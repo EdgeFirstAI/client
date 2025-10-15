@@ -27,7 +27,7 @@ use polars::prelude::*;
 /// // Create file types from strings
 /// let image_type = FileType::from("image");
 /// let lidar_type = FileType::from("lidar.pcd");
-/// 
+///
 /// // Display file types
 /// println!("Processing {} files", image_type); // "Processing image files"
 ///
@@ -97,7 +97,7 @@ impl From<&str> for FileType {
 /// // Create annotation types from strings
 /// let box_2d = AnnotationType::from("box2d");
 /// let segmentation = AnnotationType::from("mask");
-/// 
+///
 /// // Display annotation types
 /// println!("Annotation type: {}", box_2d); // "Annotation type: box2d"
 ///
@@ -156,9 +156,9 @@ impl std::fmt::Display for AnnotationType {
 /// A dataset in EdgeFirst Studio containing sensor data and annotations.
 ///
 /// Datasets are collections of multi-modal sensor data (images, LiDAR, radar)
-/// along with their corresponding annotations (bounding boxes, segmentation masks,
-/// 3D annotations). Datasets belong to projects and can be used for training
-/// and validation of machine learning models.
+/// along with their corresponding annotations (bounding boxes, segmentation
+/// masks, 3D annotations). Datasets belong to projects and can be used for
+/// training and validation of machine learning models.
 ///
 /// # Features
 ///

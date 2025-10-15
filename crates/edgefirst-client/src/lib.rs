@@ -6,19 +6,26 @@
 
 //! # EdgeFirst Studio Client Library
 //!
-//! The EdgeFirst Studio Client Library provides a Rust client for interacting with 
-//! EdgeFirst Studio, a comprehensive platform for computer vision and machine learning 
-//! workflows. This library enables developers to programmatically manage datasets, 
-//! annotations, training sessions, and other Studio resources.
+//! The EdgeFirst Studio Client Library provides a Rust client for interacting
+//! with EdgeFirst Studio, a comprehensive platform for computer vision and
+//! machine learning workflows. This library enables developers to
+//! programmatically manage datasets, annotations, training sessions, and other
+//! Studio resources.
 //!
 //! ## Features
 //!
-//! - **Authentication**: Secure token-based authentication with automatic renewal
-//! - **Dataset Management**: Upload, download, and manage datasets with various file types
-//! - **Annotation Management**: Create, update, and retrieve annotations for computer vision tasks
-//! - **Training & Validation**: Manage machine learning training and validation sessions
-//! - **Project Organization**: Organize work into projects with hierarchical structure
-//! - **Polars Integration**: Optional integration with Polars DataFrames for data analysis
+//! - **Authentication**: Secure token-based authentication with automatic
+//!   renewal
+//! - **Dataset Management**: Upload, download, and manage datasets with various
+//!   file types
+//! - **Annotation Management**: Create, update, and retrieve annotations for
+//!   computer vision tasks
+//! - **Training & Validation**: Manage machine learning training and validation
+//!   sessions
+//! - **Project Organization**: Organize work into projects with hierarchical
+//!   structure
+//! - **Polars Integration**: Optional integration with Polars DataFrames for
+//!   data analysis
 //!
 //! ## Quick Start
 //!
@@ -29,21 +36,22 @@
 //! async fn main() -> Result<(), Error> {
 //!     // Create a new client
 //!     let client = Client::new()?;
-//!     
+//!
 //!     // Authenticate with username and password
 //!     let client = client.with_login("username", "password").await?;
-//!     
+//!
 //!     // List available projects
 //!     let projects = client.projects(None).await?;
 //!     println!("Found {} projects", projects.len());
-//!     
+//!
 //!     Ok(())
 //! }
 //! ```
 //!
 //! ## Optional Features
 //!
-//! - `polars`: Enables integration with Polars DataFrames for enhanced data manipulation
+//! - `polars`: Enables integration with Polars DataFrames for enhanced data
+//!   manipulation
 
 mod api;
 mod client;

@@ -101,7 +101,6 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           maturin build --release \
-            --target ${{ matrix.target }} \
             -m crates/edgefirst-client-py/Cargo.toml
 
       - name: List wheels

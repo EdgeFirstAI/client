@@ -24,7 +24,7 @@ use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr};
 /// let float_param = Parameter::Real(3.14);
 /// let bool_param = Parameter::Boolean(true);
 /// let string_param = Parameter::String("model_name".to_string());
-/// 
+///
 /// // Complex nested parameters
 /// let array_param = Parameter::Array(vec![
 ///     Parameter::Integer(1),
@@ -61,9 +61,9 @@ pub struct LoginResult {
 
 /// Unique identifier for an organization in EdgeFirst Studio.
 ///
-/// Organizations are the top-level containers for users, projects, and resources
-/// in EdgeFirst Studio. Each organization has a unique ID that is displayed
-/// in hexadecimal format with an "org-" prefix (e.g., "org-abc123").
+/// Organizations are the top-level containers for users, projects, and
+/// resources in EdgeFirst Studio. Each organization has a unique ID that is
+/// displayed in hexadecimal format with an "org-" prefix (e.g., "org-abc123").
 ///
 /// # Examples
 ///
@@ -119,7 +119,7 @@ impl TryFrom<&str> for OrganizationID {
 
 /// Organization information and metadata.
 ///
-/// Each user belongs to an organization which contains projects, datasets, 
+/// Each user belongs to an organization which contains projects, datasets,
 /// and other resources. Organizations provide isolated workspaces for teams
 /// and manage resource quotas and billing.
 ///
@@ -127,7 +127,7 @@ impl TryFrom<&str> for OrganizationID {
 ///
 /// ```no_run
 /// use edgefirst_client::{Client, Organization};
-/// 
+///
 /// # async fn example() -> Result<(), edgefirst_client::Error> {
 /// # let client = Client::new()?;
 /// // Access organization details
@@ -168,7 +168,7 @@ impl Organization {
 /// Unique identifier for a project within EdgeFirst Studio.
 ///
 /// Projects contain datasets, experiments, and models within an organization.
-/// Each project has a unique ID displayed in hexadecimal format with a "p-" 
+/// Each project has a unique ID displayed in hexadecimal format with a "p-"
 /// prefix (e.g., "p-def456").
 ///
 /// # Examples
@@ -243,7 +243,7 @@ impl FromStr for ProjectID {
 /// Unique identifier for an experiment within a project.
 ///
 /// Experiments represent individual machine learning experiments with specific
-/// configurations, datasets, and results. Each experiment has a unique ID 
+/// configurations, datasets, and results. Each experiment has a unique ID
 /// displayed in hexadecimal format with an "exp-" prefix (e.g., "exp-123abc").
 ///
 /// # Examples
@@ -317,9 +317,9 @@ impl FromStr for ExperimentID {
 
 /// Unique identifier for a training session within an experiment.
 ///
-/// Training sessions represent individual training runs with specific hyperparameters
-/// and configurations. Each training session has a unique ID displayed in hexadecimal 
-/// format with a "t-" prefix (e.g., "t-789012").
+/// Training sessions represent individual training runs with specific
+/// hyperparameters and configurations. Each training session has a unique ID
+/// displayed in hexadecimal format with a "t-" prefix (e.g., "t-789012").
 ///
 /// # Examples
 ///
@@ -392,16 +392,16 @@ impl FromStr for TrainingSessionID {
 
 /// Unique identifier for a validation session within an experiment.
 ///
-/// Validation sessions represent model validation runs that evaluate trained models
-/// against test datasets. Each validation session has a unique ID displayed in 
-/// hexadecimal format with a "v-" prefix (e.g., "v-345678").
+/// Validation sessions represent model validation runs that evaluate trained
+/// models against test datasets. Each validation session has a unique ID
+/// displayed in hexadecimal format with a "v-" prefix (e.g., "v-345678").
 ///
 /// # Examples
 ///
 /// ```rust
 /// use edgefirst_client::ValidationSessionID;
 ///
-/// // Create from u64  
+/// // Create from u64
 /// let validation_id = ValidationSessionID::from(3456789);
 /// println!("{}", validation_id); // Displays: v-34c985
 ///
@@ -547,7 +547,7 @@ impl FromStr for TaskID {
 /// Unique identifier for a dataset within a project.
 ///
 /// Datasets contain collections of images, annotations, and other data used for
-/// machine learning experiments. Each dataset has a unique ID displayed in 
+/// machine learning experiments. Each dataset has a unique ID displayed in
 /// hexadecimal format with a "ds-" prefix (e.g., "ds-123abc").
 ///
 /// # Examples

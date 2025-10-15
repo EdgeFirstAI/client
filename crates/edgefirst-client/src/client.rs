@@ -57,9 +57,15 @@ static PART_SIZE: usize = 100 * 1024 * 1024;
 /// ```rust
 /// use edgefirst_client::Progress;
 ///
-/// let progress = Progress { current: 25, total: 100 };
+/// let progress = Progress {
+///     current: 25,
+///     total: 100,
+/// };
 /// let percentage = (progress.current as f64 / progress.total as f64) * 100.0;
-/// println!("Progress: {:.1}% ({}/{})", percentage, progress.current, progress.total);
+/// println!(
+///     "Progress: {:.1}% ({}/{})",
+///     percentage, progress.current, progress.total
+/// );
 /// ```
 #[derive(Debug, Clone)]
 pub struct Progress {
@@ -194,10 +200,12 @@ struct ImagesFilter {
 ///
 /// - **Authentication**: Token-based authentication with automatic persistence
 /// - **Dataset Management**: Upload, download, and manipulate datasets
-/// - **Project Operations**: Create and manage projects and experiments  
+/// - **Project Operations**: Create and manage projects and experiments
 /// - **Training & Validation**: Submit and monitor ML training jobs
-/// - **Data Integration**: Convert between EdgeFirst datasets and popular formats
-/// - **Progress Tracking**: Real-time progress updates for long-running operations
+/// - **Data Integration**: Convert between EdgeFirst datasets and popular
+///   formats
+/// - **Progress Tracking**: Real-time progress updates for long-running
+///   operations
 ///
 /// # Examples
 ///
@@ -208,7 +216,9 @@ struct ImagesFilter {
 /// # async fn example() -> Result<(), edgefirst_client::Error> {
 /// // Create a new client and authenticate
 /// let mut client = Client::new()?;
-/// let client = client.with_login("your-email@example.com", "password").await?;
+/// let client = client
+///     .with_login("your-email@example.com", "password")
+///     .await?;
 ///
 /// // Or use an existing token
 /// let base_client = Client::new()?;
