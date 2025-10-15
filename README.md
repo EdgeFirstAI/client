@@ -1,7 +1,7 @@
 # EdgeFirst Studio Client
 
-[![CI](https://github.com/EdgeFirstAI/client/workflows/CI/badge.svg)](https://github.com/EdgeFirstAI/client/actions/workflows/ci.yml)
-[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=EdgeFirstAI_client)
+[![Test](https://github.com/EdgeFirstAI/client/workflows/CI/badge.svg)](https://github.com/EdgeFirstAI/client/actions/workflows/test.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=EdgeFirstAI_client&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=EdgeFirstAI_client)
 [![codecov](https://codecov.io/gh/EdgeFirstAI/client/branch/main/graph/badge.svg)](https://codecov.io/gh/EdgeFirstAI/client)
 [![Crates.io](https://img.shields.io/crates/v/edgefirst-client.svg)](https://crates.io/crates/edgefirst-client)
 [![PyPI](https://img.shields.io/pypi/v/edgefirst-client.svg)](https://pypi.org/project/edgefirst-client/)
