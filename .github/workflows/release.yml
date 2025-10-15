@@ -297,10 +297,7 @@ jobs:
 
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
-        run: |
-          maturin build --release \
-            --target ${{ matrix.target }} \
-            -m crates/edgefirst-client-py/Cargo.toml
+        run: maturin build --release -m crates/edgefirst-client-py/Cargo.toml
 
       - name: Upload wheels as artifacts
         uses: actions/upload-artifact@v4
@@ -355,8 +352,9 @@ jobs:
           echo "Version verified: $CARGO_VERSION"
 
       - name: Publish workspace to crates.io
-        run: cargo publish --workspace --token ${{ secrets.CARGO_TOKEN }}
-        continue-on-error: true
+        run: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Update release with wheel assets
   upload-wheels-to-release:

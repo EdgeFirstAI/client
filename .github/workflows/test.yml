@@ -243,7 +243,6 @@ jobs:
 
       - name: Run tests with nextest
         run: cargo nextest run --no-fail-fast --profile ci
-        continue-on-error: true
         env:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
