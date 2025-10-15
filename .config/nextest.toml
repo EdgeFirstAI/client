@@ -1,0 +1,12 @@
+# Nextest configuration file
+
+# CI profile - used in GitHub Actions and other CI environments
+[profile.ci]
+# Generate JUnit XML report for test results
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "nextest-run"
+# Store output for failing tests to help with debugging
+store-failure-output = true
+# Don't store output for successful tests to keep the report size manageable
+store-success-output = false

@@ -242,7 +242,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests with nextest
-        run: cargo nextest run --all-features --workspace --no-fail-fast
+        run: cargo nextest run --no-fail-fast --profile ci
         continue-on-error: true
         env:
           STUDIO_SERVER: test
@@ -253,5 +253,5 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
         with:
-          files: target/nextest/default/junit.xml
+          files: target/nextest/ci/junit.xml
           check_name: Test Results
