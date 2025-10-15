@@ -102,7 +102,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --no-cfg-coverage --lcov --output-path lcov.info
         env:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
