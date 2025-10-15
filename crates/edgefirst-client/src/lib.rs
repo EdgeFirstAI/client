@@ -530,7 +530,7 @@ mod tests {
             )
             .await;
         assert!(res.is_err());
-        assert_eq!(Path::new("fakefile.txt").exists(), false);
+        assert!(!Path::new("fakefile.txt").exists());
 
         Ok(())
     }
@@ -591,7 +591,7 @@ mod tests {
             )
             .await;
         assert!(res.is_err());
-        assert_eq!(Path::new("fakefile.txt").exists(), false);
+        assert!(!Path::new("fakefile.txt").exists());
 
         Ok(())
     }

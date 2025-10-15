@@ -82,7 +82,7 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 
 6. **Run clippy:**
    ```bash
-   cargo clippy --all-targets --all-features -- -D warnings
+   cargo clippy --all-targets --all-features
    ```
 
 7. **Update documentation** if needed:
