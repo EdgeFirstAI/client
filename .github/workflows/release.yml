@@ -1,0 +1,380 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+rc[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Create GitHub release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Verify version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG_VERSION="${{ steps.get_version.outputs.version }}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            ## What's Changed
+
+            See [CHANGELOG.md](https://github.com/EdgeFirstAI/client/blob/${{ steps.get_version.outputs.version }}/CHANGELOG.md) for details.
+
+            ## Installation
+
+            ### CLI Binary
+            Download the appropriate binary for your platform from the assets below.
+
+            _Alternatively, the pip package includes the CLI (see below)._
+
+            ### Python Package
+            ```bash
+            pip install edgefirst-client==${{ steps.get_version.outputs.version }}
+            ```
+
+            ### Rust Crate
+            ```toml
+            [dependencies]
+            edgefirst-client = "${{ steps.get_version.outputs.version }}"
+            ```
+
+  # Generate third-party licenses
+  generate-licenses:
+    name: Generate Third-Party Licenses
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-license
+        run: cargo install cargo-license
+
+      - name: Generate TSV license file
+        run: |
+          cargo-license --authors --all-features --tsv > THIRD_PARTY.tsv
+
+      - name: Convert TSV to Markdown
+        run: |
+          cat > THIRD_PARTY.md << 'EOF'
+          # Third-Party Licenses
+
+          This file lists all third-party dependencies and their respective licenses.
+
+          EOF
+          
+          # Convert TSV to markdown table
+          awk -F'\t' '
+          NR==1 {
+            print "| " $1 " | " $2 " | " $3 " | " $4 " | " $5 " |"
+            print "|---|---|---|---|---|"
+          }
+          NR>1 {
+            # Escape pipe characters in fields
+            gsub(/\|/, "\\|", $0)
+            print "| " $1 " | " $2 " | " $3 " | " $4 " | " $5 " |"
+          }
+          ' THIRD_PARTY.tsv >> THIRD_PARTY.md
+
+      - name: Upload THIRD_PARTY.md to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./THIRD_PARTY.md
+          asset_name: THIRD_PARTY.md
+          asset_content_type: text/markdown
+
+  # Build CLI binaries
+  build-cli:
+    name: Build CLI ${{ matrix.target }}
+    needs: [create-release]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: edgefirst-client
+            asset_name: edgefirst-client-linux-amd64
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: edgefirst-client
+            asset_name: edgefirst-client-linux-arm64
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: edgefirst-client
+            asset_name: edgefirst-client-macos-amd64
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: edgefirst-client
+            asset_name: edgefirst-client-macos-arm64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: edgefirst-client.exe
+            asset_name: edgefirst-client-windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross-compilation (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+
+      - name: Build CLI
+        run: cargo build --release --target ${{ matrix.target }} -p edgefirst-cli
+
+      - name: Create release asset
+        shell: bash
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          mkdir -p release
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "release/${{ matrix.asset_name }}"
+          cd release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a "${{ matrix.asset_name }}-$VERSION.zip" "${{ matrix.asset_name }}"
+          else
+            tar czf "${{ matrix.asset_name }}-$VERSION.tar.gz" "${{ matrix.asset_name }}"
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: release/${{ matrix.asset_name }}-${{ needs.create-release.outputs.version }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+          asset_name: ${{ matrix.asset_name }}-${{ needs.create-release.outputs.version }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+          asset_content_type: application/octet-stream
+
+  # Build Python wheels
+  build-wheels:
+    name: Build wheels ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: [create-release]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x86_64
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: aarch64
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x86_64
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: aarch64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install maturin[zig]
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross-compilation (Linux aarch64)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+
+      - name: Build CLI for bundling
+        run: cargo build --release --target ${{ matrix.target }} -p edgefirst-cli
+
+      - name: Bundle CLI with wheel
+        shell: bash
+        run: |
+          mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
+          
+          # Determine the correct build output directory
+          # Cargo uses target/release for native builds, target/<triple>/release for cross-compilation
+          if [ -f "target/${{ matrix.target }}/release/edgefirst-client" ] || [ -f "target/${{ matrix.target }}/release/edgefirst-client.exe" ]; then
+            BUILD_DIR="target/${{ matrix.target }}/release"
+          else
+            BUILD_DIR="target/release"
+          fi
+          
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "$BUILD_DIR/edgefirst-client.exe" "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client.exe"
+          else
+            cp "$BUILD_DIR/edgefirst-client" "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client"
+          fi
+
+      - name: Build wheels (Linux with zig)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          maturin build --release --zig --compatibility manylinux2014 \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      - name: Build wheels (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      - name: Build wheels (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      - name: Upload wheels as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/wheels/*.whl
+
+  # Publish to PyPI
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [create-release, build-wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: List wheels
+        run: ls -lh wheels/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels/
+          skip-existing: true
+
+  # Publish to crates.io
+  publish-crates-io:
+    name: Publish to crates.io
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG_VERSION="${{ needs.create-release.outputs.version }}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+
+      - name: Publish workspace to crates.io
+        run: cargo publish --workspace --token ${{ secrets.CARGO_TOKEN }}
+        continue-on-error: true
+
+  # Update release with wheel assets
+  upload-wheels-to-release:
+    name: Upload Wheels to Release
+    needs: [create-release, build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Upload wheels to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: wheels/*.whl
+          tag_name: ${{ needs.create-release.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

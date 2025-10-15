@@ -1,0 +1,16 @@
+[project]
+name = "edgefirst_client"
+requires-python = ">=3.8"
+dependencies = ["polars"]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://edgefirst.studio"
+Documentation = "https://doc.edgefirst.ai"
+
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+# features = ["polars"]

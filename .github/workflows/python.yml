@@ -1,0 +1,167 @@
+name: Build Python Wheels
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-wheels:
+    name: Build wheels on ${{ matrix.os }} (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x86_64
+
+          # Linux aarch64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: aarch64
+
+          # macOS x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x86_64
+
+          # macOS aarch64 (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: aarch64
+
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install maturin
+        run: pip install maturin[zig]
+
+      # Install cross-compilation tools for Linux aarch64
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      # Build wheels with zig for better cross-compilation support on Linux
+      - name: Build wheels (Linux with zig)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          maturin build --release --zig --compatibility manylinux2014 \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      # Build wheels for macOS
+      - name: Build wheels (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      # Build wheels for Windows
+      - name: Build wheels (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          maturin build --release \
+            --target ${{ matrix.target }} \
+            -m crates/edgefirst-client-py/Cargo.toml
+
+      - name: List wheels
+        shell: bash
+        run: ls -lh target/wheels/
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/wheels/*.whl
+          if-no-files-found: error
+
+  # Test wheels on their respective platforms
+  test-wheels:
+    name: Test wheel on ${{ matrix.os }}
+    needs: [build-wheels]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: macos-latest
+            platform: macos
+            arch: x86_64
+          - os: macos-latest
+            platform: macos
+            arch: aarch64
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
+          path: wheels
+
+      - name: Install wheel
+        shell: bash
+        run: |
+          pip install wheels/*.whl
+
+      - name: Install test dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Python tests
+        run: python -m unittest discover
+        env:
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}

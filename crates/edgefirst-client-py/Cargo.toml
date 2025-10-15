@@ -1,0 +1,27 @@
+[package]
+name = "edgefirst-client-py"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+publish = false  # Python bindings only - distributed via PyPI, not crates.io
+
+[lib]
+name = "edgefirst_client"
+crate-type = ["dylib"]
+
+[features]
+default = ["polars"]
+polars = ["dep:pyo3-polars"]
+
+[dependencies]
+edgefirst-client = { path = "../edgefirst-client" }
+env_logger = { workspace = true }
+pyo3 = { workspace = true }
+pyo3-polars = { workspace = true, optional = true }
+tokio = { workspace = true }
+tokio-wrap = { workspace = true }
