@@ -112,6 +112,16 @@ jobs:
       - name: Set up coverage environment
         run: |
           cargo llvm-cov show-env --export-prefix --no-cfg-coverage >> $GITHUB_ENV
+          echo "Coverage environment variables written to GITHUB_ENV"
+
+      - name: Verify coverage environment
+        run: |
+          echo "Checking coverage environment variables:"
+          echo "RUSTFLAGS: $RUSTFLAGS"
+          echo "RUSTDOCFLAGS: $RUSTDOCFLAGS"
+          echo "LLVM_PROFILE_FILE: $LLVM_PROFILE_FILE"
+          echo "CARGO_LLVM_COV: $CARGO_LLVM_COV"
+          echo "CARGO_LLVM_COV_TARGET_DIR: $CARGO_LLVM_COV_TARGET_DIR"
 
       - name: Build with coverage
         run: cargo build --locked
@@ -147,7 +157,9 @@ jobs:
           find target -name "*.profraw" -type f
           echo "Checking for coverage files:"
           ls -la coverage.xml || echo "coverage.xml not found"
+          echo "Re-checking environment variables before report generation:"
           echo "LLVM_PROFILE_FILE: $LLVM_PROFILE_FILE"
+          echo "CARGO_LLVM_COV_TARGET_DIR: $CARGO_LLVM_COV_TARGET_DIR"
 
       - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path lcov.info

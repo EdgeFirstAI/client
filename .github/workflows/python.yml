@@ -7,7 +7,7 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_run:
-    workflows: ["Dependencies"]
+    workflows: ["Dependencies", "Build"]
     types:
       - completed
 
@@ -77,6 +77,14 @@ jobs:
           key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-git-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-release-
 
       - name: Install maturin
         run: pip install maturin[zig]
