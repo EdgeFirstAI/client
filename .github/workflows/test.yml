@@ -101,8 +101,19 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests with coverage
-        run: cargo llvm-cov --no-cfg-coverage --lcov --output-path lcov.info
+      - name: Set up coverage environment
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
+          echo "CARGO_INCREMENTAL=${CARGO_INCREMENTAL}" >> $GITHUB_ENV
+          echo "RUSTFLAGS=${RUSTFLAGS}" >> $GITHUB_ENV
+          echo "RUSTDOCFLAGS=${RUSTDOCFLAGS}" >> $GITHUB_ENV
+          echo "LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE}" >> $GITHUB_ENV
+
+      - name: Build with coverage
+        run: cargo build
+
+      - name: Run Rust tests
+        run: cargo test -- --nocapture
         env:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
@@ -120,11 +131,14 @@ jobs:
       - name: Install Python package
         run: pip install target/wheels/edgefirst_client-*.whl
 
-      - name: Install slipcover for Python coverage
+      - name: Install slipcover
         run: pip install slipcover
 
-      - name: Run Python tests with coverage
+      - name: Run Python tests
         run: python3 -m slipcover --xml --out coverage.xml -m unittest
+
+      - name: Generate coverage report
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload Rust coverage to Codecov
         uses: codecov/codecov-action@v4
