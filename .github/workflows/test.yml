@@ -1,14 +1,11 @@
 name: Test and Quality Checks
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_run:
     workflows: ["Dependencies"]
     types:
       - completed
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -137,8 +134,15 @@ jobs:
       - name: Build with coverage
         run: cargo build --locked
 
-      - name: Run Rust tests with nextest
-        run: cargo nextest run --locked --no-fail-fast
+      - name: Run Rust unit tests
+        run: cargo nextest run --locked --no-fail-fast --profile ci
+        env:
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+
+      - name: Run Rust doc tests
+        run: cargo test --doc --locked
         env:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
@@ -148,7 +152,7 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
         with:
-          files: target/nextest/default/junit.xml
+          files: target/nextest/ci/junit.xml
           check_name: Rust Test Results
 
       - name: Install Python dependencies
@@ -240,56 +244,4 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Run doc tests
-  doc-test:
-    name: Documentation Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            test-
-
-      - name: Set up coverage environment
-        run: |
-          # Source the environment setup to properly set variables in current shell
-          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
-          # Then write them to GITHUB_ENV for subsequent steps
-          echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
-          echo "RUSTDOCFLAGS=$RUSTDOCFLAGS" >> $GITHUB_ENV
-          echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_SHOW_ENV=$CARGO_LLVM_COV_SHOW_ENV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
-
-      - name: Run doc tests
-        run: cargo test --doc --locked

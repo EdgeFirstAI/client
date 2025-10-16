@@ -1,15 +1,11 @@
 name: Build Python Wheels
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
   workflow_run:
     workflows: ["Dependencies", "Build"]
     types:
       - completed
+  workflow_dispatch:
 
 jobs:
   build-wheels:

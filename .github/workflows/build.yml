@@ -1,15 +1,11 @@
 name: Build CLI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
   workflow_run:
     workflows: ["Dependencies"]
     types:
       - completed
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
