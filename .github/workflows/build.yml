@@ -74,25 +74,27 @@ jobs:
           path: target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      # Install cross-compilation tools for Linux targets
-      - name: Install cross-compilation tools (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      # Install zig and cargo-zigbuild for Linux targets (manylinux2014 compatibility)
+      - name: Install zig and cargo-zigbuild (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          pip install ziglang
+          cargo install cargo-zigbuild
 
-      - name: Build CLI
+      - name: Build CLI (Linux with zig)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo zigbuild --release --target ${{ matrix.target }}.2.17 -p edgefirst-cli
+
+      - name: Build CLI (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
         run: cargo build --release --target ${{ matrix.target }} -p edgefirst-cli
 
       - name: Rename binary
         shell: bash
         run: |
           mkdir -p artifacts
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
-          else
-            cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
-          fi
+          # All targets use the same path structure
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
