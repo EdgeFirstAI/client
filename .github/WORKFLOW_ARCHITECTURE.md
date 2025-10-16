@@ -403,49 +403,81 @@ Test Execution
 
 ### For Maintainers
 
-**1. Prepare Release**
+> **Note**: This project uses [cargo-release](https://github.com/crate-ci/cargo-release) for automated version management and tagging. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-process) for complete details.
+
+**1. Install cargo-release** (if not already installed)
 ```bash
-# Update version in Cargo.toml to the new release version
-# For stable releases: X.Y.Z (e.g., 1.0.0)
-# For release candidates: X.Y.ZrcN (e.g., 1.0.0rc1) - NO SEPARATORS
-VERSION="1.0.0"
-# Or for release candidate:
-# VERSION="1.0.0rc1"
-sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-rm Cargo.toml.bak || true
-
-# Update CHANGELOG.md
-# Add release notes for this version
-
-# Commit changes
-git add Cargo.toml CHANGELOG.md
-git commit -m "chore: prepare release $VERSION"
-git push
+cargo install cargo-release
 ```
 
-**2. Create Tag (must match Cargo.toml version exactly)**
+**2. Update CHANGELOG.md**
 ```bash
-# The tag MUST match the version in Cargo.toml
-git tag -a $VERSION -m "Release $VERSION"
-git push origin $VERSION
+# Add release notes for the new version
+# Edit CHANGELOG.md manually
 ```
 
-**Important**: The workflow will fail if the tag version doesn't match the version in `Cargo.toml`.
+**3. Run cargo-release**
 
-**3. Monitor Workflow**
+For **stable releases**:
+```bash
+# Patch release (e.g., 2.2.2 → 2.2.3)
+cargo release patch --execute
+
+# Minor release (e.g., 2.2.3 → 2.3.0)
+cargo release minor --execute
+
+# Major release (e.g., 2.3.0 → 3.0.0)
+cargo release major --execute
+```
+
+For **release candidates** (rarely used):
+```bash
+# Manually edit version to use rcN format (e.g., 2.3.0rc1)
+sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
+sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
+cargo release 2.3.0rc1 --execute
+```
+
+**4. Push changes and tags**
+```bash
+git push && git push --tags
+```
+
+**Important**: 
+- The workflow will fail if the tag version doesn't match the version in `Cargo.toml`
+- cargo-release automatically updates all workspace crates and creates the git tag locally
+- Tags use format `X.Y.Z` (no "v" prefix)
+
+**5. Monitor Workflow**
 - Go to Actions tab
 - Watch "Release" workflow
 - Verify all jobs complete successfully
 
-**4. Verify Release**
+**6. Verify Release**
 - Check GitHub release page
 - Verify crates.io publication
 - Verify PyPI publication
 - Test downloads
 
-### Automated Steps
+### What cargo-release Does
 
-After tag push, the workflow automatically:
+When you run `cargo release`, it automatically:
+1. Updates workspace version in root `Cargo.toml`
+2. Updates workspace dependency version for `edgefirst-client`
+3. Updates all crate versions (inherited via `version.workspace = true`)
+4. Updates `Cargo.lock`
+5. Creates commit: "Release X.Y.Z Preparations"
+6. Creates git tag: `X.Y.Z` (locally, not pushed)
+
+Configuration is in `release.toml`:
+- Only allows releases from `main` branch (safety)
+- Uses tag format `X.Y.Z` without "v" prefix
+- Disables automatic publishing (handled by CI)
+- Disables automatic pushing (manual control for review)
+
+### GitHub Actions Workflow
+
+After pushing the tag, the workflow automatically:
 1. Verifies Cargo.toml version matches the tag
 2. Creates GitHub release
 3. Builds CLI binaries (5 platforms)
@@ -455,7 +487,6 @@ After tag push, the workflow automatically:
 7. Uploads all artifacts to GitHub release
 
 **Note**: If the version verification fails (tag doesn't match Cargo.toml), the entire workflow will fail immediately.
-6. Uploads all artifacts to release
 
 ---
 

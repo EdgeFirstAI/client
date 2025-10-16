@@ -19,7 +19,7 @@ polars = ["dep:polars"]
 
 [dependencies]
 clap = { workspace = true }
-edgefirst-client = { path = "../edgefirst-client" }
+edgefirst-client = { workspace = true }
 env_logger = { workspace = true }
 indicatif = { workspace = true }
 inquire = { workspace = true }

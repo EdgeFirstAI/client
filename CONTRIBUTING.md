@@ -236,23 +236,64 @@ This project follows [Semantic Versioning](https://semver.org/) (SemVer) with th
 
 ## Release Process
 
-Releases are managed by maintainers:
+Releases are managed by maintainers using [cargo-release](https://github.com/crate-ci/cargo-release):
 
-1. Update version in `Cargo.toml` to the new release version
-2. Update `CHANGELOG.md` with release notes
-3. Commit changes: `git commit -am "Prepare release 1.0.0"`
-4. Push changes: `git push`
-5. Create a git tag matching the version: `git tag -a 1.0.0 -m "Release 1.0.0"`
-6. Push tag: `git push origin 1.0.0`
-7. GitHub Actions will automatically:
-   - Verify the tag matches the Cargo.toml version
-   - Build binaries for all platforms
-   - Build Python wheels
-   - Publish to crates.io
-   - Publish to PyPI
-   - Create GitHub Release with all artifacts
+```bash
+# 1. Update CHANGELOG.md with release notes
 
-**Important**: The version in `Cargo.toml` must exactly match the git tag, or the release workflow will fail.
+# 2. Run cargo-release to bump versions and create tag
+cargo release patch --execute    # or: minor, major
+
+# 3. Push to trigger CI/CD
+git push && git push --tags
+```
+
+GitHub Actions will automatically build binaries, publish to crates.io and PyPI, and create a GitHub Release.
+
+**Version Format**: Use `X.Y.Z` for stable releases, `X.Y.ZrcN` for release candidates (without separators for PyPI/Cargo compatibility).
+
+### Release Candidates
+
+> [!WARNING]
+> **Extra Manual Steps Required**: Release candidates require additional manual version editing because:
+> - PyPI requires `X.Y.ZrcN` format (PEP 440)
+> - cargo-release uses `X.Y.Z-rc.N` format (SemVer)
+> - Maturin does NOT automatically convert between these formats
+> - You must use `X.Y.ZrcN` in Cargo.toml for dual compatibility
+
+For release candidates, manually specify the version since cargo-release uses `-rc.1` format instead of `rc1`:
+
+```bash
+# Manually update version in Cargo.toml to use rcN format (e.g., 2.3.0rc1)
+sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
+sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
+
+# Then use cargo release with explicit version
+cargo release 2.3.0rc1 --execute
+
+# Push
+git push && git push --tags
+```
+
+### What cargo-release Does
+
+The project uses workspace dependencies in `Cargo.toml`, so cargo-release automatically:
+- Updates workspace version in root `Cargo.toml`
+- Updates workspace dependency version for `edgefirst-client`
+- Updates all crate versions (inherited via `version.workspace = true`)
+- Updates `Cargo.lock`
+- Creates commit: "Release X.Y.Z Preparations"
+- Creates git tag: `X.Y.Z` (locally, not pushed)
+
+### Configuration
+
+The `release.toml` file configures cargo-release:
+- Only allows releases from `main` branch (safety)
+- Uses tag format `X.Y.Z` without "v" prefix (matches existing tags)
+- Disables automatic publishing (handled by CI)
+- Disables automatic pushing (manual control for review)
+
+See [cargo-release reference](https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md) for more details.
 
 ## Getting Help
 

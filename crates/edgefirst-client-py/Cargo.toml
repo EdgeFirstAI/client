@@ -19,7 +19,7 @@ default = ["polars"]
 polars = ["dep:pyo3-polars"]
 
 [dependencies]
-edgefirst-client = { path = "../edgefirst-client" }
+edgefirst-client = { workspace = true }
 env_logger = { workspace = true }
 pyo3 = { workspace = true }
 pyo3-polars = { workspace = true, optional = true }

@@ -26,6 +26,7 @@ clap = { version = "4.5.49", features = ["derive", "env"] }
 config = "0.15.18"
 ctor = "0.6.0"
 directories = "6.0.0"
+edgefirst-client = { version = "2.2.2", path = "crates/edgefirst-client" }
 env_logger = "0.11.8"
 futures = "0.3.31"
 indicatif = "0.18.0"
