@@ -63,8 +63,26 @@ ci.yml
 **Secrets Required**:
 - `CODECOV_TOKEN`: For uploading coverage reports
 - `SONAR_TOKEN`: For SonarCloud analysis and quality gate checks
-- `STUDIO_USERNAME`: For running integration tests
-- `STUDIO_PASSWORD`: For running integration tests
+- `STUDIO_USERNAME`: For running Studio integration tests
+- `STUDIO_PASSWORD`: For running Studio integration tests
+
+**Studio Integration Tests**:
+
+The CI workflow runs integration tests that authenticate and interact with EdgeFirst Studio test servers. These tests validate server-side behavior including:
+- Authentication (login/logout with JWT token management)
+- Dataset operations (download datasets and annotations)
+- Project operations (list, create, read)
+- Experiment and training workflows
+- Artifact management
+
+**Test Infrastructure:**
+- Test servers: `test`, `stage`, and `saas` environments
+- Test data conventions: Common `test` user, `Unit Testing` project, `Deer` and `Test Labels` datasets
+- Server selection: `STUDIO_SERVER` environment variable (set to `test` in CI)
+- Credentials: Stored as GitHub Secrets (not publicly available)
+
+**For Contributors:**
+Studio credentials are only available to project maintainers. Contributors can run the full test suite by creating pull requests, which trigger CI workflows with stored credentials. This ensures comprehensive testing while maintaining credential security.
 
 **Artifacts Generated**:
 - `coverage-reports`: lcov.info and coverage.xml files

@@ -85,9 +85,24 @@ mod tests {
         env,
         fs::{File, read_to_string},
         io::Write,
-        path::Path,
+        path::PathBuf,
     };
     use tokio::time::{Duration, sleep};
+
+    /// Get the test data directory (target/testdata)
+    /// Creates it if it doesn't exist
+    fn get_test_data_dir() -> PathBuf {
+        let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("testdata");
+
+        std::fs::create_dir_all(&test_dir).expect("Failed to create test data directory");
+        test_dir
+    }
 
     #[ctor::ctor]
     fn init() {
@@ -510,27 +525,31 @@ mod tests {
         let artifacts = client.artifacts(trainer.id()).await?;
         assert!(!artifacts.is_empty());
 
+        let test_dir = get_test_data_dir();
+
         for artifact in artifacts {
+            let output_path = test_dir.join(artifact.name());
             client
                 .download_artifact(
                     trainer.id(),
                     artifact.name(),
-                    Some(artifact.name().into()),
+                    Some(output_path.clone()),
                     None,
                 )
                 .await?;
+
+            // Clean up downloaded file
+            if output_path.exists() {
+                std::fs::remove_file(&output_path)?;
+            }
         }
 
+        let fake_path = test_dir.join("fakefile.txt");
         let res = client
-            .download_artifact(
-                trainer.id(),
-                "fakefile.txt",
-                Some("fakefile.txt".into()),
-                None,
-            )
+            .download_artifact(trainer.id(), "fakefile.txt", Some(fake_path.clone()), None)
             .await;
         assert!(res.is_err());
-        assert!(!Path::new("fakefile.txt").exists());
+        assert!(!fake_path.exists());
 
         Ok(())
     }
@@ -555,8 +574,12 @@ mod tests {
             .await?;
         let trainer = trainer.first().unwrap();
 
+        let test_dir = get_test_data_dir();
+        let checkpoint_path = test_dir.join("checkpoint.txt");
+        let checkpoint2_path = test_dir.join("checkpoint2.txt");
+
         {
-            let mut chkpt = File::create("checkpoint.txt")?;
+            let mut chkpt = File::create(&checkpoint_path)?;
             chkpt.write_all(b"Test Checkpoint")?;
         }
 
@@ -565,7 +588,7 @@ mod tests {
                 &client,
                 &[(
                     "checkpoints/checkpoint.txt".to_string(),
-                    "checkpoint.txt".into(),
+                    checkpoint_path.clone(),
                 )],
             )
             .await?;
@@ -574,24 +597,28 @@ mod tests {
             .download_checkpoint(
                 trainer.id(),
                 "checkpoint.txt",
-                Some("checkpoint2.txt".into()),
+                Some(checkpoint2_path.clone()),
                 None,
             )
             .await?;
 
-        let chkpt = read_to_string("checkpoint2.txt")?;
+        let chkpt = read_to_string(&checkpoint2_path)?;
         assert_eq!(chkpt, "Test Checkpoint");
 
+        let fake_path = test_dir.join("fakefile.txt");
         let res = client
-            .download_checkpoint(
-                trainer.id(),
-                "fakefile.txt",
-                Some("fakefile.txt".into()),
-                None,
-            )
+            .download_checkpoint(trainer.id(), "fakefile.txt", Some(fake_path.clone()), None)
             .await;
         assert!(res.is_err());
-        assert!(!Path::new("fakefile.txt").exists());
+        assert!(!fake_path.exists());
+
+        // Clean up
+        if checkpoint_path.exists() {
+            std::fs::remove_file(&checkpoint_path)?;
+        }
+        if checkpoint2_path.exists() {
+            std::fs::remove_file(&checkpoint2_path)?;
+        }
 
         Ok(())
     }

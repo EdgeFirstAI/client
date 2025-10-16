@@ -450,6 +450,14 @@ impl TryFrom<&str> for ValidationSessionID {
     }
 }
 
+impl TryFrom<String> for ValidationSessionID {
+    type Error = Error;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        ValidationSessionID::try_from(s.as_str())
+    }
+}
+
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SnapshotID(u64);
 

@@ -4,10 +4,18 @@
 from time import sleep
 from edgefirst_client import Client, AnnotationType
 from os import environ
+from pathlib import Path
 from polars import read_ipc
 from unittest import TestCase
 from tqdm import tqdm
 from examples.coco import coco_labels
+
+
+def get_test_data_dir():
+    """Get the test data directory (target/testdata). Creates it if it doesn't exist."""
+    test_dir = Path(__file__).parent / "target" / "testdata"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    return test_dir
 
 
 class BasicTest(TestCase):
@@ -117,6 +125,9 @@ class BasicTest(TestCase):
         dataset = next(dataset, None)
         assert dataset is not None
 
+        test_dir = get_test_data_dir()
+        arrow_file = test_dir / "coco.arrow"
+
         with tqdm(total=0, unit="", unit_scale=True, unit_divisor=1000) as bar:
 
             def progress(current, total):
@@ -131,9 +142,13 @@ class BasicTest(TestCase):
                 annotation_types=[AnnotationType.Box2d],
                 progress=progress,
             )
-            df.write_ipc("coco.arrow")
-        df = read_ipc("coco.arrow")
+            df.write_ipc(str(arrow_file))
+        df = read_ipc(str(arrow_file))
         assert len(df.unique("name")) == 5000
+        
+        # Clean up
+        if arrow_file.exists():
+            arrow_file.unlink()
 
     def test_training_sessions(self):
         client = self.get_client()
@@ -188,8 +203,15 @@ class BasicTest(TestCase):
         artifacts = client.artifacts(trainer.id)
         assert len(artifacts) > 0
 
+        test_dir = get_test_data_dir()
+        
         for artifact in artifacts:
-            client.download_artifact(trainer.id, artifact.name)
+            output_path = test_dir / artifact.name
+            client.download_artifact(trainer.id, artifact.name, str(output_path))
+            
+            # Clean up downloaded file
+            if output_path.exists():
+                output_path.unlink()
 
     def test_checkpoints(self):
         client = self.get_client()
@@ -199,12 +221,19 @@ class BasicTest(TestCase):
                                            "modelpack-usermanaged")[0]
         assert trainer.uid.startswith("t-")
 
-        with open("checkpoint_py.txt", "w") as f:
+        test_dir = get_test_data_dir()
+        checkpoint_file = test_dir / "checkpoint_py.txt"
+
+        with open(str(checkpoint_file), "w") as f:
             f.write("Checkpoint from Python")
 
-        trainer.upload_checkpoint(client, "checkpoint_py.txt")
+        trainer.upload_checkpoint(client, str(checkpoint_file))
         ckpt = trainer.download_checkpoint(client, "checkpoint_py.txt")
         assert ckpt == b"Checkpoint from Python"
+        
+        # Clean up
+        if checkpoint_file.exists():
+            checkpoint_file.unlink()
 
     def test_tasks(self):
         client = self.get_client()

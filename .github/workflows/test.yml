@@ -103,11 +103,7 @@ jobs:
 
       - name: Set up coverage environment
         run: |
-          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
-          echo "CARGO_INCREMENTAL=${CARGO_INCREMENTAL}" >> $GITHUB_ENV
-          echo "RUSTFLAGS=${RUSTFLAGS}" >> $GITHUB_ENV
-          echo "RUSTDOCFLAGS=${RUSTDOCFLAGS}" >> $GITHUB_ENV
-          echo "LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE}" >> $GITHUB_ENV
+          cargo llvm-cov show-env --export-prefix --no-cfg-coverage >> $GITHUB_ENV
 
       - name: Build with coverage
         run: cargo build

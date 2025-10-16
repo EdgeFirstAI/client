@@ -237,6 +237,16 @@ enum Command {
     },
     /// Retrieve information about a specific task.
     Task { task_id: String },
+    /// List validation sessions for the provided project ID.
+    ValidationSessions {
+        /// Project ID
+        project_id: String,
+    },
+    /// Retrieve validation session information for the provided session ID.
+    ValidationSession {
+        /// Validation Session ID
+        session_id: String,
+    },
 }
 
 #[tokio::main]
@@ -722,6 +732,26 @@ async fn main() -> Result<(), Error> {
         Command::Task { task_id } => {
             let info = client.task_info(task_id.try_into()?).await?;
             println!("{:?}", info);
+        }
+        Command::ValidationSessions { project_id } => {
+            let sessions = client.validation_sessions(project_id.try_into()?).await?;
+            for session in sessions {
+                println!(
+                    "[{}] {}: {}",
+                    session.id(),
+                    session.name(),
+                    session.description()
+                );
+            }
+        }
+        Command::ValidationSession { session_id } => {
+            let session = client.validation_session(session_id.try_into()?).await?;
+            println!(
+                "[{}] {}: {}",
+                session.id(),
+                session.name(),
+                session.description()
+            );
         }
     }
 

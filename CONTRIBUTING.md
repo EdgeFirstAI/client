@@ -195,6 +195,55 @@ cargo install cargo-llvm-cov
 cargo llvm-cov --html
 ```
 
+### Studio Integration Tests
+
+The CLI test suite includes integration tests that interact with EdgeFirst Studio test servers. These tests require authenticated access to validate server-side behavior.
+
+#### Test Infrastructure
+
+**Test Servers:**
+- `test`: https://test.edgefirst.studio (primary test environment)
+- `stage`: https://stage.edgefirst.studio (staging environment)
+- `saas`: https://edgefirst.studio (production environment)
+
+**Test Data Conventions:**
+- Test user: `testing` (common across all environments)
+- Test project: `Unit Testing` (exists on all servers)
+- Static dataset: `Deer` (for download, train, and validation operations)
+- CRUD dataset: `Test Labels` (for create/update/delete operations)
+
+#### Running Studio Tests
+
+**Environment Variables:**
+- `STUDIO_SERVER`: Server environment name (`test`, `stage`, or `saas`)
+- `STUDIO_USERNAME`: Username for authentication tests
+- `STUDIO_PASSWORD`: Password for authentication tests
+
+**Credential Access:**
+> **Note**: Test credentials are **not publicly available**. Only project maintainers have access to these credentials.
+
+**For Contributors:**
+Contributors can run the full test suite (including Studio integration tests) through GitHub Actions CI/CD pipelines:
+1. Fork the repository
+2. Push changes to your fork
+3. Create a pull request
+4. The CI workflow will automatically run all tests using stored credentials
+
+**For Local Development:**
+Without Studio credentials, you can:
+- Run all non-authenticated tests: Most of the test suite
+- Develop and test CLI changes locally
+- Rely on CI/CD for full integration testing
+
+**For Maintainers:**
+With Studio credentials, set environment variables before running tests:
+```bash
+export STUDIO_SERVER=test
+export STUDIO_USERNAME=<username>
+export STUDIO_PASSWORD=<password>
+cargo test
+```
+
 ## Building
 
 ### CLI Binary
