@@ -111,7 +111,7 @@ jobs:
 
       - name: Set up coverage environment
         run: |
-          cargo llvm-cov show-env --export-prefix --no-cfg-coverage | sed 's/^export //' >> $GITHUB_ENV
+          cargo llvm-cov show-env --no-cfg-coverage >> $GITHUB_ENV
           echo "Coverage environment variables written to GITHUB_ENV"
 
       - name: Verify coverage environment
@@ -263,7 +263,7 @@ jobs:
 
       - name: Set up coverage environment
         run: |
-          cargo llvm-cov show-env --export-prefix --no-cfg-coverage | sed 's/^export //' >> $GITHUB_ENV
+          cargo llvm-cov show-env --no-cfg-coverage >> $GITHUB_ENV
 
       - name: Run doc tests
         run: cargo test --doc --locked
@@ -314,7 +314,7 @@ jobs:
 
       - name: Set up coverage environment
         run: |
-          cargo llvm-cov show-env --export-prefix --no-cfg-coverage | sed 's/^export //' >> $GITHUB_ENV
+          cargo llvm-cov show-env --no-cfg-coverage >> $GITHUB_ENV
 
       - name: Run tests with nextest
         run: cargo nextest run --locked --no-fail-fast --profile ci
