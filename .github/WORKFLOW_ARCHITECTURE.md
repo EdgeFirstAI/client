@@ -421,13 +421,13 @@ cargo install cargo-release
 For **stable releases**:
 ```bash
 # Patch release (e.g., 2.2.2 → 2.2.3)
-cargo release patch --execute
+cargo release patch --execute --no-confirm
 
 # Minor release (e.g., 2.2.3 → 2.3.0)
-cargo release minor --execute
+cargo release minor --execute --no-confirm
 
 # Major release (e.g., 2.3.0 → 3.0.0)
-cargo release major --execute
+cargo release major --execute --no-confirm
 ```
 
 For **release candidates** (rarely used):
@@ -435,7 +435,7 @@ For **release candidates** (rarely used):
 # Manually edit version to use rcN format (e.g., 2.3.0rc1)
 sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
 sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
-cargo release 2.3.0rc1 --execute
+cargo release 2.3.0rc1 --execute --no-confirm
 ```
 
 **4. Push changes and tags**

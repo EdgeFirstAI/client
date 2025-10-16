@@ -242,7 +242,7 @@ Releases are managed by maintainers using [cargo-release](https://github.com/cra
 # 1. Update CHANGELOG.md with release notes
 
 # 2. Run cargo-release to bump versions and create tag
-cargo release patch --execute    # or: minor, major
+cargo release patch --execute --no-confirm    # or: minor, major
 
 # 3. Push to trigger CI/CD
 git push && git push --tags
@@ -269,7 +269,7 @@ sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
 sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
 
 # Then use cargo release with explicit version
-cargo release 2.3.0rc1 --execute
+cargo release 2.3.0rc1 --execute --no-confirm
 
 # Push
 git push && git push --tags
