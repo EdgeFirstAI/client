@@ -148,13 +148,6 @@ jobs:
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
-      - name: Publish test results
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        if: always()
-        with:
-          files: target/nextest/ci/junit.xml
-          check_name: Rust Test Results
-
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
@@ -170,8 +163,20 @@ jobs:
       - name: Install slipcover
         run: pip install slipcover
 
+      - name: Install unittest-xml-reporting
+        run: pip install unittest-xml-reporting
+
       - name: Run Python tests
-        run: python3 -m slipcover --xml --out coverage.xml -m unittest
+        run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: |
+            target/nextest/ci/junit.xml
+            target/python/TEST-*.xml
+          check_name: Test Results (Rust + Python)
 
       - name: Check coverage files
         run: |
