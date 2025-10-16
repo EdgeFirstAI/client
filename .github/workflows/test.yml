@@ -210,7 +210,7 @@ jobs:
             target/python/TEST-*.xml
           check_name: Test Results (Rust + Python)
           comment_title: EdgeFirst Client Test Results
-          comment_mode: create new
+          comment_mode: always
           fail_on: test failures
           action_fail: true
           action_fail_on_inconclusive: true
