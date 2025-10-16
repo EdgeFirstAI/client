@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Dependencies"]
+    types:
+      - completed
 
 jobs:
   build-wheels:
@@ -62,13 +66,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-git-
 
       - name: Install maturin
         run: pip install maturin[zig]
@@ -84,7 +92,7 @@ jobs:
       - name: Build wheels (Linux with zig)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          maturin build --release --zig --compatibility manylinux2014 \
+          maturin build --release --locked --zig --compatibility manylinux2014 \
             --target ${{ matrix.target }} \
             -m crates/edgefirst-client-py/Cargo.toml
 
@@ -92,14 +100,14 @@ jobs:
       - name: Build wheels (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          maturin build --release \
+          maturin build --release --locked \
             --target ${{ matrix.target }} \
             -m crates/edgefirst-client-py/Cargo.toml
 
       # Build wheels for Windows
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
-        run: maturin build --release -m crates/edgefirst-client-py/Cargo.toml
+        run: maturin build --release --locked -m crates/edgefirst-client-py/Cargo.toml
 
       - name: List wheels
         shell: bash

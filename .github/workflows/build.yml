@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Dependencies"]
+    types:
+      - completed
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,19 +64,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-git-
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-release-
 
       # Install zig and cargo-zigbuild for Linux targets (manylinux2014 compatibility)
       - name: Install zig and cargo-zigbuild (Linux)
@@ -83,11 +93,11 @@ jobs:
 
       - name: Build CLI (Linux with zig)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo zigbuild --release --target ${{ matrix.target }}.2.17 -p edgefirst-cli
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17 -p edgefirst-cli
 
       - name: Build CLI (macOS/Windows)
         if: matrix.os != 'ubuntu-latest'
-        run: cargo build --release --target ${{ matrix.target }} -p edgefirst-cli
+        run: cargo build --release --locked --target ${{ matrix.target }} -p edgefirst-cli
 
       - name: Rename binary
         shell: bash
