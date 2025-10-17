@@ -263,45 +263,15 @@ jobs:
       - name: Generate workflow summary
         if: always()
         run: |
-          echo "# EdgeFirst Client - Test & Quality Report 📊" >> $GITHUB_STEP_SUMMARY
+          echo "## 📈 Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "[![Codecov](https://codecov.io/gh/${{ github.repository }}/graph/badge.svg?token=YOUR_CODECOV_TOKEN)](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Extract test statistics
-          RUST_TESTS=$(grep -o 'test result:.*' target/nextest/ci/junit.xml || echo "N/A")
-          PYTHON_TESTS=$(find target/python -name "TEST-*.xml" -exec grep -o 'tests="[0-9]*"' {} \; | head -1 | cut -d'"' -f2 || echo "0")
-          
-          echo "## 🧪 Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Rust Tests**: See detailed results in the action summary below" >> $GITHUB_STEP_SUMMARY
-          echo "- **Python Tests**: $PYTHON_TESTS tests executed" >> $GITHUB_STEP_SUMMARY
-          echo "- **Combined Report**: Available in [Test Results (Rust + Python)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) check" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🛠️ Code Quality" >> $GITHUB_STEP_SUMMARY
+          echo "[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=alert_status&branch=${{ github.ref_name }})](https://sonarcloud.io/summary/new_code?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "## 📈 Coverage Reports" >> $GITHUB_STEP_SUMMARY
-          echo "- **📊 Codecov Dashboard**: [View Coverage Report](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **🦀 Rust Coverage**: [Codecov Rust Flag](https://app.codecov.io/gh/${{ github.repository }}?flag=rust)" >> $GITHUB_STEP_SUMMARY
-          echo "- **🐍 Python Coverage**: [Codecov Python Flag](https://app.codecov.io/gh/${{ github.repository }}?flag=python)" >> $GITHUB_STEP_SUMMARY
-          echo "- **📁 Artifacts**: [Download Raw Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "## 🔍 Code Quality" >> $GITHUB_STEP_SUMMARY
-          echo "- **🎯 SonarCloud**: [View Quality Dashboard](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **📋 Issues**: [View Issues](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **🔒 Security**: [View Security Hotspots](https://sonarcloud.io/project/security_hotspots?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **✨ Clippy**: View lint job results above" >> $GITHUB_STEP_SUMMARY
-          echo "- **🛡️ Security Audit**: View audit job results above" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "## 🏗️ Build Information" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "- **Pull Request**: View PR details in GitHub" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Report generated on $(date) - [EdgeFirst Client](https://github.com/${{ github.repository }})*" >> $GITHUB_STEP_SUMMARY
+          echo "[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=coverage&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=security_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/security_hotspots?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
 
   # SonarCloud analysis
   sonarcloud:
