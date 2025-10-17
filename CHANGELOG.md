@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Updated GitHub Actions workflows to remove deprecated actions
+- Replaced `actions/create-release@v1` with `softprops/action-gh-release@v2`
+- Replaced `actions/upload-release-asset@v1` with `softprops/action-gh-release@v2`
 - Updated dependencies
 
 ### Added
