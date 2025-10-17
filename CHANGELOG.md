@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated dependencies
-- Adjusted resource allocation for various CI/CD pipeline stages based on usage patterns
 
 ### Added
 - Added `cargo-license` tool to Docker build image

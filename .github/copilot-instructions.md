@@ -9,6 +9,255 @@ EdgeFirst Client is a **dual-language Rust+Python** REST API client for EdgeFirs
 - `crates/edgefirst-cli/`: CLI application using the core library
 - `crates/edgefirst-client-py/`: Python bindings via PyO3/maturin
 
+## AI Agent Workflow Guidelines
+
+### 1. Self-Review Before Committing
+
+**ALWAYS** perform a comprehensive self-review of changes before proposing them, considering:
+
+- **GitHub Actions Workflows** (`.github/workflows/*.yml`):
+  - Verify workflow syntax is valid
+  - Check that job dependencies (`needs:`) are correct
+  - Ensure matrix configurations match actual platforms
+  - Validate cache keys and artifact names are consistent
+  - Confirm secrets and environment variables are correctly referenced
+
+- **Unit Tests** (Rust + Python):
+  - Run `cargo test` to verify Rust tests pass
+  - Run Python tests with `python -m unittest discover`
+  - Check that new code has corresponding test coverage
+  - Verify test data fixtures are still valid
+
+- **Documentation Tests** (Rust):
+  - Run `cargo test --doc` to verify doc examples compile and run
+  - Ensure code examples in documentation are up-to-date with API changes
+
+- **Python Bindings**:
+  - Verify changes to Rust API are reflected in `crates/edgefirst-client-py/src/lib.rs`
+  - Update `.pyi` type stub file (`crates/edgefirst-client-py/edgefirst_client.pyi`) with type signatures
+  - Test that `maturin develop` builds successfully
+  - Validate Python examples in docstrings still work
+
+- **Command-Line Application**:
+  - Verify CLI commands still parse correctly
+  - Check that help text (`--help`) is accurate
+  - Test that example commands from documentation work
+  - Ensure error messages are user-friendly
+
+- **Documentation Consistency**:
+  - Update `CONTRIBUTING.md` if development workflows change
+  - Update `.github/WORKFLOW_ARCHITECTURE.md` if CI/CD changes
+  - Update `README.md` if user-facing features change
+  - Verify API documentation in doc comments matches implementation
+  - Check that version references are consistent across files
+
+**Review Checklist** (mental check before committing):
+- [ ] Does this change affect workflows? → Verified workflow files are correct
+- [ ] Does this change APIs? → Updated tests, Python bindings, and `.pyi` stubs
+- [ ] Does this affect CLI? → Tested command parsing and help text
+- [ ] Does this require doc updates? → Verified all relevant docs are updated
+- [ ] Does this break existing examples? → Updated examples to match changes
+
+### 2. Environment Setup for Testing
+
+Before running any shell commands that involve testing:
+
+**ALWAYS check that the terminal environment is properly configured:**
+
+```bash
+# Check if virtualenv is activated
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "⚠️  Virtual environment not activated"
+    # ASK USER to activate it
+fi
+
+# Check if Studio credentials are set
+if [ -z "$STUDIO_SERVER" ] || [ -z "$STUDIO_USERNAME" ] || [ -z "$STUDIO_PASSWORD" ]; then
+    echo "⚠️  Studio credentials not configured"
+    # ASK USER to set them
+fi
+```
+
+**Required environment variables for full test suite**:
+- `STUDIO_SERVER=test` (or `stage`, `saas`)
+- `STUDIO_USERNAME=<your-username>`
+- `STUDIO_PASSWORD=<your-password>`
+
+**If environment variables are missing**:
+- **DO NOT** attempt to run tests that require Studio authentication
+- **ASK the user** to manually set them in the current terminal session:
+  ```bash
+  export STUDIO_SERVER=test
+  export STUDIO_USERNAME=<username>
+  export STUDIO_PASSWORD=<password>
+  ```
+- Explain that these are needed for integration tests that interact with EdgeFirst Studio servers
+- Offer to run only unit tests that don't require credentials as an alternative
+
+**Python virtualenv activation**:
+- If not activated, **ASK the user** to activate it:
+  ```bash
+  source venv/bin/activate  # or wherever their venv is located
+  ```
+- Explain that this ensures Python packages are installed in the project environment
+- Note that `maturin develop` needs to install into the active virtualenv
+
+### 3. Temporary Documentation Files
+
+**NEVER commit temporary documentation files** generated during development or to explain large changes.
+
+Examples of temporary files to avoid committing:
+- `CHANGES.md`, `UPDATES.md`, `MODIFICATIONS.md`
+- `CACHING_IMPROVEMENTS.md`, `WORKFLOW_CHANGES.md`
+- Any `.md` files not already tracked in the repository
+- Throwaway analysis or planning documents
+
+**Process**:
+1. Generate temporary documentation if needed to explain complex changes
+2. Share the content with the user for review
+3. **ASK the user** if they want to keep the document before staging it
+4. If user says no, delete the temporary file
+5. Only commit temporary docs if user explicitly requests it
+
+**Rationale**: The user will decide on a case-by-case basis whether temporary documentation adds long-term value or creates clutter. Maintain a clean repository history by default.
+
+### 4. Pre-Commit Housekeeping
+
+**ALWAYS** perform these housekeeping steps before committing changes:
+
+#### Step 1: Verify Documentation is Up-to-Date
+```bash
+# Check that all relevant documentation reflects your changes:
+# - README.md (user-facing features, installation, usage)
+# - CONTRIBUTING.md (development workflows, build processes)
+# - .github/WORKFLOW_ARCHITECTURE.md (CI/CD changes)
+# - API documentation in doc comments (Rust)
+# - Python docstrings and .pyi type stubs
+# - CLI help text (--help output)
+```
+
+**What to check**:
+- Does the change affect user-facing features? → Update README.md
+- Does the change affect developer workflows? → Update CONTRIBUTING.md
+- Does the change affect CI/CD? → Update WORKFLOW_ARCHITECTURE.md
+- Does the change affect APIs? → Update doc comments and .pyi stubs
+- Does the change affect CLI? → Update help text and examples
+
+#### Step 2: Update CHANGELOG.md
+
+**Always update CHANGELOG.md** with user-visible changes:
+
+```markdown
+## [Unreleased]
+
+### Added
+- New features or APIs that users can utilize
+
+### Changed
+- Modifications to existing behavior that users will notice
+- Performance improvements (e.g., "Improved upload speed by 3x")
+
+### Fixed
+- Bug fixes that affect user experience
+
+### Removed
+- Deprecated or removed features
+```
+
+**Guidelines**:
+- ✅ **DO document**: New features, API changes, behavior changes, performance improvements, bug fixes, breaking changes
+- ❌ **DO NOT document**: Internal refactoring, code cleanup, test updates (unless they enable new test scenarios for users)
+- ✅ **User perspective**: Write from the perspective of someone using the library or CLI
+- ✅ **Be specific**: Include function names, CLI commands, or specific behaviors changed
+- ✅ **Link to issues**: Reference issue numbers if applicable (e.g., "Fixed #123")
+
+**Examples of good changelog entries**:
+```markdown
+### Added
+- `Client::download_with_resume()` method for resumable dataset downloads
+- `--parallel` flag to CLI for concurrent uploads (3x faster)
+
+### Changed
+- `Dataset::annotations()` now returns `Result<Vec<Annotation>>` instead of `Vec<Annotation>` for better error handling
+- Improved multipart upload performance by 40% through connection pooling
+
+### Fixed
+- Fixed authentication token refresh failing after 6 days (#234)
+- CLI no longer crashes when dataset name contains special characters
+```
+
+**Examples of what NOT to document**:
+```markdown
+### Changed
+- Refactored internal error handling (internal detail)
+- Updated test fixtures (not user-visible)
+- Reorganized module structure (internal detail unless it affects imports)
+```
+
+#### Step 3: Format Code with Nightly Rust
+```bash
+cargo +nightly fmt --all
+```
+
+**Why nightly**: Project uses nightly-specific formatting features configured in `rustfmt.toml`
+
+**What this does**:
+- Formats all Rust code according to project style
+- Ensures consistent formatting across all crates
+- Required before commit (CI will fail if not formatted)
+
+#### Step 4: Auto-Fix Clippy Warnings
+```bash
+cargo clippy --fix --allow-dirty --all-features --all-targets
+```
+
+**What this does**:
+- Automatically fixes lints that have safe automatic fixes
+- `--allow-dirty`: Allows fixing uncommitted changes
+- `--all-features`: Checks code with all feature flags enabled (including optional `polars`)
+- `--all-targets`: Checks lib, bins, tests, examples, benches
+
+**Important**: Review the changes made by `--fix` to ensure they're correct
+
+#### Step 5: Run Full Test Suite
+
+**Prerequisite**: Verify environment is properly configured (see "Environment Setup for Testing" above)
+
+```bash
+# 1. Run Rust unit tests with coverage
+cargo test --all-features --locked
+
+# 2. Run Rust documentation tests
+cargo test --doc --locked
+
+# 3. Build and test Python bindings
+maturin develop -m crates/edgefirst-client-py/Cargo.toml
+python -m unittest discover -s . -p "test*.py"
+```
+
+**If any tests fail**:
+- ❌ **DO NOT** commit the changes
+- Fix the failing tests first
+- Re-run the full test suite
+- Only commit when all tests pass
+
+**If environment variables are not set**:
+- **ASK the user** to set them (see "Environment Setup for Testing")
+- Alternatively, rely on CI to run integration tests (only if running local unit tests that don't require credentials)
+
+#### Pre-Commit Checklist Summary
+
+Before committing, verify:
+- [ ] All relevant documentation updated
+- [ ] CHANGELOG.md updated with user-visible changes
+- [ ] Code formatted with `cargo +nightly fmt --all`
+- [ ] Clippy warnings fixed with `cargo clippy --fix --allow-dirty --all-features --all-targets`
+- [ ] All Rust tests pass: `cargo test --all-features --locked`
+- [ ] All Rust doc tests pass: `cargo test --doc --locked`
+- [ ] Python bindings build: `maturin develop`
+- [ ] All Python tests pass: `python -m unittest discover`
+- [ ] No temporary documentation files included (unless user explicitly requested)
+
 ## Critical Build & Test Commands
 
 ### Local Development
@@ -41,7 +290,7 @@ cargo clippy --all-targets --all-features --locked
 ### Cross-Platform Building
 - **Linux builds**: Use `cargo-zigbuild` with `x86_64-unknown-linux-gnu.2.17` target for manylinux2014 compatibility
 - **Python wheels**: Build with `maturin build --zig --compatibility manylinux2014` on Linux
-- See `.github/workflows/build.yml` and `.github/workflows/python.yml` for platform-specific configurations
+- See `.github/workflows/build.yml` for platform-specific configurations (includes both CLI and Python wheels)
 
 ## Code Organization Patterns
 
@@ -109,8 +358,7 @@ See `CONTRIBUTING.md` (lines 280-340) and `release.toml` for full details.
 
 ### CI Workflows (GitHub Actions)
 - `test.yml`: Lint, audit, test with coverage (Rust + Python), SonarCloud analysis
-- `build.yml`: Cross-platform CLI binaries (Linux/macOS/Windows, x64/arm64)
-- `python.yml`: Python wheels for multiple platforms via maturin
+- `build.yml`: Cross-platform CLI binaries + Python wheels (Linux/macOS/Windows, x64/arm64) with serial execution
 - `release.yml`: Triggered by version tags, publishes to crates.io/PyPI
 
 **Coverage Collection** (see test.yml lines 113-122):

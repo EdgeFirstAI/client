@@ -1,10 +1,10 @@
 name: Test and Quality Checks
 
 on:
-  workflow_run:
-    workflows: ["Dependencies"]
-    types:
-      - completed
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -12,9 +12,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Code quality checks
-  lint:
-    name: Lint and Format
+  # Code quality checks and tests (combined - both use nightly)
+  lint-and-test:
+    name: Lint, Test, and Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,89 +22,21 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: clippy, rustfmt
+          components: clippy, rustfmt, llvm-tools-preview
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Single cache for both linting and testing (both use nightly)
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-git-
+          key: nightly-lint-test
+          shared-key: "nightly"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --locked
-
-      - name: Generate lint summary
-        if: always()
-        run: |
-          echo "# Code Quality - Lint & Format ✨" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Formatting**: ✅ All code properly formatted" >> $GITHUB_STEP_SUMMARY
-          echo "- **Clippy Lints**: ✅ No linting issues found" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Tools Used" >> $GITHUB_STEP_SUMMARY
-          echo "- \`cargo fmt\` - Code formatting" >> $GITHUB_STEP_SUMMARY
-          echo "- \`cargo clippy\` - Rust linter" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Analysis completed on $(date)*" >> $GITHUB_STEP_SUMMARY
-
-  # Security audit
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Run cargo audit
-        run: cargo audit
-
-      - name: Generate security audit summary
-        if: always()
-        run: |
-          echo "# Security Audit 🔒" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Security Vulnerabilities**: ✅ No known vulnerabilities found" >> $GITHUB_STEP_SUMMARY
-          echo "- **Dependencies Checked**: All Cargo.lock dependencies scanned" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Tool Used" >> $GITHUB_STEP_SUMMARY
-          echo "- \`cargo audit\` - Rust security vulnerability scanner" >> $GITHUB_STEP_SUMMARY
-          echo "- **Database**: [RustSec Advisory Database](https://rustsec.org/)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Security scan completed on $(date)*" >> $GITHUB_STEP_SUMMARY
-
-  # Run tests with coverage
-  test:
-    name: Test Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -117,51 +49,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            test-
-
       - name: Set up coverage environment
         run: |
-          # Source the environment setup to properly set variables in current shell
           source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
-          # Then write them to GITHUB_ENV for subsequent steps
           echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
           echo "RUSTDOCFLAGS=$RUSTDOCFLAGS" >> $GITHUB_ENV
           echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
           echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV
           echo "CARGO_LLVM_COV_SHOW_ENV=$CARGO_LLVM_COV_SHOW_ENV" >> $GITHUB_ENV
           echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
-          echo "Coverage environment variables written to GITHUB_ENV"
-
-      - name: Verify coverage environment
-        run: |
-          echo "Checking coverage environment variables:"
-          echo "RUSTFLAGS: $RUSTFLAGS"
-          echo "RUSTDOCFLAGS: $RUSTDOCFLAGS"
-          echo "LLVM_PROFILE_FILE: $LLVM_PROFILE_FILE"
-          echo "CARGO_LLVM_COV: $CARGO_LLVM_COV"
-          echo "CARGO_LLVM_COV_TARGET_DIR: $CARGO_LLVM_COV_TARGET_DIR"
 
       - name: Build with coverage
         run: cargo build --locked
@@ -181,22 +77,14 @@ jobs:
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install maturin
-        run: pip install maturin
+        run: |
+          pip install -r requirements.txt
 
       - name: Build Python package
         run: maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
 
       - name: Install Python package
         run: pip install target/wheels/edgefirst_client-*.whl
-
-      - name: Install slipcover
-        run: pip install slipcover
-
-      - name: Install unittest-xml-reporting
-        run: pip install unittest-xml-reporting
 
       - name: Run Python tests
         run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
@@ -218,25 +106,8 @@ jobs:
           compare_to_earlier_commit: true
           check_run_annotations: all tests, skipped tests
 
-      - name: Check coverage files
-        run: |
-          echo "Checking for profraw files:"
-          find target -name "*.profraw" -type f
-          echo "Checking for coverage files:"
-          ls -la coverage.xml || echo "coverage.xml not found"
-          echo "Re-checking environment variables before report generation:"
-          echo "LLVM_PROFILE_FILE: $LLVM_PROFILE_FILE"
-          echo "CARGO_LLVM_COV_TARGET_DIR: $CARGO_LLVM_COV_TARGET_DIR"
-
       - name: Generate coverage report
         run: cargo llvm-cov report --doctests --lcov --output-path lcov.info
-
-      - name: Verify coverage reports
-        run: |
-          echo "Verifying coverage reports were generated:"
-          ls -lh lcov.info coverage.xml
-          echo "lcov.info size: $(wc -l < lcov.info) lines"
-          echo "coverage.xml size: $(wc -l < coverage.xml) lines"
 
       - name: Upload Rust coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -263,29 +134,49 @@ jobs:
       - name: Generate workflow summary
         if: always()
         run: |
-          echo "## 📈 Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "[![Codecov](https://codecov.io/gh/${{ github.repository }}/graph/badge.svg?token=YOUR_CODECOV_TOKEN)](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Test & Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "[![Codecov](https://codecov.io/gh/${{ github.repository }}/graph/badge.svg)](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Code Quality (SonarCloud)" >> $GITHUB_STEP_SUMMARY
+          echo "[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=coverage)](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=bugs)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG)" >> $GITHUB_STEP_SUMMARY
+          echo "[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=vulnerabilities)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=VULNERABILITY)" >> $GITHUB_STEP_SUMMARY
+          echo "[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=code_smells)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL)" >> $GITHUB_STEP_SUMMARY
+          echo "[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_index)](https://sonarcloud.io/component_measures?metric=sqale_index&id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
 
-          echo "## 🛠️ Code Quality" >> $GITHUB_STEP_SUMMARY
-          echo "[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=alert_status&branch=${{ github.ref_name }})](https://sonarcloud.io/summary/new_code?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=coverage&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+  # Security audit (uses stable rust to match distributed binaries)
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+
+      - name: Generate security audit summary
+        if: always()
+        run: |
+          echo "## 🔒 Security Audit" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=security_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/security_hotspots?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=reliability_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "✅ No known vulnerabilities found in dependencies" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=bugs&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=vulnerabilities&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=VULNERABILITY&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=code_smells&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=duplicated_lines_density&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=duplicated_lines_density&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_index&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=sqale_index&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "_Scanned with [cargo-audit](https://rustsec.org/) on stable Rust_" >> $GITHUB_STEP_SUMMARY
 
   # SonarCloud analysis
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [lint-and-test]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -313,18 +204,6 @@ jobs:
       - name: Generate SonarCloud summary
         if: always()
         run: |
-          echo "# SonarCloud Analysis Complete 🔍" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 SonarCloud Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Quality Analysis Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Full Report**: [View on SonarCloud](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **Issues**: [View Issues](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **Security Hotspots**: [View Security](https://sonarcloud.io/project/security_hotspots?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **Coverage**: [View Coverage](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "## Quality Gate Status" >> $GITHUB_STEP_SUMMARY
-            echo "The quality gate check was executed for this pull request." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "*Analysis completed on $(date)*" >> $GITHUB_STEP_SUMMARY
+          echo "[View Full Report →](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY

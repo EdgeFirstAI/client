@@ -63,10 +63,7 @@ fn test_token() -> Result<(), Box<dyn std::error::Error>> {
     let username = username.unwrap().as_str().unwrap();
     assert!(!username.is_empty());
 
-    match env::var("STUDIO_USERNAME") {
-        Ok(studio_username) => assert_eq!(studio_username, username),
-        Err(_) => {}
-    }
+    if let Ok(studio_username) = env::var("STUDIO_USERNAME") { assert_eq!(studio_username, username) }
 
     Ok(())
 }
