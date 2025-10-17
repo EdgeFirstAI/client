@@ -258,6 +258,49 @@ Before committing, verify:
 - [ ] All Python tests pass: `python -m unittest discover`
 - [ ] No temporary documentation files included (unless user explicitly requested)
 
+### 5. Commit Message Format
+
+**ALWAYS use this concise format for commit messages:**
+
+```
+<Short descriptive title>
+
+- Bullet point 1: what changed
+- Bullet point 2: what changed
+- Bullet point 3: what changed
+[- Issue reference if provided by user: "Fixes #123" or "Closes PROJ-456"]
+```
+
+**Guidelines**:
+- ✅ **Keep it concise**: Focus on **what** changed, not detailed **why** or **how**
+- ✅ **Use bullet points**: One per major change area
+- ✅ **Avoid implementation details**: Those belong in documentation, code comments, or issue trackers
+- ✅ **Wait for user direction**: Only add issue references (GitHub #, JIRA tickets) if user explicitly provides them
+- ✅ **Make it scannable**: Each line should be clear and actionable
+
+**Example**:
+```
+Optimize CI/CD workflows and add AI agent guidelines
+
+- Replace manual caching with Swatinem/rust-cache for faster builds
+- Merge lint/test jobs and Python wheels into unified workflows
+- Remove deps.yml and python.yml (consolidated into build.yml)
+- Update workflow documentation to reflect current structure
+- Add comprehensive AI agent development guidelines to copilot-instructions.md
+- Fix clippy warning in CLI tests
+```
+
+**NOT this** (too detailed):
+```
+Optimize CI/CD workflows and add AI agent guidelines
+
+## Workflow Optimizations
+### Caching Improvements
+- Replace manual actions/cache with Swatinem/rust-cache for intelligent 
+  incremental compilation because it provides better support for...
+[hundreds of lines of implementation details and reasoning]
+```
+
 ## Critical Build & Test Commands
 
 ### Local Development
