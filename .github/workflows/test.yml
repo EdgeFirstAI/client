@@ -269,9 +269,17 @@ jobs:
 
           echo "## 🛠️ Code Quality" >> $GITHUB_STEP_SUMMARY
           echo "[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=alert_status&branch=${{ github.ref_name }})](https://sonarcloud.io/summary/new_code?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=coverage&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=security_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/security_hotspots?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=reliability_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_rating&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=bugs&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=vulnerabilities&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=VULNERABILITY&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=code_smells&branch=${{ github.ref_name }})](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=duplicated_lines_density&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=duplicated_lines_density&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
+          echo "[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_index&branch=${{ github.ref_name }})](https://sonarcloud.io/component_measures?metric=sqale_index&id=${{ github.repository_owner }}_${{ github.event.repository.name }}&branch=${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
 
   # SonarCloud analysis
   sonarcloud:
@@ -320,5 +328,3 @@ jobs:
           fi
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*Analysis completed on $(date)*" >> $GITHUB_STEP_SUMMARY
-
-
