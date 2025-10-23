@@ -7,27 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Client::populate_samples()` method for importing samples with annotations
+  - Automatically uploads local files to S3 using presigned URLs
+  - Auto-generates UUIDs for samples if not provided (uuid crate v1.11.0)
+  - Auto-extracts image dimensions using imagesize crate v0.13.0
+  - Supports Box2d annotations with normalized coordinates (0.0-1.0 range)
+  - Returns sample UUIDs and upload URLs for tracking
+- Example `populate_with_circle.rs` demonstrating sample import with annotations
+
 ### Changed
-- **BREAKING**: `Client::populate_samples()` now automatically uploads local files to S3
-  - Removed `presigned_urls` parameter - file uploads are now automatic
-  - When `SampleFile` filename is a valid local file path, the file is uploaded automatically
-  - API request uses basename only, full path handled internally
-- **BREAKING**: Fixed field serialization names to match EdgeFirst Studio API
+- **BREAKING**: Simplified `Sample` and `Annotation` field types for better ergonomics
+  - `Sample.files` changed from `Option<Vec<SampleFile>>` to `Vec<SampleFile>`
+  - `Sample.annotations` changed from `Option<Vec<Annotation>>` to `Vec<Annotation>`
+  - Empty vectors now use `#[serde(default, skip_serializing_if = "Vec::is_empty")]`
+  - Eliminates verbose `Some(vec![...])` wrapping in user code
+- Applied consistent Vec<T> serialization pattern across codebase
+  - Added `skip_serializing_if = "Vec::is_empty"` to `SnapshotRestore.topics` and `.autolabel`
+  - Added `skip_serializing_if = "Vec::is_empty"` to `TaskStages.stages`
+  - Query parameters remain as `Option<Vec<T>>` where None vs Some([]) have different semantics
+- Improved test coverage with comprehensive `test_populate_samples`
+  - Generates 640x480 test image with red circle and bounding box annotation
+  - Verifies byte-for-byte image upload/download matching
+  - Uses image_name-based sample lookup (server doesn't return UUIDs)
+  - Documents server limitations (width/height not returned in samples.list)
+
+### Fixed
+- Corrected field serialization names to match EdgeFirst Studio API
   - `Sample.location` now serializes as `"sensors"` (GPS/IMU data)
   - `Annotation.object_id` now serializes as `"object_reference"`
   - `Annotation.label` now serializes as `"label_name"`
-  - These fields can still be deserialized from their original names for backward compatibility
-- **BREAKING**: Simplified `Sample` field types for better ergonomics
-  - `Sample.files` changed from `Option<Vec<SampleFile>>` to `Vec<SampleFile>` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`
-  - `Sample.annotations` changed from `Option<Vec<Annotation>>` to `Vec<Annotation>` with same serde attributes
-  - Empty vectors serialize as JSON `null` / deserialize from missing fields as empty vec
-  - Eliminates verbose `Some(vec![...])` wrapping in user code
-- **BREAKING**: `Sample.uuid` now auto-generated when `None`
-  - `populate_samples()` generates UUIDv4 for samples without explicit UUIDs
-  - Users can still provide deterministic UUIDs by setting `sample.uuid = Some("custom-uuid")`
-- Updated GitHub Actions workflows to remove deprecated actions
-- Replaced `actions/create-release@v1` with `softprops/action-gh-release@v2`
-- Replaced `actions/upload-release-asset@v1` with `softprops/action-gh-release@v2`
+  - Fields can still be deserialized from original names for backward compatibility
 - Updated dependencies
 
 ### Added
