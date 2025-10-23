@@ -908,6 +908,44 @@ pub struct SamplesListResult {
     pub continue_token: Option<String>,
 }
 
+/// Parameters for populating (importing) samples into a dataset.
+///
+/// Used with the `samples.populate` API to create new samples in a dataset,
+/// optionally with annotations and sensor data files.
+#[derive(Serialize, Clone, Debug)]
+pub struct SamplesPopulateParams {
+    pub dataset_id: DatasetID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation_set_id: Option<AnnotationSetID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presigned_urls: Option<bool>,
+    pub samples: Vec<Sample>,
+}
+
+/// Result from the `samples.populate` API call.
+///
+/// The API returns an array of populated sample results, one for each sample
+/// that was submitted. Each result contains the sample UUID and presigned URLs
+/// for uploading the associated files.
+#[derive(Deserialize, Debug)]
+pub struct SamplesPopulateResult {
+    /// UUID of the sample that was populated
+    pub uuid: String,
+    /// Presigned URLs for uploading files for this sample
+    pub urls: Vec<PresignedUrl>,
+}
+
+/// A presigned URL for uploading a file to S3.
+#[derive(Deserialize, Debug)]
+pub struct PresignedUrl {
+    /// Filename as specified in the sample
+    pub filename: String,
+    /// S3 key path
+    pub key: String,
+    /// Presigned URL for uploading (PUT request)
+    pub url: String,
+}
+
 #[derive(Deserialize)]
 pub struct Snapshot {
     id: SnapshotID,
@@ -951,9 +989,9 @@ pub struct SnapshotRestore {
     pub project_id: ProjectID,
     pub snapshot_id: SnapshotID,
     pub fps: u64,
-    #[serde(rename = "enabled_topics")]
+    #[serde(rename = "enabled_topics", skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<String>,
-    #[serde(rename = "label_names")]
+    #[serde(rename = "label_names", skip_serializing_if = "Vec::is_empty")]
     pub autolabel: Vec<String>,
     #[serde(rename = "depth_gen")]
     pub autodepth: bool,
@@ -1705,6 +1743,7 @@ impl Stage {
 pub struct TaskStages {
     #[serde(rename = "docker_task_id")]
     pub task_id: TaskID,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<HashMap<String, String>>,
 }
 

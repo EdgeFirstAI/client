@@ -21,6 +21,7 @@ ctor = { workspace = true }
 directories = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
+imagesize = { workspace = true }
 infer = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
@@ -32,7 +33,12 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 walkdir = { workspace = true }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+png = "0.17"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     Client, Error,
@@ -312,41 +312,238 @@ impl AnnotationSet {
     }
 }
 
+/// A sample in a dataset, typically representing a single image with metadata
+/// and optional sensor data.
+///
+/// Each sample has a unique ID, image reference, and can include additional
+/// sensor data like LiDAR, radar, or depth maps. Samples can also have
+/// associated annotations.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Sample {
-    id: SampleID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<SampleID>,
     #[serde(alias = "group_name", skip_serializing_if = "Option::is_none")]
-    group: Option<String>,
-    sequence_name: Option<String>,
-    image_name: String,
-    image_url: String,
-    #[serde(rename = "sensors")]
-    files: Option<Vec<SampleFile>>,
-    annotations: Option<Vec<Annotation>>,
+    pub group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_number: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Camera location and pose (GPS + IMU data).
+    /// Serialized as "sensors" for API compatibility with populate endpoint.
+    #[serde(rename = "sensors", skip_serializing_if = "Option::is_none")]
+    pub location: Option<Location>,
+    /// Additional sensor files (LiDAR, radar, depth maps, etc.).
+    /// When deserializing from samples.list: Vec<SampleFile>
+    /// When serializing for samples.populate: HashMap<String, String>
+    /// (file_type -> filename)
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "serialize_files",
+        deserialize_with = "deserialize_files"
+    )]
+    pub files: Vec<SampleFile>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "serialize_annotations",
+        deserialize_with = "deserialize_annotations"
+    )]
+    pub annotations: Vec<Annotation>,
+}
+
+// Custom serializer for files field - converts Vec<SampleFile> to
+// HashMap<String, String>
+fn serialize_files<S>(files: &[SampleFile], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    let map: HashMap<String, String> = files
+        .iter()
+        .filter_map(|f| {
+            f.filename()
+                .map(|filename| (f.file_type().to_string(), filename.to_string()))
+        })
+        .collect();
+    map.serialize(serializer)
+}
+
+// Custom deserializer for files field - converts HashMap or Vec to
+// Vec<SampleFile>
+fn deserialize_files<'de, D>(deserializer: D) -> Result<Vec<SampleFile>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum FilesFormat {
+        Vec(Vec<SampleFile>),
+        Map(HashMap<String, String>),
+    }
+
+    let value = Option::<FilesFormat>::deserialize(deserializer)?;
+    Ok(value
+        .map(|v| match v {
+            FilesFormat::Vec(files) => files,
+            FilesFormat::Map(map) => map
+                .into_iter()
+                .map(|(file_type, filename)| SampleFile::with_filename(file_type, filename))
+                .collect(),
+        })
+        .unwrap_or_default())
+}
+
+// Custom serializer for annotations field - converts Vec<Annotation> to
+// format expected by server: {"bbox": [...], "box3d": [...], "mask": [...]}
+fn serialize_annotations<S>(annotations: &Vec<Annotation>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+
+    // Group annotations by type
+    let mut bbox_annotations = Vec::new();
+    let mut box3d_annotations = Vec::new();
+    let mut mask_annotations = Vec::new();
+
+    for ann in annotations {
+        if ann.box2d().is_some() {
+            bbox_annotations.push(ann);
+        } else if ann.box3d().is_some() {
+            box3d_annotations.push(ann);
+        } else if ann.mask().is_some() {
+            mask_annotations.push(ann);
+        }
+    }
+
+    let mut map = serializer.serialize_map(Some(3))?;
+
+    if !bbox_annotations.is_empty() {
+        map.serialize_entry("bbox", &bbox_annotations)?;
+    }
+    if !box3d_annotations.is_empty() {
+        map.serialize_entry("box3d", &box3d_annotations)?;
+    }
+    if !mask_annotations.is_empty() {
+        map.serialize_entry("mask", &mask_annotations)?;
+    }
+
+    map.end()
+}
+
+// Custom deserializer for annotations field - converts server format back to
+// Vec<Annotation>
+fn deserialize_annotations<'de, D>(deserializer: D) -> Result<Vec<Annotation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AnnotationsFormat {
+        Vec(Vec<Annotation>),
+        Map(HashMap<String, Vec<Annotation>>),
+    }
+
+    let value = Option::<AnnotationsFormat>::deserialize(deserializer)?;
+    Ok(value
+        .map(|v| match v {
+            AnnotationsFormat::Vec(annotations) => annotations,
+            AnnotationsFormat::Map(map) => {
+                let mut all_annotations = Vec::new();
+                if let Some(bbox_anns) = map.get("bbox") {
+                    all_annotations.extend(bbox_anns.clone());
+                }
+                if let Some(box3d_anns) = map.get("box3d") {
+                    all_annotations.extend(box3d_anns.clone());
+                }
+                if let Some(mask_anns) = map.get("mask") {
+                    all_annotations.extend(mask_anns.clone());
+                }
+                all_annotations
+            }
+        })
+        .unwrap_or_default())
 }
 
 impl Display for Sample {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {}", self.uid(), self.image_name())
+        write!(
+            f,
+            "{} {}",
+            self.uid().unwrap_or_else(|| "unknown".to_string()),
+            self.image_name().unwrap_or("unknown")
+        )
+    }
+}
+
+impl Default for Sample {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Sample {
-    pub fn id(&self) -> SampleID {
+    /// Creates a new empty sample.
+    pub fn new() -> Self {
+        Self {
+            id: None,
+            group: None,
+            sequence_name: None,
+            sequence_uuid: None,
+            sequence_description: None,
+            frame_number: None,
+            uuid: None,
+            image_name: None,
+            image_url: None,
+            width: None,
+            height: None,
+            date: None,
+            source: None,
+            location: None,
+            files: vec![],
+            annotations: vec![],
+        }
+    }
+
+    pub fn id(&self) -> Option<SampleID> {
         self.id
     }
 
-    pub fn uid(&self) -> String {
-        self.id.to_string()
+    pub fn uid(&self) -> Option<String> {
+        self.id.map(|id| id.to_string())
     }
 
-    pub fn name(&self) -> String {
-        let name = self
-            .image_name
-            .rsplit_once('.')
-            .map_or_else(|| self.image_name.clone(), |(name, _)| name.to_string());
-        name.rsplit_once(".camera")
-            .map_or_else(|| name.clone(), |(name, _)| name.to_string())
+    pub fn name(&self) -> Option<String> {
+        self.image_name.as_ref().map(|image_name| {
+            let name = image_name
+                .rsplit_once('.')
+                .map_or_else(|| image_name.clone(), |(name, _)| name.to_string());
+            name.rsplit_once(".camera")
+                .map_or_else(|| name.clone(), |(name, _)| name.to_string())
+        })
     }
 
     pub fn group(&self) -> Option<&String> {
@@ -357,30 +554,24 @@ impl Sample {
         self.sequence_name.as_ref()
     }
 
-    pub fn image_name(&self) -> &str {
-        &self.image_name
+    pub fn image_name(&self) -> Option<&str> {
+        self.image_name.as_deref()
     }
 
-    pub fn image_url(&self) -> &str {
-        &self.image_url
+    pub fn image_url(&self) -> Option<&str> {
+        self.image_url.as_deref()
     }
 
     pub fn files(&self) -> &[SampleFile] {
-        match &self.files {
-            Some(files) => files,
-            None => &[],
-        }
+        &self.files
     }
 
     pub fn annotations(&self) -> &[Annotation] {
-        match &self.annotations {
-            Some(annotations) => annotations,
-            None => &[],
-        }
+        &self.annotations
     }
 
     pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
-        self.annotations = Some(annotations);
+        self.annotations = annotations;
         self
     }
 
@@ -390,12 +581,12 @@ impl Sample {
         file_type: FileType,
     ) -> Result<Option<Vec<u8>>, Error> {
         let url = match file_type {
-            FileType::Image => Some(&self.image_url),
+            FileType::Image => self.image_url.as_ref(),
             file => self
                 .files
-                .as_ref()
-                .and_then(|files| files.iter().find(|f| f.r#type == file.to_string()))
-                .map(|f| &f.url),
+                .iter()
+                .find(|f| f.r#type == file.to_string())
+                .and_then(|f| f.url.as_ref()),
         };
 
         Ok(match url {
@@ -405,10 +596,76 @@ impl Sample {
     }
 }
 
+/// A file associated with a sample (e.g., LiDAR point cloud, radar data).
+///
+/// For samples retrieved from the server, this contains the file type and URL.
+/// For samples being populated to the server, this can be a type and filename.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SampleFile {
     r#type: String,
-    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+}
+
+impl SampleFile {
+    /// Creates a new sample file with type and URL (for downloaded samples).
+    pub fn with_url(file_type: String, url: String) -> Self {
+        Self {
+            r#type: file_type,
+            url: Some(url),
+            filename: None,
+        }
+    }
+
+    /// Creates a new sample file with type and filename (for populate API).
+    pub fn with_filename(file_type: String, filename: String) -> Self {
+        Self {
+            r#type: file_type,
+            url: None,
+            filename: Some(filename),
+        }
+    }
+
+    pub fn file_type(&self) -> &str {
+        &self.r#type
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        self.url.as_deref()
+    }
+
+    pub fn filename(&self) -> Option<&str> {
+        self.filename.as_deref()
+    }
+}
+
+/// Location and pose information for a sample.
+///
+/// Contains GPS coordinates and IMU orientation data describing where and how
+/// the camera was positioned when capturing the sample.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Location {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gps: Option<GpsData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imu: Option<ImuData>,
+}
+
+/// GPS location data (latitude and longitude).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GpsData {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// IMU orientation data (roll, pitch, yaw in degrees).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ImuData {
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
 }
 
 pub trait TypeName {
@@ -546,7 +803,8 @@ impl Mask {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
+#[serde(from = "AnnotationHelper")]
 pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     sample_id: Option<SampleID>,
@@ -556,9 +814,9 @@ pub struct Annotation {
     sequence_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "object_reference", skip_serializing_if = "Option::is_none")]
     object_id: Option<String>,
-    #[serde(alias = "label_name", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "label_name", skip_serializing_if = "Option::is_none")]
     label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label_index: Option<u64>,
@@ -568,6 +826,106 @@ pub struct Annotation {
     box3d: Option<Box3d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mask: Option<Mask>,
+}
+
+// Helper struct for deserialization that matches the nested format
+#[derive(Deserialize)]
+struct AnnotationHelper {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_id: Option<SampleID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    #[serde(rename = "object_reference", skip_serializing_if = "Option::is_none")]
+    object_id: Option<String>,
+    #[serde(rename = "label_name", skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box2d: Option<Box2d>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box3d: Option<Box3d>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mask: Option<Mask>,
+}
+
+impl From<AnnotationHelper> for Annotation {
+    fn from(helper: AnnotationHelper) -> Self {
+        Self {
+            sample_id: helper.sample_id,
+            name: helper.name,
+            sequence_name: helper.sequence_name,
+            group: helper.group,
+            object_id: helper.object_id,
+            label: helper.label,
+            label_index: helper.label_index,
+            box2d: helper.box2d,
+            box3d: helper.box3d,
+            mask: helper.mask,
+        }
+    }
+}
+
+// Custom serializer that flattens box2d/box3d fields
+impl Serialize for Annotation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+
+        if let Some(ref sample_id) = self.sample_id {
+            map.serialize_entry("sample_id", sample_id)?;
+        }
+        if let Some(ref name) = self.name {
+            map.serialize_entry("name", name)?;
+        }
+        if let Some(ref sequence_name) = self.sequence_name {
+            map.serialize_entry("sequence_name", sequence_name)?;
+        }
+        if let Some(ref group) = self.group {
+            map.serialize_entry("group", group)?;
+        }
+        if let Some(ref object_id) = self.object_id {
+            map.serialize_entry("object_reference", object_id)?;
+        }
+        if let Some(ref label) = self.label {
+            map.serialize_entry("label_name", label)?;
+        }
+        if let Some(label_index) = self.label_index {
+            map.serialize_entry("label_index", &label_index)?;
+        }
+
+        // Flatten box2d fields
+        if let Some(ref box2d) = self.box2d {
+            map.serialize_entry("x", &box2d.x)?;
+            map.serialize_entry("y", &box2d.y)?;
+            map.serialize_entry("w", &box2d.w)?;
+            map.serialize_entry("h", &box2d.h)?;
+        }
+
+        // Flatten box3d fields
+        if let Some(ref box3d) = self.box3d {
+            map.serialize_entry("x", &box3d.x)?;
+            map.serialize_entry("y", &box3d.y)?;
+            map.serialize_entry("z", &box3d.z)?;
+            map.serialize_entry("w", &box3d.w)?;
+            map.serialize_entry("h", &box3d.h)?;
+            map.serialize_entry("l", &box3d.l)?;
+        }
+
+        if let Some(ref mask) = self.mask {
+            map.serialize_entry("mask", mask)?;
+        }
+
+        map.end()
+    }
 }
 
 impl Default for Annotation {
@@ -628,8 +986,16 @@ impl Annotation {
         self.object_id.as_ref()
     }
 
+    pub fn set_object_id(&mut self, object_id: Option<String>) {
+        self.object_id = object_id;
+    }
+
     pub fn label(&self) -> Option<&String> {
         self.label.as_ref()
+    }
+
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.label = label;
     }
 
     pub fn label_index(&self) -> Option<u64> {
@@ -644,12 +1010,24 @@ impl Annotation {
         self.box2d.as_ref()
     }
 
+    pub fn set_box2d(&mut self, box2d: Option<Box2d>) {
+        self.box2d = box2d;
+    }
+
     pub fn box3d(&self) -> Option<&Box3d> {
         self.box3d.as_ref()
     }
 
+    pub fn set_box3d(&mut self, box3d: Option<Box3d>) {
+        self.box3d = box3d;
+    }
+
     pub fn mask(&self) -> Option<&Mask> {
         self.mask.as_ref()
+    }
+
+    pub fn set_mask(&mut self, mask: Option<Mask>) {
+        self.mask = mask;
     }
 }
 

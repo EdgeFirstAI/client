@@ -8,14 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **BREAKING**: `Client::populate_samples()` now automatically uploads local files to S3
+  - Removed `presigned_urls` parameter - file uploads are now automatic
+  - When `SampleFile` filename is a valid local file path, the file is uploaded automatically
+  - API request uses basename only, full path handled internally
+- **BREAKING**: Fixed field serialization names to match EdgeFirst Studio API
+  - `Sample.location` now serializes as `"sensors"` (GPS/IMU data)
+  - `Annotation.object_id` now serializes as `"object_reference"`
+  - `Annotation.label` now serializes as `"label_name"`
+  - These fields can still be deserialized from their original names for backward compatibility
+- **BREAKING**: Simplified `Sample` field types for better ergonomics
+  - `Sample.files` changed from `Option<Vec<SampleFile>>` to `Vec<SampleFile>` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]`
+  - `Sample.annotations` changed from `Option<Vec<Annotation>>` to `Vec<Annotation>` with same serde attributes
+  - Empty vectors serialize as JSON `null` / deserialize from missing fields as empty vec
+  - Eliminates verbose `Some(vec![...])` wrapping in user code
+- **BREAKING**: `Sample.uuid` now auto-generated when `None`
+  - `populate_samples()` generates UUIDv4 for samples without explicit UUIDs
+  - Users can still provide deterministic UUIDs by setting `sample.uuid = Some("custom-uuid")`
 - Updated GitHub Actions workflows to remove deprecated actions
 - Replaced `actions/create-release@v1` with `softprops/action-gh-release@v2`
 - Replaced `actions/upload-release-asset@v1` with `softprops/action-gh-release@v2`
 - Updated dependencies
 
 ### Added
+- Automatic file upload in `populate_samples()` - detects local files and uploads to presigned S3 URLs
+- Automatic UUID generation for samples in `populate_samples()` using UUIDv4
+- Example `populate_with_circle.rs` demonstrating bbox annotations with auto-generated image and UUID
+- Example `populate_with_annotations.rs` demonstrating location (sensors) usage with populate API
 - Added `cargo-license` tool to Docker build image
 - Auto-generate `THIRD_PARTY` file listing all third-party dependencies and their licenses
+- Added `uuid` crate dependency (v1.11.0) with v4 and serde features
 
 ### Changed (License)
 - Updated project license to Apache-2.0

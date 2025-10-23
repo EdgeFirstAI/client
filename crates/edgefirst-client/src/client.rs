@@ -628,13 +628,23 @@ impl Client {
                                 t => t.to_string(),
                             };
 
-                            let file_name = format!("{}.{}", sample.name(), file_ext);
+                            let file_name = format!(
+                                "{}.{}",
+                                sample.name().unwrap_or_else(|| "unknown".to_string()),
+                                file_ext
+                            );
                             let file_path = output.join(&file_name);
 
                             let mut file = File::create(&file_path).await?;
                             file.write_all(&data).await?;
                         } else {
-                            warn!("No data for sample: {}", sample.id());
+                            warn!(
+                                "No data for sample: {}",
+                                sample
+                                    .id()
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            );
                         }
                     }
 
@@ -751,8 +761,8 @@ impl Client {
                 // annotation for the sample so that it is included in the result.
                 if sample.annotations().is_empty() {
                     let mut annotation = Annotation::new();
-                    annotation.set_sample_id(Some(sample.id()));
-                    annotation.set_name(Some(sample.name().to_string()));
+                    annotation.set_sample_id(sample.id());
+                    annotation.set_name(sample.name());
                     annotation.set_group(sample.group().cloned());
                     annotation.set_sequence_name(sample.sequence_name().cloned());
                     annotations.push(annotation);
@@ -761,8 +771,8 @@ impl Client {
 
                 sample.annotations().iter().for_each(|annotation| {
                     let mut annotation = annotation.clone();
-                    annotation.set_sample_id(Some(sample.id()));
-                    annotation.set_name(Some(sample.name().to_string()));
+                    annotation.set_sample_id(sample.id());
+                    annotation.set_name(sample.name());
                     annotation.set_group(sample.group().cloned());
                     annotation.set_sequence_name(sample.sequence_name().cloned());
                     annotation.set_label_index(Some(labels[annotation.label().unwrap().as_str()]));
@@ -894,6 +904,214 @@ impl Client {
         }
 
         Ok(samples)
+    }
+
+    /// Populates (imports) samples into a dataset using the `samples.populate`
+    /// API.
+    ///
+    /// This method creates new samples in the specified dataset, optionally
+    /// with annotations and sensor data files. For each sample, the `files`
+    /// field is checked for local file paths. If a filename is a valid path
+    /// to an existing file, the file will be automatically uploaded to S3
+    /// using presigned URLs returned by the server. The filename in the
+    /// request is replaced with the basename (path removed) before sending
+    /// to the server.
+    ///
+    /// # Important Notes
+    ///
+    /// - **`annotation_set_id` is REQUIRED** when importing samples with
+    ///   annotations. Without it, the server will accept the request but will
+    ///   not save the annotation data. Use [`Client::annotation_sets`] to query
+    ///   available annotation sets for a dataset, or create a new one via the
+    ///   Studio UI.
+    /// - **Box2d coordinates must be normalized** (0.0-1.0 range) for bounding
+    ///   boxes. Divide pixel coordinates by image width/height before creating
+    ///   [`Box2d`](crate::Box2d) annotations.
+    /// - **Files are uploaded automatically** when the filename is a valid
+    ///   local path. The method will replace the full path with just the
+    ///   basename before sending to the server.
+    /// - **Image dimensions are extracted automatically** for image files using
+    ///   the `imagesize` crate. The width/height are sent to the server, but
+    ///   note that the server currently doesn't return these fields when
+    ///   fetching samples back.
+    /// - **UUIDs are generated automatically** if not provided. If you need
+    ///   deterministic UUIDs, set `sample.uuid` explicitly before calling. Note
+    ///   that the server doesn't currently return UUIDs in sample queries.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The ID of the dataset to populate
+    /// * `annotation_set_id` - **Required** if samples contain annotations,
+    ///   otherwise they will be ignored. Query with
+    ///   [`Client::annotation_sets`].
+    /// * `samples` - Vector of samples to import with metadata and file
+    ///   references. For files, use the full local path - it will be uploaded
+    ///   automatically. UUIDs and image dimensions will be
+    ///   auto-generated/extracted if not provided.
+    ///
+    /// # Returns
+    ///
+    /// Returns the API result with sample UUIDs and upload status.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use edgefirst_client::{Annotation, Box2d, Client, DatasetID, Sample, SampleFile};
+    ///
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// # let client = Client::new()?.with_login("user", "pass").await?;
+    /// # let dataset_id = DatasetID::from(1);
+    /// // Query available annotation sets for the dataset
+    /// let annotation_sets = client.annotation_sets(dataset_id).await?;
+    /// let annotation_set_id = annotation_sets
+    ///     .first()
+    ///     .ok_or_else(|| {
+    ///         edgefirst_client::Error::InvalidParameters("No annotation sets found".to_string())
+    ///     })?
+    ///     .id();
+    ///
+    /// // Create sample with annotation (UUID will be auto-generated)
+    /// let mut sample = Sample::new();
+    /// sample.width = Some(1920);
+    /// sample.height = Some(1080);
+    /// sample.group = Some("train".to_string());
+    ///
+    /// // Add file - use full path to local file, it will be uploaded automatically
+    /// sample.files = vec![SampleFile::with_filename(
+    ///     "image".to_string(),
+    ///     "/path/to/image.jpg".to_string(),
+    /// )];
+    ///
+    /// // Add bounding box annotation with NORMALIZED coordinates (0.0-1.0)
+    /// let mut annotation = Annotation::new();
+    /// annotation.set_label(Some("person".to_string()));
+    /// // Normalize pixel coordinates by dividing by image dimensions
+    /// let bbox = Box2d::new(0.5, 0.5, 0.25, 0.25); // (x, y, w, h) normalized
+    /// annotation.set_box2d(Some(bbox));
+    /// sample.annotations = vec![annotation];
+    ///
+    /// // Populate with annotation_set_id (REQUIRED for annotations)
+    /// let result = client
+    ///     .populate_samples(dataset_id, Some(annotation_set_id), vec![sample])
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn populate_samples(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        samples: Vec<Sample>,
+    ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
+        use crate::api::SamplesPopulateParams;
+        use std::path::Path;
+
+        // Track which files need to be uploaded: (sample_uuid, file_type, local_path,
+        // basename)
+        let mut files_to_upload: Vec<(String, String, PathBuf, String)> = Vec::new();
+
+        // Process samples to detect local files, extract basenames, and generate UUIDs
+        let samples: Vec<Sample> = samples
+            .into_iter()
+            .map(|mut sample| {
+                // Generate UUID if not provided
+                if sample.uuid.is_none() {
+                    sample.uuid = Some(uuid::Uuid::new_v4().to_string());
+                }
+
+                let sample_uuid = sample.uuid.clone().unwrap();
+
+                // Process files: detect local paths and queue for upload
+                let updated_files: Vec<crate::SampleFile> = sample
+                    .files
+                    .iter()
+                    .map(|file| {
+                        if let Some(filename) = file.filename() {
+                            let path = Path::new(filename);
+
+                            // Check if this is a valid local file path
+                            if path.exists() && path.is_file() {
+                                // Get the basename
+                                if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
+                                    // For image files, try to extract dimensions if not already set
+                                    if file.file_type() == "image"
+                                        && (sample.width.is_none() || sample.height.is_none())
+                                        && let Ok(size) = imagesize::size(path) {
+                                            sample.width = Some(size.width as u32);
+                                            sample.height = Some(size.height as u32);
+                                        }
+
+                                    // Store the full path for later upload
+                                    files_to_upload.push((
+                                        sample_uuid.clone(),
+                                        file.file_type().to_string(),
+                                        path.to_path_buf(),
+                                        basename.to_string(),
+                                    ));
+
+                                    // Return SampleFile with just the basename
+                                    return crate::SampleFile::with_filename(
+                                        file.file_type().to_string(),
+                                        basename.to_string(),
+                                    );
+                                }
+                            }
+                        }
+                        // Return the file unchanged if not a local path
+                        file.clone()
+                    })
+                    .collect();
+
+                sample.files = updated_files;
+                sample
+            })
+            .collect();
+
+        let has_files_to_upload = !files_to_upload.is_empty();
+
+        // Call populate API with presigned_urls=true if we have files to upload
+        let params = SamplesPopulateParams {
+            dataset_id,
+            annotation_set_id,
+            presigned_urls: if has_files_to_upload {
+                Some(true)
+            } else {
+                Some(false)
+            },
+            samples,
+        };
+
+        let results: Vec<crate::SamplesPopulateResult> = self
+            .rpc("samples.populate".to_owned(), Some(params))
+            .await?;
+
+        // Upload files if we have any
+        if has_files_to_upload {
+            // Build a map from (sample_uuid, basename) -> local_path
+            let mut upload_map: HashMap<(String, String), PathBuf> = HashMap::new();
+            for (uuid, _file_type, path, basename) in files_to_upload {
+                upload_map.insert((uuid, basename), path);
+            }
+
+            // Upload each file to its presigned URL
+            for result in &results {
+                for url_info in &result.urls {
+                    if let Some(local_path) =
+                        upload_map.get(&(result.uuid.clone(), url_info.filename.clone()))
+                    {
+                        // Upload the file
+                        upload_file_to_presigned_url(
+                            self.http.clone(),
+                            &url_info.url,
+                            local_path.clone(),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
@@ -1899,4 +2117,61 @@ async fn upload_part(
         .strip_suffix("\"")
         .unwrap()
         .to_owned())
+}
+
+/// Upload a complete file to a presigned S3 URL using HTTP PUT.
+///
+/// This is used for populate_samples to upload files to S3 after
+/// receiving presigned URLs from the server.
+async fn upload_file_to_presigned_url(
+    http: reqwest::Client,
+    url: &str,
+    path: PathBuf,
+) -> Result<(), Error> {
+    // Read the entire file into memory
+    let file_data = fs::read(&path).await?;
+    let file_size = file_data.len();
+
+    // Upload with retry logic
+    for attempt in 1..=MAX_RETRIES {
+        match http
+            .put(url)
+            .header(CONTENT_LENGTH, file_size)
+            .body(file_data.clone())
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    debug!(
+                        "Successfully uploaded file: {:?} ({} bytes)",
+                        path, file_size
+                    );
+                    return Ok(());
+                } else {
+                    let status = resp.status();
+                    let error_text = resp.text().await.unwrap_or_default();
+                    warn!(
+                        "Upload failed [attempt {}/{}]: HTTP {} - {}",
+                        attempt, MAX_RETRIES, status, error_text
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Upload error [attempt {}/{}]: {:?}",
+                    attempt, MAX_RETRIES, err
+                );
+            }
+        }
+
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
+        }
+    }
+
+    Err(Error::InvalidParameters(format!(
+        "Failed to upload file {:?} after {} attempts",
+        path, MAX_RETRIES
+    )))
 }
