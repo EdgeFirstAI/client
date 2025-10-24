@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2025-10-24
+
 ### Added
 - `Sample` accessor functions for all fields in Rust API
   - `uuid()`, `sequence_uuid()`, `sequence_description()`, `frame_number()`
