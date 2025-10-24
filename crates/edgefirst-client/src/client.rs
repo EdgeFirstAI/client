@@ -792,6 +792,25 @@ impl Client {
         Ok(result.id)
     }
 
+    /// Deletes an annotation set by marking it as deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `annotation_set_id` - The ID of the annotation set to delete
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the annotation set was successfully marked as
+    /// deleted.
+    pub async fn delete_annotation_set(
+        &self,
+        annotation_set_id: AnnotationSetID,
+    ) -> Result<(), Error> {
+        let params = HashMap::from([("id", annotation_set_id)]);
+        let _: String = self.rpc("annset.delete".to_owned(), Some(params)).await?;
+        Ok(())
+    }
+
     /// Retrieve the annotation set with the specified ID.
     pub async fn annotation_set(
         &self,

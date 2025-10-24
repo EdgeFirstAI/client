@@ -141,7 +141,31 @@ Examples of temporary files to avoid committing:
 - Does the change affect developer workflows? → Update CONTRIBUTING.md
 - Does the change affect CI/CD? → Update WORKFLOW_ARCHITECTURE.md
 - Does the change affect APIs? → Update doc comments and .pyi stubs
-- Does the change affect CLI? → Update help text and examples
+- Does the change affect CLI? → Update help text, examples, and CLI.md
+
+#### CLI Man Page Documentation
+
+If you add, modify, or remove CLI commands, update `CLI.md`:
+
+1. **Add/update command documentation** with syntax, options, arguments, and examples
+2. **Optionally rebuild the man page** to verify formatting is correct:
+   ```bash
+   pandoc CLI.md --standalone --to man --output edgefirst-client.1
+   man ./edgefirst-client.1
+   ```
+3. **Do NOT commit the generated `.1` file** (it's auto-generated and git-ignored)
+4. **Man page is built automatically** during GitHub releases
+
+**On release:** Update version and date in `CLI.md` YAML front matter:
+```yaml
+---
+title: EDGEFIRST-CLIENT
+section: 1
+header: EdgeFirst Client Manual
+footer: edgefirst-client X.Y.Z  # <-- Update this version
+date: Month YYYY                # <-- Update this date
+---
+```
 
 #### Step 2: Update CHANGELOG.md
 
@@ -362,23 +386,65 @@ cargo clippy --all-targets --all-features --locked
 - **Why**: PyPI requires `rcN` format (PEP 440), Cargo accepts both, maturin doesn't convert
 - **Workspace versioning**: Single version in root `Cargo.toml` inherited via `version.workspace = true`
 
+### Choosing the Version Number
+
+When preparing a release, select the appropriate version bump based on changes since the last release:
+
+**PATCH (X.Y.Z → X.Y.Z+1)** - Default for most releases
+- Bug fixes that don't change the API
+- Performance improvements
+- Internal refactoring (no API changes)
+- New features that don't change existing APIs (backward-compatible additions)
+- Documentation updates
+- Examples: `2.1.0 → 2.1.1`, `2.1.1 → 2.1.2`
+- **Use**: `cargo release patch`
+
+**MINOR (X.Y.Z → X.Y+1.0)** - Required for breaking changes
+- API changes that break backward compatibility
+- Removing public functions, methods, or types
+- Changing function signatures (parameters, return types)
+- Renaming public APIs
+- Changing behavior in ways that existing code depends on
+- Examples: `2.1.5 → 2.2.0`, `2.2.0 → 2.3.0`
+- **Use**: `cargo release minor`
+
+**MAJOR (X.Y.Z → X+1.0.0)** - Reserved for maintainers
+- Major architectural changes
+- Complete API rewrites
+- Reserved for maintainer decision only
+- Examples: `2.9.5 → 3.0.0`, `1.5.2 → 2.0.0`
+- **Use**: `cargo release major`
+
+**CHANGELOG Requirements:**
+- **PATCH releases**: Document new features or bug fixes in CHANGELOG under `### Added`, `### Fixed`, or `### Changed`
+- **MINOR releases**: Document breaking changes in CHANGELOG under `### Changed` with clear migration guidance
+- **MAJOR releases**: Provide comprehensive migration guide
+
+**Default**: When in doubt, use **PATCH** for backward-compatible changes and **MINOR** for breaking changes.
+
 **Release Process** (maintainers only):
 ```bash
-# Update CHANGELOG.md first
+# 1. Update CHANGELOG.md with release notes under [Unreleased]
 
-# Stable release
+# 2. Update CLI.md version and date in YAML front matter
+#    footer: edgefirst-client X.Y.Z
+#    date: Month YYYY
+
+# 3. Stable release (choose: patch, minor, or major)
 cargo release patch --execute --no-confirm  # or: minor, major
 
-# Release candidate (MANUAL version edit required)
+# 4. Release candidate (MANUAL version edit required)
 sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
 sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
 cargo release 2.3.0rc1 --execute --no-confirm
 
-# Push to trigger CI/CD
+# 5. Push to trigger CI/CD
 git push && git push --tags
 ```
 
-See `CONTRIBUTING.md` (lines 280-340) and `release.toml` for full details.
+See `CONTRIBUTING.md` for full release details and `release.toml` for configuration.
+
+**Note**: The man page is automatically generated and included as a release artifact in GitHub releases.
 
 ## Dependency & Feature Management
 

@@ -1951,6 +1951,15 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    pub fn delete_annotation_set<'py>(
+        &self,
+        annotation_set_id: Bound<'py, PyAny>,
+    ) -> Result<(), Error> {
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        Ok(self.0.delete_annotation_set(annotation_set_id.0).await?)
+    }
+
+    #[tokio_wrap::sync]
     pub fn annotation_sets<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,

@@ -270,6 +270,37 @@ cargo doc --open
 
 Rust documentation is automatically published to [docs.rs](https://docs.rs/edgefirst-client) on release.
 
+### CLI Man Page Documentation
+
+The CLI has comprehensive man-page style documentation in `CLI.md` that can be converted to a Unix man page:
+
+```bash
+# Build the man page (requires pandoc)
+pandoc CLI.md --standalone --to man --output edgefirst-client.1
+
+# View locally
+man ./edgefirst-client.1
+```
+
+**When updating CLI commands:** If you add, modify, or remove CLI commands, update `CLI.md` to reflect the changes:
+
+1. Add/update command documentation with syntax, options, arguments, and examples
+2. Update the date in the YAML front matter (e.g., `date: October 2025`)
+3. Optionally rebuild the man page to verify formatting: `pandoc CLI.md --standalone --to man --output edgefirst-client.1`
+4. The man page (`.1` file) is auto-generated and git-ignored - don't commit it
+5. The man page is automatically built and included in GitHub releases
+
+**On release:** Update the version in `CLI.md` YAML front matter:
+```yaml
+---
+title: EDGEFIRST-CLIENT
+section: 1
+header: EdgeFirst Client Manual
+footer: edgefirst-client X.Y.Z  # <-- Update this version
+date: Month YYYY                # <-- Update this date
+---
+```
+
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/) (SemVer) with the following format:
@@ -283,21 +314,58 @@ This project follows [Semantic Versioning](https://semver.org/) (SemVer) with th
 - Python's PEP 440 standard (for PyPI publishing)
 - Rust's Cargo/SemVer standard (for crates.io publishing)
 
+### Choosing the Version Number
+
+When preparing a release, select the appropriate version bump based on changes since the last release:
+
+**PATCH (X.Y.Z → X.Y.Z+1)** - Default for most releases
+- Bug fixes that don't change the API
+- Performance improvements
+- Internal refactoring (no API changes)
+- New features that don't change existing APIs (backward-compatible additions)
+- Documentation updates
+- Examples: `2.1.0 → 2.1.1`, `2.1.1 → 2.1.2`
+
+**MINOR (X.Y.Z → X.Y+1.0)** - Required for breaking changes
+- API changes that break backward compatibility
+- Removing public functions, methods, or types
+- Changing function signatures (parameters, return types)
+- Renaming public APIs
+- Changing behavior in ways that existing code depends on
+- Examples: `2.1.5 → 2.2.0`, `2.2.0 → 2.3.0`
+
+**MAJOR (X.Y.Z → X+1.0.0)** - Reserved for maintainers
+- Major architectural changes
+- Complete API rewrites
+- Reserved for maintainer decision only
+- Examples: `2.9.5 → 3.0.0`, `1.5.2 → 2.0.0`
+
+**CHANGELOG Requirements:**
+- **PATCH releases**: Document new features or bug fixes in CHANGELOG under `### Added`, `### Fixed`, or `### Changed`
+- **MINOR releases**: Document breaking changes in CHANGELOG under `### Changed` with clear migration guidance
+- **MAJOR releases**: Provide comprehensive migration guide
+
+**Default**: When in doubt, use **PATCH** for backward-compatible changes and **MINOR** for breaking changes.
+
 ## Release Process
 
 Releases are managed by maintainers using [cargo-release](https://github.com/crate-ci/cargo-release):
 
 ```bash
-# 1. Update CHANGELOG.md with release notes
+# 1. Update CHANGELOG.md with release notes under [Unreleased]
 
-# 2. Run cargo-release to bump versions and create tag
+# 2. Update CLI.md version and date in YAML front matter
+#    footer: edgefirst-client X.Y.Z
+#    date: Month YYYY
+
+# 3. Run cargo-release to bump versions and create tag
 cargo release patch --execute --no-confirm    # or: minor, major
 
-# 3. Push to trigger CI/CD
+# 4. Push to trigger CI/CD
 git push && git push --tags
 ```
 
-GitHub Actions will automatically build binaries, publish to crates.io and PyPI, and create a GitHub Release.
+GitHub Actions will automatically build binaries, publish to crates.io and PyPI, create a GitHub Release, and generate the man page as a release artifact.
 
 **Version Format**: Use `X.Y.Z` for stable releases, `X.Y.ZrcN` for release candidates (without separators for PyPI/Cargo compatibility).
 

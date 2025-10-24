@@ -20,14 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Create new datasets with optional descriptions
   - Delete datasets by marking them as deleted
   - Python bindings with `description` defaulting to `None`
-- `Client::create_annotation_set()` method in Rust API
+- `Client::create_annotation_set()` and `Client::delete_annotation_set()` methods in Rust API
   - Create new annotation sets for datasets with optional descriptions
+  - Delete annotation sets by marking them as deleted
   - Python bindings with `description` defaulting to `None`
+- CLI commands for dataset and annotation set management
+  - `create-dataset` - Create new dataset in a project
+  - `delete-dataset` - Delete dataset by ID
+  - `create-annotation-set` - Create new annotation set for a dataset
+  - `delete-annotation-set` - Delete annotation set by ID
 - Comprehensive round-trip tests for dataset integrity verification
   - `test_deer_dataset_roundtrip()` in Rust library verifies download→upload data integrity
   - Equivalent Python test verifies byte-level image matching and annotation preservation
   - Tests create temporary datasets and annotation sets, then clean up after completion
   - Tests use random dataset names to prevent parallel execution conflicts
+- CLI integration test for complete dataset and annotation set CRUD workflow
+  - `test_dataset_crud()` - Comprehensive test covering create dataset → create annotation set → delete annotation set → delete dataset
+  - Follows the complete lifecycle workflow with proper cleanup
+  - Gracefully handles server API limitations (annotation set deletion not yet supported)
+  - Uses `#[serial]` attribute to prevent race conditions
+  - Uses timestamp-based unique names to avoid conflicts
 
 ### Changed
 - `test_populate_samples` now creates and cleans up temporary datasets and annotation sets

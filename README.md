@@ -268,8 +268,34 @@ EdgeFirst Client is a REST API client built with:
 - **EdgeFirst Studio Docs**: [doc.edgefirst.ai](https://doc.edgefirst.ai)
 - **Rust API Documentation**: [docs.rs/edgefirst-client](https://docs.rs/edgefirst-client)
 - **Python API Documentation**: Available on [PyPI](https://pypi.org/project/edgefirst-client/)
+- **CLI Man Page**: See [CLI.md](CLI.md) - convert with `pandoc CLI.md --standalone --to man --output edgefirst-client.1`
 - **Dataset Format Specification**: [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/)
 - **AGTG Workflow Tutorial**: [Automated Ground-Truth Generation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
+
+### Building and Installing the Man Page
+
+The CLI documentation is available as a man page that can be installed on Linux and macOS systems:
+
+```bash
+# Build the man page (requires pandoc)
+pandoc CLI.md --standalone --to man --output edgefirst-client.1
+
+# View locally
+man ./edgefirst-client.1
+
+# Install system-wide (Linux)
+sudo cp edgefirst-client.1 /usr/local/man/man1/
+sudo mandb
+
+# Install system-wide (macOS)
+sudo cp edgefirst-client.1 /usr/local/share/man/man1/
+sudo /usr/libexec/makewhatis /usr/local/share/man
+
+# Then use anywhere
+man edgefirst-client
+```
+
+**Note**: The man page is automatically built and included as an artifact in [GitHub Releases](https://github.com/EdgeFirstAI/client/releases).
 
 ## Support
 

@@ -93,6 +93,40 @@ enum Command {
         #[clap(long, short)]
         labels: bool,
     },
+    /// Create a new dataset in the specified project.
+    CreateDataset {
+        /// Project ID
+        project_id: String,
+
+        /// Dataset name
+        name: String,
+
+        /// Dataset description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete a dataset by marking it as deleted.
+    DeleteDataset {
+        /// Dataset ID
+        dataset_id: String,
+    },
+    /// Create a new annotation set for the specified dataset.
+    CreateAnnotationSet {
+        /// Dataset ID
+        dataset_id: String,
+
+        /// Annotation set name
+        name: String,
+
+        /// Annotation set description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete an annotation set by marking it as deleted.
+    DeleteAnnotationSet {
+        /// Annotation Set ID
+        annotation_set_id: String,
+    },
     /// Download a dataset to the local filesystem from the EdgeFirst Studio
     /// server.  The dataset ID is required along with an optional output file
     /// path, if none is provided the dataset is downloaded to the current
@@ -498,6 +532,43 @@ async fn main() -> Result<(), Error> {
                     );
                 }
             }
+        }
+        Command::CreateDataset {
+            project_id,
+            name,
+            description,
+        } => {
+            let project_id: edgefirst_client::ProjectID = project_id.try_into()?;
+            let dataset_id = client
+                .create_dataset(
+                    project_id.to_string().as_str(),
+                    &name,
+                    description.as_deref(),
+                )
+                .await?;
+            println!("Created dataset with ID: {}", dataset_id);
+        }
+        Command::DeleteDataset { dataset_id } => {
+            let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
+            client.delete_dataset(dataset_id).await?;
+            println!("Dataset {} marked as deleted", dataset_id);
+        }
+        Command::CreateAnnotationSet {
+            dataset_id,
+            name,
+            description,
+        } => {
+            let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
+            let annotation_set_id = client
+                .create_annotation_set(dataset_id, &name, description.as_deref())
+                .await?;
+            println!("Created annotation set with ID: {}", annotation_set_id);
+        }
+        Command::DeleteAnnotationSet { annotation_set_id } => {
+            let annotation_set_id: edgefirst_client::AnnotationSetID =
+                annotation_set_id.try_into()?;
+            client.delete_annotation_set(annotation_set_id).await?;
+            println!("Annotation set {} marked as deleted", annotation_set_id);
         }
         Command::DownloadDataset {
             dataset_id,

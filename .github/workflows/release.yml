@@ -108,6 +108,29 @@ jobs:
           tag_name: ${{ needs.create-release.outputs.version }}
           files: THIRD_PARTY.md
 
+  # Generate man page
+  generate-manpage:
+    name: Generate Man Page
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+
+      - name: Generate man page
+        run: |
+          pandoc CLI.md --standalone --to man --output edgefirst-client.1
+
+      - name: Upload man page to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.version }}
+          files: edgefirst-client.1
+
   # Build CLI binaries
   build-cli:
     name: Build CLI ${{ matrix.target }}

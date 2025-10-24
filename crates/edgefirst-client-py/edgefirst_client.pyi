@@ -2454,6 +2454,15 @@ class Client:
         """
         ...
 
+    def delete_annotation_set(self, annotation_set_id: AnnotationSetUID) -> None:
+        """
+        Delete an annotation set by marking it as deleted.
+
+        Args:
+            annotation_set_id (Union[AnnotationSetID, int, str]): ID of the annotation set to delete.
+        """
+        ...
+
     def download_dataset(
         self,
         dataset_id: DatasetUID,

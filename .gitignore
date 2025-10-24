@@ -38,3 +38,6 @@ edgefirst.yaml
 lcov.info
 
 THIRD_PARTY*
+
+# Generated man page
+*.1
