@@ -173,6 +173,26 @@ jobs:
         if: matrix.os != 'ubuntu-latest'
         run: cargo build --release --locked --target ${{ matrix.target }} -p edgefirst-cli
 
+      # Verify GLIBC requirements for Linux binaries (manylinux2014 = glibc 2.17)
+      - name: Verify GLIBC requirements (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          echo "Checking GLIBC requirements for ${{ matrix.target }}..."
+          GLIBC_MAX=$(objdump -T "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
+          echo "Maximum GLIBC version required: $GLIBC_MAX"
+          
+          # Extract version numbers for comparison
+          GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
+          GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
+          
+          # Check if version is <= 2.17 (manylinux2014)
+          if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
+            echo "❌ ERROR: Binary requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
+            exit 1
+          fi
+          echo "✅ GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
+
       - name: Create release asset
         shell: bash
         run: |
@@ -285,6 +305,26 @@ jobs:
             cp "target/${{ matrix.target }}/release/edgefirst-client" "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client"
           fi
 
+      # Verify GLIBC requirements for bundled CLI (Linux only, manylinux2014 = glibc 2.17)
+      - name: Verify bundled CLI GLIBC requirements (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          echo "Checking GLIBC requirements for bundled CLI binary (${{ matrix.target }})..."
+          GLIBC_MAX=$(objdump -T "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
+          echo "Maximum GLIBC version required: $GLIBC_MAX"
+          
+          # Extract version numbers for comparison
+          GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
+          GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
+          
+          # Check if version is <= 2.17 (manylinux2014)
+          if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
+            echo "❌ ERROR: Bundled CLI requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
+            exit 1
+          fi
+          echo "✅ Bundled CLI GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
+
       - name: Build wheels (Linux with zig)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -302,6 +342,55 @@ jobs:
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
         run: maturin build --release --locked -m crates/edgefirst-client-py/Cargo.toml
+
+      # Final verification of wheel contents (Linux only)
+      - name: Verify wheel contents GLIBC requirements (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          echo "Extracting and verifying final wheel contents for ${{ matrix.target }}..."
+          WHEEL_FILE=$(ls target/wheels/*.whl)
+          TEMP_DIR=$(mktemp -d)
+          unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
+          
+          # Check the Python extension module (.so)
+          SO_FILE=$(find "$TEMP_DIR" -name "*.so" | head -1)
+          if [ -n "$SO_FILE" ]; then
+            echo "Checking Python extension: $SO_FILE"
+            GLIBC_MAX=$(objdump -T "$SO_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
+            echo "  Max GLIBC: $GLIBC_MAX"
+            
+            GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
+            GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
+            
+            if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
+              echo "❌ ERROR: Python extension requires $GLIBC_MAX"
+              rm -rf "$TEMP_DIR"
+              exit 1
+            fi
+            echo "  ✅ Python extension OK"
+          fi
+          
+          # Check bundled CLI binary
+          CLI_FILE=$(find "$TEMP_DIR" -path "*.data/scripts/edgefirst-client" -type f | head -1)
+          if [ -n "$CLI_FILE" ]; then
+            echo "Checking bundled CLI: $CLI_FILE"
+            GLIBC_MAX=$(objdump -T "$CLI_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
+            echo "  Max GLIBC: $GLIBC_MAX"
+            
+            GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
+            GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
+            
+            if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
+              echo "❌ ERROR: Bundled CLI requires $GLIBC_MAX"
+              rm -rf "$TEMP_DIR"
+              exit 1
+            fi
+            echo "  ✅ Bundled CLI OK"
+          fi
+          
+          rm -rf "$TEMP_DIR"
+          echo "✅ All binaries in wheel verified: compliant with manylinux2014 (GLIBC_2.17)"
 
       - name: Upload wheels as artifacts
         uses: actions/upload-artifact@v4
