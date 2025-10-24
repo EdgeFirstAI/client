@@ -102,22 +102,27 @@ struct RpcError {
 
 #[derive(Deserialize)]
 struct RpcResponse<RpcResult> {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     jsonrpc: String,
     error: Option<RpcError>,
     result: Option<RpcResult>,
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct EmptyResult {}
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct SnapshotCreateParams {
     snapshot_name: String,
     keys: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct SnapshotCreateResult {
     snapshot_id: SnapshotID,
     urls: Vec<String>,
@@ -167,14 +172,20 @@ struct SnapshotStatusParams {
 
 #[derive(Deserialize, Debug)]
 struct SnapshotStatusResult {
+    #[allow(dead_code)]
     pub id: SnapshotID,
+    #[allow(dead_code)]
     pub uid: String,
+    #[allow(dead_code)]
     pub description: String,
+    #[allow(dead_code)]
     pub date: String,
+    #[allow(dead_code)]
     pub status: String,
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct ImageListParams {
     images_filter: ImagesFilter,
     image_files_filter: HashMap<String, String>,
@@ -182,6 +193,7 @@ struct ImageListParams {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct ImagesFilter {
     dataset_id: DatasetID,
 }
@@ -562,6 +574,55 @@ impl Client {
         Ok(())
     }
 
+    /// Creates a new dataset in the specified project.
+    ///
+    /// # Arguments
+    ///
+    /// * `project_id` - The ID of the project to create the dataset in
+    /// * `name` - The name of the new dataset
+    /// * `description` - Optional description for the dataset
+    ///
+    /// # Returns
+    ///
+    /// Returns the dataset ID of the newly created dataset.
+    pub async fn create_dataset(
+        &self,
+        project_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<DatasetID, Error> {
+        let mut params = HashMap::new();
+        params.insert("project_id", project_id);
+        params.insert("name", name);
+        if let Some(desc) = description {
+            params.insert("description", desc);
+        }
+
+        #[derive(Deserialize)]
+        struct CreateDatasetResult {
+            id: DatasetID,
+        }
+
+        let result: CreateDatasetResult =
+            self.rpc("dataset.create".to_owned(), Some(params)).await?;
+        Ok(result.id)
+    }
+
+    /// Deletes a dataset by marking it as deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The ID of the dataset to delete
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the dataset was successfully marked as deleted.
+    pub async fn delete_dataset(&self, dataset_id: DatasetID) -> Result<(), Error> {
+        let params = HashMap::from([("id", dataset_id)]);
+        let _: String = self.rpc("dataset.delete".to_owned(), Some(params)).await?;
+        Ok(())
+    }
+
     /// Updates the label with the specified ID to have the new name or index.
     /// Label IDs cannot be changed.  Label IDs are globally unique so the
     /// dataset_id is not required.
@@ -683,6 +744,52 @@ impl Client {
     ) -> Result<Vec<AnnotationSet>, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);
         self.rpc("annset.list".to_owned(), Some(params)).await
+    }
+
+    /// Create a new annotation set for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The ID of the dataset to create the annotation set in
+    /// * `name` - The name of the new annotation set
+    /// * `description` - Optional description for the annotation set
+    ///
+    /// # Returns
+    ///
+    /// Returns the annotation set ID of the newly created annotation set.
+    pub async fn create_annotation_set(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<AnnotationSetID, Error> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            dataset_id: DatasetID,
+            name: &'a str,
+            operator: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<&'a str>,
+        }
+
+        #[derive(Deserialize)]
+        struct CreateAnnotationSetResult {
+            id: AnnotationSetID,
+        }
+
+        let username = self.username().await?;
+        let result: CreateAnnotationSetResult = self
+            .rpc(
+                "annset.add".to_owned(),
+                Some(Params {
+                    dataset_id,
+                    name,
+                    operator: &username,
+                    description,
+                }),
+            )
+            .await?;
+        Ok(result.id)
     }
 
     /// Retrieve the annotation set with the specified ID.
@@ -1517,6 +1624,7 @@ impl Client {
     /// The autodepth flag is used to determine if a depthmap should be
     /// automatically generated for the dataset, this will currently only work
     /// accurately for Maivin or Raivin cameras.
+    #[allow(clippy::too_many_arguments)]
     pub async fn restore_snapshot(
         &self,
         project_id: ProjectID,

@@ -81,6 +81,7 @@ pub use crate::dataset::annotations_dataframe;
 mod tests {
     use super::*;
     use polars::frame::UniqueKeepStrategy;
+    use rand::Rng;
     use std::{
         collections::HashMap,
         env,
@@ -222,22 +223,49 @@ mod tests {
             )
         });
 
-        let labels = dataset.labels(&client).await?;
-        for label in labels {
-            label.remove(&client).await?;
-        }
+        // Generate a random label name to avoid conflicts with parallel tests
+        // Use a random 8-character hex string
+        let random_suffix: u64 = rand::rng().random();
+        let test_label = format!("test_{:x}", random_suffix);
 
-        let labels = dataset.labels(&client).await?;
-        assert_eq!(labels.len(), 0);
+        // Get initial label count
+        let initial_labels = dataset.labels(&client).await?;
+        let initial_count = initial_labels.len();
 
-        dataset.add_label(&client, "test").await?;
-        let labels = dataset.labels(&client).await?;
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].name(), "test");
+        // Verify the random label doesn't already exist
+        assert!(
+            !initial_labels.iter().any(|l| l.name() == test_label),
+            "Random label '{}' should not exist yet",
+            test_label
+        );
 
-        dataset.remove_label(&client, "test").await?;
-        let labels = dataset.labels(&client).await?;
-        assert_eq!(labels.len(), 0);
+        // Add the test label
+        dataset.add_label(&client, &test_label).await?;
+        let labels_after_add = dataset.labels(&client).await?;
+        assert_eq!(
+            labels_after_add.len(),
+            initial_count + 1,
+            "Should have one more label after adding"
+        );
+        assert!(
+            labels_after_add.iter().any(|l| l.name() == test_label),
+            "Label '{}' should exist after adding",
+            test_label
+        );
+
+        // Remove the test label
+        dataset.remove_label(&client, &test_label).await?;
+        let labels_after_remove = dataset.labels(&client).await?;
+        assert_eq!(
+            labels_after_remove.len(),
+            initial_count,
+            "Should have same label count as initial after removing"
+        );
+        assert!(
+            !labels_after_remove.iter().any(|l| l.name() == test_label),
+            "Label '{}' should not exist after removing",
+            test_label
+        );
 
         Ok(())
     }
@@ -731,16 +759,33 @@ mod tests {
     async fn test_populate_samples() -> Result<(), Error> {
         let client = get_client().await?;
 
-        // Find the Unit Testing project and Test Labels dataset
+        // Find the Unit Testing project
         let projects = client.projects(Some("Unit Testing")).await?;
         let project = projects.first().unwrap();
 
-        let datasets = client.datasets(project.id(), Some("Test Labels")).await?;
-        let dataset = datasets.first().unwrap();
+        // Create a temporary test dataset with random suffix
+        let random_suffix: u64 = rand::rng().random();
+        let test_dataset_name = format!("Test Populate {:x}", random_suffix);
 
-        // Get the first annotation set
-        let annotation_sets = client.annotation_sets(dataset.id()).await?;
-        let annotation_set = annotation_sets.first().unwrap();
+        eprintln!("Creating test dataset: {}", test_dataset_name);
+
+        let dataset_id = client
+            .create_dataset(
+                &project.id().to_string(),
+                &test_dataset_name,
+                Some("Automated test: populate_samples verification"),
+            )
+            .await?;
+
+        eprintln!("Created test dataset: {}", dataset_id);
+
+        // Create an annotation set
+        eprintln!("Creating annotation set...");
+        let annotation_set_id = client
+            .create_annotation_set(dataset_id, "Default", Some("Default annotation set"))
+            .await?;
+
+        eprintln!("Created annotation set: {}", annotation_set_id);
 
         // Generate a 640x480 PNG image with a red circle
         // (Tested with JPEG too - server doesn't return width/height for either format)
@@ -815,150 +860,408 @@ mod tests {
         sample.annotations = vec![annotation];
 
         // Populate the sample
-        let results = client
-            .populate_samples(dataset.id(), Some(annotation_set.id()), vec![sample], None)
-            .await?;
+        let populate_result = async {
+            let results = client
+                .populate_samples(dataset_id, Some(annotation_set_id), vec![sample], None)
+                .await?;
 
-        assert_eq!(results.len(), 1);
-        let result = &results[0];
-        assert_eq!(result.urls.len(), 1);
+            assert_eq!(results.len(), 1);
+            let result = &results[0];
+            assert_eq!(result.urls.len(), 1);
 
-        // The image filename we'll search for when fetching back
-        let image_filename = format!("test_populate_{}.{}", timestamp, file_extension);
+            // The image filename we'll search for when fetching back
+            let image_filename = format!("test_populate_{}.{}", timestamp, file_extension);
 
-        // Give the server a moment to process the upload
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // Give the server a moment to process the upload
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // Verify the sample was created by fetching it back and searching by image_name
-        let samples = client
+            // Verify the sample was created by fetching it back and searching by image_name
+            let samples = client
+                .samples(
+                    dataset_id,
+                    Some(annotation_set_id),
+                    &[],
+                    &[], // Don't filter by group - get all samples
+                    &[],
+                    None,
+                )
+                .await?;
+
+            eprintln!("Looking for image: {}", image_filename);
+            eprintln!("Found {} samples total", samples.len());
+
+            // Find the sample by image_name (server doesn't return UUID we sent)
+            let created_sample = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some(&image_filename));
+
+            assert!(
+                created_sample.is_some(),
+                "Sample with image_name '{}' should exist in dataset",
+                image_filename
+            );
+            let created_sample = created_sample.unwrap();
+
+            eprintln!("✓ Found sample by image_name: {}", image_filename);
+
+            // Verify basic properties
+            assert_eq!(
+                created_sample.image_name.as_deref(),
+                Some(&image_filename[..])
+            );
+            assert_eq!(created_sample.group, Some("train".to_string()));
+
+            eprintln!("\nSample verification:");
+            eprintln!("  ✓ image_name: {:?}", created_sample.image_name);
+            eprintln!("  ✓ group: {:?}", created_sample.group);
+            eprintln!(
+                "  ✓ annotations: {} item(s)",
+                created_sample.annotations.len()
+            );
+
+            // Note: The server currently doesn't return width/height or UUID fields in
+            // samples.list This is a known server limitation (bug report
+            // submitted).
+            eprintln!(
+                "  ⚠ uuid: {:?} (not returned by server)",
+                created_sample.uuid
+            );
+            eprintln!(
+                "  ⚠ width: {:?} (not returned by server)",
+                created_sample.width
+            );
+            eprintln!(
+                "  ⚠ height: {:?} (not returned by server)",
+                created_sample.height
+            );
+
+            // Verify annotations are returned correctly
+            let annotations = &created_sample.annotations;
+            assert_eq!(annotations.len(), 1, "Should have exactly one annotation");
+
+            let annotation = &annotations[0];
+            assert_eq!(annotation.label(), Some(&"circle".to_string()));
+            assert!(
+                annotation.box2d().is_some(),
+                "Bounding box should be present"
+            );
+
+            let returned_bbox = annotation.box2d().unwrap();
+            eprintln!("\nAnnotation verification:");
+            eprintln!("  ✓ label: {:?}", annotation.label());
+            eprintln!(
+                "  ✓ bbox: x={:.3}, y={:.3}, w={:.3}, h={:.3}",
+                returned_bbox.left(),
+                returned_bbox.top(),
+                returned_bbox.width(),
+                returned_bbox.height()
+            );
+
+            // Verify the bounding box coordinates match what we sent (within tolerance)
+            assert!(
+                (returned_bbox.left() - normalized_x).abs() < 0.01,
+                "bbox.x should match (sent: {:.3}, got: {:.3})",
+                normalized_x,
+                returned_bbox.left()
+            );
+            assert!(
+                (returned_bbox.top() - normalized_y).abs() < 0.01,
+                "bbox.y should match (sent: {:.3}, got: {:.3})",
+                normalized_y,
+                returned_bbox.top()
+            );
+            assert!(
+                (returned_bbox.width() - normalized_w).abs() < 0.01,
+                "bbox.w should match (sent: {:.3}, got: {:.3})",
+                normalized_w,
+                returned_bbox.width()
+            );
+            assert!(
+                (returned_bbox.height() - normalized_h).abs() < 0.01,
+                "bbox.h should match (sent: {:.3}, got: {:.3})",
+                normalized_h,
+                returned_bbox.height()
+            );
+
+            // Verify the uploaded image matches what we sent (byte-for-byte)
+            eprintln!("\nImage verification:");
+            let downloaded_image = created_sample.download(&client, FileType::Image).await?;
+            assert!(
+                downloaded_image.is_some(),
+                "Should be able to download the image"
+            );
+            let downloaded_data = downloaded_image.unwrap();
+
+            assert_eq!(
+                image_data.len(),
+                downloaded_data.len(),
+                "Downloaded image should have same size as uploaded"
+            );
+            assert_eq!(
+                image_data, downloaded_data,
+                "Downloaded image should match uploaded image byte-for-byte"
+            );
+            eprintln!("  ✓ Image data matches ({} bytes)", image_data.len());
+
+            Ok::<(), Error>(())
+        }
+        .await;
+
+        // Clean up temporary files
+        let _ = std::fs::remove_file(&test_image_path);
+
+        // Clean up test dataset (always execute, even if test failed)
+        eprintln!("\nCleaning up test dataset...");
+        client.delete_dataset(dataset_id).await?;
+        eprintln!("  ✓ Deleted test dataset");
+
+        // Propagate test result
+        populate_result?;
+
+        eprintln!("\n✓ Test passed: populate_samples with automatic upload");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_deer_dataset_roundtrip() -> Result<(), Error> {
+        use rand::Rng;
+
+        let client = get_client().await?;
+
+        // Find the Unit Testing project and Deer dataset (read-only)
+        let projects = client.projects(Some("Unit Testing")).await?;
+        let project = projects.first().unwrap();
+
+        let datasets = client.datasets(project.id(), Some("Deer")).await?;
+        let deer_dataset = datasets
+            .iter()
+            .find(|d| d.name() == "Deer")
+            .expect("Deer dataset should exist");
+
+        eprintln!("Found Deer dataset: {}", deer_dataset.id());
+
+        // Get annotation sets
+        let annotation_sets = client.annotation_sets(deer_dataset.id()).await?;
+        let annotation_set = annotation_sets
+            .first()
+            .expect("Deer dataset should have annotation sets");
+
+        eprintln!("Using annotation set: {}", annotation_set.id());
+
+        // Download all samples from Deer dataset
+        eprintln!("Downloading samples from Deer dataset...");
+        let deer_samples = client
             .samples(
-                dataset.id(),
+                deer_dataset.id(),
                 Some(annotation_set.id()),
                 &[],
-                &[], // Don't filter by group - get all samples
+                &[],
                 &[],
                 None,
             )
             .await?;
 
-        eprintln!("Looking for image: {}", image_filename);
-        eprintln!("Found {} samples total", samples.len());
+        eprintln!("Downloaded {} samples", deer_samples.len());
+        assert!(!deer_samples.is_empty(), "Deer dataset should have samples");
 
-        // Find the sample by image_name (server doesn't return UUID we sent)
-        let created_sample = samples
-            .iter()
-            .find(|s| s.image_name.as_deref() == Some(&image_filename));
+        // Download annotations
+        eprintln!("Downloading annotations...");
+        let deer_annotations = client
+            .annotations(annotation_set.id(), &[], &[], None)
+            .await?;
 
-        assert!(
-            created_sample.is_some(),
-            "Sample with image_name '{}' should exist in dataset",
-            image_filename
+        eprintln!("Downloaded {} annotations", deer_annotations.len());
+
+        // Download a few sample images to verify data integrity
+        eprintln!("Downloading sample images...");
+        let test_dir = get_test_data_dir();
+        let download_dir = test_dir.join(format!("deer_download_{}", std::process::id()));
+        std::fs::create_dir_all(&download_dir)?;
+
+        let mut downloaded_images = HashMap::new();
+        for (idx, sample) in deer_samples.iter().take(5).enumerate() {
+            if let Some(image_data) = sample.download(&client, FileType::Image).await? {
+                let default_name = format!("sample_{}.jpg", idx);
+                let image_name = sample.image_name().unwrap_or(&default_name);
+                let image_path = download_dir.join(image_name);
+                std::fs::write(&image_path, &image_data)?;
+                downloaded_images.insert(image_name.to_string(), image_data);
+                eprintln!("  Downloaded: {}", image_name);
+            }
+        }
+
+        eprintln!(
+            "Downloaded {} sample images for verification",
+            downloaded_images.len()
         );
-        let created_sample = created_sample.unwrap();
 
-        eprintln!("✓ Found sample by image_name: {}", image_filename);
+        // Create a test dataset with random suffix to avoid conflicts
+        let random_suffix: u64 = rand::rng().random();
+        let test_dataset_name = format!("Deer Test {:x}", random_suffix);
 
-        // Verify basic properties
+        eprintln!("Creating test dataset: {}", test_dataset_name);
+
+        // Create the test dataset
+        let test_dataset_id = client
+            .create_dataset(
+                &project.id().to_string(),
+                &test_dataset_name,
+                Some("Automated test: Deer dataset round-trip verification"),
+            )
+            .await?;
+
+        eprintln!("Created test dataset: {}", test_dataset_id);
+
+        // Create an annotation set
+        eprintln!("Creating annotation set...");
+        let test_annotation_set_id = client
+            .create_annotation_set(test_dataset_id, "Default", Some("Default annotation set"))
+            .await?;
+
+        eprintln!("Created annotation set: {}", test_annotation_set_id);
+
+        // Copy labels from Deer dataset
+        let deer_labels = deer_dataset.labels(&client).await?;
+        for label in &deer_labels {
+            client.add_label(test_dataset_id, label.name()).await?;
+        }
+        eprintln!("Copied {} labels", deer_labels.len());
+
+        // Prepare samples for upload
+        eprintln!("Preparing samples for upload...");
+        let mut upload_samples = Vec::new();
+
+        for sample in deer_samples.iter().take(10) {
+            // Limit to first 10 samples for testing
+            let mut new_sample = Sample::new();
+
+            // Copy metadata
+            new_sample.group = sample.group().cloned();
+            new_sample.sequence_name = sample.sequence_name().cloned();
+            new_sample.frame_number = sample.frame_number();
+
+            // Download and save image to temp file
+            if let Some(image_data) = sample.download(&client, FileType::Image).await? {
+                let default_name = format!("sample_{}.jpg", upload_samples.len());
+                let image_name = sample.image_name().unwrap_or(&default_name);
+                let temp_path = download_dir.join(image_name);
+                std::fs::write(&temp_path, &image_data)?;
+                new_sample.files = vec![SampleFile::with_filename(
+                    "image".to_string(),
+                    temp_path.to_str().unwrap().to_string(),
+                )];
+
+                // Copy annotations for this sample
+                let sample_annotations: Vec<Annotation> = deer_annotations
+                    .iter()
+                    .filter(|ann| {
+                        ann.name()
+                            .map(|n| sample.image_name().map(|s| n == s).unwrap_or(false))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect();
+
+                new_sample.annotations = sample_annotations;
+
+                upload_samples.push(new_sample);
+            }
+        }
+
+        eprintln!("Prepared {} samples for upload", upload_samples.len());
+        assert!(
+            !upload_samples.is_empty(),
+            "Should have samples prepared for upload"
+        );
+
+        // Upload samples
+        eprintln!("Uploading samples to test dataset...");
+        let results = client
+            .populate_samples(
+                test_dataset_id,
+                Some(test_annotation_set_id),
+                upload_samples,
+                None,
+            )
+            .await?;
+
+        eprintln!("Uploaded {} samples", results.len());
+
+        // Give the server time to process
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Verify uploaded data
+        eprintln!("Verifying uploaded data...");
+        let uploaded_samples = client
+            .samples(
+                test_dataset_id,
+                Some(test_annotation_set_id),
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .await?;
+
+        eprintln!("Found {} uploaded samples", uploaded_samples.len());
         assert_eq!(
-            created_sample.image_name.as_deref(),
-            Some(&image_filename[..])
-        );
-        assert_eq!(created_sample.group, Some("train".to_string()));
-
-        eprintln!("\nSample verification:");
-        eprintln!("  ✓ image_name: {:?}", created_sample.image_name);
-        eprintln!("  ✓ group: {:?}", created_sample.group);
-        eprintln!(
-            "  ✓ annotations: {} item(s)",
-            created_sample.annotations.len()
+            uploaded_samples.len(),
+            results.len(),
+            "Should have same number of uploaded samples"
         );
 
-        // Note: The server currently doesn't return width/height or UUID fields in
-        // samples.list This is a known server limitation (bug report
-        // submitted).
-        eprintln!(
-            "  ⚠ uuid: {:?} (not returned by server)",
-            created_sample.uuid
-        );
-        eprintln!(
-            "  ⚠ width: {:?} (not returned by server)",
-            created_sample.width
-        );
-        eprintln!(
-            "  ⚠ height: {:?} (not returned by server)",
-            created_sample.height
-        );
+        // Verify a few images match byte-for-byte
+        let mut verified_count = 0;
+        for (original_name, original_data) in downloaded_images.iter().take(3) {
+            if let Some(uploaded_sample) = uploaded_samples
+                .iter()
+                .find(|s| s.image_name().map(|n| n == original_name).unwrap_or(false))
+                && let Some(uploaded_data) =
+                    uploaded_sample.download(&client, FileType::Image).await?
+            {
+                assert_eq!(
+                    original_data.len(),
+                    uploaded_data.len(),
+                    "Image {} should have same size",
+                    original_name
+                );
+                assert_eq!(
+                    original_data, &uploaded_data,
+                    "Image {} should match byte-for-byte",
+                    original_name
+                );
+                verified_count += 1;
+                eprintln!("  ✓ Verified: {}", original_name);
+            }
+        }
 
-        // Verify annotations are returned correctly
-        let annotations = &created_sample.annotations;
-        assert_eq!(annotations.len(), 1, "Should have exactly one annotation");
-
-        let annotation = &annotations[0];
-        assert_eq!(annotation.label(), Some(&"circle".to_string()));
         assert!(
-            annotation.box2d().is_some(),
-            "Bounding box should be present"
+            verified_count > 0,
+            "Should have verified at least one image"
+        );
+        eprintln!("Verified {} images match byte-for-byte", verified_count);
+
+        // Verify annotations were uploaded
+        let uploaded_annotations = client
+            .annotations(test_annotation_set_id, &[], &[], None)
+            .await?;
+
+        eprintln!("Found {} uploaded annotations", uploaded_annotations.len());
+        assert!(
+            !uploaded_annotations.is_empty(),
+            "Should have uploaded annotations"
         );
 
-        let returned_bbox = annotation.box2d().unwrap();
-        eprintln!("\nAnnotation verification:");
-        eprintln!("  ✓ label: {:?}", annotation.label());
-        eprintln!(
-            "  ✓ bbox: x={:.3}, y={:.3}, w={:.3}, h={:.3}",
-            returned_bbox.left(),
-            returned_bbox.top(),
-            returned_bbox.width(),
-            returned_bbox.height()
-        );
+        // Clean up: Delete the test dataset
+        eprintln!("Cleaning up test dataset...");
+        client.delete_dataset(test_dataset_id).await?;
+        eprintln!("  ✓ Deleted test dataset");
 
-        // Verify the bounding box coordinates match what we sent (within tolerance)
-        assert!(
-            (returned_bbox.left() - normalized_x).abs() < 0.01,
-            "bbox.x should match (sent: {:.3}, got: {:.3})",
-            normalized_x,
-            returned_bbox.left()
-        );
-        assert!(
-            (returned_bbox.top() - normalized_y).abs() < 0.01,
-            "bbox.y should match (sent: {:.3}, got: {:.3})",
-            normalized_y,
-            returned_bbox.top()
-        );
-        assert!(
-            (returned_bbox.width() - normalized_w).abs() < 0.01,
-            "bbox.w should match (sent: {:.3}, got: {:.3})",
-            normalized_w,
-            returned_bbox.width()
-        );
-        assert!(
-            (returned_bbox.height() - normalized_h).abs() < 0.01,
-            "bbox.h should match (sent: {:.3}, got: {:.3})",
-            normalized_h,
-            returned_bbox.height()
-        );
+        // Clean up downloaded files
+        std::fs::remove_dir_all(&download_dir)?;
+        eprintln!("  ✓ Cleaned up downloaded files");
 
-        // Verify the uploaded image matches what we sent (byte-for-byte)
-        eprintln!("\nImage verification:");
-        let downloaded_image = created_sample.download(&client, FileType::Image).await?;
-        assert!(
-            downloaded_image.is_some(),
-            "Should be able to download the image"
-        );
-        let downloaded_data = downloaded_image.unwrap();
-
-        assert_eq!(
-            image_data.len(),
-            downloaded_data.len(),
-            "Downloaded image should have same size as uploaded"
-        );
-        assert_eq!(
-            image_data, downloaded_data,
-            "Downloaded image should match uploaded image byte-for-byte"
-        );
-        eprintln!("  ✓ Image data matches ({} bytes)", image_data.len());
-
-        // Clean up
-        let _ = std::fs::remove_file(&test_image_path);
+        eprintln!("\n✅ Round-trip test completed successfully!");
 
         Ok(())
     }

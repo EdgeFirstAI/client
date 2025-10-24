@@ -39,6 +39,7 @@ walkdir = { workspace = true }
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 png = "0.17"
+rand = { version = "0.9", features = ["std_rng"] }
 
 [package.metadata.docs.rs]
 all-features = true

@@ -1913,6 +1913,44 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    #[pyo3(signature = (project_id, name, description=None))]
+    pub fn create_dataset<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let dataset_id = self
+            .0
+            .create_dataset(project_id.to_string().as_str(), name, description)
+            .await?;
+        Ok(dataset_id.to_string())
+    }
+
+    #[tokio_wrap::sync]
+    pub fn delete_dataset<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<(), Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self.0.delete_dataset(dataset_id.0).await?)
+    }
+
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (dataset_id, name, description=None))]
+    pub fn create_annotation_set<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id = self
+            .0
+            .create_annotation_set(dataset_id.0, name, description)
+            .await?;
+        Ok(annotation_set_id.to_string())
+    }
+
+    #[tokio_wrap::sync]
     pub fn annotation_sets<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
@@ -2764,6 +2802,21 @@ impl Sample {
         self.0.image_name = image_name;
     }
 
+    /// Sets the group for this sample (e.g., "train", "val", "test").
+    pub fn set_group(&mut self, group: Option<String>) {
+        self.0.group = group;
+    }
+
+    /// Sets the sequence name for this sample.
+    pub fn set_sequence_name(&mut self, sequence_name: Option<String>) {
+        self.0.sequence_name = sequence_name;
+    }
+
+    /// Sets the frame number for this sample.
+    pub fn set_frame_number(&mut self, frame_number: Option<u32>) {
+        self.0.frame_number = frame_number;
+    }
+
     /// Adds a file to this sample.
     pub fn add_file(&mut self, file: &SampleFile) {
         self.0.files.push(file.0.clone());
@@ -2797,6 +2850,65 @@ impl Sample {
     #[getter]
     pub fn sequence_name(&self) -> Option<String> {
         self.0.sequence_name().cloned()
+    }
+
+    #[getter]
+    pub fn sequence_uuid(&self) -> Option<String> {
+        self.0.sequence_uuid().cloned()
+    }
+
+    #[getter]
+    pub fn sequence_description(&self) -> Option<String> {
+        self.0.sequence_description().cloned()
+    }
+
+    #[getter]
+    pub fn frame_number(&self) -> Option<u32> {
+        self.0.frame_number()
+    }
+
+    #[getter]
+    pub fn uuid(&self) -> Option<String> {
+        self.0.uuid().cloned()
+    }
+
+    #[getter]
+    pub fn image_name(&self) -> Option<String> {
+        self.0.image_name().map(str::to_string)
+    }
+
+    #[getter]
+    pub fn image_url(&self) -> Option<String> {
+        self.0.image_url().map(str::to_string)
+    }
+
+    #[getter]
+    pub fn width(&self) -> Option<u32> {
+        self.0.width()
+    }
+
+    #[getter]
+    pub fn height(&self) -> Option<u32> {
+        self.0.height()
+    }
+
+    #[getter]
+    pub fn date(&self) -> Option<String> {
+        self.0.date().map(|d| d.to_rfc3339())
+    }
+
+    #[getter]
+    pub fn source(&self) -> Option<String> {
+        self.0.source().cloned()
+    }
+
+    #[getter]
+    pub fn files(&self) -> Vec<SampleFile> {
+        self.0
+            .files()
+            .iter()
+            .map(|f| SampleFile(f.clone()))
+            .collect()
     }
 
     #[getter]

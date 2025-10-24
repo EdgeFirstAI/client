@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-from edgefirst_client import Client
 from os import environ
-from tqdm import tqdm
 
+from edgefirst_client import Client
+from tqdm import tqdm
 
 coco_labels = {
     0: "person",
@@ -86,12 +86,12 @@ coco_labels = {
     76: "scissors",
     77: "teddy bear",
     78: "hair drier",
-    79: "toothbrush"
+    79: "toothbrush",
 }
 
 
 if __name__ == "__main__":
-    client = Client(token=environ.get('STUDIO_TOKEN'))
+    client = Client(token=environ.get("STUDIO_TOKEN"))
     project = client.projects("Sample Project")[0]
     dataset = client.datasets(project.id, "COCO")
     # Filter to avoid fetching the COCO People dataset.

@@ -1220,6 +1220,116 @@ class Sample:
         ...
 
     @property
+    def sequence_uuid(self) -> Optional[str]:
+        """
+        Returns the UUID of the sequence to which this sample belongs, if any.
+
+        Returns:
+            Optional[str]: The sequence UUID or None.
+        """
+        ...
+
+    @property
+    def sequence_description(self) -> Optional[str]:
+        """
+        Returns the description of the sequence to which this sample belongs, if any.
+
+        Returns:
+            Optional[str]: The sequence description or None.
+        """
+        ...
+
+    @property
+    def frame_number(self) -> Optional[int]:
+        """
+        Returns the frame number of this sample within its sequence, if any.
+
+        Returns:
+            Optional[int]: The frame number or None.
+        """
+        ...
+
+    @property
+    def uuid(self) -> Optional[str]:
+        """
+        Returns the UUID of this sample.
+
+        Returns:
+            Optional[str]: The sample UUID or None.
+        """
+        ...
+
+    @property
+    def image_name(self) -> Optional[str]:
+        """
+        Returns the image filename for this sample.
+
+        Returns:
+            Optional[str]: The image filename or None.
+        """
+        ...
+
+    @property
+    def image_url(self) -> Optional[str]:
+        """
+        Returns the URL of the image for this sample.
+
+        Returns:
+            Optional[str]: The image URL or None.
+        """
+        ...
+
+    @property
+    def width(self) -> Optional[int]:
+        """
+        Returns the width of the image in pixels.
+
+        Returns:
+            Optional[int]: The image width or None.
+        """
+        ...
+
+    @property
+    def height(self) -> Optional[int]:
+        """
+        Returns the height of the image in pixels.
+
+        Returns:
+            Optional[int]: The image height or None.
+        """
+        ...
+
+    @property
+    def date(self) -> Optional[str]:
+        """
+        Returns the timestamp when this sample was captured, in RFC3339 format.
+
+        Returns:
+            Optional[str]: The timestamp as an ISO 8601 string or None.
+        """
+        ...
+
+    @property
+    def source(self) -> Optional[str]:
+        """
+        Returns the source identifier for this sample.
+
+        Returns:
+            Optional[str]: The source identifier or None.
+        """
+        ...
+
+    @property
+    def files(self) -> List[SampleFile]:
+        """
+        Returns the list of files associated with this sample.
+
+        Returns:
+            List[SampleFile]: A list of sample file objects.
+        """
+        ...
+
+    @property
     def annotations(self) -> List[Annotation]:
         """
         Returns the list of annotations associated with this sample.
@@ -2295,6 +2405,53 @@ class Client:
 
     def remove_label(self, client: Client, label_id: int) -> None:
         """Remove a label from the dataset."""
+        ...
+
+    def create_dataset(
+        self,
+        project_id: str,
+        name: str,
+        description: Optional[str] = None
+    ) -> str:
+        """
+        Create a new dataset in the specified project.
+
+        Args:
+            project_id (str): ID of the project to create the dataset in.
+            name (str): Name of the new dataset.
+            description (Optional[str]): Optional description for the dataset. Defaults to None.
+
+        Returns:
+            str: Dataset ID of the newly created dataset.
+        """
+        ...
+
+    def delete_dataset(self, dataset_id: DatasetUID) -> None:
+        """
+        Delete a dataset by marking it as deleted.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset to delete.
+        """
+        ...
+
+    def create_annotation_set(
+        self,
+        dataset_id: DatasetUID,
+        name: str,
+        description: Optional[str] = None
+    ) -> str:
+        """
+        Create a new annotation set for the specified dataset.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset to create the annotation set in.
+            name (str): Name of the new annotation set.
+            description (Optional[str]): Optional description for the annotation set. Defaults to None.
+
+        Returns:
+            str: Annotation set ID of the newly created annotation set.
+        """
         ...
 
     def download_dataset(

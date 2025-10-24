@@ -554,12 +554,48 @@ impl Sample {
         self.sequence_name.as_ref()
     }
 
+    pub fn sequence_uuid(&self) -> Option<&String> {
+        self.sequence_uuid.as_ref()
+    }
+
+    pub fn sequence_description(&self) -> Option<&String> {
+        self.sequence_description.as_ref()
+    }
+
+    pub fn frame_number(&self) -> Option<u32> {
+        self.frame_number
+    }
+
+    pub fn uuid(&self) -> Option<&String> {
+        self.uuid.as_ref()
+    }
+
     pub fn image_name(&self) -> Option<&str> {
         self.image_name.as_deref()
     }
 
     pub fn image_url(&self) -> Option<&str> {
         self.image_url.as_deref()
+    }
+
+    pub fn width(&self) -> Option<u32> {
+        self.width
+    }
+
+    pub fn height(&self) -> Option<u32> {
+        self.height
+    }
+
+    pub fn date(&self) -> Option<DateTime<Utc>> {
+        self.date
+    }
+
+    pub fn source(&self) -> Option<&String> {
+        self.source.as_ref()
+    }
+
+    pub fn location(&self) -> Option<&Location> {
+        self.location.as_ref()
     }
 
     pub fn files(&self) -> &[SampleFile] {
@@ -668,6 +704,7 @@ pub struct ImuData {
     pub yaw: f64,
 }
 
+#[allow(dead_code)]
 pub trait TypeName {
     fn type_name() -> String;
 }
@@ -1089,6 +1126,7 @@ pub struct NewLabel {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct Group {
     pub id: u64, // Groups seem to use raw u64, not a specific ID type
     pub name: String,

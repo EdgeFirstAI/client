@@ -1,4 +1,5 @@
 maturin
+pillow
 polars
 slipcover
 tqdm

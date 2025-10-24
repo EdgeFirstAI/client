@@ -837,6 +837,7 @@ dependencies = [
  "log",
  "png 0.17.16",
  "polars",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",

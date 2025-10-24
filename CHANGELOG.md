@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Sample` accessor functions for all fields in Rust API
+  - `uuid()`, `sequence_uuid()`, `sequence_description()`, `frame_number()`
+  - `image_name()`, `image_url()`, `width()`, `height()`, `date()`, `source()`
+  - `location()`, `files()` - providing complete access to sample metadata
+- Python bindings for all new `Sample` accessor properties
+  - Complete property exposure matching Rust API
+  - Setter methods: `set_group()`, `set_sequence_name()`, `set_frame_number()` for mutable fields
+  - Updated type stubs in `edgefirst_client.pyi` with documentation
+- `Client::create_dataset()` and `Client::delete_dataset()` methods in Rust API
+  - Create new datasets with optional descriptions
+  - Delete datasets by marking them as deleted
+  - Python bindings with `description` defaulting to `None`
+- `Client::create_annotation_set()` method in Rust API
+  - Create new annotation sets for datasets with optional descriptions
+  - Python bindings with `description` defaulting to `None`
+- Comprehensive round-trip tests for dataset integrity verification
+  - `test_deer_dataset_roundtrip()` in Rust library verifies download→upload data integrity
+  - Equivalent Python test verifies byte-level image matching and annotation preservation
+  - Tests create temporary datasets and annotation sets, then clean up after completion
+  - Tests use random dataset names to prevent parallel execution conflicts
+
+### Changed
+- `test_populate_samples` now creates and cleans up temporary datasets and annotation sets
+  - Creates test dataset with random suffix to avoid conflicts
+  - Creates annotation set for the new dataset
+  - Uploads samples to new dataset instead of reusing existing dataset
+  - Automatically deletes test dataset after verification
+  - Both Rust and Python tests use this improved pattern
+- `test_deer_dataset_roundtrip` now creates and cleans up temporary datasets
+  - Creates test dataset with random suffix to avoid conflicts
+  - Creates annotation set for the new dataset
+  - Uploads subset of Deer dataset samples to new dataset
+  - Verifies byte-level image matching and annotation preservation
+  - Automatically deletes test dataset after verification
+  - Both Rust and Python tests use this improved pattern
+
+### Fixed
+- `test_labels` test now uses random label names to avoid conflicts with parallel test execution
+  - Previously tried to delete all labels which caused race conditions
+  - Now creates/verifies/deletes a uniquely named test label
+
 ## [2.3.0] - 2025-10-23
 
 ### Added

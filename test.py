@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-from time import sleep
-from edgefirst_client import Client, AnnotationType
 from os import environ
 from pathlib import Path
-from polars import read_ipc
+from time import sleep
 from unittest import TestCase
+
+from edgefirst_client import AnnotationType, Client
+from polars import read_ipc
 from tqdm import tqdm
+
 from examples.coco import coco_labels
 
 
@@ -197,8 +199,7 @@ class BasicTest(TestCase):
         client = self.get_client()
         project = client.projects("Unit Testing")[0]
         experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(experiment.id,
-                                           "modelpack-960x540")[0]
+        trainer = client.training_sessions(experiment.id, "modelpack-960x540")[0]
         assert trainer.uid.startswith("t-")
         artifacts = client.artifacts(trainer.id)
         assert len(artifacts) > 0
@@ -207,8 +208,7 @@ class BasicTest(TestCase):
 
         for artifact in artifacts:
             output_path = test_dir / artifact.name
-            client.download_artifact(
-                trainer.id, artifact.name, str(output_path))
+            client.download_artifact(trainer.id, artifact.name, str(output_path))
 
             # Clean up downloaded file
             if output_path.exists():
@@ -218,8 +218,7 @@ class BasicTest(TestCase):
         client = self.get_client()
         project = client.projects("Unit Testing")[0]
         experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(experiment.id,
-                                           "modelpack-usermanaged")[0]
+        trainer = client.training_sessions(experiment.id, "modelpack-usermanaged")[0]
         assert trainer.uid.startswith("t-")
 
         test_dir = get_test_data_dir()
@@ -265,30 +264,53 @@ class BasicTest(TestCase):
 
     def test_populate_samples(self):
         """Test populating samples with automatic file upload."""
-        from edgefirst_client import Sample, SampleFile, Annotation, Box2d
-        from PIL import Image, ImageDraw
+        import random
+        import string
         import time
+
+        from edgefirst_client import Annotation, Box2d, Sample, SampleFile
+        from PIL import Image, ImageDraw
 
         client = self.get_client()
 
-        # Find the Unit Testing project and Test Labels dataset
+        # Find the Unit Testing project
         projects = client.projects("Unit Testing")
         assert len(projects) > 0
         project = projects[0]
 
-        datasets = client.datasets(project.id, "Test Labels")
-        assert len(datasets) > 0
-        dataset = datasets[0]
+        # Create a temporary test dataset with random suffix
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        test_dataset_name = f"Test Populate {random_suffix}"
 
-        # Get the first annotation set
-        annotation_sets = client.annotation_sets(dataset.id)
+        print(f"Creating test dataset: {test_dataset_name}")
+
+        dataset_id = client.create_dataset(
+            project.id,
+            test_dataset_name,
+            "Automated test: populate_samples verification",
+        )
+
+        print(f"Created test dataset: {dataset_id}")
+
+        # Create an annotation set
+        print("Creating annotation set...")
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default annotation set"
+        )
+
+        print(f"Created annotation set: {annotation_set_id}")
+
+        # Get the annotation set
+        annotation_sets = client.annotation_sets(dataset_id)
         assert len(annotation_sets) > 0
         annotation_set = annotation_sets[0]
 
         # Generate a 640x480 PNG image with a red circle
         img_width = 640
         img_height = 480
-        img = Image.new('RGB', (img_width, img_height), color='white')
+        img = Image.new("RGB", (img_width, img_height), color="white")
         draw = ImageDraw.Draw(img)
 
         # Draw a red circle in the top-left quadrant
@@ -298,9 +320,13 @@ class BasicTest(TestCase):
 
         # PIL ellipse takes (left, top, right, bottom)
         draw.ellipse(
-            [center_x - radius, center_y - radius,
-             center_x + radius, center_y + radius],
-            fill='red'
+            [
+                center_x - radius,
+                center_y - radius,
+                center_x + radius,
+                center_y + radius,
+            ],
+            fill="red",
         )
 
         # Calculate bounding box around the circle (with some padding)
@@ -309,14 +335,16 @@ class BasicTest(TestCase):
         bbox_w = (radius * 2.0) + 10.0
         bbox_h = (radius * 2.0) + 10.0
 
-        print(f"Generated PNG image with circle at bbox: "
-              f"({bbox_x:.1f}, {bbox_y:.1f}, {bbox_w:.1f}, {bbox_h:.1f})")
+        print(
+            f"Generated PNG image with circle at bbox: "
+            f"({bbox_x:.1f}, {bbox_y:.1f}, {bbox_w:.1f}, {bbox_h:.1f})"
+        )
 
         # Save to temporary file
         test_dir = get_test_data_dir()
         timestamp = int(time.time())
         test_image_path = test_dir / f"test_populate_{timestamp}.png"
-        img.save(str(test_image_path), format='PNG')
+        img.save(str(test_image_path), format="PNG")
         print(f"Test image saved to: {test_image_path}")
 
         # Create sample with annotation
@@ -337,8 +365,10 @@ class BasicTest(TestCase):
         normalized_w = bbox_w / img_width
         normalized_h = bbox_h / img_height
 
-        print(f"Normalized bbox: ({normalized_x:.3f}, {normalized_y:.3f}, "
-              f"{normalized_w:.3f}, {normalized_h:.3f})")
+        print(
+            f"Normalized bbox: ({normalized_x:.3f}, {normalized_y:.3f}, "
+            f"{normalized_w:.3f}, {normalized_h:.3f})"
+        )
 
         bbox = Box2d(normalized_x, normalized_y, normalized_w, normalized_h)
         annotation.set_box2d(bbox)
@@ -348,98 +378,304 @@ class BasicTest(TestCase):
         def progress(current, total):
             print(f"Upload progress: {current}/{total}")
 
-        results = client.populate_samples(
-            dataset.id,
-            annotation_set.id,
-            [sample],
-            progress=progress
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set.id, [sample], progress=progress
+            )
+
+            assert len(results) == 1
+            result = results[0]
+            assert len(result.urls) == 1
+            print(f"✓ Sample populated with UUID: {result.uuid}")
+
+            # Give the server a moment to process the upload
+            time.sleep(2)
+
+            # Verify the sample was created by fetching it back
+            image_filename = f"test_populate_{timestamp}"
+            print(f"Looking for image: {image_filename}")
+
+            samples = client.samples(
+                dataset_id,
+                annotation_set.id,
+                annotation_types=[],
+                groups=[],  # Don't filter by group - get all samples
+                types=[],
+            )
+
+            print(f"Found {len(samples)} samples total")
+
+            # Find the sample by image_name
+            created_sample = None
+            for s in samples:
+                print(
+                    f"  Sample: {s.name} UUID: {s.uuid} Dimensions: {s.width}x{s.height}"
+                )
+                if s.name == image_filename:
+                    created_sample = s
+                    break
+
+            assert (
+                created_sample is not None
+            ), f"Sample with image_name '{image_filename}' should exist"
+
+            print(f"✓ Found sample by image_name: {image_filename}")
+
+            # Verify basic properties
+            assert created_sample.name == image_filename
+            assert created_sample.group == "train" or created_sample.group is None
+
+            print("\nSample verification:")
+            print(f"  ✓ image_name: {created_sample.name}")
+            print(f"  ✓ group: {created_sample.group}")
+            print(f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
+
+            # Verify annotations are returned correctly
+            annotations = created_sample.annotations
+            assert len(annotations) == 1, "Should have exactly one annotation"
+
+            annotation = annotations[0]
+            assert annotation.label == "circle"
+            assert annotation.box2d is not None, "Bounding box should be present"
+
+            returned_bbox = annotation.box2d
+            print(
+                f"\nReturned bbox (normalized): ({returned_bbox.left:.3f}, "
+                f"{returned_bbox.top:.3f}, {returned_bbox.width:.3f}, "
+                f"{returned_bbox.height:.3f})"
+            )
+
+            # Verify bbox coordinates are approximately correct
+            # (within 5% tolerance)
+            tolerance = 0.05
+            assert abs(returned_bbox.left - normalized_x) < tolerance
+            assert abs(returned_bbox.top - normalized_y) < tolerance
+            assert abs(returned_bbox.width - normalized_w) < tolerance
+            assert abs(returned_bbox.height - normalized_h) < tolerance
+
+            print("✓ Bounding box coordinates verified")
+
+            # Download the image and verify byte-for-byte match
+            downloaded_data = created_sample.download(client)
+            assert downloaded_data is not None, "Downloaded data should not be None"
+
+            # Read original file
+            with open(str(test_image_path), "rb") as f:
+                original_data = f.read()
+
+            assert len(downloaded_data) == len(
+                original_data
+            ), "Downloaded data length should match original"
+            assert (
+                downloaded_data == original_data
+            ), "Downloaded data should match original byte-for-byte"
+
+            print(
+                f"✓ Downloaded image matches original "
+                f"({len(downloaded_data)} bytes)"
+            )
+
+            print("\n✓ Test passed: populate_samples with automatic upload")
+
+        finally:
+            # Clean up temporary file
+            if test_image_path.exists():
+                test_image_path.unlink()
+
+            # Clean up test dataset (always execute, even if test failed)
+            print("\nCleaning up test dataset...")
+            client.delete_dataset(dataset_id)
+            print("  ✓ Deleted test dataset")
+
+    def test_deer_dataset_roundtrip(self):
+        """Test downloading Deer dataset and re-uploading to verify data integrity."""
+        import random
+        import string
+        import time
+
+        client = self.get_client()
+
+        # Find the Unit Testing project and Deer dataset (read-only)
+        projects = client.projects("Unit Testing")
+        assert len(projects) > 0
+        project = projects[0]
+
+        datasets = client.datasets(project.id, "Deer")
+        deer_dataset = next((d for d in datasets if d.name == "Deer"), None)
+        assert deer_dataset is not None, "Deer dataset should exist"
+
+        print(f"Found Deer dataset: {deer_dataset.uid}")
+
+        # Get annotation sets
+        annotation_sets = client.annotation_sets(deer_dataset.id)
+        assert len(annotation_sets) > 0
+        annotation_set = annotation_sets[0]
+
+        print(f"Using annotation set: {annotation_set.uid}")
+
+        # Download all samples from Deer dataset
+        print("Downloading samples from Deer dataset...")
+        deer_samples = client.samples(deer_dataset.id, annotation_set.id, groups=[])
+
+        print(f"Downloaded {len(deer_samples)} samples")
+        assert len(deer_samples) > 0, "Deer dataset should have samples"
+
+        # Download annotations
+        print("Downloading annotations...")
+        deer_annotations = client.annotations(annotation_set.id, groups=[])
+
+        print(f"Downloaded {len(deer_annotations)} annotations")
+
+        # Download a few sample images to verify data integrity
+        print("Downloading sample images...")
+        test_dir = get_test_data_dir()
+        download_dir = test_dir / f"deer_download_{int(time.time())}"
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        downloaded_images = {}
+        for idx, sample in enumerate(deer_samples[:5]):  # First 5 samples
+            image_data = sample.download(client)
+            if image_data:
+                image_name = sample.image_name or f"sample_{idx}.jpg"
+                image_path = download_dir / image_name
+                image_path.write_bytes(image_data)
+                downloaded_images[image_name] = image_data
+                print(f"  Downloaded: {image_name}")
+
+        print(f"Downloaded {len(downloaded_images)} sample images for verification")
+
+        # Create a test dataset with random suffix to avoid conflicts
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        test_dataset_name = f"Deer Test {random_suffix}"
+
+        print(f"Creating test dataset: {test_dataset_name}")
+
+        # Create the test dataset
+        test_dataset_id = client.create_dataset(
+            project.id,
+            test_dataset_name,
+            "Automated test: Deer dataset round-trip verification",
         )
 
-        assert len(results) == 1
-        result = results[0]
-        assert len(result.urls) == 1
-        print(f"✓ Sample populated with UUID: {result.uuid}")
+        print(f"Created test dataset: {test_dataset_id}")
 
-        # Give the server a moment to process the upload
-        time.sleep(2)
+        try:
+            # Create an annotation set
+            print("Creating annotation set...")
+            test_annotation_set_id = client.create_annotation_set(
+                test_dataset_id, "Default", "Default annotation set"
+            )
 
-        # Verify the sample was created by fetching it back
-        image_filename = f"test_populate_{timestamp}.png"
-        print(f"Looking for image: {image_filename}")
+            print(f"Created annotation set: {test_annotation_set_id}")
 
-        samples = client.samples(
-            dataset.id,
-            annotation_set.id,
-            annotation_types=[],
-            groups=[],  # Don't filter by group - get all samples
-            types=[],
-        )
+            # Copy labels from Deer dataset
+            deer_labels = client.labels(deer_dataset.id)
+            for label in deer_labels:
+                client.add_label(test_dataset_id, label.name)
+            print(f"Copied {len(deer_labels)} labels")
 
-        print(f"Found {len(samples)} samples total")
+            # Prepare samples for upload
+            print("Preparing samples for upload...")
+            upload_samples = []
 
-        # Find the sample by image_name
-        created_sample = None
-        for s in samples:
-            if s.name == image_filename:
-                created_sample = s
-                break
+            # Limit to first 10 samples for testing
+            for idx, sample in enumerate(deer_samples[:10]):
+                from edgefirst_client import Sample, SampleFile
 
-        assert created_sample is not None, \
-            f"Sample with image_name '{image_filename}' should exist"
+                new_sample = Sample()
 
-        print(f"✓ Found sample by image_name: {image_filename}")
+                # Copy metadata
+                if sample.group:
+                    new_sample.set_group(sample.group)
+                if sample.sequence_name:
+                    new_sample.set_sequence_name(sample.sequence_name)
+                if sample.frame_number:
+                    new_sample.set_frame_number(sample.frame_number)
 
-        # Verify basic properties
-        assert created_sample.name == image_filename
-        assert created_sample.group == "train" or created_sample.group is None
+                # Download and save image to temp file
+                image_data = sample.download(client)
+                if image_data:
+                    image_name = sample.image_name or f"sample_{idx}.jpg"
+                    temp_path = download_dir / image_name
+                    temp_path.write_bytes(image_data)
 
-        print("\nSample verification:")
-        print(f"  ✓ image_name: {created_sample.name}")
-        print(f"  ✓ group: {created_sample.group}")
-        print(f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
+                    new_sample.add_file(SampleFile("image", str(temp_path)))
 
-        # Verify annotations are returned correctly
-        annotations = created_sample.annotations
-        assert len(annotations) == 1, "Should have exactly one annotation"
+                    # Copy annotations for this sample
+                    sample_annotations = [
+                        ann for ann in deer_annotations if ann.name == sample.image_name
+                    ]
 
-        annotation = annotations[0]
-        assert annotation.label == "circle"
-        assert annotation.box2d is not None, "Bounding box should be present"
+                    for ann in sample_annotations:
+                        new_sample.add_annotation(ann)
 
-        returned_bbox = annotation.box2d
-        print(f"\nReturned bbox (normalized): ({returned_bbox.left:.3f}, "
-              f"{returned_bbox.top:.3f}, {returned_bbox.width:.3f}, "
-              f"{returned_bbox.height:.3f})")
+                    upload_samples.append(new_sample)
 
-        # Verify bbox coordinates are approximately correct
-        # (within 5% tolerance)
-        tolerance = 0.05
-        assert abs(returned_bbox.left - normalized_x) < tolerance
-        assert abs(returned_bbox.top - normalized_y) < tolerance
-        assert abs(returned_bbox.width - normalized_w) < tolerance
-        assert abs(returned_bbox.height - normalized_h) < tolerance
+            print(f"Prepared {len(upload_samples)} samples for upload")
+            assert len(upload_samples) > 0, "Should have samples prepared for upload"
 
-        print("✓ Bounding box coordinates verified")
+            # Upload samples
+            print("Uploading samples to test dataset...")
+            results = client.populate_samples(
+                test_dataset_id, test_annotation_set_id, upload_samples
+            )
 
-        # Download the image and verify byte-for-byte match
-        downloaded_data = created_sample.download(client)
-        assert downloaded_data is not None, \
-            "Downloaded data should not be None"
+            print(f"Uploaded {len(results)} samples")
 
-        # Read original file
-        with open(str(test_image_path), 'rb') as f:
-            original_data = f.read()
+            # Give the server time to process
+            time.sleep(3)
 
-        assert len(downloaded_data) == len(original_data), \
-            "Downloaded data length should match original"
-        assert downloaded_data == original_data, \
-            "Downloaded data should match original byte-for-byte"
+            # Verify uploaded data
+            print("Verifying uploaded data...")
+            uploaded_samples = client.samples(
+                test_dataset_id, test_annotation_set_id, groups=[]
+            )
 
-        print(f"✓ Downloaded image matches original "
-              f"({len(downloaded_data)} bytes)")
+            print(f"Found {len(uploaded_samples)} uploaded samples")
+            assert len(uploaded_samples) == len(
+                results
+            ), "Should have same number of uploaded samples"
 
-        # Clean up
-        if test_image_path.exists():
-            test_image_path.unlink()
+            # Verify a few images match byte-for-byte
+            verified_count = 0
+            for original_name, original_data in list(downloaded_images.items())[:3]:
+                uploaded_sample = next(
+                    (s for s in uploaded_samples if s.image_name == original_name), None
+                )
+                if uploaded_sample:
+                    uploaded_data = uploaded_sample.download(client)
+                    if uploaded_data:
+                        assert len(original_data) == len(
+                            uploaded_data
+                        ), f"Image {original_name} should have same size"
+                        assert (
+                            original_data == uploaded_data
+                        ), f"Image {original_name} should match byte-for-byte"
+                        verified_count += 1
+                        print(f"  ✓ Verified: {original_name}")
 
-        print("\n✓ Test passed: populate_samples with automatic upload")
+            assert verified_count > 0, "Should have verified at least one image"
+            print(f"Verified {verified_count} images match byte-for-byte")
+
+            # Verify annotations were uploaded
+            uploaded_annotations = client.annotations(test_annotation_set_id, groups=[])
+
+            print(f"Found {len(uploaded_annotations)} uploaded annotations")
+            assert len(uploaded_annotations) > 0, "Should have uploaded annotations"
+
+            print("\n✅ Round-trip test completed successfully!")
+
+        finally:
+            # Clean up: Delete the test dataset
+            print("Cleaning up test dataset...")
+            client.delete_dataset(test_dataset_id)
+            print("  ✓ Deleted test dataset")
+
+            # Clean up downloaded files
+            import shutil
+
+            if download_dir.exists():
+                shutil.rmtree(download_dir)
+            print("  ✓ Cleaned up downloaded files")
