@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2025-10-23
+
 ### Added
 - `Client::populate_samples()` method for importing samples with annotations
   - Automatically uploads local files to S3 using presigned URLs
@@ -62,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Annotation.object_id` now serializes as `"object_reference"`
   - `Annotation.label` now serializes as `"label_name"`
   - Fields can still be deserialized from original names for backward compatibility
+- Added GLIBC verification steps to CI/CD workflows to ensure manylinux2014 compatibility
+  - Verifies CLI binaries require max GLIBC_2.17 after cargo zigbuild
+  - Verifies Python extension modules (.so files) in wheels meet GLIBC requirements
+  - Verifies bundled CLI binaries before packaging into Python wheels
+  - Build fails with clear error if any binary violates manylinux2014 requirements
 - Updated dependencies
 
 ### Added
