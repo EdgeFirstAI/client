@@ -992,7 +992,7 @@ impl Client {
     ///
     /// // Populate with annotation_set_id (REQUIRED for annotations)
     /// let result = client
-    ///     .populate_samples(dataset_id, Some(annotation_set_id), vec![sample])
+    ///     .populate_samples(dataset_id, Some(annotation_set_id), vec![sample], None)
     ///     .await?;
     /// # Ok(())
     /// # }
@@ -1002,9 +1002,12 @@ impl Client {
         dataset_id: DatasetID,
         annotation_set_id: Option<AnnotationSetID>,
         samples: Vec<Sample>,
+        progress: Option<Sender<Progress>>,
     ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
         use crate::api::SamplesPopulateParams;
         use std::path::Path;
+
+        let total = samples.len();
 
         // Track which files need to be uploaded: (sample_uuid, file_type, local_path,
         // basename)
@@ -1036,10 +1039,11 @@ impl Client {
                                     // For image files, try to extract dimensions if not already set
                                     if file.file_type() == "image"
                                         && (sample.width.is_none() || sample.height.is_none())
-                                        && let Ok(size) = imagesize::size(path) {
-                                            sample.width = Some(size.width as u32);
-                                            sample.height = Some(size.height as u32);
-                                        }
+                                        && let Ok(size) = imagesize::size(path)
+                                    {
+                                        sample.width = Some(size.width as u32);
+                                        sample.height = Some(size.height as u32);
+                                    }
 
                                     // Store the full path for later upload
                                     files_to_upload.push((
@@ -1093,22 +1097,64 @@ impl Client {
                 upload_map.insert((uuid, basename), path);
             }
 
-            // Upload each file to its presigned URL
-            for result in &results {
-                for url_info in &result.urls {
-                    if let Some(local_path) =
-                        upload_map.get(&(result.uuid.clone(), url_info.filename.clone()))
-                    {
-                        // Upload the file
-                        upload_file_to_presigned_url(
-                            self.http.clone(),
-                            &url_info.url,
-                            local_path.clone(),
-                        )
-                        .await?;
-                    }
-                }
-            }
+            let current = Arc::new(AtomicUsize::new(0));
+            let sem = Arc::new(Semaphore::new(MAX_TASKS));
+
+            // Upload each sample's files in parallel
+            let upload_tasks = results
+                .iter()
+                .map(|result| {
+                    let sem = sem.clone();
+                    let http = self.http.clone();
+                    let current = current.clone();
+                    let progress = progress.clone();
+                    let result_uuid = result.uuid.clone();
+                    let urls = result.urls.clone();
+                    let upload_map = upload_map.clone();
+
+                    tokio::spawn(async move {
+                        let _permit = sem.acquire().await.unwrap();
+
+                        // Upload all files for this sample
+                        for url_info in &urls {
+                            if let Some(local_path) =
+                                upload_map.get(&(result_uuid.clone(), url_info.filename.clone()))
+                            {
+                                // Upload the file
+                                upload_file_to_presigned_url(
+                                    http.clone(),
+                                    &url_info.url,
+                                    local_path.clone(),
+                                )
+                                .await?;
+                            }
+                        }
+
+                        // Update progress after uploading all files for this sample
+                        if let Some(progress) = &progress {
+                            let current = current.fetch_add(1, Ordering::SeqCst);
+                            progress
+                                .send(Progress {
+                                    current: current + 1,
+                                    total,
+                                })
+                                .await
+                                .unwrap();
+                        }
+
+                        Ok::<(), Error>(())
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            join_all(upload_tasks)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        if let Some(progress) = progress {
+            drop(progress);
         }
 
         Ok(results)

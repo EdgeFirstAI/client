@@ -2106,6 +2106,90 @@ impl Client {
         Ok(samples.into_iter().map(Sample).collect::<Vec<_>>())
     }
 
+    /// Populate samples into a dataset with automatic file uploads.
+    ///
+    /// This method creates new samples in the specified dataset and
+    /// automatically uploads their associated files (images, LiDAR, etc.)
+    /// to S3 using presigned URLs.
+    ///
+    /// The server will auto-generate UUIDs and extract image dimensions for
+    /// samples that don't have them specified.
+    ///
+    /// Args:
+    ///     dataset_id: ID of the dataset to populate
+    ///     annotation_set_id: ID of the annotation set for sample annotations
+    ///     samples: List of Sample objects to create (with files and
+    /// annotations)     progress: Optional callback function(current,
+    /// total) for upload progress
+    ///
+    /// Returns:
+    ///     List of SamplesPopulateResult objects with UUIDs and presigned URLs
+    ///
+    /// Example:
+    ///     ```python
+    ///     from edgefirst_client import Client, Sample, SampleFile, Annotation,
+    /// Box2d
+    ///
+    ///     client = Client()
+    ///     sample = Sample()
+    ///     sample.set_image_name("test.png")
+    ///     sample.add_file(SampleFile("image", "path/to/test.png"))
+    ///
+    ///     annotation = Annotation()
+    ///     annotation.set_label("car")
+    ///     annotation.set_box2d(Box2d(10.0, 20.0, 100.0, 50.0))
+    ///     sample.add_annotation(annotation)
+    ///
+    ///     results = client.populate_samples(
+    ///         dataset_id,
+    ///         annotation_set_id,
+    ///         [sample],
+    ///         lambda curr, total: print(f"{curr}/{total}")
+    ///     )
+    ///     ```
+    #[pyo3(signature = (dataset_id, annotation_set_id, samples, progress = None))]
+    pub fn populate_samples<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        annotation_set_id: Bound<'py, PyAny>,
+        samples: Vec<Py<Sample>>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Vec<SamplesPopulateResult>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+
+        // Convert Python Sample objects to Rust Sample objects
+        let samples: Vec<edgefirst_client::Sample> =
+            Python::with_gil(|py| samples.iter().map(|s| s.borrow(py).0.clone()).collect());
+
+        let results = match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.populate_samples_sync(dataset_id, annotation_set_id, samples, Some(tx))
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::with_gil(|py| {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                    });
+                }
+
+                task.join().unwrap()
+            }
+            None => self.populate_samples_sync(dataset_id, annotation_set_id, samples, None),
+        }?;
+
+        Ok(results
+            .into_iter()
+            .map(SamplesPopulateResult)
+            .collect::<Vec<_>>())
+    }
+
     #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), progress = None))]
     pub fn download_dataset<'py>(
         &self,
@@ -2444,6 +2528,19 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn populate_samples_sync<'py>(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: AnnotationSetID,
+        samples: Vec<edgefirst_client::Sample>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<Vec<edgefirst_client::SamplesPopulateResult>, edgefirst_client::Error> {
+        self.0
+            .populate_samples(dataset_id.0, Some(annotation_set_id.0), samples, progress)
+            .await
+    }
+
+    #[tokio_wrap::sync]
     fn download_dataset_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -2485,10 +2582,121 @@ impl Client {
 }
 
 #[pyclass(module = "edgefirst_client")]
+pub struct SampleFile(edgefirst_client::SampleFile);
+
+#[pymethods]
+impl SampleFile {
+    /// Creates a new sample file with type and filename for upload.
+    ///
+    /// Args:
+    ///     file_type: Type of the file (e.g., "image", "lidar", "depth")
+    ///     filename: Path to the file to upload
+    #[new]
+    pub fn new(file_type: String, filename: String) -> Self {
+        SampleFile(edgefirst_client::SampleFile::with_filename(
+            file_type, filename,
+        ))
+    }
+
+    #[getter]
+    pub fn file_type(&self) -> &str {
+        self.0.file_type()
+    }
+
+    #[getter]
+    pub fn filename(&self) -> Option<String> {
+        self.0.filename().map(str::to_string)
+    }
+
+    #[getter]
+    pub fn url(&self) -> Option<String> {
+        self.0.url().map(str::to_string)
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+pub struct PresignedUrl(edgefirst_client::PresignedUrl);
+
+#[pymethods]
+impl PresignedUrl {
+    #[getter]
+    pub fn filename(&self) -> &str {
+        &self.0.filename
+    }
+
+    #[getter]
+    pub fn key(&self) -> &str {
+        &self.0.key
+    }
+
+    #[getter]
+    pub fn url(&self) -> &str {
+        &self.0.url
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+pub struct SamplesPopulateResult(edgefirst_client::SamplesPopulateResult);
+
+#[pymethods]
+impl SamplesPopulateResult {
+    #[getter]
+    pub fn uuid(&self) -> &str {
+        &self.0.uuid
+    }
+
+    #[getter]
+    pub fn urls(&self) -> Vec<PresignedUrl> {
+        self.0
+            .urls
+            .iter()
+            .map(|u| {
+                PresignedUrl(edgefirst_client::PresignedUrl {
+                    filename: u.filename.clone(),
+                    key: u.key.clone(),
+                    url: u.url.clone(),
+                })
+            })
+            .collect()
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
 pub struct Annotation(edgefirst_client::Annotation);
 
 #[pymethods]
 impl Annotation {
+    /// Creates a new empty annotation.
+    #[new]
+    pub fn new() -> Self {
+        Annotation(edgefirst_client::Annotation::new())
+    }
+
+    /// Sets the label for this annotation.
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.0.set_label(label);
+    }
+
+    /// Sets the object ID for this annotation.
+    pub fn set_object_id(&mut self, object_id: Option<String>) {
+        self.0.set_object_id(object_id);
+    }
+
+    /// Sets the 2D bounding box for this annotation.
+    pub fn set_box2d(&mut self, box2d: Option<&Box2d>) {
+        self.0.set_box2d(box2d.map(|b| b.0.clone()));
+    }
+
+    /// Sets the 3D bounding box for this annotation.
+    pub fn set_box3d(&mut self, box3d: Option<&Box3d>) {
+        self.0.set_box3d(box3d.map(|b| b.0.clone()));
+    }
+
+    /// Sets the mask for this annotation.
+    pub fn set_mask(&mut self, mask: Option<&Mask>) {
+        self.0.set_mask(mask.map(|m| m.0.clone()));
+    }
+
     #[getter]
     pub fn sample_id(&self) -> Option<SampleID> {
         self.0.sample_id().map(SampleID)
@@ -2545,18 +2753,39 @@ pub struct Sample(edgefirst_client::Sample);
 
 #[pymethods]
 impl Sample {
-    #[getter]
-    pub fn id(&self) -> SampleID {
-        SampleID(self.0.id())
+    /// Creates a new empty sample.
+    #[new]
+    pub fn new() -> Self {
+        Sample(edgefirst_client::Sample::new())
+    }
+
+    /// Sets the image filename for this sample.
+    pub fn set_image_name(&mut self, image_name: Option<String>) {
+        self.0.image_name = image_name;
+    }
+
+    /// Adds a file to this sample.
+    pub fn add_file(&mut self, file: &SampleFile) {
+        self.0.files.push(file.0.clone());
+    }
+
+    /// Adds an annotation to this sample.
+    pub fn add_annotation(&mut self, annotation: &Annotation) {
+        self.0.annotations.push(annotation.0.clone());
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
+    pub fn id(&self) -> Option<SampleID> {
+        self.0.id().map(SampleID)
+    }
+
+    #[getter]
+    pub fn uid(&self) -> Option<String> {
         self.0.uid()
     }
 
     #[getter]
-    pub fn name(&self) -> String {
+    pub fn name(&self) -> Option<String> {
         self.0.name()
     }
 
@@ -2639,8 +2868,11 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Box3d>()?;
     m.add_class::<Mask>()?;
     m.add_class::<Sample>()?;
+    m.add_class::<SampleFile>()?;
     m.add_class::<FileType>()?;
     m.add_class::<Annotation>()?;
+    m.add_class::<PresignedUrl>()?;
+    m.add_class::<SamplesPopulateResult>()?;
     m.add_class::<DatasetParams>()?;
     m.add_class::<Task>()?;
     m.add_class::<TaskInfo>()?;

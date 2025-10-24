@@ -1415,3 +1415,374 @@ fn test_validation_session_details() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+// ============================================================================
+// Upload Dataset Tests
+// ============================================================================
+
+/// Helper function to get "Test Labels" dataset for write operations
+fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Error>> {
+    // Get Unit Testing project
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("projects").arg("--name").arg("Unit Testing");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+    let project_id = output_str
+        .lines()
+        .next()
+        .and_then(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .map(|s| s.trim().to_string())
+        })
+        .expect("Could not find Unit Testing project");
+
+    // Get datasets and find "Test Labels" dataset
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("datasets").arg(&project_id);
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    // Find the Test Labels dataset
+    let test_labels_dataset = output_str
+        .lines()
+        .find(|line| line.contains("Test Labels"))
+        .and_then(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .map(|s| s.trim().to_string())
+        })
+        .expect("Could not find Test Labels dataset");
+
+    println!("Found Test Labels dataset: {}", test_labels_dataset);
+
+    // Get annotation sets for the dataset
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("dataset")
+        .arg(&test_labels_dataset)
+        .arg("--annotation-sets");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    println!("Annotation sets output:\n{}", output_str);
+
+    // Extract first annotation set ID (format: "[as-XXXX] name")
+    // Skip the dataset info line and find annotation set lines
+    let annotation_set_id = output_str
+        .lines()
+        .skip_while(|line| !line.contains("Annotation Sets:"))
+        .skip(1) // Skip the "Annotation Sets:" header
+        .find(|line| line.trim().starts_with('[') && line.contains("as-"))
+        .and_then(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .map(|s| s.trim().to_string())
+        })
+        .expect("Could not find annotation set for Test Labels dataset");
+
+    println!("Found annotation set: {}", annotation_set_id);
+
+    Ok((test_labels_dataset, annotation_set_id))
+}
+
+/// Helper to get path to test data
+fn get_deer_test_data_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target")
+        .join("testdata")
+        .join("deer-test")
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset for write operations
+    let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
+
+    // Get test data paths
+    let test_data_dir = get_deer_test_data_path();
+    let annotations_path = test_data_dir.join("deer-stage.arrow");
+    let images_path = test_data_dir.join("deer");
+
+    // Verify test data exists
+    if !annotations_path.exists() {
+        eprintln!("⚠️  Test data not found: {}", annotations_path.display());
+        eprintln!("    Skipping test - run download tests first to populate test data");
+        return Ok(());
+    }
+
+    // Run upload-dataset with all parameters (full mode)
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--annotation-set-id")
+        .arg(&annotation_set_id)
+        .arg("--images")
+        .arg(&images_path);
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    println!("Upload output:\n{}", output_str);
+
+    // Verify success message or samples message
+    assert!(
+        output_str.contains("Successfully uploaded") || output_str.contains("samples"),
+        "Expected success or samples message"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
+
+    // Get test data paths
+    let test_data_dir = get_deer_test_data_path();
+    // Use deer-stage.arrow which matches the downloaded images better
+    let annotations_path = test_data_dir.join("deer-stage.arrow");
+
+    // Verify test data exists
+    if !annotations_path.exists() {
+        eprintln!("⚠️  Test data not found");
+        eprintln!("    Skipping test - run download tests first to populate test data");
+        return Ok(());
+    }
+
+    // Test auto-discovery: For deer-stage.arrow, try to find folder/zip
+    // Since we have deer/ (not deer-stage/), auto-discovery should fail gracefully
+    // Run upload-dataset WITHOUT --images parameter
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--annotation-set-id")
+        .arg(&annotation_set_id);
+
+    let result = cmd.output()?;
+    let stderr_str = String::from_utf8(result.stderr)?;
+
+    println!("Upload stderr:\n{}", stderr_str);
+
+    // Should fail with message about not finding images (deer-stage/ doesn't exist)
+    assert!(
+        !result.status.success(),
+        "Auto-discovery should fail when deer-stage/ folder doesn't exist"
+    );
+    assert!(
+        stderr_str.contains("Could not find images"),
+        "Expected error about missing images directory"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_images_only() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
+
+    // Get test data paths
+    let test_data_dir = get_deer_test_data_path();
+    let images_path = test_data_dir.join("deer");
+
+    // Verify test data exists
+    if !images_path.exists() {
+        eprintln!("⚠️  Test data not found: {}", images_path.display());
+        eprintln!("    Skipping test - run download tests first to populate test data");
+        return Ok(());
+    }
+
+    // Run upload-dataset in images-only mode (no annotations)
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--images")
+        .arg(&images_path);
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    println!("Upload output:\n{}", output_str);
+
+    // Verify success message or samples message
+    assert!(
+        output_str.contains("Successfully uploaded") || output_str.contains("samples"),
+        "Expected success or samples message"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_warning_no_annotation_set_id() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
+
+    // Get test data paths
+    let test_data_dir = get_deer_test_data_path();
+    let annotations_path = test_data_dir.join("deer-stage.arrow");
+    let images_path = test_data_dir.join("deer");
+
+    // Verify test data exists
+    if !annotations_path.exists() {
+        eprintln!("⚠️  Test data not found: {}", annotations_path.display());
+        eprintln!("    Skipping test - run download tests first to populate test data");
+        return Ok(());
+    }
+
+    // Run upload-dataset with annotations but NO annotation_set_id (should warn)
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--images")
+        .arg(&images_path);
+
+    let result = cmd.output()?;
+    let stdout_str = String::from_utf8(result.stdout)?;
+    let stderr_str = String::from_utf8(result.stderr)?;
+
+    println!("Upload stdout:\n{}", stdout_str);
+    println!("Upload stderr:\n{}", stderr_str);
+
+    // Verify warning message is present in stderr
+    assert!(
+        stderr_str.contains("⚠️") || stderr_str.contains("Warning"),
+        "Expected warning message about missing annotation_set_id in stderr"
+    );
+    assert!(
+        stderr_str.contains("annotation-set-id"),
+        "Expected warning to mention annotation-set-id parameter"
+    );
+
+    // Should still succeed (uploading images only)
+    assert!(
+        result.status.success(),
+        "Command should succeed when uploading images only"
+    );
+    assert!(
+        stdout_str.contains("Successfully uploaded") || stdout_str.contains("samples"),
+        "Expected success or samples message for images"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_batching() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
+
+    // Get test data paths (Deer dataset has 1646 images, which will trigger
+    // batching)
+    let test_data_dir = get_deer_test_data_path();
+    let annotations_path = test_data_dir.join("deer-stage.arrow");
+    let images_path = test_data_dir.join("deer");
+
+    // Verify test data exists
+    if !annotations_path.exists() {
+        eprintln!("⚠️  Test data not found: {}", annotations_path.display());
+        eprintln!("    Skipping test - run download tests first to populate test data");
+        return Ok(());
+    }
+
+    // Run upload-dataset with full dataset (should trigger batching at 500 samples)
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--annotation-set-id")
+        .arg(&annotation_set_id)
+        .arg("--images")
+        .arg(&images_path);
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    println!("Upload output:\n{}", output_str);
+
+    // With 1646 samples, should see batching messages if uploading new data
+    // Expected: "Uploading batch 1/4", "Uploading batch 2/4", etc.
+    // Note: May not see batching if samples already exist
+
+    // Verify success
+    assert!(
+        output_str.contains("Successfully uploaded") || output_str.contains("samples"),
+        "Expected success or samples message"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_missing_parameters() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
+
+    // Try to run upload-dataset with NEITHER annotations NOR images (should fail)
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset").arg(&dataset_id);
+
+    let result = cmd.output()?;
+    let output_str = String::from_utf8(result.stderr)?;
+
+    println!("Error output:\n{}", output_str);
+
+    // Should fail with error about missing parameters
+    assert!(
+        !result.status.success(),
+        "Command should fail when both annotations and images are missing"
+    );
+    assert!(
+        output_str.contains("annotations")
+            || output_str.contains("images")
+            || output_str.contains("Must provide"),
+        "Error message should mention missing parameters"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_upload_dataset_invalid_path() -> Result<(), Box<dyn std::error::Error>> {
+    // Get Test Labels dataset
+    let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
+
+    // Try to upload with non-existent path
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("upload-dataset")
+        .arg(&dataset_id)
+        .arg("--images")
+        .arg("/nonexistent/path/to/images");
+
+    let result = cmd.output()?;
+
+    // Should fail
+    assert!(
+        !result.status.success(),
+        "Command should fail with invalid path"
+    );
+
+    Ok(())
+}

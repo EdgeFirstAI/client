@@ -137,6 +137,37 @@ enum Command {
         /// Output File Path
         output: PathBuf,
     },
+    /// Upload samples to a dataset from images and/or Arrow annotations file.
+    /// Supports flexible workflows: images-only, annotations-only, or both.
+    /// Arrow file must follow EdgeFirst Dataset Format
+    /// (https://doc.edgefirst.ai/latest/datasets/format/).
+    ///
+    /// Image discovery (if --images not provided):
+    /// - Looks for folder named after Arrow file (e.g., "data/" for
+    ///   "data.arrow")
+    /// - Or folder named "dataset/"
+    /// - Or ZIP file with same basename (e.g., "data.zip" for "data.arrow")
+    /// - Or "dataset.zip"
+    UploadDataset {
+        /// Dataset ID to upload samples to
+        dataset_id: String,
+
+        /// Path to Arrow file with annotations (EdgeFirst Dataset Format).
+        /// If omitted, only images will be uploaded.
+        #[clap(long)]
+        annotations: Option<PathBuf>,
+
+        /// Path to folder or ZIP containing images.
+        /// If omitted, auto-discovers based on Arrow filename or "dataset"
+        /// convention.
+        #[clap(long)]
+        images: Option<PathBuf>,
+
+        /// Annotation Set ID for the annotations.
+        /// Required if Arrow file contains annotations.
+        #[clap(long)]
+        annotation_set_id: Option<String>,
+    },
     /// List training experiments for the provided project ID (optional).  The
     /// experiments are a method of grouping training sessions together.
     Experiments {
@@ -560,6 +591,493 @@ async fn main() -> Result<(), Error> {
                         "Unsupported output format: {:?}",
                         format
                     )));
+                }
+            }
+        }
+        Command::UploadDataset {
+            dataset_id,
+            annotation_set_id,
+            annotations,
+            images,
+        } => {
+            #[cfg(not(feature = "polars"))]
+            {
+                return Err(Error::FeatureNotEnabled("polars".to_owned()));
+            }
+
+            #[cfg(feature = "polars")]
+            {
+                use polars::prelude::*;
+                use std::{collections::HashMap, path::Path};
+
+                // Validate inputs
+                if annotations.is_none() && images.is_none() {
+                    return Err(Error::InvalidParameters(
+                        "Must provide at least one of --annotations or --images".to_owned(),
+                    ));
+                }
+
+                // Warning: annotations exist but no annotation_set_id
+                if annotations.is_some() && annotation_set_id.is_none() {
+                    eprintln!(
+                        "⚠️  Warning: Arrow file provided but no --annotation-set-id specified."
+                    );
+                    eprintln!("   Annotations in the Arrow file will NOT be uploaded.");
+                    eprintln!("   Only images will be imported.");
+                }
+
+                // Warning: annotation_set_id provided but no annotations
+                if annotation_set_id.is_some() && annotations.is_none() {
+                    eprintln!(
+                        "⚠️  Warning: --annotation-set-id provided but no --annotations file."
+                    );
+                    eprintln!("   No annotations will be read or uploaded.");
+                    eprintln!("   Only images will be imported.");
+                }
+
+                // Determine images path
+                let images_path = if let Some(ref img_path) = images {
+                    // Explicit images path provided
+                    img_path.clone()
+                } else if let Some(ref arrow_path) = annotations {
+                    // Auto-discover based on arrow filename
+                    let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
+                    let arrow_stem = arrow_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("dataset");
+
+                    // Try: <arrow_stem>/ folder
+                    let folder = arrow_dir.join(arrow_stem);
+                    if folder.exists() && folder.is_dir() {
+                        folder
+                    } else {
+                        // Try: dataset/ folder
+                        let dataset_folder = arrow_dir.join("dataset");
+                        if dataset_folder.exists() && dataset_folder.is_dir() {
+                            dataset_folder
+                        } else {
+                            // Try: <arrow_stem>.zip
+                            let zip_file = arrow_dir.join(format!("{}.zip", arrow_stem));
+                            if zip_file.exists() {
+                                zip_file
+                            } else {
+                                // Try: dataset.zip
+                                let dataset_zip = arrow_dir.join("dataset.zip");
+                                if dataset_zip.exists() {
+                                    dataset_zip
+                                } else {
+                                    return Err(Error::InvalidParameters(format!(
+                                        "Could not find images. Tried:\n  - {}/\n  - {}/\n  - {}\n  - {}\nPlease specify --images explicitly.",
+                                        folder.display(),
+                                        dataset_folder.display(),
+                                        zip_file.display(),
+                                        dataset_zip.display()
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No annotations, images must be provided
+                    return Err(Error::InvalidParameters(
+                        "When --annotations is not provided, --images must be specified".to_owned(),
+                    ));
+                };
+
+                if !images_path.exists() {
+                    return Err(Error::InvalidParameters(format!(
+                        "Images path does not exist: {}",
+                        images_path.display()
+                    )));
+                }
+
+                // Parse annotations from Arrow if provided
+                let mut samples_map: HashMap<
+                    String,
+                    (Option<String>, Vec<edgefirst_client::Annotation>),
+                > = HashMap::new();
+                let should_upload_annotations =
+                    annotations.is_some() && annotation_set_id.is_some();
+
+                if let Some(ref arrow_path) = annotations {
+                    // Read Arrow file
+                    let mut file = File::open(arrow_path)?;
+                    let df = IpcReader::new(&mut file).finish().map_err(|e| {
+                        Error::InvalidParameters(format!("Failed to read Arrow file: {}", e))
+                    })?;
+
+                    // Parse DataFrame into samples
+                    // Schema: one row per annotation (or one row for sample without annotations)
+                    // Columns: name, frame, object_id, label, label_index, group, mask, box2d,
+                    // box3d
+                    for idx in 0..df.height() {
+                        // Get name (required)
+                        let name = df
+                            .column("name")
+                            .map_err(|e| {
+                                Error::InvalidParameters(format!("Missing 'name' column: {}", e))
+                            })?
+                            .str()
+                            .map_err(|e| {
+                                Error::InvalidParameters(format!(
+                                    "Invalid 'name' column type: {}",
+                                    e
+                                ))
+                            })?
+                            .get(idx)
+                            .ok_or_else(|| {
+                                Error::InvalidParameters("Missing name value".to_owned())
+                            })?
+                            .to_string();
+
+                        // Get group (optional, categorical column)
+                        let sample_group = df
+                            .column("group")
+                            .ok()
+                            .and_then(|c| c.str().ok())
+                            .and_then(|s| s.get(idx))
+                            .map(|s| s.to_string());
+
+                        // Get or create sample entry (group is stored with sample)
+                        let entry = samples_map
+                            .entry(name.clone())
+                            .or_insert((sample_group, Vec::new()));
+
+                        // Only parse annotations if we're going to upload them
+                        if should_upload_annotations {
+                            // Check if this row has any annotations (box2d, box3d, or mask)
+                            let mut has_annotation = false;
+                            let mut geometry_count = 0; // Track number of geometries in this row
+                            let mut annotation = edgefirst_client::Annotation::new();
+
+                            // Get label (optional, categorical column)
+                            if let Some(label) = df
+                                .column("label")
+                                .ok()
+                                .and_then(|c| c.str().ok())
+                                .and_then(|s| s.get(idx))
+                                .map(|s| s.to_string())
+                                && !label.is_empty()
+                            {
+                                annotation.set_label(Some(label));
+                                has_annotation = true;
+                            }
+
+                            // Get object_id (optional) - we'll check later if we need to generate
+                            // one
+                            let object_id = df
+                                .column("object_id")
+                                .ok()
+                                .and_then(|c| c.str().ok())
+                                .and_then(|s| s.get(idx))
+                                .and_then(|s| {
+                                    if s.is_empty() {
+                                        None
+                                    } else {
+                                        Some(s.to_string())
+                                    }
+                                });
+
+                            if let Some(ref obj_id) = object_id {
+                                annotation.set_object_id(Some(obj_id.clone()));
+                            }
+
+                            // Get box2d (optional, Array<Float32, 4> format: [cx, cy, width,
+                            // height])
+                            if let Ok(box2d_col) = df.column("box2d")
+                                && let Ok(array_chunked) = box2d_col.array()
+                                && let Some(array_series) = array_chunked.get_as_series(idx)
+                                && let Ok(values) = array_series.f32()
+                            {
+                                let coords: Vec<f32> = values.into_iter().flatten().collect();
+                                if coords.len() >= 4 {
+                                    // Convert from [cx, cy, w, h] to [x, y, w, h]
+                                    let cx = coords[0];
+                                    let cy = coords[1];
+                                    let w = coords[2];
+                                    let h = coords[3];
+                                    let x = cx - w / 2.0;
+                                    let y = cy - h / 2.0;
+                                    let bbox = edgefirst_client::Box2d::new(x, y, w, h);
+                                    annotation.set_box2d(Some(bbox));
+                                    has_annotation = true;
+                                    geometry_count += 1;
+                                }
+                            }
+
+                            // Get box3d (optional, Array<Float32, 6> format: [cx, cy, cz, w, h, l])
+                            if let Ok(box3d_col) = df.column("box3d")
+                                && let Ok(array_chunked) = box3d_col.array()
+                                && let Some(array_series) = array_chunked.get_as_series(idx)
+                                && let Ok(values) = array_series.f32()
+                            {
+                                let coords: Vec<f32> = values.into_iter().flatten().collect();
+                                if coords.len() >= 6 {
+                                    // Box3d::new(cx, cy, cz, width, height, length)
+                                    let box3d = edgefirst_client::Box3d::new(
+                                        coords[0], coords[1], coords[2], coords[3], coords[4],
+                                        coords[5],
+                                    );
+                                    annotation.set_box3d(Some(box3d));
+                                    has_annotation = true;
+                                    geometry_count += 1;
+                                }
+                            }
+
+                            // Get mask (optional, List<Float32> format: flat array of x,y pairs)
+                            if let Ok(mask_col) = df.column("mask")
+                                && let Ok(list_chunked) = mask_col.list()
+                                && let Some(mask_series) = list_chunked.get_as_series(idx)
+                                && let Ok(values) = mask_series.f32()
+                            {
+                                let coords: Vec<f32> = values.into_iter().flatten().collect();
+                                if !coords.is_empty() && coords.len().is_multiple_of(2) {
+                                    // Convert flat array to Vec<Vec<(f32, f32)>>
+                                    // Split on NaN to separate polygons
+                                    let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
+                                    let mut current_polygon: Vec<(f32, f32)> = Vec::new();
+
+                                    let mut i = 0;
+                                    while i < coords.len() {
+                                        let x = coords[i];
+                                        let y = coords[i + 1];
+
+                                        if x.is_nan() || y.is_nan() {
+                                            // End current polygon
+                                            if !current_polygon.is_empty() {
+                                                polygons.push(current_polygon.clone());
+                                                current_polygon.clear();
+                                            }
+                                        } else {
+                                            current_polygon.push((x, y));
+                                        }
+                                        i += 2;
+                                    }
+
+                                    // Add final polygon
+                                    if !current_polygon.is_empty() {
+                                        polygons.push(current_polygon);
+                                    }
+
+                                    if !polygons.is_empty() {
+                                        let mask = edgefirst_client::Mask::new(polygons);
+                                        annotation.set_mask(Some(mask));
+                                        has_annotation = true;
+                                        geometry_count += 1;
+                                    }
+                                }
+                            }
+
+                            // If multiple geometries on same row and no object_id, generate UUID
+                            // This ensures all geometries belong to the same object on the server
+                            if geometry_count > 1 && object_id.is_none() {
+                                let generated_uuid = uuid::Uuid::new_v4().to_string();
+                                annotation.set_object_id(Some(generated_uuid));
+                            }
+
+                            // Only add annotation if it has at least one geometry or label
+                            // (samples without annotations are represented by name/group only - no
+                            // annotation added)
+                            if has_annotation {
+                                entry.1.push(annotation);
+                            }
+                        }
+                    }
+                }
+
+                // Find image files and create samples
+                let mut samples = Vec::new();
+
+                // If we have Arrow data, use those sample names
+                if !samples_map.is_empty() {
+                    for (image_name, (sample_group, annotations)) in samples_map {
+                        // Find matching image file
+                        let image_path = if images_path.is_dir() {
+                            // Search directory for matching file
+                            let entries = std::fs::read_dir(&images_path)?;
+                            let mut found_path = None;
+
+                            for entry in entries {
+                                let entry = entry?;
+                                let path = entry.path();
+                                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                                    // Match base name (without extension)
+                                    if file_name.starts_with(&image_name)
+                                        && (file_name == image_name
+                                            || file_name
+                                                .strip_prefix(&image_name)
+                                                .map(|s| s.starts_with('.'))
+                                                .unwrap_or(false))
+                                    {
+                                        found_path = Some(path);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            found_path.ok_or_else(|| {
+                                Error::InvalidParameters(format!(
+                                    "Image file not found for sample: {}",
+                                    image_name
+                                ))
+                            })?
+                        } else {
+                            return Err(Error::InvalidParameters(
+                                "ZIP file support not yet implemented".to_owned(),
+                            ));
+                        };
+
+                        let image_file = edgefirst_client::SampleFile::with_filename(
+                            "image".to_string(),
+                            image_path.to_str().unwrap().to_string(),
+                        );
+
+                        let sample = edgefirst_client::Sample {
+                            image_name: Some(image_name.clone()),
+                            group: sample_group,
+                            files: vec![image_file],
+                            annotations,
+                            ..Default::default()
+                        };
+
+                        samples.push(sample);
+                    }
+                } else {
+                    // No Arrow file, upload all images in the directory
+                    if images_path.is_dir() {
+                        let entries = std::fs::read_dir(&images_path)?;
+
+                        for entry in entries {
+                            let entry = entry?;
+                            let path = entry.path();
+
+                            // Skip directories and non-image files
+                            if !path.is_file() {
+                                continue;
+                            }
+
+                            // Check if it's likely an image file
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                let ext_lower = ext.to_lowercase();
+                                if !matches!(
+                                    ext_lower.as_str(),
+                                    "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "tif" | "webp"
+                                ) {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+
+                            let file_name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .ok_or_else(|| {
+                                    Error::InvalidParameters(format!(
+                                        "Invalid filename: {}",
+                                        path.display()
+                                    ))
+                                })?
+                                .to_string();
+
+                            let image_file = edgefirst_client::SampleFile::with_filename(
+                                "image".to_string(),
+                                path.to_str().unwrap().to_string(),
+                            );
+
+                            let sample = edgefirst_client::Sample {
+                                image_name: Some(file_name),
+                                group: None,
+                                files: vec![image_file],
+                                annotations: Vec::new(),
+                                ..Default::default()
+                            };
+
+                            samples.push(sample);
+                        }
+                    } else {
+                        return Err(Error::InvalidParameters(
+                            "ZIP file support not yet implemented".to_owned(),
+                        ));
+                    }
+                }
+
+                if samples.is_empty() {
+                    return Err(Error::InvalidParameters(
+                        "No samples to upload. Check that images exist.".to_owned(),
+                    ));
+                }
+
+                println!(
+                    "Uploading {} samples to dataset {}...",
+                    samples.len(),
+                    dataset_id
+                );
+
+                // Set up progress bar
+                let bar = indicatif::ProgressBar::new(samples.len() as u64);
+                bar.set_style(
+                    indicatif::ProgressStyle::with_template(
+                        "[{elapsed_precise} ETA: {eta}] Uploading samples: {wide_bar:.yellow} {human_pos}/{human_len}"
+                    )
+                    .unwrap()
+                    .progress_chars("█▇▆▅▄▃▂▁  "),
+                );
+
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
+                tokio::spawn(async move {
+                    while let Some(progress) = rx.recv().await {
+                        if progress.total > 0 {
+                            bar.set_length(progress.total as u64);
+                            bar.set_position(progress.current as u64);
+                        }
+                    }
+                    bar.finish_with_message("Upload complete");
+                });
+
+                // Upload samples - API limit is 500 samples per batch
+                const BATCH_SIZE: usize = 500;
+                let mut all_results = Vec::new();
+
+                let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
+                let annotation_set_id_parsed = if should_upload_annotations {
+                    Some(annotation_set_id.unwrap().try_into()?)
+                } else {
+                    None
+                };
+
+                // Upload in batches
+                for (batch_num, batch) in samples.chunks(BATCH_SIZE).enumerate() {
+                    if samples.len() > BATCH_SIZE {
+                        println!(
+                            "Uploading batch {}/{} ({} samples)...",
+                            batch_num + 1,
+                            samples.len().div_ceil(BATCH_SIZE),
+                            batch.len()
+                        );
+                    }
+
+                    let results = client
+                        .populate_samples(
+                            dataset_id_parsed,
+                            annotation_set_id_parsed,
+                            batch.to_vec(),
+                            Some(tx.clone()),
+                        )
+                        .await?;
+
+                    all_results.extend(results);
+                }
+
+                drop(tx); // Close channel to let progress bar finish
+
+                println!("Successfully uploaded {} samples", all_results.len());
+                for result in all_results.iter().take(10) {
+                    println!("  Sample UUID: {}", result.uuid);
+                }
+                if all_results.len() > 10 {
+                    println!("  ... and {} more", all_results.len() - 10);
                 }
             }
         }

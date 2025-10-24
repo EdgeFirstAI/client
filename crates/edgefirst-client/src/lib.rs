@@ -816,7 +816,7 @@ mod tests {
 
         // Populate the sample
         let results = client
-            .populate_samples(dataset.id(), Some(annotation_set.id()), vec![sample])
+            .populate_samples(dataset.id(), Some(annotation_set.id()), vec![sample], None)
             .await?;
 
         assert_eq!(results.len(), 1);

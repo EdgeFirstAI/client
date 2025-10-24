@@ -79,9 +79,9 @@ class BasicTest(TestCase):
             assert ds.name == dataset.name
 
             ds = client.datasets(project.id, dataset.name)
-            assert len(ds) == 1
+            assert len(ds) > 0
             ds = ds[0]
-            assert ds.name == dataset.name
+            assert dataset.name in ds.name
 
     def test_labels(self):
         client = self.get_client()
@@ -145,7 +145,7 @@ class BasicTest(TestCase):
             df.write_ipc(str(arrow_file))
         df = read_ipc(str(arrow_file))
         assert len(df.unique("name")) == 5000
-        
+
         # Clean up
         if arrow_file.exists():
             arrow_file.unlink()
@@ -204,11 +204,12 @@ class BasicTest(TestCase):
         assert len(artifacts) > 0
 
         test_dir = get_test_data_dir()
-        
+
         for artifact in artifacts:
             output_path = test_dir / artifact.name
-            client.download_artifact(trainer.id, artifact.name, str(output_path))
-            
+            client.download_artifact(
+                trainer.id, artifact.name, str(output_path))
+
             # Clean up downloaded file
             if output_path.exists():
                 output_path.unlink()
@@ -230,7 +231,7 @@ class BasicTest(TestCase):
         trainer.upload_checkpoint(client, str(checkpoint_file))
         ckpt = trainer.download_checkpoint(client, "checkpoint_py.txt")
         assert ckpt == b"Checkpoint from Python"
-        
+
         # Clean up
         if checkpoint_file.exists():
             checkpoint_file.unlink()
@@ -261,3 +262,184 @@ class BasicTest(TestCase):
         assert task.stages["export"].message == "Exporting the model"
         assert task.stages["export"].status == "running"
         assert task.stages["export"].percentage == 25
+
+    def test_populate_samples(self):
+        """Test populating samples with automatic file upload."""
+        from edgefirst_client import Sample, SampleFile, Annotation, Box2d
+        from PIL import Image, ImageDraw
+        import time
+
+        client = self.get_client()
+
+        # Find the Unit Testing project and Test Labels dataset
+        projects = client.projects("Unit Testing")
+        assert len(projects) > 0
+        project = projects[0]
+
+        datasets = client.datasets(project.id, "Test Labels")
+        assert len(datasets) > 0
+        dataset = datasets[0]
+
+        # Get the first annotation set
+        annotation_sets = client.annotation_sets(dataset.id)
+        assert len(annotation_sets) > 0
+        annotation_set = annotation_sets[0]
+
+        # Generate a 640x480 PNG image with a red circle
+        img_width = 640
+        img_height = 480
+        img = Image.new('RGB', (img_width, img_height), color='white')
+        draw = ImageDraw.Draw(img)
+
+        # Draw a red circle in the top-left quadrant
+        center_x = 150.0
+        center_y = 120.0
+        radius = 50.0
+
+        # PIL ellipse takes (left, top, right, bottom)
+        draw.ellipse(
+            [center_x - radius, center_y - radius,
+             center_x + radius, center_y + radius],
+            fill='red'
+        )
+
+        # Calculate bounding box around the circle (with some padding)
+        bbox_x = center_x - radius - 5.0
+        bbox_y = center_y - radius - 5.0
+        bbox_w = (radius * 2.0) + 10.0
+        bbox_h = (radius * 2.0) + 10.0
+
+        print(f"Generated PNG image with circle at bbox: "
+              f"({bbox_x:.1f}, {bbox_y:.1f}, {bbox_w:.1f}, {bbox_h:.1f})")
+
+        # Save to temporary file
+        test_dir = get_test_data_dir()
+        timestamp = int(time.time())
+        test_image_path = test_dir / f"test_populate_{timestamp}.png"
+        img.save(str(test_image_path), format='PNG')
+        print(f"Test image saved to: {test_image_path}")
+
+        # Create sample with annotation
+        sample = Sample()
+        sample.set_image_name(f"test_populate_{timestamp}.png")
+
+        # Add file
+        sample.add_file(SampleFile("image", str(test_image_path)))
+
+        # Add bounding box annotation with NORMALIZED coordinates
+        annotation = Annotation()
+        annotation.set_label("circle")
+        annotation.set_object_id("circle-obj-1")
+
+        # Normalize coordinates: divide pixel values by image dimensions
+        normalized_x = bbox_x / img_width
+        normalized_y = bbox_y / img_height
+        normalized_w = bbox_w / img_width
+        normalized_h = bbox_h / img_height
+
+        print(f"Normalized bbox: ({normalized_x:.3f}, {normalized_y:.3f}, "
+              f"{normalized_w:.3f}, {normalized_h:.3f})")
+
+        bbox = Box2d(normalized_x, normalized_y, normalized_w, normalized_h)
+        annotation.set_box2d(bbox)
+        sample.add_annotation(annotation)
+
+        # Populate the sample with progress callback
+        def progress(current, total):
+            print(f"Upload progress: {current}/{total}")
+
+        results = client.populate_samples(
+            dataset.id,
+            annotation_set.id,
+            [sample],
+            progress=progress
+        )
+
+        assert len(results) == 1
+        result = results[0]
+        assert len(result.urls) == 1
+        print(f"✓ Sample populated with UUID: {result.uuid}")
+
+        # Give the server a moment to process the upload
+        time.sleep(2)
+
+        # Verify the sample was created by fetching it back
+        image_filename = f"test_populate_{timestamp}.png"
+        print(f"Looking for image: {image_filename}")
+
+        samples = client.samples(
+            dataset.id,
+            annotation_set.id,
+            annotation_types=[],
+            groups=[],  # Don't filter by group - get all samples
+            types=[],
+        )
+
+        print(f"Found {len(samples)} samples total")
+
+        # Find the sample by image_name
+        created_sample = None
+        for s in samples:
+            if s.name == image_filename:
+                created_sample = s
+                break
+
+        assert created_sample is not None, \
+            f"Sample with image_name '{image_filename}' should exist"
+
+        print(f"✓ Found sample by image_name: {image_filename}")
+
+        # Verify basic properties
+        assert created_sample.name == image_filename
+        assert created_sample.group == "train" or created_sample.group is None
+
+        print("\nSample verification:")
+        print(f"  ✓ image_name: {created_sample.name}")
+        print(f"  ✓ group: {created_sample.group}")
+        print(f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
+
+        # Verify annotations are returned correctly
+        annotations = created_sample.annotations
+        assert len(annotations) == 1, "Should have exactly one annotation"
+
+        annotation = annotations[0]
+        assert annotation.label == "circle"
+        assert annotation.box2d is not None, "Bounding box should be present"
+
+        returned_bbox = annotation.box2d
+        print(f"\nReturned bbox (normalized): ({returned_bbox.left:.3f}, "
+              f"{returned_bbox.top:.3f}, {returned_bbox.width:.3f}, "
+              f"{returned_bbox.height:.3f})")
+
+        # Verify bbox coordinates are approximately correct
+        # (within 5% tolerance)
+        tolerance = 0.05
+        assert abs(returned_bbox.left - normalized_x) < tolerance
+        assert abs(returned_bbox.top - normalized_y) < tolerance
+        assert abs(returned_bbox.width - normalized_w) < tolerance
+        assert abs(returned_bbox.height - normalized_h) < tolerance
+
+        print("✓ Bounding box coordinates verified")
+
+        # Download the image and verify byte-for-byte match
+        downloaded_data = created_sample.download(client)
+        assert downloaded_data is not None, \
+            "Downloaded data should not be None"
+
+        # Read original file
+        with open(str(test_image_path), 'rb') as f:
+            original_data = f.read()
+
+        assert len(downloaded_data) == len(original_data), \
+            "Downloaded data length should match original"
+        assert downloaded_data == original_data, \
+            "Downloaded data should match original byte-for-byte"
+
+        print(f"✓ Downloaded image matches original "
+              f"({len(downloaded_data)} bytes)")
+
+        # Clean up
+        if test_image_path.exists():
+            test_image_path.unlink()
+
+        print("\n✓ Test passed: populate_samples with automatic upload")

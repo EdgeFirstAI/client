@@ -169,11 +169,25 @@ async fn main() -> Result<(), Error> {
     let sample_json = serde_json::to_string_pretty(&sample).unwrap();
     println!("{}", sample_json);
 
-    // Call populate API
+    // Call populate API with progress tracking
     println!("\nCalling samples.populate API with annotation_set_id...");
 
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
+
+    // Spawn task to print progress
+    let progress_task = tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            println!("Upload progress: {}/{}", progress.current, progress.total);
+        }
+    });
+
     match client
-        .populate_samples(dataset.id(), Some(annotation_set.id()), vec![sample])
+        .populate_samples(
+            dataset.id(),
+            Some(annotation_set.id()),
+            vec![sample],
+            Some(tx),
+        )
         .await
     {
         Ok(results) => {
@@ -194,6 +208,9 @@ async fn main() -> Result<(), Error> {
             std::process::exit(1);
         }
     }
+
+    // Wait for progress task to complete
+    progress_task.await.unwrap();
 
     // Clean up
     let _ = std::fs::remove_file(&test_image_path);

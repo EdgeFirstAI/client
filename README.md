@@ -137,7 +137,33 @@ edgefirst-client download-dataset <DATASET_ID> --types image --output ./data
 edgefirst-client download-annotations <ANNOTATION_SET_ID> \
   --types box2d,box3d,segmentation \
   --output annotations.arrow
+
+# Upload samples to dataset
+# Full mode: annotations + images
+edgefirst-client upload-dataset <DATASET_ID> \
+  --annotations annotations.arrow \
+  --annotation-set-id <ANNOTATION_SET_ID> \
+  --images ./images/
+
+# Images-only mode: upload images without annotations
+edgefirst-client upload-dataset <DATASET_ID> --images ./images/
+
+# Auto-discovery: finds images in folder named after Arrow file
+edgefirst-client upload-dataset <DATASET_ID> \
+  --annotations data.arrow \
+  --annotation-set-id <ANNOTATION_SET_ID>
+  # Automatically looks for: data/, dataset/, data.zip, dataset.zip
 ```
+
+**Upload Dataset Format**: The Arrow file must follow the [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/) with columns: `name`, `frame`, `object_id`, `label`, `label_index`, `group`, `mask`, `box2d`, `box3d`. Key features:
+- **Flexible parameters**: All parameters except `DATASET_ID` are optional (must provide at least one of `--annotations` or `--images`)
+- **Auto-discovery**: If `--images` not specified, searches for folder/ZIP named after Arrow file or "dataset"
+- **Images-only mode**: Upload images without annotations by omitting `--annotations` and `--annotation-set-id`
+- **Warning system**: Warns if annotations provided without annotation_set_id (annotations will be skipped)
+- **Samples without annotations**: Include row with `name`/`group` but null geometries
+- **Multiple annotations per sample**: Multiple rows with same `name`
+- **Multiple geometries per annotation**: `box2d`, `box3d`, and `mask` in same row belong to same annotation
+- **Auto-generated object_id**: If multiple geometries appear in same row without `object_id`, a UUID is generated automatically
 
 #### Monitor Training and Download Models
 

@@ -930,6 +930,82 @@ class Mask:
         ...
 
 
+class SampleFile:
+    """
+    Represents a file associated with a sample (e.g., LiDAR, radar, depth map).
+
+    For uploading samples, create a SampleFile with a type and local filename.
+    For downloaded samples, the file will have a type and URL.
+    """
+
+    def __init__(self, file_type: str, filename: str) -> None:
+        """
+        Create a new sample file for upload.
+
+        Args:
+            file_type: Type of file (e.g., "image", "lidar", "depth")
+            filename: Path to the local file to upload
+        """
+        ...
+
+    @property
+    def file_type(self) -> str:
+        """The type of file (e.g., "image", "lidar")."""
+        ...
+
+    @property
+    def filename(self) -> Optional[str]:
+        """Local filename for upload, or None if downloaded."""
+        ...
+
+    @property
+    def url(self) -> Optional[str]:
+        """URL for downloaded files, or None if for upload."""
+        ...
+
+
+class PresignedUrl:
+    """
+    A presigned URL for uploading a file to S3.
+
+    Returned by populate_samples to indicate where files should be uploaded.
+    """
+
+    @property
+    def filename(self) -> str:
+        """The filename as specified in the sample."""
+        ...
+
+    @property
+    def key(self) -> str:
+        """The S3 key path."""
+        ...
+
+    @property
+    def url(self) -> str:
+        """The presigned URL for uploading (use PUT request)."""
+        ...
+
+
+class SamplesPopulateResult:
+    """
+    Result of populating a sample into a dataset.
+
+    Contains the UUID assigned to the sample and presigned URLs
+    for uploading associated files.
+    """
+
+    @property
+    def uuid(self) -> str:
+        """The UUID assigned to the sample by the server."""
+        ...
+
+    @property
+    def urls(self) -> List[PresignedUrl]:
+        """Presigned URLs for uploading files associated with this sample."""
+        ...
+
+
 class Annotation:
     """
     Represents a single annotation associated
@@ -939,6 +1015,30 @@ class Annotation:
     (name, group, label, etc.) as well as 2D/3D bounding boxes
     and segmentation masks.
     """
+
+    def __init__(self) -> None:
+        """Create a new empty annotation."""
+        ...
+
+    def set_label(self, label: Optional[str]) -> None:
+        """Set the label for this annotation."""
+        ...
+
+    def set_object_id(self, object_id: Optional[str]) -> None:
+        """Set the object ID for this annotation."""
+        ...
+
+    def set_box2d(self, box2d: Optional[Box2d]) -> None:
+        """Set the 2D bounding box for this annotation."""
+        ...
+
+    def set_box3d(self, box3d: Optional[Box3d]) -> None:
+        """Set the 3D bounding box for this annotation."""
+        ...
+
+    def set_mask(self, mask: Optional[Mask]) -> None:
+        """Set the segmentation mask for this annotation."""
+        ...
 
     @property
     def sample_id(self) -> Optional[SampleID]:
@@ -1053,30 +1153,49 @@ class Sample:
     can be used to download file content for different sensor modalities.
     """
 
+    def __init__(self) -> None:
+        """Create a new empty sample."""
+        ...
+
+    def set_image_name(self, image_name: Optional[str]) -> None:
+        """Set the image filename for this sample."""
+        ...
+
+    def add_file(self, file: SampleFile) -> None:
+        """Add a file (image, LiDAR, etc.) to this sample."""
+        ...
+
+    def add_annotation(self, annotation: Annotation) -> None:
+        """Add an annotation to this sample."""
+        ...
+
     @property
-    def id(self) -> SampleID:
+    def id(self) -> Optional[SampleID]:
         """
         Returns the unique identifier of the sample.
 
         Returns:
-            ID: The sample ID.
+            Optional[SampleID]: The sample ID, or None if not set.
         """
         ...
 
     @property
-    def uid(self) -> str:
+    def uid(self) -> Optional[str]:
         """
         The unique string identifier for the object.
+
+        Returns:
+            Optional[str]: The UID, or None if not set.
         """
         ...
 
     @property
-    def name(self) -> str:
+    def name(self) -> Optional[str]:
         """
         Returns the name of the sample.
 
         Returns:
-            str: The sample name.
+            Optional[str]: The sample name, or None if not set.
         """
         ...
 
@@ -2312,6 +2431,57 @@ class Client:
 
         Returns:
             List[Sample]: A list of sample objects.
+        """
+        ...
+
+    def populate_samples(
+        self,
+        dataset_id: DatasetUID,
+        annotation_set_id: AnnotationSetUID,
+        samples: List[Sample],
+        progress: Optional[Progress] = None,
+    ) -> List[SamplesPopulateResult]:
+        """
+        Populate samples into a dataset with automatic file uploads.
+
+        This method creates new samples in the specified dataset and
+        automatically uploads their associated files (images, LiDAR, etc.)
+        to S3 using presigned URLs.
+
+        The server will auto-generate UUIDs and extract image dimensions
+        for samples that don't have them specified.
+
+        Args:
+            dataset_id: ID of the dataset to populate
+            annotation_set_id: ID of the annotation set for sample
+                              annotations
+            samples: List of Sample objects to create (with files
+                    and annotations)
+            progress: Optional callback function(current, total)
+                     for upload progress
+
+        Returns:
+            List[SamplesPopulateResult]: List of results with UUIDs
+                                        and presigned URLs
+
+        Example:
+            >>> from edgefirst_client import (
+            ...     Client, Sample, SampleFile, Annotation, Box2d
+            ... )
+            >>> client = Client()
+            >>> sample = Sample()
+            >>> sample.set_image_name("test.png")
+            >>> sample.add_file(SampleFile("image", "path/to/test.png"))
+            >>> annotation = Annotation()
+            >>> annotation.set_label("car")
+            >>> annotation.set_box2d(Box2d(10.0, 20.0, 100.0, 50.0))
+            >>> sample.add_annotation(annotation)
+            >>> results = client.populate_samples(
+            ...     dataset_id,
+            ...     annotation_set_id,
+            ...     [sample],
+            ...     lambda curr, total: print(f"{curr}/{total}")
+            ... )
         """
         ...
 

@@ -936,7 +936,7 @@ pub struct SamplesPopulateResult {
 }
 
 /// A presigned URL for uploading a file to S3.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct PresignedUrl {
     /// Filename as specified in the sample
     pub filename: String,

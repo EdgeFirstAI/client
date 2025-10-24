@@ -14,7 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auto-extracts image dimensions using imagesize crate v0.13.0
   - Supports Box2d annotations with normalized coordinates (0.0-1.0 range)
   - Returns sample UUIDs and upload URLs for tracking
+  - **Progress tracking**: Optional callback reports CUR/TOTAL as samples are uploaded
+  - Parallel uploads with semaphore limiting (MAX_TASKS=32 concurrent uploads)
 - Example `populate_with_circle.rs` demonstrating sample import with annotations
+- **Python bindings** for `populate_samples()` API
+  - `Client.populate_samples()` method with progress callback support
+  - `Sample` and `Annotation` constructors for creating samples from Python
+  - `SampleFile` class for specifying file types and paths
+  - `SamplesPopulateResult` and `PresignedUrl` classes for tracking uploads
+  - Setter methods: `Sample.set_image_name()`, `Sample.add_file()`, `Sample.add_annotation()`
+  - Setter methods: `Annotation.set_label()`, `Annotation.set_object_id()`, `Annotation.set_box2d()`, etc.
+  - Complete type stubs in `edgefirst_client.pyi` with documentation
+  - Python test `test_populate_samples()` with 640x480 PNG and circle annotation
+- **CLI `upload-dataset` command** for importing samples from EdgeFirst Dataset Format (Arrow)
+  - **Flexible parameters**: All parameters except dataset ID are optional (must provide at least one of `--annotations` or `--images`)
+  - **Auto-discovery**: Automatically finds images in folder/ZIP named after Arrow file or "dataset" if `--images` not specified
+  - **Images-only mode**: Upload images without annotations by omitting `--annotations` and `--annotation-set-id`
+  - **Warning system**: Warns if annotations provided without annotation_set_id (annotations will be skipped)
+  - **Automatic batching**: Handles datasets larger than 500 samples by automatically batching uploads
+  - Reads Arrow file with annotations following EdgeFirst Dataset Format schema
+  - Handles samples without annotations (rows with name/group but null geometries)
+  - Supports multiple annotations per sample (multiple rows with same name)
+  - Supports multiple geometries per annotation (box2d/box3d/mask in same row)
+  - Auto-generates object_id UUID when multiple geometries on same row without object_id
+  - Progress bar with ETA for upload tracking
+  - **Tested with 1646-sample Deer dataset** across all workflow modes
 
 ### Changed
 - **BREAKING**: Simplified `Sample` and `Annotation` field types for better ergonomics
