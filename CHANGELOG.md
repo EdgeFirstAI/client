@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
+  - Polars operations (casting, DataFrame construction) now properly propagate errors
+  - Callers must handle the Result with `?` or `.unwrap()` / `.expect()`
+  - Improves robustness by eliminating panics in dataframe construction
+
+### Fixed
+- Eliminated all `unwrap()` calls from library code (client.rs, dataset.rs, error.rs)
+  - Download functions: Fixed file path and content-length handling
+  - Multipart uploads: Fixed part key validation and ETag parsing
+  - Dataset operations: Fixed file type and path parsing
+  - All potential panic points now return proper errors
+- Added `InvalidEtag` error variant for HTTP response validation
+- Added `PolarsError` error variant (feature-gated) for dataframe operations
+
 ## [2.3.1] - 2025-10-24
 
 ### Added

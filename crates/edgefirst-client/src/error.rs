@@ -47,8 +47,12 @@ pub enum Error {
     NotImplemented,
     /// File part size exceeds the maximum allowed limit.
     PartTooLarge,
+    /// Invalid file type provided.
+    InvalidFileType(String),
     /// Invalid annotation type provided.
     InvalidAnnotationType(String),
+    /// Unsupported file format.
+    UnsupportedFormat(String),
     /// Required image files are missing from the dataset.
     MissingImages(String),
     /// Required annotation files are missing from the dataset.
@@ -67,6 +71,11 @@ pub enum Error {
     TokenExpired,
     /// User is not authorized to perform the requested operation.
     Unauthorized,
+    /// Invalid or missing ETag header in HTTP response.
+    InvalidEtag(String),
+    /// Polars dataframe operation error (only with "polars" feature).
+    #[cfg(feature = "polars")]
+    PolarsError(polars::error::PolarsError),
 }
 
 impl From<std::io::Error> for Error {
@@ -138,5 +147,71 @@ impl From<std::path::StripPrefixError> for Error {
 impl From<std::num::ParseIntError> for Error {
     fn from(err: std::num::ParseIntError) -> Self {
         Error::ParseIntError(err)
+    }
+}
+
+#[cfg(feature = "polars")]
+impl From<polars::error::PolarsError> for Error {
+    fn from(err: polars::error::PolarsError) -> Self {
+        Error::PolarsError(err)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::IoError(e) => write!(f, "I/O error: {}", e),
+            Error::ConfigError(e) => write!(f, "Configuration error: {}", e),
+            Error::JsonError(e) => write!(f, "JSON error: {}", e),
+            Error::HttpError(e) => write!(f, "HTTP error: {}", e),
+            Error::MaxRetriesExceeded(n) => write!(f, "Maximum retries ({}) exceeded", n),
+            Error::UrlParseError(e) => write!(f, "URL parse error: {}", e),
+            Error::RpcError(code, msg) => write!(f, "RPC error {}: {}", code, msg),
+            Error::InvalidRpcId(id) => write!(f, "Invalid RPC ID: {}", id),
+            Error::EnvError(e) => write!(f, "Environment variable error: {}", e),
+            Error::SemaphoreError(e) => write!(f, "Semaphore error: {}", e),
+            Error::JoinError(e) => write!(f, "Task join error: {}", e),
+            Error::ProgressSendError(e) => write!(f, "Progress send error: {}", e),
+            Error::ProgressRecvError(e) => write!(f, "Progress receive error: {}", e),
+            Error::StripPrefixError(e) => write!(f, "Path prefix error: {}", e),
+            Error::ParseIntError(e) => write!(f, "Integer parse error: {}", e),
+            Error::InvalidResponse => write!(f, "Invalid server response"),
+            Error::NotImplemented => write!(f, "Not implemented"),
+            Error::PartTooLarge => write!(f, "File part size exceeds maximum limit"),
+            Error::InvalidFileType(s) => write!(f, "Invalid file type: {}", s),
+            Error::InvalidAnnotationType(s) => write!(f, "Invalid annotation type: {}", s),
+            Error::UnsupportedFormat(s) => write!(f, "Unsupported format: {}", s),
+            Error::MissingImages(s) => write!(f, "Missing images: {}", s),
+            Error::MissingAnnotations(s) => write!(f, "Missing annotations: {}", s),
+            Error::MissingLabel(s) => write!(f, "Missing label: {}", s),
+            Error::InvalidParameters(s) => write!(f, "Invalid parameters: {}", s),
+            Error::FeatureNotEnabled(s) => write!(f, "Feature not enabled: {}", s),
+            Error::EmptyToken => write!(f, "Authentication token is empty"),
+            Error::InvalidToken => write!(f, "Invalid authentication token"),
+            Error::TokenExpired => write!(f, "Authentication token has expired"),
+            Error::Unauthorized => write!(f, "Unauthorized access"),
+            Error::InvalidEtag(s) => write!(f, "Invalid ETag header: {}", s),
+            #[cfg(feature = "polars")]
+            Error::PolarsError(e) => write!(f, "Polars error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::IoError(e) => Some(e),
+            Error::ConfigError(e) => Some(e),
+            Error::JsonError(e) => Some(e),
+            Error::HttpError(e) => Some(e),
+            Error::UrlParseError(e) => Some(e),
+            Error::EnvError(e) => Some(e),
+            Error::JoinError(e) => Some(e),
+            Error::StripPrefixError(e) => Some(e),
+            Error::ParseIntError(e) => Some(e),
+            #[cfg(feature = "polars")]
+            Error::PolarsError(e) => Some(e),
+            _ => None,
+        }
     }
 }

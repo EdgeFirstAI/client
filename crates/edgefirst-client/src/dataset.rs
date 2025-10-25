@@ -25,8 +25,8 @@ use polars::prelude::*;
 /// use edgefirst_client::FileType;
 ///
 /// // Create file types from strings
-/// let image_type = FileType::from("image");
-/// let lidar_type = FileType::from("lidar.pcd");
+/// let image_type: FileType = "image".try_into().unwrap();
+/// let lidar_type: FileType = "lidar.pcd".try_into().unwrap();
 ///
 /// // Display file types
 /// println!("Processing {} files", image_type); // "Processing image files"
@@ -69,17 +69,27 @@ impl std::fmt::Display for FileType {
     }
 }
 
-impl From<&str> for FileType {
-    fn from(s: &str) -> Self {
+impl TryFrom<&str> for FileType {
+    type Error = crate::Error;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "image" => FileType::Image,
-            "lidar.pcd" => FileType::LidarPcd,
-            "lidar.png" => FileType::LidarDepth,
-            "lidar.jpg" => FileType::LidarReflect,
-            "radar.pcd" => FileType::RadarPcd,
-            "radar.png" => FileType::RadarCube,
-            _ => panic!("Invalid file type"),
+            "image" => Ok(FileType::Image),
+            "lidar.pcd" => Ok(FileType::LidarPcd),
+            "lidar.png" => Ok(FileType::LidarDepth),
+            "lidar.jpg" => Ok(FileType::LidarReflect),
+            "radar.pcd" => Ok(FileType::RadarPcd),
+            "radar.png" => Ok(FileType::RadarCube),
+            _ => Err(crate::Error::InvalidFileType(s.to_string())),
         }
+    }
+}
+
+impl std::str::FromStr for FileType {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.try_into()
     }
 }
 
@@ -119,26 +129,30 @@ pub enum AnnotationType {
     Mask,
 }
 
-impl From<&str> for AnnotationType {
-    fn from(s: &str) -> Self {
+impl TryFrom<&str> for AnnotationType {
+    type Error = crate::Error;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "box2d" => AnnotationType::Box2d,
-            "box3d" => AnnotationType::Box3d,
-            "mask" => AnnotationType::Mask,
-            _ => panic!("Invalid annotation type"),
+            "box2d" => Ok(AnnotationType::Box2d),
+            "box3d" => Ok(AnnotationType::Box3d),
+            "mask" => Ok(AnnotationType::Mask),
+            _ => Err(crate::Error::InvalidAnnotationType(s.to_string())),
         }
     }
 }
 
 impl From<String> for AnnotationType {
     fn from(s: String) -> Self {
-        s.as_str().into()
+        // For backward compatibility, default to Box2d if invalid
+        s.as_str().try_into().unwrap_or(AnnotationType::Box2d)
     }
 }
 
 impl From<&String> for AnnotationType {
     fn from(s: &String) -> Self {
-        s.as_str().into()
+        // For backward compatibility, default to Box2d if invalid
+        s.as_str().try_into().unwrap_or(AnnotationType::Box2d)
     }
 }
 
@@ -1133,7 +1147,7 @@ pub struct Group {
 }
 
 #[cfg(feature = "polars")]
-pub fn annotations_dataframe(annotations: &[Annotation]) -> DataFrame {
+pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Error> {
     use itertools::Itertools;
     use log::warn;
     use std::path::Path;
@@ -1160,7 +1174,23 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> DataFrame {
                     }
                 };
 
-                let name = Path::new(name).file_stem().unwrap().to_str().unwrap();
+                let name = match Path::new(name).file_stem().and_then(|s| s.to_str()) {
+                    Some(n) => n,
+                    None => {
+                        warn!("annotation has invalid image name, skipping");
+                        return (
+                            String::new(),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                };
 
                 let (name, frame) = match &ann.sequence_name {
                     Some(sequence) => match name.strip_prefix(sequence) {
@@ -1259,31 +1289,26 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> DataFrame {
         .cast(&DataType::Categorical(
             Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
             Arc::new(CategoricalMapping::new(u8::MAX as usize)),
-        ))
-        .unwrap()
+        ))?
         .into();
     let label_indices = Series::new("label_index".into(), label_indices).into();
     let groups = Series::new("group".into(), groups)
         .cast(&DataType::Categorical(
             Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
             Arc::new(CategoricalMapping::new(u8::MAX as usize)),
-        ))
-        .unwrap()
+        ))?
         .into();
     let masks = Series::new("mask".into(), masks)
-        .cast(&DataType::List(Box::new(DataType::Float32)))
-        .unwrap()
+        .cast(&DataType::List(Box::new(DataType::Float32)))?
         .into();
     let boxes2d = Series::new("box2d".into(), boxes2d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 4))
-        .unwrap()
+        .cast(&DataType::Array(Box::new(DataType::Float32), 4))?
         .into();
     let boxes3d = Series::new("box3d".into(), boxes3d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 6))
-        .unwrap()
+        .cast(&DataType::Array(Box::new(DataType::Float32), 6))?
         .into();
 
-    DataFrame::new(vec![
+    Ok(DataFrame::new(vec![
         names,
         frames,
         objects,
@@ -1293,6 +1318,5 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> DataFrame {
         masks,
         boxes2d,
         boxes3d,
-    ])
-    .unwrap()
+    ])?)
 }

@@ -647,7 +647,7 @@ async fn main() -> Result<(), Error> {
                     {
                         use polars::{io::SerWriter as _, prelude::IpcWriter};
 
-                        let mut df = edgefirst_client::annotations_dataframe(&annotations);
+                        let mut df = edgefirst_client::annotations_dataframe(&annotations)?;
                         IpcWriter::new(File::create(output).unwrap())
                             .finish(&mut df)
                             .unwrap();

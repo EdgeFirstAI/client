@@ -96,9 +96,9 @@ mod tests {
     fn get_test_data_dir() -> PathBuf {
         let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .expect("CARGO_MANIFEST_DIR should have parent")
             .parent()
-            .unwrap()
+            .expect("workspace root should exist")
             .join("target")
             .join("testdata");
 
@@ -197,7 +197,9 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let datasets = client.datasets(project.id(), None).await?;
 
         for dataset in datasets {
@@ -214,14 +216,16 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let datasets = client.datasets(project.id(), Some("Test Labels")).await?;
-        let dataset = datasets.first().unwrap_or_else(|| {
-            panic!(
+        let dataset = datasets.first().ok_or_else(|| {
+            Error::InvalidParameters(format!(
                 "Dataset 'Test Labels' not found in project '{}'",
                 project.name()
-            )
-        });
+            ))
+        })?;
 
         // Generate a random label name to avoid conflicts with parallel tests
         // Use a random 8-character hex string
@@ -358,11 +362,14 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Sample Project")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project.first().expect("'Sample Project' should exist");
         let datasets = client.datasets(project.id(), Some("COCO")).await?;
         assert!(!datasets.is_empty());
         // Filter to avoid fetching the COCO People dataset.
-        let dataset = datasets.iter().find(|d| d.name() == "COCO").unwrap();
+        let dataset = datasets
+            .iter()
+            .find(|d| d.name() == "COCO")
+            .expect("'COCO' dataset should exist");
 
         let labels = dataset.labels(&client).await?;
         assert_eq!(labels.len(), 80);
@@ -390,26 +397,29 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Sample Project")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project.first().expect("'Sample Project' should exist");
         let datasets = client.datasets(project.id(), Some("COCO")).await?;
         assert!(!datasets.is_empty());
         // Filter to avoid fetching the COCO People dataset.
-        let dataset = datasets.iter().find(|d| d.name() == "COCO").unwrap();
+        let dataset = datasets
+            .iter()
+            .find(|d| d.name() == "COCO")
+            .expect("'COCO' dataset should exist");
 
         let annotation_set_id = dataset
             .annotation_sets(&client)
             .await?
             .first()
-            .unwrap()
+            .expect("COCO dataset should have annotation sets")
             .id();
 
         let annotations = client
             .annotations(annotation_set_id, &["val".to_string()], &[], None)
             .await?;
-        let df = annotations_dataframe(&annotations);
+        let df = annotations_dataframe(&annotations)?;
         let df = df
             .unique_stable(Some(&["name".to_string()]), UniqueKeepStrategy::First, None)
-            .unwrap();
+            .expect("DataFrame unique_stable operation should succeed");
         assert_eq!(df.height(), 5000);
 
         Ok(())
@@ -434,7 +444,9 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let experiments = client.experiments(project.id(), None).await?;
 
         for experiment in experiments {
@@ -451,17 +463,23 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let experiment = client
             .experiments(project.id(), Some("Unit Testing"))
             .await?;
-        let experiment = experiment.first().unwrap();
+        let experiment = experiment
+            .first()
+            .expect("'Unit Testing' experiment should exist");
 
         let sessions = client
             .training_sessions(experiment.id(), Some("modelpack-usermanaged"))
             .await?;
         assert_ne!(sessions.len(), 0);
-        let session = sessions.first().unwrap();
+        let session = sessions
+            .first()
+            .expect("Training sessions should exist for experiment");
 
         let metrics = HashMap::from([
             ("epochs".to_string(), Parameter::Integer(10)),
@@ -509,7 +527,9 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
 
         let sessions = client.validation_sessions(project.id()).await?;
         for session in &sessions {
@@ -521,12 +541,12 @@ mod tests {
         let session = sessions
             .into_iter()
             .find(|s| s.name() == "modelpack-usermanaged")
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                Error::InvalidParameters(format!(
                     "Validation session 'modelpack-usermanaged' not found in project '{}'",
                     project.name()
-                )
-            });
+                ))
+            })?;
 
         let metrics = HashMap::from([("accuracy".to_string(), Parameter::Real(0.95))]);
         session.set_metrics(&client, metrics).await?;
@@ -542,15 +562,21 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let experiment = client
             .experiments(project.id(), Some("Unit Testing"))
             .await?;
-        let experiment = experiment.first().unwrap();
+        let experiment = experiment
+            .first()
+            .expect("'Unit Testing' experiment should exist");
         let trainer = client
             .training_sessions(experiment.id(), Some("modelpack-960x540"))
             .await?;
-        let trainer = trainer.first().unwrap();
+        let trainer = trainer
+            .first()
+            .expect("'modelpack-960x540' training session should exist");
         let artifacts = client.artifacts(trainer.id()).await?;
         assert!(!artifacts.is_empty());
 
@@ -588,20 +614,24 @@ mod tests {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
         assert!(!project.is_empty());
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let experiment = client
             .experiments(project.id(), Some("Unit Testing"))
             .await?;
-        let experiment = experiment.first().unwrap_or_else(|| {
-            panic!(
+        let experiment = experiment.first().ok_or_else(|| {
+            Error::InvalidParameters(format!(
                 "Experiment 'Unit Testing' not found in project '{}'",
                 project.name()
-            )
-        });
+            ))
+        })?;
         let trainer = client
             .training_sessions(experiment.id(), Some("modelpack-usermanaged"))
             .await?;
-        let trainer = trainer.first().unwrap();
+        let trainer = trainer
+            .first()
+            .expect("'modelpack-usermanaged' training session should exist");
 
         let test_dir = get_test_data_dir();
         let checkpoint_path = test_dir.join("checkpoint.txt");
@@ -656,7 +686,9 @@ mod tests {
     async fn test_tasks() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
-        let project = project.first().unwrap();
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
         let tasks = client.tasks(None, None, None, None).await?;
 
         for task in tasks {
@@ -705,7 +737,9 @@ mod tests {
     /// Generate a 640x480 image with a red circle in the specified format.
     /// Returns the image data plus the bounding box coordinates (x, y, w, h) in
     /// pixels. Supported formats: "png", "jpeg"
-    fn generate_test_image_with_circle_format(format: &str) -> (Vec<u8>, (f32, f32, f32, f32)) {
+    fn generate_test_image_with_circle_format(
+        format: &str,
+    ) -> Result<(Vec<u8>, (f32, f32, f32, f32)), Error> {
         use image::{ImageBuffer, Rgb, RgbImage};
         use std::io::Cursor;
 
@@ -738,12 +772,14 @@ mod tests {
 
         match format {
             "jpeg" | "jpg" => {
-                img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+                img.write_to(&mut cursor, image::ImageFormat::Jpeg)
+                    .expect("Failed to write JPEG image");
             }
             "png" => {
-                img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();
+                img.write_to(&mut cursor, image::ImageFormat::Png)
+                    .expect("Failed to write PNG image");
             }
-            _ => panic!("Unsupported format: {}", format),
+            _ => return Err(Error::UnsupportedFormat(format.to_string())),
         }
 
         // Calculate bounding box around the circle (with some padding)
@@ -752,7 +788,7 @@ mod tests {
         let bbox_w = (radius * 2.0) + 10.0;
         let bbox_h = (radius * 2.0) + 10.0;
 
-        (image_data, (bbox_x, bbox_y, bbox_w, bbox_h))
+        Ok((image_data, (bbox_x, bbox_y, bbox_w, bbox_h)))
     }
 
     #[tokio::test]
@@ -761,7 +797,9 @@ mod tests {
 
         // Find the Unit Testing project
         let projects = client.projects(Some("Unit Testing")).await?;
-        let project = projects.first().unwrap();
+        let project = projects
+            .first()
+            .expect("'Unit Testing' project should exist");
 
         // Create a temporary test dataset with random suffix
         let random_suffix: u64 = rand::rng().random();
@@ -793,7 +831,7 @@ mod tests {
         let file_extension = "png";
 
         // Generate a 640x480 image with a red circle
-        let (image_data, circle_bbox) = generate_test_image_with_circle_format(test_format);
+        let (image_data, circle_bbox) = generate_test_image_with_circle_format(test_format)?;
         eprintln!(
             "Generated {} image with circle at bbox: ({:.1}, {:.1}, {:.1}, {:.1})",
             test_format, circle_bbox.0, circle_bbox.1, circle_bbox.2, circle_bbox.3
@@ -802,7 +840,7 @@ mod tests {
         // Create temporary file
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("System time should be after UNIX epoch")
             .as_secs();
         let temp_dir = std::env::temp_dir();
         let test_image_path =
@@ -812,9 +850,9 @@ mod tests {
         // Also save a copy to target/testdata for manual inspection
         let testdata_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .expect("CARGO_MANIFEST_DIR should have parent")
             .parent()
-            .unwrap()
+            .expect("workspace root should exist")
             .join("target")
             .join("testdata");
         std::fs::create_dir_all(&testdata_dir).ok();
@@ -836,7 +874,10 @@ mod tests {
         // Add file
         sample.files = vec![SampleFile::with_filename(
             "image".to_string(),
-            test_image_path.to_str().unwrap().to_string(),
+            test_image_path
+                .to_str()
+                .expect("Test image path should be valid UTF-8")
+                .to_string(),
         )];
 
         // Add bounding box annotation with NORMALIZED coordinates
@@ -900,7 +941,8 @@ mod tests {
                 "Sample with image_name '{}' should exist in dataset",
                 image_filename
             );
-            let created_sample = created_sample.unwrap();
+            let created_sample =
+                created_sample.expect("Sample should exist (verified by assert above)");
 
             eprintln!("✓ Found sample by image_name: {}", image_filename);
 
@@ -946,7 +988,9 @@ mod tests {
                 "Bounding box should be present"
             );
 
-            let returned_bbox = annotation.box2d().unwrap();
+            let returned_bbox = annotation
+                .box2d()
+                .expect("Bounding box should exist (verified by assert above)");
             eprintln!("\nAnnotation verification:");
             eprintln!("  ✓ label: {:?}", annotation.label());
             eprintln!(
@@ -990,7 +1034,8 @@ mod tests {
                 downloaded_image.is_some(),
                 "Should be able to download the image"
             );
-            let downloaded_data = downloaded_image.unwrap();
+            let downloaded_data =
+                downloaded_image.expect("Downloaded image should exist (verified by assert above)");
 
             assert_eq!(
                 image_data.len(),
@@ -1030,7 +1075,9 @@ mod tests {
 
         // Find the Unit Testing project and Deer dataset (read-only)
         let projects = client.projects(Some("Unit Testing")).await?;
-        let project = projects.first().unwrap();
+        let project = projects
+            .first()
+            .expect("'Unit Testing' project should exist");
 
         let datasets = client.datasets(project.id(), Some("Deer")).await?;
         let deer_dataset = datasets
@@ -1148,7 +1195,10 @@ mod tests {
                 std::fs::write(&temp_path, &image_data)?;
                 new_sample.files = vec![SampleFile::with_filename(
                     "image".to_string(),
-                    temp_path.to_str().unwrap().to_string(),
+                    temp_path
+                        .to_str()
+                        .expect("Temp path should be valid UTF-8")
+                        .to_string(),
                 )];
 
                 // Copy annotations for this sample

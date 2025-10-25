@@ -303,7 +303,12 @@ impl Client {
         let token_path = match token_path {
             Some(path) => path.to_path_buf(),
             None => ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-                .unwrap()
+                .ok_or_else(|| {
+                    Error::IoError(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Could not determine user config directory",
+                    ))
+                })?
                 .config_dir()
                 .join("token"),
         };
@@ -342,12 +347,12 @@ impl Client {
 
         let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
             .decode(token_parts[1])
-            .unwrap();
+            .map_err(|_| Error::InvalidToken)?;
         let payload: HashMap<String, serde_json::Value> = serde_json::from_slice(&decoded)?;
         let server = match payload.get("database") {
-            Some(value) => Ok(value.as_str().unwrap().to_string()),
-            None => Err(Error::InvalidToken),
-        }?;
+            Some(value) => value.as_str().ok_or(Error::InvalidToken)?.to_string(),
+            None => return Err(Error::InvalidToken),
+        };
 
         Ok(Client {
             url: format!("https://{}.edgefirst.studio", server),
@@ -359,12 +364,16 @@ impl Client {
     pub async fn save_token(&self) -> Result<(), Error> {
         let path = self.token_path.clone().unwrap_or_else(|| {
             ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-                .unwrap()
-                .config_dir()
-                .join("token")
+                .map(|dirs| dirs.config_dir().join("token"))
+                .unwrap_or_else(|| PathBuf::from(".token"))
         });
 
-        create_dir_all(path.parent().unwrap())?;
+        create_dir_all(path.parent().ok_or_else(|| {
+            Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Token path has no parent directory",
+            ))
+        })?)?;
         let mut file = std::fs::File::create(&path)?;
         file.write_all(self.token.read().await.as_bytes())?;
 
@@ -453,7 +462,7 @@ impl Client {
 
         let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
             .decode(token_parts[1])
-            .unwrap();
+            .map_err(|_| Error::InvalidToken)?;
         let payload: HashMap<String, serde_json::Value> = serde_json::from_slice(&decoded)?;
         match payload.get(field) {
             Some(value) => Ok(value.to_owned()),
@@ -677,7 +686,9 @@ impl Client {
                 let output = output.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = sem.acquire().await.map_err(|_| {
+                        Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                    })?;
 
                     for file_type in file_types {
                         if let Some(data) = sample.download(&client, file_type.clone()).await? {
@@ -711,13 +722,12 @@ impl Client {
 
                     if let Some(progress) = &progress {
                         let current = current.fetch_add(1, Ordering::SeqCst);
-                        progress
+                        let _ = progress
                             .send(Progress {
                                 current: current + 1,
                                 total,
                             })
-                            .await
-                            .unwrap();
+                            .await;
                     }
 
                     Ok::<(), Error>(())
@@ -901,13 +911,15 @@ impl Client {
                     annotation.set_name(sample.name());
                     annotation.set_group(sample.group().cloned());
                     annotation.set_sequence_name(sample.sequence_name().cloned());
-                    annotation.set_label_index(Some(labels[annotation.label().unwrap().as_str()]));
+                    if let Some(label) = annotation.label() {
+                        annotation.set_label_index(Some(labels[label.as_str()]));
+                    }
                     annotations.push(annotation);
                 });
             }
 
             if let Some(progress) = &progress {
-                progress.send(Progress { current, total }).await.unwrap();
+                let _ = progress.send(Progress { current, total }).await;
             }
 
             match &continue_token {
@@ -1016,7 +1028,7 @@ impl Client {
             );
 
             if let Some(progress) = &progress {
-                progress.send(Progress { current, total }).await.unwrap();
+                let _ = progress.send(Progress { current, total }).await;
             }
 
             match &continue_token {
@@ -1148,7 +1160,8 @@ impl Client {
                     sample.uuid = Some(uuid::Uuid::new_v4().to_string());
                 }
 
-                let sample_uuid = sample.uuid.clone().unwrap();
+                // Safe: We just ensured uuid is Some above
+                let sample_uuid = sample.uuid.clone().expect("UUID just set above");
 
                 // Process files: detect local paths and queue for upload
                 let updated_files: Vec<crate::SampleFile> = sample
@@ -1239,7 +1252,9 @@ impl Client {
                     let upload_map = upload_map.clone();
 
                     tokio::spawn(async move {
-                        let _permit = sem.acquire().await.unwrap();
+                        let _permit = sem.acquire().await.map_err(|_| {
+                            Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                        })?;
 
                         // Upload all files for this sample
                         for url_info in &urls {
@@ -1259,13 +1274,12 @@ impl Client {
                         // Update progress after uploading all files for this sample
                         if let Some(progress) = &progress {
                             let current = current.fetch_add(1, Ordering::SeqCst);
-                            progress
+                            let _ = progress
                                 .send(Progress {
                                     current: current + 1,
                                     total,
                                 })
-                                .await
-                                .unwrap();
+                                .await;
                         }
 
                         Ok::<(), Error>(())
@@ -1336,7 +1350,7 @@ impl Client {
         let annotations = self
             .annotations(annotation_set_id, groups, types, progress)
             .await?;
-        Ok(annotations_dataframe(&annotations))
+        annotations_dataframe(&annotations)
     }
 
     /// List available snapshots.  If a name is provided, only snapshots
@@ -1375,17 +1389,26 @@ impl Client {
         let path = Path::new(path);
 
         if path.is_dir() {
-            return self
-                .create_snapshot_folder(path.to_str().unwrap(), progress)
-                .await;
+            let path_str = path.to_str().ok_or_else(|| {
+                Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Path contains invalid UTF-8",
+                ))
+            })?;
+            return self.create_snapshot_folder(path_str, progress).await;
         }
 
-        let name = path.file_name().unwrap().to_str().unwrap();
+        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid filename",
+            ))
+        })?;
         let total = path.metadata()?.len() as usize;
         let current = Arc::new(AtomicUsize::new(0));
 
         if let Some(progress) = &progress {
-            progress.send(Progress { current: 0, total }).await.unwrap();
+            let _ = progress.send(Progress { current: 0, total }).await;
         }
 
         let params = SnapshotCreateMultipartParams {
@@ -1406,7 +1429,12 @@ impl Client {
         };
 
         let snapshot = self.snapshot(snapshot_id).await?;
-        let part_prefix = snapshot.path().split("::/").last().unwrap().to_owned();
+        let part_prefix = snapshot
+            .path()
+            .split("::/")
+            .last()
+            .ok_or(Error::InvalidResponse)?
+            .to_owned();
         let part_key = format!("{}/{}", part_prefix, name);
         let mut part = match multipart.get(&part_key) {
             Some(SnapshotCreateMultipartResultField::Part(part)) => part,
@@ -1454,32 +1482,39 @@ impl Client {
         progress: Option<Sender<Progress>>,
     ) -> Result<Snapshot, Error> {
         let path = Path::new(path);
-        let name = path.file_name().unwrap().to_str().unwrap();
+        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid directory name",
+            ))
+        })?;
 
         let files = WalkDir::new(path)
             .into_iter()
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.path().strip_prefix(path).unwrap().to_owned())
+            .filter_map(|entry| entry.path().strip_prefix(path).ok().map(|p| p.to_owned()))
             .collect::<Vec<_>>();
 
-        let total = files
+        let total: usize = files
             .iter()
-            .map(|file| path.join(file).metadata().unwrap().len() as usize)
+            .filter_map(|file| path.join(file).metadata().ok())
+            .map(|metadata| metadata.len() as usize)
             .sum();
         let current = Arc::new(AtomicUsize::new(0));
 
         if let Some(progress) = &progress {
-            progress.send(Progress { current: 0, total }).await.unwrap();
+            let _ = progress.send(Progress { current: 0, total }).await;
         }
 
         let keys = files
             .iter()
-            .map(|key| key.to_str().unwrap().to_owned())
+            .filter_map(|key| key.to_str().map(|s| s.to_owned()))
             .collect::<Vec<_>>();
         let file_sizes = files
             .iter()
-            .map(|key| path.join(key).metadata().unwrap().len() as usize)
+            .filter_map(|key| path.join(key).metadata().ok())
+            .map(|metadata| metadata.len() as usize)
             .collect::<Vec<_>>();
 
         let params = SnapshotCreateMultipartParams {
@@ -1501,10 +1536,21 @@ impl Client {
         };
 
         let snapshot = self.snapshot(snapshot_id).await?;
-        let part_prefix = snapshot.path().split("::/").last().unwrap().to_owned();
+        let part_prefix = snapshot
+            .path()
+            .split("::/")
+            .last()
+            .ok_or(Error::InvalidResponse)?
+            .to_owned();
 
         for file in files {
-            let part_key = format!("{}/{}", part_prefix, file.to_str().unwrap());
+            let file_str = file.to_str().ok_or_else(|| {
+                Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "File path contains invalid UTF-8",
+                ))
+            })?;
+            let part_key = format!("{}/{}", part_prefix, file_str);
             let mut part = match multipart.get(&part_key) {
                 Some(SnapshotCreateMultipartResultField::Part(part)) => part,
                 _ => return Err(Error::InvalidResponse),
@@ -1580,42 +1626,44 @@ impl Client {
                 let sem = sem.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
-                    let res = http.get(url).send().await.unwrap();
-                    let content_length = res.content_length().unwrap() as usize;
+                    let _permit = sem.acquire().await.map_err(|_| {
+                        Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                    })?;
+                    let res = http.get(url).send().await?;
+                    let content_length = res.content_length().unwrap_or(0) as usize;
 
                     if let Some(progress) = &progress {
                         let total = total.fetch_add(content_length, Ordering::SeqCst);
-                        progress
+                        let _ = progress
                             .send(Progress {
                                 current: current.load(Ordering::SeqCst),
                                 total: total + content_length,
                             })
-                            .await
-                            .unwrap();
+                            .await;
                     }
 
-                    let mut file = File::create(output.join(key)).await.unwrap();
+                    let mut file = File::create(output.join(key)).await?;
                     let mut stream = res.bytes_stream();
 
                     while let Some(chunk) = stream.next().await {
-                        let chunk = chunk.unwrap();
-                        file.write_all(&chunk).await.unwrap();
+                        let chunk = chunk?;
+                        file.write_all(&chunk).await?;
                         let len = chunk.len();
 
                         if let Some(progress) = &progress {
                             let total = total.load(Ordering::SeqCst);
                             let current = current.fetch_add(len, Ordering::SeqCst);
 
-                            progress
+                            let _ = progress
                                 .send(Progress {
                                     current: current + len,
                                     total,
                                 })
-                                .await
-                                .unwrap();
+                                .await;
                         }
                     }
+
+                    Ok::<(), Error>(())
                 })
             })
             .collect::<Vec<_>>();
@@ -1623,8 +1671,9 @@ impl Client {
         join_all(tasks)
             .await
             .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(())
     }
@@ -1799,11 +1848,13 @@ impl Client {
             return Err(Error::HttpError(err));
         }
 
-        fs::create_dir_all(filename.parent().unwrap()).await?;
+        if let Some(parent) = filename.parent() {
+            fs::create_dir_all(parent).await?;
+        }
 
         if let Some(progress) = progress {
-            let total = resp.content_length().unwrap() as usize;
-            progress.send(Progress { current: 0, total }).await.unwrap();
+            let total = resp.content_length().unwrap_or(0) as usize;
+            let _ = progress.send(Progress { current: 0, total }).await;
 
             let mut file = File::create(filename).await?;
             let mut current = 0;
@@ -1813,7 +1864,7 @@ impl Client {
                 let chunk = item?;
                 file.write_all(&chunk).await?;
                 current += chunk.len();
-                progress.send(Progress { current, total }).await.unwrap();
+                let _ = progress.send(Progress { current, total }).await;
             }
         } else {
             let body = resp.bytes().await?;
@@ -1856,11 +1907,13 @@ impl Client {
             return Err(Error::HttpError(err));
         }
 
-        fs::create_dir_all(filename.parent().unwrap()).await?;
+        if let Some(parent) = filename.parent() {
+            fs::create_dir_all(parent).await?;
+        }
 
         if let Some(progress) = progress {
-            let total = resp.content_length().unwrap() as usize;
-            progress.send(Progress { current: 0, total }).await.unwrap();
+            let total = resp.content_length().unwrap_or(0) as usize;
+            let _ = progress.send(Progress { current: 0, total }).await;
 
             let mut file = File::create(filename).await?;
             let mut current = 0;
@@ -1870,7 +1923,7 @@ impl Client {
                 let chunk = item?;
                 file.write_all(&chunk).await?;
                 current += chunk.len();
-                progress.send(Progress { current, total }).await.unwrap();
+                let _ = progress.send(Progress { current, total }).await;
             }
         } else {
             let body = resp.bytes().await?;
@@ -2168,7 +2221,7 @@ async fn upload_multipart(
     let n_parts = filesize.div_ceil(PART_SIZE);
     let sem = Arc::new(Semaphore::new(MAX_TASKS));
 
-    let key = part.key.unwrap();
+    let key = part.key.ok_or(Error::InvalidResponse)?;
     let upload_id = part.upload_id;
 
     let urls = part.urls.clone();
@@ -2217,13 +2270,12 @@ async fn upload_multipart(
 
                     let current = current.fetch_add(PART_SIZE, Ordering::SeqCst);
                     if let Some(progress) = &progress {
-                        progress
+                        let _ = progress
                             .send(Progress {
                                 current: current + PART_SIZE,
                                 total,
                             })
-                            .await
-                            .unwrap();
+                            .await;
                     }
 
                     Ok(())
@@ -2254,10 +2306,9 @@ async fn upload_part(
     n_parts: usize,
 ) -> Result<String, Error> {
     let filesize = path.metadata()?.len() as usize;
-    let mut file = File::open(path).await.unwrap();
+    let mut file = File::open(path).await?;
     file.seek(SeekFrom::Start((part * PART_SIZE) as u64))
-        .await
-        .unwrap();
+        .await?;
     let file = file.take(PART_SIZE as u64);
 
     let body_length = if part + 1 == n_parts {
@@ -2276,20 +2327,24 @@ async fn upload_part(
         .send()
         .await?
         .error_for_status()?;
+
     let etag = resp
         .headers()
         .get("etag")
-        .unwrap()
+        .ok_or_else(|| Error::InvalidEtag("Missing ETag header".to_string()))?
         .to_str()
-        .unwrap()
+        .map_err(|_| Error::InvalidEtag("Invalid ETag encoding".to_string()))?
         .to_owned();
+
     // Studio Server requires etag without the quotes.
-    Ok(etag
+    let etag = etag
         .strip_prefix("\"")
-        .unwrap()
+        .ok_or_else(|| Error::InvalidEtag("Missing opening quote".to_string()))?;
+    let etag = etag
         .strip_suffix("\"")
-        .unwrap()
-        .to_owned())
+        .ok_or_else(|| Error::InvalidEtag("Missing closing quote".to_string()))?;
+
+    Ok(etag.to_owned())
 }
 
 /// Upload a complete file to a presigned S3 URL using HTTP PUT.
