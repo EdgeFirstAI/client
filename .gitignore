@@ -41,3 +41,5 @@ THIRD_PARTY*
 
 # Generated man page
 *.1
+
+env.sh

@@ -671,80 +671,50 @@ impl Client {
             .await?;
         fs::create_dir_all(&output).await?;
 
-        let total = samples.len();
-        let current = Arc::new(AtomicUsize::new(0));
-        let sem = Arc::new(Semaphore::new(MAX_TASKS));
+        let client = self.clone();
+        let file_types = file_types.to_vec();
+        let output = output.clone();
 
-        let tasks = samples
-            .into_iter()
-            .map(|sample| {
-                let sem = sem.clone();
-                let client = self.clone();
-                let current = current.clone();
-                let progress = progress.clone();
-                let file_types = file_types.to_vec();
-                let output = output.clone();
+        parallel_foreach_items(samples, progress, move |sample| {
+            let client = client.clone();
+            let file_types = file_types.clone();
+            let output = output.clone();
 
-                tokio::spawn(async move {
-                    let _permit = sem.acquire().await.map_err(|_| {
-                        Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
-                    })?;
+            async move {
+                for file_type in file_types {
+                    if let Some(data) = sample.download(&client, file_type.clone()).await? {
+                        let file_ext = match file_type {
+                            FileType::Image => infer::get(&data)
+                                .expect("Failed to identify image file format for sample")
+                                .extension()
+                                .to_string(),
+                            t => t.to_string(),
+                        };
 
-                    for file_type in file_types {
-                        if let Some(data) = sample.download(&client, file_type.clone()).await? {
-                            let file_ext = match file_type {
-                                FileType::Image => infer::get(&data)
-                                    .expect("Failed to identify image file format for sample")
-                                    .extension()
-                                    .to_string(),
-                                t => t.to_string(),
-                            };
+                        let file_name = format!(
+                            "{}.{}",
+                            sample.name().unwrap_or_else(|| "unknown".to_string()),
+                            file_ext
+                        );
+                        let file_path = output.join(&file_name);
 
-                            let file_name = format!(
-                                "{}.{}",
-                                sample.name().unwrap_or_else(|| "unknown".to_string()),
-                                file_ext
-                            );
-                            let file_path = output.join(&file_name);
-
-                            let mut file = File::create(&file_path).await?;
-                            file.write_all(&data).await?;
-                        } else {
-                            warn!(
-                                "No data for sample: {}",
-                                sample
-                                    .id()
-                                    .map(|id| id.to_string())
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            );
-                        }
+                        let mut file = File::create(&file_path).await?;
+                        file.write_all(&data).await?;
+                    } else {
+                        warn!(
+                            "No data for sample: {}",
+                            sample
+                                .id()
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        );
                     }
+                }
 
-                    if let Some(progress) = &progress {
-                        let current = current.fetch_add(1, Ordering::SeqCst);
-                        let _ = progress
-                            .send(Progress {
-                                current: current + 1,
-                                total,
-                            })
-                            .await;
-                    }
-
-                    Ok::<(), Error>(())
-                })
-            })
-            .collect::<Vec<_>>();
-
-        join_all(tasks)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if let Some(progress) = progress {
-            drop(progress);
-        }
-
-        Ok(())
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// List available annotation sets for the specified dataset.
@@ -1145,8 +1115,6 @@ impl Client {
         use crate::api::SamplesPopulateParams;
         use std::path::Path;
 
-        let total = samples.len();
-
         // Track which files need to be uploaded: (sample_uuid, file_type, local_path,
         // basename)
         let mut files_to_upload: Vec<(String, String, PathBuf, String)> = Vec::new();
@@ -1236,65 +1204,38 @@ impl Client {
                 upload_map.insert((uuid, basename), path);
             }
 
-            let current = Arc::new(AtomicUsize::new(0));
-            let sem = Arc::new(Semaphore::new(MAX_TASKS));
+            let http = self.http.clone();
 
-            // Upload each sample's files in parallel
-            let upload_tasks = results
+            // Extract the data we need for parallel upload
+            let upload_tasks: Vec<_> = results
                 .iter()
-                .map(|result| {
-                    let sem = sem.clone();
-                    let http = self.http.clone();
-                    let current = current.clone();
-                    let progress = progress.clone();
-                    let result_uuid = result.uuid.clone();
-                    let urls = result.urls.clone();
-                    let upload_map = upload_map.clone();
+                .map(|result| (result.uuid.clone(), result.urls.clone()))
+                .collect();
 
-                    tokio::spawn(async move {
-                        let _permit = sem.acquire().await.map_err(|_| {
-                            Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
-                        })?;
+            parallel_foreach_items(upload_tasks, progress.clone(), move |(uuid, urls)| {
+                let http = http.clone();
+                let upload_map = upload_map.clone();
 
-                        // Upload all files for this sample
-                        for url_info in &urls {
-                            if let Some(local_path) =
-                                upload_map.get(&(result_uuid.clone(), url_info.filename.clone()))
-                            {
-                                // Upload the file
-                                upload_file_to_presigned_url(
-                                    http.clone(),
-                                    &url_info.url,
-                                    local_path.clone(),
-                                )
-                                .await?;
-                            }
+                async move {
+                    // Upload all files for this sample
+                    for url_info in &urls {
+                        if let Some(local_path) =
+                            upload_map.get(&(uuid.clone(), url_info.filename.clone()))
+                        {
+                            // Upload the file
+                            upload_file_to_presigned_url(
+                                http.clone(),
+                                &url_info.url,
+                                local_path.clone(),
+                            )
+                            .await?;
                         }
+                    }
 
-                        // Update progress after uploading all files for this sample
-                        if let Some(progress) = &progress {
-                            let current = current.fetch_add(1, Ordering::SeqCst);
-                            let _ = progress
-                                .send(Progress {
-                                    current: current + 1,
-                                    total,
-                                })
-                                .await;
-                        }
-
-                        Ok::<(), Error>(())
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            join_all(upload_tasks)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-        }
-
-        if let Some(progress) = progress {
-            drop(progress);
+                    Ok(())
+                }
+            })
+            .await?;
         }
 
         Ok(results)
@@ -2207,6 +2148,95 @@ impl Client {
 
         Err(Error::MaxRetriesExceeded(MAX_RETRIES))
     }
+}
+
+/// Process items in parallel with semaphore concurrency control and progress
+/// tracking.
+///
+/// This helper eliminates boilerplate for parallel item processing with:
+/// - Semaphore limiting concurrent tasks to MAX_TASKS
+/// - Atomic progress counter with automatic item-level updates
+/// - Progress updates sent after each item completes (not byte-level streaming)
+/// - Proper error propagation from spawned tasks
+///
+/// Note: This is optimized for discrete items with post-completion progress
+/// updates. For byte-level streaming progress or custom retry logic, use
+/// specialized implementations.
+///
+/// # Arguments
+///
+/// * `items` - Collection of items to process in parallel
+/// * `progress` - Optional progress channel for tracking completion
+/// * `work_fn` - Async function to execute for each item
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// parallel_foreach_items(samples, progress, |sample| async move {
+///     // Process sample
+///     sample.download(&client, file_type).await?;
+///     Ok(())
+/// }).await?;
+/// ```
+async fn parallel_foreach_items<T, F, Fut>(
+    items: Vec<T>,
+    progress: Option<Sender<Progress>>,
+    work_fn: F,
+) -> Result<(), Error>
+where
+    T: Send + 'static,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), Error>> + Send + 'static,
+{
+    let total = items.len();
+    let current = Arc::new(AtomicUsize::new(0));
+    let sem = Arc::new(Semaphore::new(MAX_TASKS));
+    let work_fn = Arc::new(work_fn);
+
+    let tasks = items
+        .into_iter()
+        .map(|item| {
+            let sem = sem.clone();
+            let current = current.clone();
+            let progress = progress.clone();
+            let work_fn = work_fn.clone();
+
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.map_err(|_| {
+                    Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                })?;
+
+                // Execute the actual work
+                work_fn(item).await?;
+
+                // Update progress
+                if let Some(progress) = &progress {
+                    let current = current.fetch_add(1, Ordering::SeqCst);
+                    let _ = progress
+                        .send(Progress {
+                            current: current + 1,
+                            total,
+                        })
+                        .await;
+                }
+
+                Ok::<(), Error>(())
+            })
+        })
+        .collect::<Vec<_>>();
+
+    join_all(tasks)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if let Some(progress) = progress {
+        drop(progress);
+    }
+
+    Ok(())
 }
 
 async fn upload_multipart(

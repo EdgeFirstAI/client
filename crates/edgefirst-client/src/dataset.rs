@@ -104,9 +104,13 @@ impl std::str::FromStr for FileType {
 /// ```rust
 /// use edgefirst_client::AnnotationType;
 ///
-/// // Create annotation types from strings
-/// let box_2d = AnnotationType::from("box2d");
-/// let segmentation = AnnotationType::from("mask");
+/// // Create annotation types from strings (using TryFrom)
+/// let box_2d: AnnotationType = "box2d".try_into().unwrap();
+/// let segmentation: AnnotationType = "mask".try_into().unwrap();
+///
+/// // Or use From with String
+/// let box_2d = AnnotationType::from("box2d".to_string());
+/// let segmentation = AnnotationType::from("mask".to_string());
 ///
 /// // Display annotation types
 /// println!("Annotation type: {}", box_2d); // "Annotation type: box2d"
