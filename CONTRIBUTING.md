@@ -197,35 +197,41 @@ cargo llvm-cov --html
 
 ### SonarCloud Code Quality Analysis
 
-The project uses SonarCloud for automated code quality and security analysis. You can download the latest findings locally to assist with fixing issues.
+The project uses SonarCloud for automated code quality and security analysis. You can download the latest findings locally to assist with fixing issues using GitHub Copilot.
 
-**Setup:**
+**Quick Start:**
 
-1. Install the `sonar-tools` package:
-   ```bash
-   pip install sonar-tools
-   ```
-
-2. Create a SonarCloud token:
+1. Create a SonarCloud token:
    - Visit [SonarCloud](https://sonarcloud.io/)
    - Navigate to: Account → Security → Generate Tokens
-   - Create a new token with appropriate permissions
+   - Create a new token with read permissions
 
-3. Set the token as an environment variable:
+2. Set up environment variables:
    ```bash
    export SONAR_TOKEN=your_token_here
+   export SONAR_ORG=edgefirstai
+   export SONAR_PROJECT=EdgeFirstAI_client
    ```
 
-**Download Findings:**
+3. Download current findings (optimized for Copilot):
+   ```bash
+   python3 sonar.py --branch main --output sonar-issues.json --verbose
+   ```
 
-Export the latest SonarCloud findings to a local SARIF file:
-```bash
-sonar-findings-export -u https://sonarcloud.io -o edgefirstai -k EdgeFirstAI_client --format sarif > sonar.json
-```
+4. Use with GitHub Copilot:
+   - Open `sonar-issues.json` in your IDE
+   - Ask Copilot: `@workspace Review sonar-issues.json and help me fix the top critical issues`
 
-The `sonar.json` file contains all code quality issues, security vulnerabilities, and code smells in SARIF format. GitHub Copilot can parse this file to help you understand and fix the identified issues.
+**Advanced Usage:**
 
-**Note:** The `sonar.json` file is gitignored and should not be committed to the repository.
+See [SONAR_INTEGRATION.md](SONAR_INTEGRATION.md) for complete documentation including:
+- Filtering by severity and type
+- Pull request analysis
+- Staleness detection
+- Multiple output formats
+- CI/CD integration examples
+
+**Note:** The `sonar-issues.json` file is gitignored and should not be committed to the repository.
 
 ### Studio Integration Tests
 
