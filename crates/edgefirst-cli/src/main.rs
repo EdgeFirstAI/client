@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
-
 use clap::{Parser, Subcommand};
 use edgefirst_client::{AnnotationType, Client, Error, FileType, Progress};
-use indicatif::ProgressStyle;
 use inquire::{Password, PasswordDisplayMode};
-use std::{fs::File, io::Write as _, path::PathBuf};
-use tokio::sync::mpsc;
+use std::{fs::File, path::PathBuf};
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -314,6 +309,1011 @@ enum Command {
     },
 }
 
+// Command handler functions
+
+async fn handle_version(client: &Client) -> Result<(), Error> {
+    let version = client.version().await?;
+    println!(
+        "EdgeFirst Studio Server [{}]: {} Client: {}",
+        client.url(),
+        version,
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(())
+}
+
+async fn handle_login(
+    client: Client,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<(), Error> {
+    let (username, password) = match (username, password) {
+        (Some(username), Some(password)) => (username, password),
+        (Some(username), None) => {
+            let password = Password::new("EdgeFirst Studio Password")
+                .with_display_mode(PasswordDisplayMode::Masked)
+                .without_confirmation()
+                .prompt()
+                .unwrap();
+            (username, password)
+        }
+        _ => {
+            let username = Password::new("EdgeFirst Studio Username")
+                .with_display_mode(PasswordDisplayMode::Full)
+                .without_confirmation()
+                .prompt()
+                .unwrap();
+            let password = Password::new("EdgeFirst Studio Password")
+                .with_display_mode(PasswordDisplayMode::Masked)
+                .without_confirmation()
+                .prompt()
+                .unwrap();
+            (username, password)
+        }
+    };
+
+    let client = client.with_login(&username, &password).await?;
+    client.save_token().await?;
+
+    let username = client.username().await?;
+    let expires = client.token_expiration().await?;
+
+    println!("Successfully logged into EdgeFirst Studio as {}", username);
+    println!("Token for {} expires at {}", client.url(), expires);
+
+    Ok(())
+}
+
+async fn handle_logout(client: &Client) -> Result<(), Error> {
+    client.logout().await?;
+    println!("Successfully logged out of EdgeFirst Studio");
+    Ok(())
+}
+
+async fn handle_token(client: &Client) -> Result<(), Error> {
+    let token = client.token().await;
+    println!("{}", token);
+    Ok(())
+}
+
+async fn handle_organization(client: &Client) -> Result<(), Error> {
+    let org = client.organization().await?;
+    println!(
+        "Username: {}\nOrganization: {}\nID: {}\nCredits: {}",
+        client.username().await?,
+        org.name(),
+        org.id(),
+        org.credits()
+    );
+    Ok(())
+}
+
+async fn handle_projects(client: &Client, name: Option<String>) -> Result<(), Error> {
+    let projects = client.projects(name.as_deref()).await?;
+    for project in projects {
+        println!(
+            "[{}] {}: {}",
+            project.id(),
+            project.name(),
+            project.description()
+        );
+    }
+    Ok(())
+}
+
+async fn handle_project(client: &Client, project_id: String) -> Result<(), Error> {
+    let project = client.project(project_id.try_into()?).await?;
+    println!(
+        "[{}] {}: {}",
+        project.id(),
+        project.name(),
+        project.description()
+    );
+    Ok(())
+}
+
+async fn handle_datasets(
+    client: &Client,
+    project_id: Option<String>,
+    annotation_sets: bool,
+    labels: bool,
+    name: Option<String>,
+) -> Result<(), Error> {
+    if let Some(project_id) = project_id {
+        let datasets = client
+            .datasets(project_id.try_into()?, name.as_deref())
+            .await?;
+        for dataset in datasets {
+            println!(
+                "[{}] {}: {}",
+                dataset.uid(),
+                dataset.name(),
+                dataset.description()
+            );
+
+            if labels {
+                let labels = client.labels(dataset.id()).await?;
+                println!("Labels:");
+                for label in labels {
+                    println!("    [{}] {}", label.id(), label.name());
+                }
+            }
+
+            if annotation_sets {
+                let annotation_sets = client.annotation_sets(dataset.id()).await?;
+                println!("Annotation Sets:");
+                for annotation_set in annotation_sets {
+                    println!(
+                        "[{}] {}: {}",
+                        annotation_set.uid(),
+                        annotation_set.name(),
+                        annotation_set.description(),
+                    );
+                }
+            }
+        }
+    } else {
+        let projects = client.projects(None).await?;
+        for project in projects {
+            let datasets = client.datasets(project.id(), name.as_deref()).await?;
+            for dataset in datasets {
+                println!(
+                    "[{}] {}: {}",
+                    dataset.uid(),
+                    dataset.name(),
+                    dataset.description()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_dataset(
+    client: &Client,
+    dataset_id: String,
+    annotation_sets: bool,
+    labels: bool,
+) -> Result<(), Error> {
+    let dataset = client.dataset(dataset_id.clone().try_into()?).await?;
+    println!(
+        "[{}] {}: {}",
+        dataset.uid(),
+        dataset.name(),
+        dataset.description()
+    );
+
+    if labels {
+        let labels = client.labels(dataset_id.clone().try_into()?).await?;
+        println!("Labels:");
+        for label in labels {
+            println!("    [{}] {}", label.id(), label.name());
+        }
+    }
+
+    if annotation_sets {
+        let annotation_sets = client.annotation_sets(dataset_id.try_into()?).await?;
+        println!("Annotation Sets:");
+        for annotation_set in annotation_sets {
+            println!(
+                "[{}] {}: {}",
+                annotation_set.uid(),
+                annotation_set.name(),
+                annotation_set.description(),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_create_dataset(
+    client: &Client,
+    project_id: String,
+    name: String,
+    description: Option<String>,
+) -> Result<(), Error> {
+    let project_id: edgefirst_client::ProjectID = project_id.try_into()?;
+    let dataset_id = client
+        .create_dataset(
+            project_id.to_string().as_str(),
+            &name,
+            description.as_deref(),
+        )
+        .await?;
+    println!("Created dataset with ID: {}", dataset_id);
+    Ok(())
+}
+
+async fn handle_delete_dataset(client: &Client, dataset_id: String) -> Result<(), Error> {
+    let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
+    client.delete_dataset(dataset_id).await?;
+    println!("Dataset {} marked as deleted", dataset_id);
+    Ok(())
+}
+
+async fn handle_create_annotation_set(
+    client: &Client,
+    dataset_id: String,
+    name: String,
+    description: Option<String>,
+) -> Result<(), Error> {
+    let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
+    let annotation_set_id = client
+        .create_annotation_set(dataset_id, &name, description.as_deref())
+        .await?;
+    println!("Created annotation set with ID: {}", annotation_set_id);
+    Ok(())
+}
+
+async fn handle_delete_annotation_set(
+    client: &Client,
+    annotation_set_id: String,
+) -> Result<(), Error> {
+    let annotation_set_id: edgefirst_client::AnnotationSetID = annotation_set_id.try_into()?;
+    client.delete_annotation_set(annotation_set_id).await?;
+    println!("Annotation set {} marked as deleted", annotation_set_id);
+    Ok(())
+}
+
+async fn handle_download_dataset(
+    client: &Client,
+    dataset_id: String,
+    groups: Vec<String>,
+    types: Vec<edgefirst_client::FileType>,
+    output: PathBuf,
+) -> Result<(), Error> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use tokio::sync::mpsc;
+
+    let bar = ProgressBar::new(0);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise} ETA: {eta}] {msg}: {wide_bar:.yellow} {human_pos}/{human_len}",
+        )
+        .unwrap()
+        .progress_chars("█▇▆▅▄▃▂▁  "),
+    );
+
+    let (tx, mut rx) = mpsc::channel::<Progress>(1);
+
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if progress.total > 0 {
+                bar.set_length(progress.total as u64);
+                bar.set_position(progress.current as u64);
+            }
+        }
+    });
+
+    client
+        .download_dataset(dataset_id.try_into()?, &groups, &types, output, Some(tx))
+        .await?;
+    Ok(())
+}
+
+async fn handle_download_annotations(
+    client: &Client,
+    annotation_set_id: String,
+    groups: Vec<String>,
+    types: Vec<edgefirst_client::AnnotationType>,
+    output: PathBuf,
+) -> Result<(), Error> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use std::io::Write;
+    use tokio::sync::mpsc;
+
+    let bar = ProgressBar::new(0);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise} ETA: {eta}] {msg}: {wide_bar:.yellow} {human_pos}/{human_len}",
+        )
+        .unwrap()
+        .progress_chars("█▇▆▅▄▃▂▁  "),
+    );
+
+    let (tx, mut rx) = mpsc::channel::<Progress>(1);
+
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if progress.total > 0 {
+                bar.set_length(progress.total as u64);
+                bar.set_position(progress.current as u64);
+            }
+        }
+    });
+
+    let annotations = client
+        .annotations(annotation_set_id.try_into()?, &groups, &types, Some(tx))
+        .await?;
+
+    let format = output
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_lowercase());
+
+    match format {
+        Some(ext) if ext == "json" => {
+            let mut file = File::create(&output)?;
+            file.write_all(serde_json::to_string_pretty(&annotations)?.as_bytes())?;
+        }
+        Some(ext) if ext == "arrow" => {
+            #[cfg(feature = "polars")]
+            {
+                use polars::{io::SerWriter as _, prelude::IpcWriter};
+
+                let mut df = edgefirst_client::annotations_dataframe(&annotations)?;
+                IpcWriter::new(File::create(output).unwrap())
+                    .finish(&mut df)
+                    .unwrap();
+            }
+            #[cfg(not(feature = "polars"))]
+            {
+                return Err(Error::FeatureNotEnabled("polars".to_owned()));
+            }
+        }
+        _ => {
+            return Err(Error::InvalidParameters(format!(
+                "Unsupported output format: {:?}",
+                format
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "polars")]
+async fn handle_upload_dataset(
+    client: &Client,
+    dataset_id: String,
+    annotation_set_id: Option<String>,
+    annotations: Option<PathBuf>,
+    images: Option<PathBuf>,
+) -> Result<(), Error> {
+    use polars::prelude::*;
+    use std::{collections::HashMap, path::Path};
+
+    // Validate inputs
+    if annotations.is_none() && images.is_none() {
+        return Err(Error::InvalidParameters(
+            "Must provide at least one of --annotations or --images".to_owned(),
+        ));
+    }
+
+    // Warning: annotations exist but no annotation_set_id
+    if annotations.is_some() && annotation_set_id.is_none() {
+        eprintln!("⚠️  Warning: Arrow file provided but no --annotation-set-id specified.");
+        eprintln!("   Annotations in the Arrow file will NOT be uploaded.");
+        eprintln!("   Only images will be imported.");
+    }
+
+    // Warning: annotation_set_id provided but no annotations
+    if annotation_set_id.is_some() && annotations.is_none() {
+        eprintln!("⚠️  Warning: --annotation-set-id provided but no --annotations file.");
+        eprintln!("   No annotations will be read or uploaded.");
+        eprintln!("   Only images will be imported.");
+    }
+
+    // Determine images path
+    let images_path = if let Some(ref img_path) = images {
+        img_path.clone()
+    } else if let Some(ref arrow_path) = annotations {
+        let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
+        let arrow_stem = arrow_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("dataset");
+
+        let folder = arrow_dir.join(arrow_stem);
+        if folder.exists() && folder.is_dir() {
+            folder
+        } else {
+            let dataset_folder = arrow_dir.join("dataset");
+            if dataset_folder.exists() && dataset_folder.is_dir() {
+                dataset_folder
+            } else {
+                let zip_file = arrow_dir.join(format!("{}.zip", arrow_stem));
+                if zip_file.exists() {
+                    zip_file
+                } else {
+                    let dataset_zip = arrow_dir.join("dataset.zip");
+                    if dataset_zip.exists() {
+                        dataset_zip
+                    } else {
+                        return Err(Error::InvalidParameters(format!(
+                            "Could not find images. Tried:\n  - {}/\n  - {}/\n  - {}\n  - {}\nPlease specify --images explicitly.",
+                            folder.display(),
+                            dataset_folder.display(),
+                            zip_file.display(),
+                            dataset_zip.display()
+                        )));
+                    }
+                }
+            }
+        }
+    } else {
+        return Err(Error::InvalidParameters(
+            "When --annotations is not provided, --images must be specified".to_owned(),
+        ));
+    };
+
+    if !images_path.exists() {
+        return Err(Error::InvalidParameters(format!(
+            "Images path does not exist: {}",
+            images_path.display()
+        )));
+    }
+
+    // Parse annotations from Arrow if provided
+    let mut samples_map: HashMap<String, (Option<String>, Vec<edgefirst_client::Annotation>)> =
+        HashMap::new();
+    let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
+
+    if let Some(ref arrow_path) = annotations {
+        let mut file = File::open(arrow_path)?;
+        let df = IpcReader::new(&mut file)
+            .finish()
+            .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
+
+        for idx in 0..df.height() {
+            let name = df
+                .column("name")
+                .map_err(|e| Error::InvalidParameters(format!("Missing 'name' column: {}", e)))?
+                .str()
+                .map_err(|e| {
+                    Error::InvalidParameters(format!("Invalid 'name' column type: {}", e))
+                })?
+                .get(idx)
+                .ok_or_else(|| Error::InvalidParameters("Missing name value".to_owned()))?
+                .to_string();
+
+            let sample_group = df
+                .column("group")
+                .ok()
+                .and_then(|c| c.str().ok())
+                .and_then(|s| s.get(idx))
+                .map(|s| s.to_string());
+
+            let entry = samples_map
+                .entry(name.clone())
+                .or_insert((sample_group, Vec::new()));
+
+            if should_upload_annotations {
+                let mut has_annotation = false;
+                let mut geometry_count = 0;
+                let mut annotation = edgefirst_client::Annotation::new();
+
+                if let Some(label) = df
+                    .column("label")
+                    .ok()
+                    .and_then(|c| c.str().ok())
+                    .and_then(|s| s.get(idx))
+                    .map(|s| s.to_string())
+                    && !label.is_empty()
+                {
+                    annotation.set_label(Some(label));
+                    has_annotation = true;
+                }
+
+                let object_id = df
+                    .column("object_id")
+                    .ok()
+                    .and_then(|c| c.str().ok())
+                    .and_then(|s| s.get(idx))
+                    .and_then(|s| {
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
+                    });
+
+                if let Some(ref obj_id) = object_id {
+                    annotation.set_object_id(Some(obj_id.clone()));
+                }
+
+                if let Ok(box2d_col) = df.column("box2d")
+                    && let Ok(array_chunked) = box2d_col.array()
+                    && let Some(array_series) = array_chunked.get_as_series(idx)
+                    && let Ok(values) = array_series.f32()
+                {
+                    let coords: Vec<f32> = values.into_iter().flatten().collect();
+                    if coords.len() >= 4 {
+                        let cx = coords[0];
+                        let cy = coords[1];
+                        let w = coords[2];
+                        let h = coords[3];
+                        let x = cx - w / 2.0;
+                        let y = cy - h / 2.0;
+                        let bbox = edgefirst_client::Box2d::new(x, y, w, h);
+                        annotation.set_box2d(Some(bbox));
+                        has_annotation = true;
+                        geometry_count += 1;
+                    }
+                }
+
+                if let Ok(box3d_col) = df.column("box3d")
+                    && let Ok(array_chunked) = box3d_col.array()
+                    && let Some(array_series) = array_chunked.get_as_series(idx)
+                    && let Ok(values) = array_series.f32()
+                {
+                    let coords: Vec<f32> = values.into_iter().flatten().collect();
+                    if coords.len() >= 6 {
+                        let box3d = edgefirst_client::Box3d::new(
+                            coords[0], coords[1], coords[2], coords[3], coords[4], coords[5],
+                        );
+                        annotation.set_box3d(Some(box3d));
+                        has_annotation = true;
+                        geometry_count += 1;
+                    }
+                }
+
+                if let Ok(mask_col) = df.column("mask")
+                    && let Ok(list_chunked) = mask_col.list()
+                    && let Some(mask_series) = list_chunked.get_as_series(idx)
+                    && let Ok(values) = mask_series.f32()
+                {
+                    let coords: Vec<f32> = values.into_iter().flatten().collect();
+                    if !coords.is_empty() && coords.len().is_multiple_of(2) {
+                        let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
+                        let mut current_polygon: Vec<(f32, f32)> = Vec::new();
+
+                        let mut i = 0;
+                        while i < coords.len() {
+                            let x = coords[i];
+                            let y = coords[i + 1];
+
+                            if x.is_nan() || y.is_nan() {
+                                if !current_polygon.is_empty() {
+                                    polygons.push(current_polygon.clone());
+                                    current_polygon.clear();
+                                }
+                            } else {
+                                current_polygon.push((x, y));
+                            }
+                            i += 2;
+                        }
+
+                        if !current_polygon.is_empty() {
+                            polygons.push(current_polygon);
+                        }
+
+                        if !polygons.is_empty() {
+                            let mask = edgefirst_client::Mask::new(polygons);
+                            annotation.set_mask(Some(mask));
+                            has_annotation = true;
+                            geometry_count += 1;
+                        }
+                    }
+                }
+
+                if geometry_count > 1 && object_id.is_none() {
+                    let generated_uuid = uuid::Uuid::new_v4().to_string();
+                    annotation.set_object_id(Some(generated_uuid));
+                }
+
+                if has_annotation {
+                    entry.1.push(annotation);
+                }
+            }
+        }
+    }
+
+    let mut samples = Vec::new();
+
+    if !samples_map.is_empty() {
+        for (image_name, (sample_group, annotations)) in samples_map {
+            let image_path = if images_path.is_dir() {
+                let entries = std::fs::read_dir(&images_path)?;
+                let mut found_path = None;
+
+                for entry in entries {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if file_name.starts_with(&image_name)
+                            && (file_name == image_name
+                                || file_name
+                                    .strip_prefix(&image_name)
+                                    .map(|s| s.starts_with('.'))
+                                    .unwrap_or(false))
+                        {
+                            found_path = Some(path);
+                            break;
+                        }
+                    }
+                }
+
+                found_path.ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "Image file not found for sample: {}",
+                        image_name
+                    ))
+                })?
+            } else {
+                return Err(Error::InvalidParameters(
+                    "ZIP file support not yet implemented".to_owned(),
+                ));
+            };
+
+            let image_file = edgefirst_client::SampleFile::with_filename(
+                "image".to_string(),
+                image_path.to_str().unwrap().to_string(),
+            );
+
+            let sample = edgefirst_client::Sample {
+                image_name: Some(image_name.clone()),
+                group: sample_group,
+                files: vec![image_file],
+                annotations,
+                ..Default::default()
+            };
+
+            samples.push(sample);
+        }
+    } else {
+        if images_path.is_dir() {
+            let entries = std::fs::read_dir(&images_path)?;
+
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+
+                if !path.is_file() {
+                    continue;
+                }
+
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_lowercase();
+                    if !matches!(
+                        ext_lower.as_str(),
+                        "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "tif" | "webp"
+                    ) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| {
+                        Error::InvalidParameters(format!("Invalid filename: {}", path.display()))
+                    })?
+                    .to_string();
+
+                let image_file = edgefirst_client::SampleFile::with_filename(
+                    "image".to_string(),
+                    path.to_str().unwrap().to_string(),
+                );
+
+                let sample = edgefirst_client::Sample {
+                    image_name: Some(file_name),
+                    group: None,
+                    files: vec![image_file],
+                    annotations: Vec::new(),
+                    ..Default::default()
+                };
+
+                samples.push(sample);
+            }
+        } else {
+            return Err(Error::InvalidParameters(
+                "ZIP file support not yet implemented".to_owned(),
+            ));
+        }
+    }
+
+    if samples.is_empty() {
+        return Err(Error::InvalidParameters(
+            "No samples to upload. Check that images exist.".to_owned(),
+        ));
+    }
+
+    println!(
+        "Uploading {} samples to dataset {}...",
+        samples.len(),
+        dataset_id
+    );
+
+    let bar = indicatif::ProgressBar::new(samples.len() as u64);
+    bar.set_style(
+        indicatif::ProgressStyle::with_template(
+            "[{elapsed_precise} ETA: {eta}] Uploading samples: {wide_bar:.yellow} {human_pos}/{human_len}"
+        )
+        .unwrap()
+        .progress_chars("█▇▆▅▄▃▂▁  "),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if progress.total > 0 {
+                bar.set_length(progress.total as u64);
+                bar.set_position(progress.current as u64);
+            }
+        }
+        bar.finish_with_message("Upload complete");
+    });
+
+    const BATCH_SIZE: usize = 500;
+    let mut all_results = Vec::new();
+
+    let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
+    let annotation_set_id_parsed = if should_upload_annotations {
+        Some(annotation_set_id.unwrap().try_into()?)
+    } else {
+        None
+    };
+
+    for (batch_num, batch) in samples.chunks(BATCH_SIZE).enumerate() {
+        if samples.len() > BATCH_SIZE {
+            println!(
+                "Uploading batch {}/{} ({} samples)...",
+                batch_num + 1,
+                samples.len().div_ceil(BATCH_SIZE),
+                batch.len()
+            );
+        }
+
+        let results = client
+            .populate_samples(
+                dataset_id_parsed,
+                annotation_set_id_parsed,
+                batch.to_vec(),
+                Some(tx.clone()),
+            )
+            .await?;
+
+        all_results.extend(results);
+    }
+
+    drop(tx);
+
+    println!("Successfully uploaded {} samples", all_results.len());
+    for result in all_results.iter().take(10) {
+        println!("  Sample UUID: {}", result.uuid);
+    }
+    if all_results.len() > 10 {
+        println!("  ... and {} more", all_results.len() - 10);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "polars"))]
+async fn handle_upload_dataset(
+    _client: &Client,
+    _dataset_id: String,
+    _annotation_set_id: Option<String>,
+    _annotations: Option<PathBuf>,
+    _images: Option<PathBuf>,
+) -> Result<(), Error> {
+    Err(Error::FeatureNotEnabled("polars".to_owned()))
+}
+
+async fn handle_experiments(
+    client: &Client,
+    project_id: Option<String>,
+    name: Option<String>,
+) -> Result<(), Error> {
+    let projects = if let Some(project_id) = project_id {
+        vec![client.project(project_id.try_into()?).await?]
+    } else {
+        client.projects(None).await?
+    };
+
+    for project in projects {
+        println!("{}", project.name());
+
+        let experiments = client.experiments(project.id(), name.as_deref()).await?;
+        for experiment in experiments {
+            println!(
+                "    [{}] {}: {}",
+                experiment.uid(),
+                experiment.name(),
+                experiment.description()
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_experiment(client: &Client, experiment_id: String) -> Result<(), Error> {
+    let experiment = client.experiment(experiment_id.try_into()?).await?;
+    println!(
+        "[{}] {}: {}",
+        experiment.uid(),
+        experiment.name(),
+        experiment.description()
+    );
+    Ok(())
+}
+
+async fn handle_training_sessions(
+    client: &Client,
+    experiment_id: Option<String>,
+    name: Option<String>,
+) -> Result<(), Error> {
+    if let Some(experiment_id) = experiment_id {
+        let sessions = client
+            .training_sessions(experiment_id.try_into()?, name.as_deref())
+            .await?;
+        for session in sessions {
+            println!(
+                "{} ({}) {}",
+                session.uid(),
+                session.task().status(),
+                session.name()
+            );
+
+            for artifact in client.artifacts(session.id()).await? {
+                println!("    - {}", artifact.name());
+            }
+        }
+    } else {
+        let projects = client.projects(None).await?;
+        for project in projects {
+            let trainers = client.experiments(project.id(), None).await?;
+            for trainer in trainers {
+                let sessions = client
+                    .training_sessions(trainer.id(), name.as_deref())
+                    .await?;
+                for session in sessions {
+                    println!(
+                        "{} ({}) {}",
+                        session.uid(),
+                        session.task().status(),
+                        session.name()
+                    );
+
+                    for artifact in client.artifacts(session.id()).await? {
+                        println!("    - {}", artifact.name());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_training_session(
+    client: &Client,
+    training_session_id: String,
+    model: bool,
+    dataset: bool,
+    artifacts: bool,
+) -> Result<(), Error> {
+    let session = client
+        .training_session(training_session_id.clone().try_into()?)
+        .await?;
+    println!(
+        "{} ({}) {}",
+        session.uid(),
+        session.task().status(),
+        session.name()
+    );
+
+    if model {
+        println!("Model Parameters: {:?}", session.model_params());
+    }
+
+    if dataset {
+        println!("Dataset Parameters: {:?}", session.dataset_params());
+    }
+
+    if artifacts {
+        println!("Artifacts:");
+        for artifact in client.artifacts(training_session_id.try_into()?).await? {
+            println!("    - {}", artifact.name());
+        }
+    }
+    Ok(())
+}
+
+async fn handle_download_artifact(
+    client: &Client,
+    session_id: String,
+    name: String,
+    output: Option<PathBuf>,
+) -> Result<(), Error> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use tokio::sync::mpsc;
+
+    let bar = ProgressBar::new(0);
+    bar.set_style(ProgressStyle::with_template("[{elapsed_precise}] [{wide_bar:.yellow}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})").unwrap().progress_chars("█▇▆▅▄▃▂▁  "));
+
+    let (tx, mut rx) = mpsc::channel::<Progress>(1);
+
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if progress.total > 0 {
+                bar.set_length(progress.total as u64);
+                bar.set_position(progress.current as u64);
+            }
+        }
+    });
+
+    client
+        .download_artifact(session_id.try_into()?, &name, output, Some(tx))
+        .await?;
+    Ok(())
+}
+
+async fn handle_upload_artifact(
+    client: &Client,
+    session_id: String,
+    path: PathBuf,
+    name: Option<String>,
+) -> Result<(), Error> {
+    let name = name.unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_owned())
+            .unwrap()
+    });
+    let session = client.training_session(session_id.try_into()?).await?;
+    session.upload_artifact(client, &name, path).await?;
+    Ok(())
+}
+
+async fn handle_tasks(
+    client: &Client,
+    stages: bool,
+    name: Option<String>,
+    workflow: Option<String>,
+    status: Option<String>,
+    manager: Option<String>,
+) -> Result<(), Error> {
+    let tasks = client
+        .tasks(
+            name.as_deref(),
+            workflow.as_deref(),
+            status.as_deref(),
+            manager.as_deref(),
+        )
+        .await?;
+    for task in tasks {
+        println!("{} => {}", task, task.status());
+
+        if stages {
+            let info = client.task_info(task.id()).await?;
+            println!("    {:?}", info.stages());
+        }
+    }
+    Ok(())
+}
+
+async fn handle_task(client: &Client, task_id: String) -> Result<(), Error> {
+    let info = client.task_info(task_id.try_into()?).await?;
+    println!("{:?}", info);
+    Ok(())
+}
+
+async fn handle_validation_sessions(client: &Client, project_id: String) -> Result<(), Error> {
+    let sessions = client.validation_sessions(project_id.try_into()?).await?;
+    for session in sessions {
+        println!(
+            "[{}] {}: {}",
+            session.id(),
+            session.name(),
+            session.description()
+        );
+    }
+    Ok(())
+}
+
+async fn handle_validation_session(client: &Client, session_id: String) -> Result<(), Error> {
+    let session = client.validation_session(session_id.try_into()?).await?;
+    println!(
+        "[{}] {}: {}",
+        session.id(),
+        session.name(),
+        session.description()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -333,242 +1333,50 @@ async fn main() -> Result<(), Error> {
         },
     };
 
-    if args.cmd == Command::Version {
-        let version = client.version().await?;
-        println!(
-            "EdgeFirst Studio Server [{}]: {} Client: {}",
-            client.url(),
-            version,
-            env!("CARGO_PKG_VERSION")
-        );
-        return Ok(());
-    } else if args.cmd == Command::Login {
-        let (username, password) = match (args.username, args.password) {
-            (Some(username), Some(password)) => (username, password),
-            (Some(username), None) => {
-                let password = Password::new("EdgeFirst Studio Password")
-                    .with_display_mode(PasswordDisplayMode::Masked)
-                    .without_confirmation()
-                    .prompt()
-                    .unwrap();
-                (username, password)
-            }
-            _ => {
-                let username = Password::new("EdgeFirst Studio Username")
-                    .with_display_mode(PasswordDisplayMode::Full)
-                    .without_confirmation()
-                    .prompt()
-                    .unwrap();
-                let password = Password::new("EdgeFirst Studio Password")
-                    .with_display_mode(PasswordDisplayMode::Masked)
-                    .without_confirmation()
-                    .prompt()
-                    .unwrap();
-                (username, password)
-            }
-        };
-
-        let client = client.with_login(&username, &password).await?;
-        client.save_token().await?;
-
-        let username = client.username().await?;
-        let expires = client.token_expiration().await?;
-
-        println!("Successfully logged into EdgeFirst Studio as {}", username);
-        println!("Token for {} expires at {}", client.url(), expires);
-
-        return Ok(());
-    } else if args.cmd == Command::Logout {
-        client.logout().await?;
-        println!("Successfully logged out of EdgeFirst Studio");
-        return Ok(());
+    // Handle commands that don't need token renewal
+    match &args.cmd {
+        Command::Version => return handle_version(&client).await,
+        Command::Login => {
+            return handle_login(client, args.username, args.password).await;
+        }
+        Command::Logout => return handle_logout(&client).await,
+        _ => {}
     }
 
+    // Renew token for all other commands
     client.renew_token().await?;
 
+    // Handle all other commands
     match args.cmd {
-        Command::Version => (), // Already handled above
-        Command::Login => (),   // Already handled above
-        Command::Logout => (),  // Already handled above
-        Command::Token => {
-            let token = client.token().await;
-            println!("{}", token);
-        }
-        Command::Organization => {
-            let org = client.organization().await?;
-            println!(
-                "Username: {}\nOrganization: {}\nID: {}\nCredits: {}",
-                client.username().await?,
-                org.name(),
-                org.id(),
-                org.credits()
-            );
-        }
-        Command::Projects { name } => {
-            let projects = client.projects(name.as_deref()).await?;
-            for project in projects {
-                println!(
-                    "[{}] {}: {}",
-                    project.id(),
-                    project.name(),
-                    project.description()
-                );
-            }
-        }
-        Command::Project { project_id } => {
-            let project = client.project(project_id.try_into()?).await?;
-            println!(
-                "[{}] {}: {}",
-                project.id(),
-                project.name(),
-                project.description()
-            );
-        }
+        Command::Version | Command::Login | Command::Logout => unreachable!(),
+        Command::Token => handle_token(&client).await,
+        Command::Organization => handle_organization(&client).await,
+        Command::Projects { name } => handle_projects(&client, name).await,
+        Command::Project { project_id } => handle_project(&client, project_id).await,
         Command::Datasets {
             project_id,
             annotation_sets,
             labels,
             name,
-        } => {
-            if let Some(project_id) = project_id {
-                let datasets = client
-                    .datasets(project_id.try_into()?, name.as_deref())
-                    .await?;
-                for dataset in datasets {
-                    println!(
-                        "[{}] {}: {}",
-                        dataset.uid(),
-                        dataset.name(),
-                        dataset.description()
-                    );
-
-                    if labels {
-                        let labels = client.labels(dataset.id()).await?;
-                        println!("Labels:");
-                        for label in labels {
-                            println!("    [{}] {}", label.id(), label.name(),);
-                        }
-                    }
-
-                    if annotation_sets {
-                        let annotation_sets = client.annotation_sets(dataset.id()).await?;
-                        println!("Annotation Sets:");
-                        for annotation_set in annotation_sets {
-                            println!(
-                                "[{}] {}: {}",
-                                annotation_set.uid(),
-                                annotation_set.name(),
-                                annotation_set.description(),
-                            );
-                        }
-                    }
-                }
-            } else {
-                let projects = client.projects(None).await?;
-                for project in projects {
-                    let datasets = client.datasets(project.id(), name.as_deref()).await?;
-                    for dataset in datasets {
-                        println!(
-                            "[{}] {}: {}",
-                            dataset.uid(),
-                            dataset.name(),
-                            dataset.description()
-                        );
-
-                        if labels {
-                            let labels = client.labels(dataset.id()).await?;
-                            println!("Labels:");
-                            for label in labels {
-                                println!("    [{}] {}", label.id(), label.name(),);
-                            }
-                        }
-
-                        if annotation_sets {
-                            let annotation_sets = client.annotation_sets(dataset.id()).await?;
-                            println!("Annotation Sets:");
-                            for annotation_set in annotation_sets {
-                                println!(
-                                    "    [{}] {}: {}",
-                                    annotation_set.uid(),
-                                    annotation_set.name(),
-                                    annotation_set.description(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        } => handle_datasets(&client, project_id, annotation_sets, labels, name).await,
         Command::Dataset {
             dataset_id,
             annotation_sets,
             labels,
-        } => {
-            let dataset = client.dataset(dataset_id.try_into()?).await?;
-            println!(
-                "[{}] {}: {}",
-                dataset.uid(),
-                dataset.name(),
-                dataset.description()
-            );
-
-            if labels {
-                let labels = client.labels(dataset.id()).await?;
-                println!("Labels:");
-                for label in labels {
-                    println!("    [{}] {}", label.id(), label.name(),);
-                }
-            }
-
-            if annotation_sets {
-                let annotation_sets = client.annotation_sets(dataset.id()).await?;
-                println!("Annotation Sets:");
-                for annotation_set in annotation_sets {
-                    println!(
-                        "[{}] {}: {}",
-                        annotation_set.uid(),
-                        annotation_set.name(),
-                        annotation_set.description(),
-                    );
-                }
-            }
-        }
+        } => handle_dataset(&client, dataset_id, annotation_sets, labels).await,
         Command::CreateDataset {
             project_id,
             name,
             description,
-        } => {
-            let project_id: edgefirst_client::ProjectID = project_id.try_into()?;
-            let dataset_id = client
-                .create_dataset(
-                    project_id.to_string().as_str(),
-                    &name,
-                    description.as_deref(),
-                )
-                .await?;
-            println!("Created dataset with ID: {}", dataset_id);
-        }
-        Command::DeleteDataset { dataset_id } => {
-            let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
-            client.delete_dataset(dataset_id).await?;
-            println!("Dataset {} marked as deleted", dataset_id);
-        }
+        } => handle_create_dataset(&client, project_id, name, description).await,
+        Command::DeleteDataset { dataset_id } => handle_delete_dataset(&client, dataset_id).await,
         Command::CreateAnnotationSet {
             dataset_id,
             name,
             description,
-        } => {
-            let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
-            let annotation_set_id = client
-                .create_annotation_set(dataset_id, &name, description.as_deref())
-                .await?;
-            println!("Created annotation set with ID: {}", annotation_set_id);
-        }
+        } => handle_create_annotation_set(&client, dataset_id, name, description).await,
         Command::DeleteAnnotationSet { annotation_set_id } => {
-            let annotation_set_id: edgefirst_client::AnnotationSetID =
-                annotation_set_id.try_into()?;
-            client.delete_annotation_set(annotation_set_id).await?;
-            println!("Annotation set {} marked as deleted", annotation_set_id);
+            handle_delete_annotation_set(&client, annotation_set_id).await
         }
         Command::DownloadDataset {
             dataset_id,
@@ -576,773 +1384,60 @@ async fn main() -> Result<(), Error> {
             types,
             output,
         } => {
-            let bar = indicatif::ProgressBar::new(0);
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise} ETA: {eta}] {msg}: {wide_bar:.yellow} {human_pos}/{human_len}",
-                )
-                .unwrap()
-                .progress_chars("█▇▆▅▄▃▂▁  "),
-            );
-
             let output = output.unwrap_or_else(|| ".".into());
-
-            let (tx, mut rx) = mpsc::channel::<Progress>(1);
-
-            tokio::spawn(async move {
-                while let Some(progress) = rx.recv().await {
-                    if progress.total > 0 {
-                        bar.set_length(progress.total as u64);
-                        bar.set_position(progress.current as u64);
-                    }
-                }
-            });
-
-            client
-                .download_dataset(dataset_id.try_into()?, &groups, &types, output, Some(tx))
-                .await?;
+            handle_download_dataset(&client, dataset_id, groups, types, output).await
         }
         Command::DownloadAnnotations {
             annotation_set_id,
             groups,
             types,
             output,
-        } => {
-            let bar = indicatif::ProgressBar::new(0);
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise} ETA: {eta}] {msg}: {wide_bar:.yellow} {human_pos}/{human_len}",
-                )
-                .unwrap()
-                .progress_chars("█▇▆▅▄▃▂▁  "),
-            );
-
-            let (tx, mut rx) = mpsc::channel::<Progress>(1);
-
-            tokio::spawn(async move {
-                while let Some(progress) = rx.recv().await {
-                    if progress.total > 0 {
-                        bar.set_length(progress.total as u64);
-                        bar.set_position(progress.current as u64);
-                    }
-                }
-            });
-
-            let annotations = client
-                .annotations(annotation_set_id.try_into()?, &groups, &types, Some(tx))
-                .await?;
-
-            let format = output
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_lowercase());
-
-            match format {
-                Some(ext) if ext == "json" => {
-                    let mut file = File::create(&output)?;
-                    file.write_all(serde_json::to_string_pretty(&annotations)?.as_bytes())?;
-                }
-                Some(ext) if ext == "arrow" => {
-                    #[cfg(feature = "polars")]
-                    {
-                        use polars::{io::SerWriter as _, prelude::IpcWriter};
-
-                        let mut df = edgefirst_client::annotations_dataframe(&annotations)?;
-                        IpcWriter::new(File::create(output).unwrap())
-                            .finish(&mut df)
-                            .unwrap();
-                    }
-                    #[cfg(not(feature = "polars"))]
-                    {
-                        return Err(Error::FeatureNotEnabled("polars".to_owned()));
-                    }
-                }
-                _ => {
-                    return Err(Error::InvalidParameters(format!(
-                        "Unsupported output format: {:?}",
-                        format
-                    )));
-                }
-            }
-        }
+        } => handle_download_annotations(&client, annotation_set_id, groups, types, output).await,
         Command::UploadDataset {
             dataset_id,
             annotation_set_id,
             annotations,
             images,
         } => {
-            #[cfg(not(feature = "polars"))]
-            {
-                return Err(Error::FeatureNotEnabled("polars".to_owned()));
-            }
-
-            #[cfg(feature = "polars")]
-            {
-                use polars::prelude::*;
-                use std::{collections::HashMap, path::Path};
-
-                // Validate inputs
-                if annotations.is_none() && images.is_none() {
-                    return Err(Error::InvalidParameters(
-                        "Must provide at least one of --annotations or --images".to_owned(),
-                    ));
-                }
-
-                // Warning: annotations exist but no annotation_set_id
-                if annotations.is_some() && annotation_set_id.is_none() {
-                    eprintln!(
-                        "⚠️  Warning: Arrow file provided but no --annotation-set-id specified."
-                    );
-                    eprintln!("   Annotations in the Arrow file will NOT be uploaded.");
-                    eprintln!("   Only images will be imported.");
-                }
-
-                // Warning: annotation_set_id provided but no annotations
-                if annotation_set_id.is_some() && annotations.is_none() {
-                    eprintln!(
-                        "⚠️  Warning: --annotation-set-id provided but no --annotations file."
-                    );
-                    eprintln!("   No annotations will be read or uploaded.");
-                    eprintln!("   Only images will be imported.");
-                }
-
-                // Determine images path
-                let images_path = if let Some(ref img_path) = images {
-                    // Explicit images path provided
-                    img_path.clone()
-                } else if let Some(ref arrow_path) = annotations {
-                    // Auto-discover based on arrow filename
-                    let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
-                    let arrow_stem = arrow_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("dataset");
-
-                    // Try: <arrow_stem>/ folder
-                    let folder = arrow_dir.join(arrow_stem);
-                    if folder.exists() && folder.is_dir() {
-                        folder
-                    } else {
-                        // Try: dataset/ folder
-                        let dataset_folder = arrow_dir.join("dataset");
-                        if dataset_folder.exists() && dataset_folder.is_dir() {
-                            dataset_folder
-                        } else {
-                            // Try: <arrow_stem>.zip
-                            let zip_file = arrow_dir.join(format!("{}.zip", arrow_stem));
-                            if zip_file.exists() {
-                                zip_file
-                            } else {
-                                // Try: dataset.zip
-                                let dataset_zip = arrow_dir.join("dataset.zip");
-                                if dataset_zip.exists() {
-                                    dataset_zip
-                                } else {
-                                    return Err(Error::InvalidParameters(format!(
-                                        "Could not find images. Tried:\n  - {}/\n  - {}/\n  - {}\n  - {}\nPlease specify --images explicitly.",
-                                        folder.display(),
-                                        dataset_folder.display(),
-                                        zip_file.display(),
-                                        dataset_zip.display()
-                                    )));
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // No annotations, images must be provided
-                    return Err(Error::InvalidParameters(
-                        "When --annotations is not provided, --images must be specified".to_owned(),
-                    ));
-                };
-
-                if !images_path.exists() {
-                    return Err(Error::InvalidParameters(format!(
-                        "Images path does not exist: {}",
-                        images_path.display()
-                    )));
-                }
-
-                // Parse annotations from Arrow if provided
-                let mut samples_map: HashMap<
-                    String,
-                    (Option<String>, Vec<edgefirst_client::Annotation>),
-                > = HashMap::new();
-                let should_upload_annotations =
-                    annotations.is_some() && annotation_set_id.is_some();
-
-                if let Some(ref arrow_path) = annotations {
-                    // Read Arrow file
-                    let mut file = File::open(arrow_path)?;
-                    let df = IpcReader::new(&mut file).finish().map_err(|e| {
-                        Error::InvalidParameters(format!("Failed to read Arrow file: {}", e))
-                    })?;
-
-                    // Parse DataFrame into samples
-                    // Schema: one row per annotation (or one row for sample without annotations)
-                    // Columns: name, frame, object_id, label, label_index, group, mask, box2d,
-                    // box3d
-                    for idx in 0..df.height() {
-                        // Get name (required)
-                        let name = df
-                            .column("name")
-                            .map_err(|e| {
-                                Error::InvalidParameters(format!("Missing 'name' column: {}", e))
-                            })?
-                            .str()
-                            .map_err(|e| {
-                                Error::InvalidParameters(format!(
-                                    "Invalid 'name' column type: {}",
-                                    e
-                                ))
-                            })?
-                            .get(idx)
-                            .ok_or_else(|| {
-                                Error::InvalidParameters("Missing name value".to_owned())
-                            })?
-                            .to_string();
-
-                        // Get group (optional, categorical column)
-                        let sample_group = df
-                            .column("group")
-                            .ok()
-                            .and_then(|c| c.str().ok())
-                            .and_then(|s| s.get(idx))
-                            .map(|s| s.to_string());
-
-                        // Get or create sample entry (group is stored with sample)
-                        let entry = samples_map
-                            .entry(name.clone())
-                            .or_insert((sample_group, Vec::new()));
-
-                        // Only parse annotations if we're going to upload them
-                        if should_upload_annotations {
-                            // Check if this row has any annotations (box2d, box3d, or mask)
-                            let mut has_annotation = false;
-                            let mut geometry_count = 0; // Track number of geometries in this row
-                            let mut annotation = edgefirst_client::Annotation::new();
-
-                            // Get label (optional, categorical column)
-                            if let Some(label) = df
-                                .column("label")
-                                .ok()
-                                .and_then(|c| c.str().ok())
-                                .and_then(|s| s.get(idx))
-                                .map(|s| s.to_string())
-                                && !label.is_empty()
-                            {
-                                annotation.set_label(Some(label));
-                                has_annotation = true;
-                            }
-
-                            // Get object_id (optional) - we'll check later if we need to generate
-                            // one
-                            let object_id = df
-                                .column("object_id")
-                                .ok()
-                                .and_then(|c| c.str().ok())
-                                .and_then(|s| s.get(idx))
-                                .and_then(|s| {
-                                    if s.is_empty() {
-                                        None
-                                    } else {
-                                        Some(s.to_string())
-                                    }
-                                });
-
-                            if let Some(ref obj_id) = object_id {
-                                annotation.set_object_id(Some(obj_id.clone()));
-                            }
-
-                            // Get box2d (optional, Array<Float32, 4> format: [cx, cy, width,
-                            // height])
-                            if let Ok(box2d_col) = df.column("box2d")
-                                && let Ok(array_chunked) = box2d_col.array()
-                                && let Some(array_series) = array_chunked.get_as_series(idx)
-                                && let Ok(values) = array_series.f32()
-                            {
-                                let coords: Vec<f32> = values.into_iter().flatten().collect();
-                                if coords.len() >= 4 {
-                                    // Convert from [cx, cy, w, h] to [x, y, w, h]
-                                    let cx = coords[0];
-                                    let cy = coords[1];
-                                    let w = coords[2];
-                                    let h = coords[3];
-                                    let x = cx - w / 2.0;
-                                    let y = cy - h / 2.0;
-                                    let bbox = edgefirst_client::Box2d::new(x, y, w, h);
-                                    annotation.set_box2d(Some(bbox));
-                                    has_annotation = true;
-                                    geometry_count += 1;
-                                }
-                            }
-
-                            // Get box3d (optional, Array<Float32, 6> format: [cx, cy, cz, w, h, l])
-                            if let Ok(box3d_col) = df.column("box3d")
-                                && let Ok(array_chunked) = box3d_col.array()
-                                && let Some(array_series) = array_chunked.get_as_series(idx)
-                                && let Ok(values) = array_series.f32()
-                            {
-                                let coords: Vec<f32> = values.into_iter().flatten().collect();
-                                if coords.len() >= 6 {
-                                    // Box3d::new(cx, cy, cz, width, height, length)
-                                    let box3d = edgefirst_client::Box3d::new(
-                                        coords[0], coords[1], coords[2], coords[3], coords[4],
-                                        coords[5],
-                                    );
-                                    annotation.set_box3d(Some(box3d));
-                                    has_annotation = true;
-                                    geometry_count += 1;
-                                }
-                            }
-
-                            // Get mask (optional, List<Float32> format: flat array of x,y pairs)
-                            if let Ok(mask_col) = df.column("mask")
-                                && let Ok(list_chunked) = mask_col.list()
-                                && let Some(mask_series) = list_chunked.get_as_series(idx)
-                                && let Ok(values) = mask_series.f32()
-                            {
-                                let coords: Vec<f32> = values.into_iter().flatten().collect();
-                                if !coords.is_empty() && coords.len().is_multiple_of(2) {
-                                    // Convert flat array to Vec<Vec<(f32, f32)>>
-                                    // Split on NaN to separate polygons
-                                    let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
-                                    let mut current_polygon: Vec<(f32, f32)> = Vec::new();
-
-                                    let mut i = 0;
-                                    while i < coords.len() {
-                                        let x = coords[i];
-                                        let y = coords[i + 1];
-
-                                        if x.is_nan() || y.is_nan() {
-                                            // End current polygon
-                                            if !current_polygon.is_empty() {
-                                                polygons.push(current_polygon.clone());
-                                                current_polygon.clear();
-                                            }
-                                        } else {
-                                            current_polygon.push((x, y));
-                                        }
-                                        i += 2;
-                                    }
-
-                                    // Add final polygon
-                                    if !current_polygon.is_empty() {
-                                        polygons.push(current_polygon);
-                                    }
-
-                                    if !polygons.is_empty() {
-                                        let mask = edgefirst_client::Mask::new(polygons);
-                                        annotation.set_mask(Some(mask));
-                                        has_annotation = true;
-                                        geometry_count += 1;
-                                    }
-                                }
-                            }
-
-                            // If multiple geometries on same row and no object_id, generate UUID
-                            // This ensures all geometries belong to the same object on the server
-                            if geometry_count > 1 && object_id.is_none() {
-                                let generated_uuid = uuid::Uuid::new_v4().to_string();
-                                annotation.set_object_id(Some(generated_uuid));
-                            }
-
-                            // Only add annotation if it has at least one geometry or label
-                            // (samples without annotations are represented by name/group only - no
-                            // annotation added)
-                            if has_annotation {
-                                entry.1.push(annotation);
-                            }
-                        }
-                    }
-                }
-
-                // Find image files and create samples
-                let mut samples = Vec::new();
-
-                // If we have Arrow data, use those sample names
-                if !samples_map.is_empty() {
-                    for (image_name, (sample_group, annotations)) in samples_map {
-                        // Find matching image file
-                        let image_path = if images_path.is_dir() {
-                            // Search directory for matching file
-                            let entries = std::fs::read_dir(&images_path)?;
-                            let mut found_path = None;
-
-                            for entry in entries {
-                                let entry = entry?;
-                                let path = entry.path();
-                                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                                    // Match base name (without extension)
-                                    if file_name.starts_with(&image_name)
-                                        && (file_name == image_name
-                                            || file_name
-                                                .strip_prefix(&image_name)
-                                                .map(|s| s.starts_with('.'))
-                                                .unwrap_or(false))
-                                    {
-                                        found_path = Some(path);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            found_path.ok_or_else(|| {
-                                Error::InvalidParameters(format!(
-                                    "Image file not found for sample: {}",
-                                    image_name
-                                ))
-                            })?
-                        } else {
-                            return Err(Error::InvalidParameters(
-                                "ZIP file support not yet implemented".to_owned(),
-                            ));
-                        };
-
-                        let image_file = edgefirst_client::SampleFile::with_filename(
-                            "image".to_string(),
-                            image_path.to_str().unwrap().to_string(),
-                        );
-
-                        let sample = edgefirst_client::Sample {
-                            image_name: Some(image_name.clone()),
-                            group: sample_group,
-                            files: vec![image_file],
-                            annotations,
-                            ..Default::default()
-                        };
-
-                        samples.push(sample);
-                    }
-                } else {
-                    // No Arrow file, upload all images in the directory
-                    if images_path.is_dir() {
-                        let entries = std::fs::read_dir(&images_path)?;
-
-                        for entry in entries {
-                            let entry = entry?;
-                            let path = entry.path();
-
-                            // Skip directories and non-image files
-                            if !path.is_file() {
-                                continue;
-                            }
-
-                            // Check if it's likely an image file
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                let ext_lower = ext.to_lowercase();
-                                if !matches!(
-                                    ext_lower.as_str(),
-                                    "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "tif" | "webp"
-                                ) {
-                                    continue;
-                                }
-                            } else {
-                                continue;
-                            }
-
-                            let file_name = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .ok_or_else(|| {
-                                    Error::InvalidParameters(format!(
-                                        "Invalid filename: {}",
-                                        path.display()
-                                    ))
-                                })?
-                                .to_string();
-
-                            let image_file = edgefirst_client::SampleFile::with_filename(
-                                "image".to_string(),
-                                path.to_str().unwrap().to_string(),
-                            );
-
-                            let sample = edgefirst_client::Sample {
-                                image_name: Some(file_name),
-                                group: None,
-                                files: vec![image_file],
-                                annotations: Vec::new(),
-                                ..Default::default()
-                            };
-
-                            samples.push(sample);
-                        }
-                    } else {
-                        return Err(Error::InvalidParameters(
-                            "ZIP file support not yet implemented".to_owned(),
-                        ));
-                    }
-                }
-
-                if samples.is_empty() {
-                    return Err(Error::InvalidParameters(
-                        "No samples to upload. Check that images exist.".to_owned(),
-                    ));
-                }
-
-                println!(
-                    "Uploading {} samples to dataset {}...",
-                    samples.len(),
-                    dataset_id
-                );
-
-                // Set up progress bar
-                let bar = indicatif::ProgressBar::new(samples.len() as u64);
-                bar.set_style(
-                    indicatif::ProgressStyle::with_template(
-                        "[{elapsed_precise} ETA: {eta}] Uploading samples: {wide_bar:.yellow} {human_pos}/{human_len}"
-                    )
-                    .unwrap()
-                    .progress_chars("█▇▆▅▄▃▂▁  "),
-                );
-
-                let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
-                tokio::spawn(async move {
-                    while let Some(progress) = rx.recv().await {
-                        if progress.total > 0 {
-                            bar.set_length(progress.total as u64);
-                            bar.set_position(progress.current as u64);
-                        }
-                    }
-                    bar.finish_with_message("Upload complete");
-                });
-
-                // Upload samples - API limit is 500 samples per batch
-                const BATCH_SIZE: usize = 500;
-                let mut all_results = Vec::new();
-
-                let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
-                let annotation_set_id_parsed = if should_upload_annotations {
-                    Some(annotation_set_id.unwrap().try_into()?)
-                } else {
-                    None
-                };
-
-                // Upload in batches
-                for (batch_num, batch) in samples.chunks(BATCH_SIZE).enumerate() {
-                    if samples.len() > BATCH_SIZE {
-                        println!(
-                            "Uploading batch {}/{} ({} samples)...",
-                            batch_num + 1,
-                            samples.len().div_ceil(BATCH_SIZE),
-                            batch.len()
-                        );
-                    }
-
-                    let results = client
-                        .populate_samples(
-                            dataset_id_parsed,
-                            annotation_set_id_parsed,
-                            batch.to_vec(),
-                            Some(tx.clone()),
-                        )
-                        .await?;
-
-                    all_results.extend(results);
-                }
-
-                drop(tx); // Close channel to let progress bar finish
-
-                println!("Successfully uploaded {} samples", all_results.len());
-                for result in all_results.iter().take(10) {
-                    println!("  Sample UUID: {}", result.uuid);
-                }
-                if all_results.len() > 10 {
-                    println!("  ... and {} more", all_results.len() - 10);
-                }
-            }
+            handle_upload_dataset(&client, dataset_id, annotation_set_id, annotations, images).await
         }
         Command::Experiments { project_id, name } => {
-            let projects = if let Some(project_id) = project_id {
-                vec![client.project(project_id.try_into()?).await?]
-            } else {
-                client.projects(None).await?
-            };
-
-            for project in projects {
-                println!("{}", project.name());
-
-                let experiments = client.experiments(project.id(), name.as_deref()).await?;
-                for experiment in experiments {
-                    println!(
-                        "    [{}] {}: {}",
-                        experiment.uid(),
-                        experiment.name(),
-                        experiment.description()
-                    );
-                }
-            }
+            handle_experiments(&client, project_id, name).await
         }
-        Command::Experiment { experiment_id } => {
-            let experiment = client.experiment(experiment_id.try_into()?).await?;
-            println!(
-                "[{}] {}: {}",
-                experiment.uid(),
-                experiment.name(),
-                experiment.description()
-            );
-        }
+        Command::Experiment { experiment_id } => handle_experiment(&client, experiment_id).await,
         Command::TrainingSessions {
             experiment_id,
             name,
-        } => {
-            if let Some(experiment_id) = experiment_id {
-                let sessions = client
-                    .training_sessions(experiment_id.try_into()?, name.as_deref())
-                    .await?;
-                for session in sessions {
-                    println!(
-                        "{} ({}) {}",
-                        session.uid(),
-                        session.task().status(),
-                        session.name()
-                    );
-
-                    for artifact in client.artifacts(session.id()).await? {
-                        println!("    - {}", artifact.name());
-                    }
-                }
-            } else {
-                let projects = client.projects(None).await?;
-                for project in projects {
-                    let trainers = client.experiments(project.id(), None).await?;
-                    for trainer in trainers {
-                        let sessions = client
-                            .training_sessions(trainer.id(), name.as_deref())
-                            .await?;
-                        for session in sessions {
-                            println!(
-                                "{} ({}) {}",
-                                session.uid(),
-                                session.task().status(),
-                                session.name()
-                            );
-
-                            for artifact in client.artifacts(session.id()).await? {
-                                println!("    - {}", artifact.name());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        } => handle_training_sessions(&client, experiment_id, name).await,
         Command::TrainingSession {
             training_session_id,
             model,
             dataset,
             artifacts,
-        } => {
-            let session = client
-                .training_session(training_session_id.clone().try_into()?)
-                .await?;
-            println!(
-                "{} ({}) {}",
-                session.uid(),
-                session.task().status(),
-                session.name()
-            );
-
-            if model {
-                println!("Model Parameters: {:?}", session.model_params());
-            }
-
-            if dataset {
-                println!("Dataset Parameters: {:?}", session.dataset_params());
-            }
-
-            if artifacts {
-                println!("Artifacts:");
-                for artifact in client.artifacts(training_session_id.try_into()?).await? {
-                    println!("    - {}", artifact.name());
-                }
-            }
-        }
+        } => handle_training_session(&client, training_session_id, model, dataset, artifacts).await,
         Command::DownloadArtifact {
             session_id,
             name,
             output,
-        } => {
-            let bar = indicatif::ProgressBar::new(0);
-            bar.set_style(ProgressStyle::with_template("[{elapsed_precise}] [{wide_bar:.yellow}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})").unwrap().progress_chars("█▇▆▅▄▃▂▁  "));
-
-            let (tx, mut rx) = mpsc::channel::<Progress>(1);
-
-            tokio::spawn(async move {
-                while let Some(progress) = rx.recv().await {
-                    if progress.total > 0 {
-                        bar.set_length(progress.total as u64);
-                        bar.set_position(progress.current as u64);
-                    }
-                }
-            });
-
-            client
-                .download_artifact(session_id.try_into()?, &name, output, Some(tx))
-                .await?;
-        }
+        } => handle_download_artifact(&client, session_id, name, output).await,
         Command::UploadArtifact {
             session_id,
             path,
             name,
-        } => {
-            let name = name.unwrap_or_else(|| {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|s| s.to_owned())
-                    .unwrap()
-            });
-            let session = client.training_session(session_id.try_into()?).await?;
-            session.upload_artifact(&client, &name, path).await?;
-        }
+        } => handle_upload_artifact(&client, session_id, path, name).await,
         Command::Tasks {
             stages,
             name,
             workflow,
             status,
             manager,
-        } => {
-            let tasks = client
-                .tasks(
-                    name.as_deref(),
-                    workflow.as_deref(),
-                    status.as_deref(),
-                    manager.as_deref(),
-                )
-                .await?;
-            for task in tasks {
-                println!("{} => {}", task, task.status());
-
-                if stages {
-                    let info = client.task_info(task.id()).await?;
-                    println!("    {:?}", info.stages());
-                }
-            }
-        }
-        Command::Task { task_id } => {
-            let info = client.task_info(task_id.try_into()?).await?;
-            println!("{:?}", info);
-        }
+        } => handle_tasks(&client, stages, name, workflow, status, manager).await,
+        Command::Task { task_id } => handle_task(&client, task_id).await,
         Command::ValidationSessions { project_id } => {
-            let sessions = client.validation_sessions(project_id.try_into()?).await?;
-            for session in sessions {
-                println!(
-                    "[{}] {}: {}",
-                    session.id(),
-                    session.name(),
-                    session.description()
-                );
-            }
+            handle_validation_sessions(&client, project_id).await
         }
         Command::ValidationSession { session_id } => {
-            let session = client.validation_session(session_id.try_into()?).await?;
-            println!(
-                "[{}] {}: {}",
-                session.id(),
-                session.name(),
-                session.description()
-            );
+            handle_validation_session(&client, session_id).await
         }
     }
-
-    Ok(())
 }
