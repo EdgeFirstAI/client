@@ -737,6 +737,7 @@ mod tests {
     /// Generate a 640x480 image with a red circle in the specified format.
     /// Returns the image data plus the bounding box coordinates (x, y, w, h) in
     /// pixels. Supported formats: "png", "jpeg"
+    #[allow(clippy::type_complexity)]
     fn generate_test_image_with_circle_format(
         format: &str,
     ) -> Result<(Vec<u8>, (f32, f32, f32, f32)), Error> {
