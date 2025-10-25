@@ -909,17 +909,16 @@ async fn handle_upload_dataset(
                 for entry in entries {
                     let entry = entry?;
                     let path = entry.path();
-                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        if file_name.starts_with(&image_name)
-                            && (file_name == image_name
-                                || file_name
-                                    .strip_prefix(&image_name)
-                                    .map(|s| s.starts_with('.'))
-                                    .unwrap_or(false))
-                        {
-                            found_path = Some(path);
-                            break;
-                        }
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                        && file_name.starts_with(&image_name)
+                        && (file_name == image_name
+                            || file_name
+                                .strip_prefix(&image_name)
+                                .map(|s| s.starts_with('.'))
+                                .unwrap_or(false))
+                    {
+                        found_path = Some(path);
+                        break;
                     }
                 }
 
@@ -950,58 +949,56 @@ async fn handle_upload_dataset(
 
             samples.push(sample);
         }
-    } else {
-        if images_path.is_dir() {
-            let entries = std::fs::read_dir(&images_path)?;
+    } else if images_path.is_dir() {
+        let entries = std::fs::read_dir(&images_path)?;
 
-            for entry in entries {
-                let entry = entry?;
-                let path = entry.path();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
 
-                if !path.is_file() {
-                    continue;
-                }
-
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    let ext_lower = ext.to_lowercase();
-                    if !matches!(
-                        ext_lower.as_str(),
-                        "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "tif" | "webp"
-                    ) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-
-                let file_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(|| {
-                        Error::InvalidParameters(format!("Invalid filename: {}", path.display()))
-                    })?
-                    .to_string();
-
-                let image_file = edgefirst_client::SampleFile::with_filename(
-                    "image".to_string(),
-                    path.to_str().unwrap().to_string(),
-                );
-
-                let sample = edgefirst_client::Sample {
-                    image_name: Some(file_name),
-                    group: None,
-                    files: vec![image_file],
-                    annotations: Vec::new(),
-                    ..Default::default()
-                };
-
-                samples.push(sample);
+            if !path.is_file() {
+                continue;
             }
-        } else {
-            return Err(Error::InvalidParameters(
-                "ZIP file support not yet implemented".to_owned(),
-            ));
+
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if !matches!(
+                    ext_lower.as_str(),
+                    "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "tif" | "webp"
+                ) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!("Invalid filename: {}", path.display()))
+                })?
+                .to_string();
+
+            let image_file = edgefirst_client::SampleFile::with_filename(
+                "image".to_string(),
+                path.to_str().unwrap().to_string(),
+            );
+
+            let sample = edgefirst_client::Sample {
+                image_name: Some(file_name),
+                group: None,
+                files: vec![image_file],
+                annotations: Vec::new(),
+                ..Default::default()
+            };
+
+            samples.push(sample);
         }
+    } else {
+        return Err(Error::InvalidParameters(
+            "ZIP file support not yet implemented".to_owned(),
+        ));
     }
 
     if samples.is_empty() {

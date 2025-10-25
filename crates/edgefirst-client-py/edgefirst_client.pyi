@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from polars import DataFrame
-from typing import Callable, Dict, Optional, List, Tuple, Union
+from typing import Any, Callable, Dict, Optional, List, Tuple, Union
 
 
 #: Progress callback for long-running operations.
@@ -20,10 +20,150 @@ from typing import Callable, Dict, Optional, List, Tuple, Union
 #:     >>> client.upload_dataset("/path/to/data", "ds-abc123",
 #:     ...                      progress=progress_callback)
 Progress = Callable[[int, int], None]
+
+
+class Parameter:
+    """
+    Represents a parameter value that can be an integer, float, boolean,
+    string, array, or object (dictionary).
+
+    This class provides Python magic methods for type conversions and
+    comparisons, making it behave like native Python types.
+
+    Examples:
+        >>> # Create Parameters using static constructors
+        >>> p_int = Parameter.integer(42)
+        >>> p_real = Parameter.real(3.14)
+        >>> p_bool = Parameter.boolean(True)
+        >>> p_str = Parameter.string("hello")
+        >>> p_array = Parameter.array([1, 2, 3])
+        >>> p_obj = Parameter.object({"key": "value"})
+        >>>
+        >>> # Type conversions
+        >>> int(p_int)  # Returns: 42
+        >>> float(p_int)  # Returns: 42.0
+        >>> float(p_real)  # Returns: 3.14
+        >>> int(p_real)  # Returns: 3
+        >>>
+        >>> # Type checking
+        >>> p_real.is_real()  # Returns: True
+        >>> p_real.type_name()  # Returns: "Real"
+        >>>
+        >>> # Equality with tolerance for floats
+        >>> p_real = Parameter.real(0.75)
+        >>> p_real == 0.75  # Returns: True (with tolerance)
+        >>> p_real == 0.75000000001  # Returns: True (within epsilon)
+    """
+
+    @staticmethod
+    def integer(value: int) -> "Parameter":
+        """Create an Integer parameter."""
+        ...
+
+    @staticmethod
+    def real(value: float) -> "Parameter":
+        """Create a Real (float) parameter."""
+        ...
+
+    @staticmethod
+    def boolean(value: bool) -> "Parameter":
+        """Create a Boolean parameter."""
+        ...
+
+    @staticmethod
+    def string(value: str) -> "Parameter":
+        """Create a String parameter."""
+        ...
+
+    @staticmethod
+    def array(values: List[Any]) -> "Parameter":
+        """
+        Create an Array parameter from a Python list.
+
+        Values in the list will be converted to Parameters recursively.
+        """
+        ...
+
+    @staticmethod
+    def object(values: Dict[str, Any]) -> "Parameter":
+        """
+        Create an Object parameter from a Python dictionary.
+
+        Values in the dict will be converted to Parameters recursively.
+        """
+        ...
+
+    def is_integer(self) -> bool:
+        """Check if this is an Integer parameter."""
+        ...
+
+    def is_real(self) -> bool:
+        """Check if this is a Real parameter."""
+        ...
+
+    def is_boolean(self) -> bool:
+        """Check if this is a Boolean parameter."""
+        ...
+
+    def is_string(self) -> bool:
+        """Check if this is a String parameter."""
+        ...
+
+    def is_array(self) -> bool:
+        """Check if this is an Array parameter."""
+        ...
+
+    def is_object(self) -> bool:
+        """Check if this is an Object parameter."""
+        ...
+
+    def type_name(self) -> str:
+        """
+        Get the variant type name.
+
+        Returns one of: "Integer", "Real", "Boolean", "String",
+        "Array", "Object"
+        """
+        ...
+
+    def __int__(self) -> int:
+        """Convert to Python int (works for Integer, Real, Boolean)."""
+        ...
+
+    def __float__(self) -> float:
+        """Convert to Python float (works for Integer, Real, Boolean)."""
+        ...
+
+    def __bool__(self) -> bool:
+        """Convert to Python bool (works for all types)."""
+        ...
+
+    def __str__(self) -> str:
+        """Convert to Python string."""
+        ...
+
+    def __repr__(self) -> str:
+        """Python representation."""
+        ...
+
+    def __eq__(self, other: Any) -> bool:
+        """
+        Equality comparison with type coercion.
+
+        For numeric types (Integer, Real), compares with tolerance
+        (epsilon=1e-9).
+        """
+        ...
+
+
+#: Type alias for parameter values used in metrics and configurations
 ParameterValue = Union[str, float, bool]
-Parameter = Union[ParameterValue,
-                  List[ParameterValue],
-                  Dict[str, ParameterValue]]
+ParameterDict = Dict[
+    str,
+    Union[Parameter, ParameterValue, List[ParameterValue],
+          Dict[str, ParameterValue]]
+]
+
 
 
 class Error(Exception):

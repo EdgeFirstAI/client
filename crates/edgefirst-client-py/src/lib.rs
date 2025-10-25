@@ -45,7 +45,8 @@ impl From<Error> for PyErr {
     }
 }
 
-#[derive(Clone, Debug, IntoPyObject)]
+#[pyclass]
+#[derive(Clone, Debug)]
 pub enum Parameter {
     Integer(i64),
     Real(f64),
@@ -53,6 +54,195 @@ pub enum Parameter {
     String(String),
     Array(Vec<Parameter>),
     Object(HashMap<String, Parameter>),
+}
+
+#[pymethods]
+impl Parameter {
+    /// Create an Integer parameter
+    #[staticmethod]
+    fn integer(value: i64) -> Self {
+        Parameter::Integer(value)
+    }
+
+    /// Create a Real (float) parameter
+    #[staticmethod]
+    fn real(value: f64) -> Self {
+        Parameter::Real(value)
+    }
+
+    /// Create a Boolean parameter
+    #[staticmethod]
+    fn boolean(value: bool) -> Self {
+        Parameter::Boolean(value)
+    }
+
+    /// Create a String parameter
+    #[staticmethod]
+    fn string(value: String) -> Self {
+        Parameter::String(value)
+    }
+
+    /// Create an Array parameter from a Python list
+    #[staticmethod]
+    fn array(values: Vec<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let mut vec = Vec::with_capacity(values.len());
+        for item in values {
+            vec.push(
+                item.try_into()
+                    .map_err(|e: Error| pyo3::exceptions::PyTypeError::new_err(format!("{}", e)))?,
+            );
+        }
+        Ok(Parameter::Array(vec))
+    }
+
+    /// Create an Object (dict) parameter from a Python dict
+    #[staticmethod]
+    fn object(values: HashMap<String, Bound<'_, PyAny>>) -> PyResult<Self> {
+        let mut map = HashMap::with_capacity(values.len());
+        for (k, item) in values {
+            map.insert(
+                k,
+                item.try_into()
+                    .map_err(|e: Error| pyo3::exceptions::PyTypeError::new_err(format!("{}", e)))?,
+            );
+        }
+        Ok(Parameter::Object(map))
+    }
+
+    /// Check if this is an Integer parameter
+    fn is_integer(&self) -> bool {
+        matches!(self, Parameter::Integer(_))
+    }
+
+    /// Check if this is a Real parameter
+    fn is_real(&self) -> bool {
+        matches!(self, Parameter::Real(_))
+    }
+
+    /// Check if this is a Boolean parameter
+    fn is_boolean(&self) -> bool {
+        matches!(self, Parameter::Boolean(_))
+    }
+
+    /// Check if this is a String parameter
+    fn is_string(&self) -> bool {
+        matches!(self, Parameter::String(_))
+    }
+
+    /// Check if this is an Array parameter
+    fn is_array(&self) -> bool {
+        matches!(self, Parameter::Array(_))
+    }
+
+    /// Check if this is an Object parameter
+    fn is_object(&self) -> bool {
+        matches!(self, Parameter::Object(_))
+    }
+
+    /// Get the variant type name
+    fn type_name(&self) -> &'static str {
+        match self {
+            Parameter::Integer(_) => "Integer",
+            Parameter::Real(_) => "Real",
+            Parameter::Boolean(_) => "Boolean",
+            Parameter::String(_) => "String",
+            Parameter::Array(_) => "Array",
+            Parameter::Object(_) => "Object",
+        }
+    }
+
+    /// Convert to Python int
+    fn __int__(&self) -> PyResult<i64> {
+        match self {
+            Parameter::Integer(v) => Ok(*v),
+            Parameter::Real(v) => Ok(*v as i64),
+            Parameter::Boolean(v) => Ok(if *v { 1 } else { 0 }),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "Cannot convert to int",
+            )),
+        }
+    }
+
+    /// Convert to Python float
+    fn __float__(&self) -> PyResult<f64> {
+        match self {
+            Parameter::Real(v) => Ok(*v),
+            Parameter::Integer(v) => Ok(*v as f64),
+            Parameter::Boolean(v) => Ok(if *v { 1.0 } else { 0.0 }),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "Cannot convert to float",
+            )),
+        }
+    }
+
+    /// Convert to Python bool
+    fn __bool__(&self) -> PyResult<bool> {
+        match self {
+            Parameter::Boolean(v) => Ok(*v),
+            Parameter::Integer(v) => Ok(*v != 0),
+            Parameter::Real(v) => Ok(*v != 0.0),
+            Parameter::String(v) => Ok(!v.is_empty()),
+            Parameter::Array(v) => Ok(!v.is_empty()),
+            Parameter::Object(v) => Ok(!v.is_empty()),
+        }
+    }
+
+    /// Convert to Python str
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
+    /// Python repr
+    fn __repr__(&self) -> String {
+        self.to_string()
+    }
+
+    /// Equality comparison with type coercion
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match self {
+            Parameter::Real(v) => {
+                // Try float comparison with tolerance
+                if let Ok(other_f) = other.extract::<f64>() {
+                    const EPSILON: f64 = 1e-9;
+                    return Ok((v - other_f).abs() <= EPSILON);
+                }
+                // Try int comparison
+                if let Ok(other_i) = other.extract::<i64>() {
+                    const EPSILON: f64 = 1e-9;
+                    return Ok((v - other_i as f64).abs() <= EPSILON);
+                }
+                Ok(false)
+            }
+            Parameter::Integer(v) => {
+                // Try int comparison
+                if let Ok(other_i) = other.extract::<i64>() {
+                    return Ok(*v == other_i);
+                }
+                // Try float comparison with tolerance
+                if let Ok(other_f) = other.extract::<f64>() {
+                    const EPSILON: f64 = 1e-9;
+                    return Ok((*v as f64 - other_f).abs() <= EPSILON);
+                }
+                Ok(false)
+            }
+            Parameter::Boolean(v) => {
+                if let Ok(other_b) = other.extract::<bool>() {
+                    Ok(*v == other_b)
+                } else {
+                    Ok(false)
+                }
+            }
+            Parameter::String(v) => {
+                if let Ok(other_s) = other.extract::<String>() {
+                    Ok(v == &other_s)
+                } else {
+                    Ok(false)
+                }
+            }
+            // Arrays and Objects can't be compared to Python primitives
+            _ => Ok(false),
+        }
+    }
 }
 
 impl From<edgefirst_client::Parameter> for Parameter {
@@ -2995,6 +3185,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PresignedUrl>()?;
     m.add_class::<SamplesPopulateResult>()?;
     m.add_class::<DatasetParams>()?;
+    m.add_class::<Parameter>()?;
     m.add_class::<Task>()?;
     m.add_class::<TaskInfo>()?;
     m.add_class::<Stage>()?;

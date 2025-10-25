@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Python bindings: `Parameter` class now implements Python magic methods for type conversions
+  - `__int__()`: Convert Integer, Real, Boolean to Python int
+  - `__float__()`: Convert Integer, Real, Boolean to Python float
+  - `__bool__()`: Convert all Parameter types to Python bool
+  - `__str__()` and `__repr__()`: String representations
+  - `__eq__()`: Equality comparison with epsilon tolerance (1e-9) for numeric types
+  - Enables natural Python usage: `float(param)`, `int(param)`, `param == 0.75`
+
 ### Changed
 - **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
   - Polars operations (casting, DataFrame construction) now properly propagate errors
@@ -21,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - All potential panic points now return proper errors
 - Added `InvalidEtag` error variant for HTTP response validation
 - Added `PolarsError` error variant (feature-gated) for dataframe operations
+- Python tests: Float equality comparisons now use epsilon tolerance (fixes python:S1244)
 
 ## [2.3.1] - 2025-10-24
 
