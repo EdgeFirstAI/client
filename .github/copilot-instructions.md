@@ -273,36 +273,44 @@ python -m unittest discover -s . -p "test*.py"
 
 **Download Latest Code Quality Findings:**
 
-To assist with identifying and fixing code quality issues, you can download the latest SonarCloud findings:
+To assist with identifying and fixing code quality issues, you can download the latest SonarCloud findings using the improved `sonar.py` script:
 
-1. **Install sonar-tools** (one-time setup):
-   ```bash
-   pip install sonar-tools
-   ```
-
-2. **Set SonarCloud token** (requires user to create token):
+1. **Set SonarCloud token** (requires user to create token):
    - User must create token at: [SonarCloud Security Settings](https://sonarcloud.io/)
-   - User sets environment variable:
+   - User sets environment variables:
      ```bash
      export SONAR_TOKEN=their_token_here
+     export SONAR_ORG=edgefirstai
+     export SONAR_PROJECT=EdgeFirstAI_client
      ```
 
-3. **Export findings to local file**:
+2. **Download findings (optimized for Copilot)**:
    ```bash
-   sonar-findings-export -u https://sonarcloud.io -o edgefirstai -k EdgeFirstAI_client --format sarif > sonar.json
+   python3 sonar.py --branch main --output sonar-issues.json --verbose
    ```
 
-4. **Parse findings**:
-   - The `sonar.json` file is in SARIF format
-   - Contains all code quality issues, security vulnerabilities, and code smells
-   - You can read this file to understand what issues need to be addressed
+3. **Use with GitHub Copilot**:
+   - The `sonar-issues.json` file contains structured issue data optimized for Copilot
+   - Ask: `@workspace Review sonar-issues.json and help me fix the top critical issues`
+   - Copilot can read file paths, line numbers, rule descriptions, and suggest fixes
    - The file is gitignored and should not be committed
+
+4. **Advanced filtering**:
+   ```bash
+   # Only critical/blocker issues
+   python3 sonar.py --branch main --severity BLOCKER,CRITICAL -o critical-issues.json
+   
+   # Only bugs and vulnerabilities
+   python3 sonar.py --branch main --type BUG,VULNERABILITY -o security-issues.json
+   ```
 
 **Use Cases:**
 - Understanding SonarCloud issues reported in CI
-- Prioritizing code quality improvements
+- Prioritizing code quality improvements with Copilot assistance
 - Systematically addressing technical debt
-- Planning refactoring work
+- Planning refactoring work with AI-assisted fixes
+
+**See Also:** [SONAR_INTEGRATION.md](../SONAR_INTEGRATION.md) for complete documentation.
 
 **Note**: This is optional - CI/CD automatically runs SonarCloud analysis on all PRs.
 
