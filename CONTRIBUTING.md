@@ -220,7 +220,7 @@ The project uses SonarCloud for automated code quality and security analysis. Yo
 
 Export the latest SonarCloud findings to a local SARIF file:
 ```bash
-sonar-findings-export -u https://sonarcloud.io -o edgefirstai --format sarif > sonar.json
+sonar-findings-export -u https://sonarcloud.io -o edgefirstai -k EdgeFirstAI_client --format sarif > sonar.json
 ```
 
 The `sonar.json` file contains all code quality issues, security vulnerabilities, and code smells in SARIF format. GitHub Copilot can parse this file to help you understand and fix the identified issues.

@@ -289,7 +289,7 @@ To assist with identifying and fixing code quality issues, you can download the 
 
 3. **Export findings to local file**:
    ```bash
-   sonar-findings-export -u https://sonarcloud.io -o edgefirstai --format sarif > sonar.json
+   sonar-findings-export -u https://sonarcloud.io -o edgefirstai -k EdgeFirstAI_client --format sarif > sonar.json
    ```
 
 4. **Parse findings**:
