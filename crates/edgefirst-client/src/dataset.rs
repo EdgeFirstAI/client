@@ -1199,8 +1199,8 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
                 let (name, frame) = match &ann.sequence_name {
                     Some(sequence) => match name.strip_prefix(sequence) {
                         Some(frame) => (
-                            sequence.to_string(),
-                            Some(frame.trim_start_matches('_').to_string()),
+                            sequence.clone(),
+                            Some(frame.trim_start_matches('_').to_owned()),
                         ),
                         None => {
                             warn!(
