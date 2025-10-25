@@ -195,6 +195,38 @@ cargo install cargo-llvm-cov
 cargo llvm-cov --html
 ```
 
+### SonarCloud Code Quality Analysis
+
+The project uses SonarCloud for automated code quality and security analysis. You can download the latest findings locally to assist with fixing issues.
+
+**Setup:**
+
+1. Install the `sonar-tools` package:
+   ```bash
+   pip install sonar-tools
+   ```
+
+2. Create a SonarCloud token:
+   - Visit [SonarCloud](https://sonarcloud.io/)
+   - Navigate to: Account → Security → Generate Tokens
+   - Create a new token with appropriate permissions
+
+3. Set the token as an environment variable:
+   ```bash
+   export SONAR_TOKEN=your_token_here
+   ```
+
+**Download Findings:**
+
+Export the latest SonarCloud findings to a local SARIF file:
+```bash
+sonar-findings-export -u https://sonarcloud.io -o edgefirstai --format sarif > sonar.json
+```
+
+The `sonar.json` file contains all code quality issues, security vulnerabilities, and code smells in SARIF format. GitHub Copilot can parse this file to help you understand and fix the identified issues.
+
+**Note:** The `sonar.json` file is gitignored and should not be committed to the repository.
+
 ### Studio Integration Tests
 
 The CLI test suite includes integration tests that interact with EdgeFirst Studio test servers. These tests require authenticated access to validate server-side behavior.

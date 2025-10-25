@@ -269,6 +269,43 @@ python -m unittest discover -s . -p "test*.py"
 - **ASK the user** to set them (see "Environment Setup for Testing")
 - Alternatively, rely on CI to run integration tests (only if running local unit tests that don't require credentials)
 
+#### Step 6: Review SonarCloud Findings (Optional)
+
+**Download Latest Code Quality Findings:**
+
+To assist with identifying and fixing code quality issues, you can download the latest SonarCloud findings:
+
+1. **Install sonar-tools** (one-time setup):
+   ```bash
+   pip install sonar-tools
+   ```
+
+2. **Set SonarCloud token** (requires user to create token):
+   - User must create token at: [SonarCloud Security Settings](https://sonarcloud.io/)
+   - User sets environment variable:
+     ```bash
+     export SONAR_TOKEN=their_token_here
+     ```
+
+3. **Export findings to local file**:
+   ```bash
+   sonar-findings-export -u https://sonarcloud.io -o edgefirstai --format sarif > sonar.json
+   ```
+
+4. **Parse findings**:
+   - The `sonar.json` file is in SARIF format
+   - Contains all code quality issues, security vulnerabilities, and code smells
+   - You can read this file to understand what issues need to be addressed
+   - The file is gitignored and should not be committed
+
+**Use Cases:**
+- Understanding SonarCloud issues reported in CI
+- Prioritizing code quality improvements
+- Systematically addressing technical debt
+- Planning refactoring work
+
+**Note**: This is optional - CI/CD automatically runs SonarCloud analysis on all PRs.
+
 #### Pre-Commit Checklist Summary
 
 Before committing, verify:
