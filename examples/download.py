@@ -12,7 +12,11 @@ if __name__ == "__main__":
     args = ArgumentParser(
         description="Download EdgeFirst Studio Dataset to COCO format"
     )
-    args.add_argument("--output", type=str, default="dataset", help="Output directory")
+    args.add_argument(
+        "--output",
+        type=str,
+        default="dataset",
+        help="Output directory")
     args.add_argument(
         "--groups",
         type=str,

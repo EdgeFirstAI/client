@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `AGENTS.md`: Standardized AI coding agent instructions following agents.md specification
+  - Project conventions, build commands, and pre-commit requirements
+  - Succinct format optimized for AI assistants (GitHub Copilot, Cursor, Aider, etc.)
+  - Referenced in README.md and CONTRIBUTING.md for discoverability
 - Python bindings: `Parameter` class now implements Python magic methods for type conversions
   - `__int__()`: Convert Integer, Real, Boolean to Python int
   - `__float__()`: Convert Integer, Real, Boolean to Python float

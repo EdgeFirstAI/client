@@ -9,6 +9,10 @@ repository.workspace = true
 readme.workspace = true
 license.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["polars"]
 polars = ["dep:polars"]
@@ -40,7 +44,3 @@ walkdir = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 png = "0.17"
 rand = { version = "0.9", features = ["std_rng"] }
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

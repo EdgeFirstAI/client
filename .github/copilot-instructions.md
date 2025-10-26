@@ -243,6 +243,17 @@ cargo clippy --fix --allow-dirty --all-features --all-targets
 
 **Important**: Review the changes made by `--fix` to ensure they're correct
 
+#### Step 4.5: Format Python Code
+```bash
+autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+```
+
+**What this does**:
+- Formats Python code according to PEP-8 standard (79-character lines)
+- Fixes PEP-8 compliance issues automatically
+- Ensures consistent Python code style across the project
+- Works well with VS Code's Pylance linter
+
 #### Step 5: Run Full Test Suite
 
 **Prerequisite**: Verify environment is properly configured (see "Environment Setup for Testing" above)
@@ -325,6 +336,7 @@ Before committing, verify:
 - [ ] CHANGELOG.md updated with user-visible changes
 - [ ] Code formatted with `cargo +nightly fmt --all`
 - [ ] Clippy warnings fixed with `cargo clippy --fix --allow-dirty --all-features --all-targets`
+- [ ] Python code formatted with `autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi`
 - [ ] All Rust tests pass: `cargo test --all-features --locked`
 - [ ] All Rust doc tests pass: `cargo test --doc --locked`
 - [ ] Python bindings build: `maturin develop`

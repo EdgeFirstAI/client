@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to EdgeFirst Client! This document provides guidelines and instructions for contributing.
 
+**Using AI Coding Agents?** See [AGENTS.md](AGENTS.md) for a concise reference of project conventions, build commands, and pre-commit requirements optimized for AI assistants.
+
 ## Code of Conduct
 
 By participating in this project, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md). Please be respectful and constructive in all interactions.
@@ -124,7 +126,8 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 
 ### Python Code
 
-- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/)
+- Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/) strictly (79-character line limit)
+- Use `autopep8` for automatic formatting and PEP-8 compliance
 - Use type hints where possible
 - Add docstrings for public functions and classes
 - Write unit tests for new functionality

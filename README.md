@@ -315,6 +315,8 @@ Contributions are welcome! Please:
 3. Fork the repository and create a feature branch
 4. Submit a pull request with clear descriptions
 
+**Using AI Coding Agents?** See [AGENTS.md](AGENTS.md) for project conventions, build commands, and pre-commit requirements.
+
 ### Code Quality
 
 This project uses [SonarCloud](https://sonarcloud.io/project/overview?id=EdgeFirstAI_client) for automated code quality analysis. Contributors can download findings and use GitHub Copilot to help fix issues:

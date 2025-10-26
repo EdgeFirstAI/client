@@ -33,5 +33,5 @@ assert_cmd = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 directories = { workspace = true }
-predicates = { workspace = true}
+predicates = { workspace = true }
 serial_test = { workspace = true }

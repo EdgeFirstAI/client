@@ -199,7 +199,8 @@ class BasicTest(TestCase):
         client = self.get_client()
         project = client.projects("Unit Testing")[0]
         experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(experiment.id, "modelpack-960x540")[0]
+        trainer = client.training_sessions(
+            experiment.id, "modelpack-960x540")[0]
         assert trainer.uid.startswith("t-")
         artifacts = client.artifacts(trainer.id)
         assert len(artifacts) > 0
@@ -208,7 +209,8 @@ class BasicTest(TestCase):
 
         for artifact in artifacts:
             output_path = test_dir / artifact.name
-            client.download_artifact(trainer.id, artifact.name, str(output_path))
+            client.download_artifact(
+                trainer.id, artifact.name, str(output_path))
 
             # Clean up downloaded file
             if output_path.exists():
@@ -218,7 +220,8 @@ class BasicTest(TestCase):
         client = self.get_client()
         project = client.projects("Unit Testing")[0]
         experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(experiment.id, "modelpack-usermanaged")[0]
+        trainer = client.training_sessions(
+            experiment.id, "modelpack-usermanaged")[0]
         assert trainer.uid.startswith("t-")
 
         test_dir = get_test_data_dir()
@@ -409,8 +412,11 @@ class BasicTest(TestCase):
             created_sample = None
             for s in samples:
                 print(
-                    f"  Sample: {s.name} UUID: {s.uuid} Dimensions: {s.width}x{s.height}"
-                )
+                    f"  Sample: {
+                        s.name} UUID: {
+                        s.uuid} Dimensions: {
+                        s.width}x{
+                        s.height}")
                 if s.name == image_filename:
                     created_sample = s
                     break
@@ -428,7 +434,8 @@ class BasicTest(TestCase):
             print("\nSample verification:")
             print(f"  ✓ image_name: {created_sample.name}")
             print(f"  ✓ group: {created_sample.group}")
-            print(f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
+            print(
+                f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
 
             # Verify annotations are returned correctly
             annotations = created_sample.annotations
@@ -471,9 +478,8 @@ class BasicTest(TestCase):
             ), "Downloaded data should match original byte-for-byte"
 
             print(
-                f"✓ Downloaded image matches original "
-                f"({len(downloaded_data)} bytes)"
-            )
+                f"✓ Downloaded image matches original ({
+                    len(downloaded_data)} bytes)")
 
             print("\n✓ Test passed: populate_samples with automatic upload")
 
@@ -515,7 +521,8 @@ class BasicTest(TestCase):
 
         # Download all samples from Deer dataset
         print("Downloading samples from Deer dataset...")
-        deer_samples = client.samples(deer_dataset.id, annotation_set.id, groups=[])
+        deer_samples = client.samples(
+            deer_dataset.id, annotation_set.id, groups=[])
 
         print(f"Downloaded {len(deer_samples)} samples")
         assert len(deer_samples) > 0, "Deer dataset should have samples"
@@ -542,7 +549,9 @@ class BasicTest(TestCase):
                 downloaded_images[image_name] = image_data
                 print(f"  Downloaded: {image_name}")
 
-        print(f"Downloaded {len(downloaded_images)} sample images for verification")
+        print(
+            f"Downloaded {
+                len(downloaded_images)} sample images for verification")
 
         # Create a test dataset with random suffix to avoid conflicts
         random_suffix = "".join(
@@ -605,8 +614,7 @@ class BasicTest(TestCase):
 
                     # Copy annotations for this sample
                     sample_annotations = [
-                        ann for ann in deer_annotations if ann.name == sample.image_name
-                    ]
+                        ann for ann in deer_annotations if ann.name == sample.image_name]
 
                     for ann in sample_annotations:
                         new_sample.add_annotation(ann)
@@ -614,7 +622,8 @@ class BasicTest(TestCase):
                     upload_samples.append(new_sample)
 
             print(f"Prepared {len(upload_samples)} samples for upload")
-            assert len(upload_samples) > 0, "Should have samples prepared for upload"
+            assert len(
+                upload_samples) > 0, "Should have samples prepared for upload"
 
             # Upload samples
             print("Uploading samples to test dataset...")
@@ -640,10 +649,10 @@ class BasicTest(TestCase):
 
             # Verify a few images match byte-for-byte
             verified_count = 0
-            for original_name, original_data in list(downloaded_images.items())[:3]:
+            for original_name, original_data in list(
+                    downloaded_images.items())[:3]:
                 uploaded_sample = next(
-                    (s for s in uploaded_samples if s.image_name == original_name), None
-                )
+                    (s for s in uploaded_samples if s.image_name == original_name), None)
                 if uploaded_sample:
                     uploaded_data = uploaded_sample.download(client)
                     if uploaded_data:
@@ -660,10 +669,12 @@ class BasicTest(TestCase):
             print(f"Verified {verified_count} images match byte-for-byte")
 
             # Verify annotations were uploaded
-            uploaded_annotations = client.annotations(test_annotation_set_id, groups=[])
+            uploaded_annotations = client.annotations(
+                test_annotation_set_id, groups=[])
 
             print(f"Found {len(uploaded_annotations)} uploaded annotations")
-            assert len(uploaded_annotations) > 0, "Should have uploaded annotations"
+            assert len(
+                uploaded_annotations) > 0, "Should have uploaded annotations"
 
             print("\n✅ Round-trip test completed successfully!")
 

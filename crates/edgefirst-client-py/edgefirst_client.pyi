@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from polars import DataFrame
 from typing import Any, Callable, Dict, Optional, List, Tuple, Union
-
 
 #: Progress callback for long-running operations.
 #:
@@ -160,21 +161,16 @@ class Parameter:
 ParameterValue = Union[str, float, bool]
 ParameterDict = Dict[
     str,
-    Union[Parameter, ParameterValue, List[ParameterValue],
-          Dict[str, ParameterValue]]
+    Union[
+        Parameter,
+        ParameterValue,
+        List[ParameterValue],
+        Dict[str, ParameterValue],
+    ],
 ]
 
 
-
 class Error(Exception):
-    ...
-
-
-class Dataset:  # pyright: ignore[reportRedeclaration]
-    ...
-
-
-class Client:  # pyright: ignore[reportRedeclaration]
     ...
 
 
@@ -556,9 +552,9 @@ class Project:
         """
         ...
 
-    def datasets(self,
-                 client: Client,
-                 name: Optional[str] = None) -> List[Dataset]:
+    def datasets(
+        self, client: Client, name: Optional[str] = None
+    ) -> List[Dataset]:
         """
         List the datasets in the project.
 
@@ -780,6 +776,7 @@ class FileType(Enum):
             dimensions: sequence, rx_antenna, range_bins, doppler_bins —
             encoded in a 16-bit PNG.
     """
+
     Image: "FileType"
     LidarPcd: "FileType"
     LidarDepth: "FileType"
@@ -810,6 +807,7 @@ class AnnotationType(Enum):
         Mask:  Pixel-level segmentation masks for semantic/instance
                segmentation
     """
+
     Box2d: "AnnotationType"
     Box3d: "AnnotationType"
     Mask: "AnnotationType"
@@ -828,11 +826,9 @@ class Box2d:
     center of the box.
     """
 
-    def __init__(self,
-                 left: float,
-                 top: float,
-                 width: float,
-                 height: float) -> None:
+    def __init__(
+        self, left: float, top: float, width: float, height: float
+    ) -> None:
         """
         Create a new bounding box representation given the coordinates
         [xc, yc, width, height] or [xmin, ymin, width, height] of the
@@ -852,8 +848,8 @@ class Box2d:
     @property
     def width(self) -> float:
         """
-        Returns the width of the bounding box.  This dimension is normalized
-        to the image width.
+        Returns the width of the bounding box. This dimension is
+        normalized to the image width.
 
         Returns:
             float: The width of the bounding box.
@@ -925,13 +921,15 @@ class Box3d:
     left, and z-axis is up.
     """
 
-    def __init__(self,
-                 cx: float,
-                 cy: float,
-                 cz: float,
-                 width: float,
-                 height: float,
-                 depth: float) -> None:
+    def __init__(
+        self,
+        cx: float,
+        cy: float,
+        cz: float,
+        width: float,
+        height: float,
+        depth: float,
+    ) -> None:
         """
         Initialize a 3D bounding box with the given position and dimensions.
 
@@ -1372,7 +1370,8 @@ class Sample:
     @property
     def sequence_description(self) -> Optional[str]:
         """
-        Returns the description of the sequence to which this sample belongs, if any.
+        Returns the description of the sequence to which this sample
+        belongs, if any.
 
         Returns:
             Optional[str]: The sequence description or None.
@@ -1479,8 +1478,9 @@ class Sample:
         """
         ...
 
-    def download(self, client: Client,
-                 file_type: FileType = FileType.Image) -> Optional[bytes]:
+    def download(
+        self, client: Client, file_type: FileType = FileType.Image
+    ) -> Optional[bytes]:
         """
         Downloads the data file for this sample using the given file type.
 
@@ -1790,9 +1790,9 @@ class TaskInfo:
         """
         ...
 
-    def set_stages(self,
-                   client: Client,
-                   stages: List[Tuple[str, str]]) -> None:
+    def set_stages(
+        self, client: Client, stages: List[Tuple[str, str]]
+    ) -> None:
         """
         Sets the stages of the task.
 
@@ -1802,12 +1802,14 @@ class TaskInfo:
                                             names and descriptions.
         """
 
-    def update_stage(self,
-                     client: Client,
-                     stage_name: str,
-                     status: Optional[str] = None,
-                     message: Optional[str] = None,
-                     percentage: Optional[int] = None) -> None:
+    def update_stage(
+        self,
+        client: Client,
+        stage_name: str,
+        status: Optional[str] = None,
+        message: Optional[str] = None,
+        percentage: Optional[int] = None,
+    ) -> None:
         """
         Updates a specific stage of the task.
 
@@ -1998,9 +2000,9 @@ class TrainingSession:
         """
         ...
 
-    def set_metrics(self,
-                    client: Client,
-                    metrics: Dict[str, Parameter]) -> None:
+    def set_metrics(
+        self, client: Client, metrics: Dict[str, Parameter]
+    ) -> None:
         """
         Sets the metrics for the training session.
 
@@ -2022,10 +2024,9 @@ class TrainingSession:
         """
         ...
 
-    def upload_artifact(self,
-                        client: Client,
-                        filename: str,
-                        path: Optional[Path] = None) -> None:
+    def upload_artifact(
+        self, client: Client, filename: str, path: Optional[Path] = None
+    ) -> None:
         """
         Uploads an artifact file to the training session.
 
@@ -2052,10 +2053,9 @@ class TrainingSession:
         """
         ...
 
-    def upload_checkpoint(self,
-                          client: Client,
-                          filename: str,
-                          path: Optional[Path] = None) -> None:
+    def upload_checkpoint(
+        self, client: Client, filename: str, path: Optional[Path] = None
+    ) -> None:
         """
         Uploads a checkpoint file to the training session.
 
@@ -2322,12 +2322,14 @@ class Client:
         datasets and converting them to and from Polars DataFrames.
     """
 
-    def __init__(self,
-                 token: Optional[str] = None,
-                 username: Optional[str] = None,
-                 password: Optional[str] = None,
-                 server: Optional[str] = None,
-                 use_token_file: bool = True) -> None:
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        server: Optional[str] = None,
+        use_token_file: bool = True,
+    ) -> None:
         """
         Create a new EdgeFirst client instance.  The client has a few options
         for authentication.  A token can be provided directly to the client
@@ -2497,9 +2499,9 @@ class Client:
         """
         ...
 
-    def datasets(self,
-                 project_id: ProjectUID,
-                 name: Optional[str] = None) -> List[Dataset]:
+    def datasets(
+        self, project_id: ProjectUID, name: Optional[str] = None
+    ) -> List[Dataset]:
         """
         Returns a list of datasets available to the user.  The datasets are
         returned as a vector of Dataset objects.  If a name is provided, only
@@ -2530,16 +2532,13 @@ class Client:
         """
         ...
 
-    def labels(self,
-               client: Client,
-               dataset_id: DatasetUID) -> List[Label]:
+    def labels(self, client: Client, dataset_id: DatasetUID) -> List[Label]:
         """Get the labels associated with the dataset."""
         ...
 
-    def add_label(self,
-                  client: Client,
-                  dataset_id: DatasetUID,
-                  name: str) -> None:
+    def add_label(
+        self, client: Client, dataset_id: DatasetUID, name: str
+    ) -> None:
         """Add a label to the dataset."""
         ...
 
@@ -2548,10 +2547,7 @@ class Client:
         ...
 
     def create_dataset(
-        self,
-        project_id: str,
-        name: str,
-        description: Optional[str] = None
+        self, project_id: str, name: str, description: Optional[str] = None
     ) -> str:
         """
         Create a new dataset in the specified project.
@@ -2559,7 +2555,8 @@ class Client:
         Args:
             project_id (str): ID of the project to create the dataset in.
             name (str): Name of the new dataset.
-            description (Optional[str]): Optional description for the dataset. Defaults to None.
+            description (Optional[str]): Optional description for the
+                dataset. Defaults to None.
 
         Returns:
             str: Dataset ID of the newly created dataset.
@@ -2571,7 +2568,8 @@ class Client:
         Delete a dataset by marking it as deleted.
 
         Args:
-            dataset_id (Union[DatasetID, int, str]): ID of the dataset to delete.
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset
+                to delete.
         """
         ...
 
@@ -2579,27 +2577,32 @@ class Client:
         self,
         dataset_id: DatasetUID,
         name: str,
-        description: Optional[str] = None
+        description: Optional[str] = None,
     ) -> str:
         """
         Create a new annotation set for the specified dataset.
 
         Args:
-            dataset_id (Union[DatasetID, int, str]): ID of the dataset to create the annotation set in.
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset to
+                create the annotation set in.
             name (str): Name of the new annotation set.
-            description (Optional[str]): Optional description for the annotation set. Defaults to None.
+            description (Optional[str]): Optional description for the
+                annotation set. Defaults to None.
 
         Returns:
             str: Annotation set ID of the newly created annotation set.
         """
         ...
 
-    def delete_annotation_set(self, annotation_set_id: AnnotationSetUID) -> None:
+    def delete_annotation_set(
+        self, annotation_set_id: AnnotationSetUID
+    ) -> None:
         """
         Delete an annotation set by marking it as deleted.
 
         Args:
-            annotation_set_id (Union[AnnotationSetID, int, str]): ID of the annotation set to delete.
+            annotation_set_id (Union[AnnotationSetID, int, str]): ID of the
+                annotation set to delete.
         """
         ...
 
@@ -2609,7 +2612,7 @@ class Client:
         groups: List[str] = [],
         types: List[FileType] = [],
         output: Optional[str] = None,
-        progress: Optional[Progress] = None
+        progress: Optional[Progress] = None,
     ):
         """
         Download dataset samples matching specified groups and file types.
@@ -2623,8 +2626,7 @@ class Client:
         """
         ...
 
-    def annotation_sets(self,
-                        dataset_id: DatasetUID) -> List[AnnotationSet]:
+    def annotation_sets(self, dataset_id: DatasetUID) -> List[AnnotationSet]:
         """
         Retrieve the annotation sets associated with the specified dataset.
 
@@ -2636,8 +2638,9 @@ class Client:
         """
         ...
 
-    def annotation_set(self,
-                       annotation_set_id: AnnotationSetUID) -> AnnotationSet:
+    def annotation_set(
+        self, annotation_set_id: AnnotationSetUID
+    ) -> AnnotationSet:
         """
         Retrieve the annotation set with the specified ID.
 
@@ -2654,7 +2657,7 @@ class Client:
         annotation_set_id: AnnotationSetUID,
         groups: List[str] = [],
         annotation_types: List[AnnotationType] = [],
-        progress: Optional[Progress] = None
+        progress: Optional[Progress] = None,
     ) -> List[Annotation]:
         """
         Get the annotations for the specified annotation set with the
@@ -2791,9 +2794,9 @@ class Client:
         """
         ...
 
-    def experiments(self,
-                    project_id: ProjectUID,
-                    name: Optional[str] = None) -> List[Experiment]:
+    def experiments(
+        self, project_id: ProjectUID, name: Optional[str] = None
+    ) -> List[Experiment]:
         """
         Returns a list of experiments available to the user.  The experiments
         are returned as a vector of Experiment objects.  Experiments provide a
@@ -2832,9 +2835,9 @@ class Client:
         """
         ...
 
-    def training_sessions(self,
-                          trainer_id: ExperimentUID,
-                          name: Optional[str] = None) -> List[TrainingSession]:
+    def training_sessions(
+        self, trainer_id: ExperimentUID, name: Optional[str] = None
+    ) -> List[TrainingSession]:
         """
         Returns a list of trainer sessions available to the user.  The trainer
         sessions are returned as a vector of TrainingSession objects.  Trainer
@@ -2854,9 +2857,9 @@ class Client:
         """
         ...
 
-    def training_session(self,
-                         session_id: TrainingSessionUID) \
-            -> TrainingSession:
+    def training_session(
+        self, session_id: TrainingSessionUID
+    ) -> TrainingSession:
         """
         Return the training session with the specified training session ID.  If
         the training session does not exist, an error is returned.
@@ -2872,9 +2875,9 @@ class Client:
         """
         ...
 
-    def validation_sessions(self,
-                            project_id: ProjectUID) \
-            -> List[ValidationSession]:
+    def validation_sessions(
+        self, project_id: ProjectUID
+    ) -> List[ValidationSession]:
         """
         Returns a list of validation sessions associated with the specified
         project.
@@ -2977,11 +2980,13 @@ class Client:
         """
         ...
 
-    def tasks(self,
-              name: Optional[str] = None,
-              workflow: Optional[str] = None,
-              status: Optional[str] = None,
-              manager: Optional[str] = None) -> List[Task]:
+    def tasks(
+        self,
+        name: Optional[str] = None,
+        workflow: Optional[str] = None,
+        status: Optional[str] = None,
+        manager: Optional[str] = None,
+    ) -> List[Task]:
         """
         Returns a list of tasks available to the user.  The tasks are returned
         as a vector of Task objects.  Tasks represent some workflow within
@@ -3034,9 +3039,9 @@ class Client:
         """
         ...
 
-    def set_stages(self,
-                   task_id: TaskUID,
-                   stages: List[Tuple[str, str]]) -> None:
+    def set_stages(
+        self, task_id: TaskUID, stages: List[Tuple[str, str]]
+    ) -> None:
         """
         Configures the task stages.  Stages are used to show various steps in
         the task execution process.
@@ -3054,12 +3059,14 @@ class Client:
         """
         ...
 
-    def update_stage(self,
-                     task_id: TaskUID,
-                     stage: str,
-                     status: str,
-                     message: str,
-                     percentage: int) -> None:
+    def update_stage(
+        self,
+        task_id: TaskUID,
+        stage: str,
+        status: str,
+        message: str,
+        percentage: int,
+    ) -> None:
         """
         Updates a specific stage of a task.
 

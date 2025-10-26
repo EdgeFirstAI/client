@@ -82,11 +82,9 @@ class TestParameter(unittest.TestCase):
         self.assertTrue(p_nested_array.is_array())
 
         # Nested object
-        p_nested_obj = ec.Parameter.object({
-            "number": 42,
-            "array": [1, 2, 3],
-            "nested": {"inner": "value"}
-        })
+        p_nested_obj = ec.Parameter.object(
+            {"number": 42, "array": [1, 2, 3], "nested": {"inner": "value"}}
+        )
         self.assertTrue(p_nested_obj.is_object())
 
     def test_equality_integer(self):
@@ -125,10 +123,11 @@ class TestParameter(unittest.TestCase):
         p_true = ec.Parameter.boolean(True)
         p_false = ec.Parameter.boolean(False)
 
-        self.assertTrue(p_true == True)
-        self.assertTrue(p_false == False)
-        self.assertFalse(p_true == False)
-        self.assertFalse(p_false == True)
+        # Testing Parameter.__eq__ with boolean literals (intentional)
+        self.assertTrue(p_true == True)  # noqa: E712
+        self.assertTrue(p_false == False)  # noqa: E712
+        self.assertFalse(p_true == False)  # noqa: E712
+        self.assertFalse(p_false == True)  # noqa: E712
 
     def test_equality_string(self):
         """Test equality comparison for String parameters."""
@@ -231,6 +230,7 @@ class TestParameter(unittest.TestCase):
 
         # Also verify math.isclose() would work if needed
         import math
+
         self.assertTrue(math.isclose(float(p), 0.75))
 
 

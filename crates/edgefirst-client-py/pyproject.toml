@@ -14,3 +14,11 @@ build-backend = "maturin"
 
 [tool.maturin]
 # features = ["polars"]
+
+[tool.autopep8]
+max_line_length = 79
+aggressive = 2
+
+[tool.pyright]
+reportUnusedImport = false
+reportUnusedVariable = false
