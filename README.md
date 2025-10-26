@@ -323,7 +323,7 @@ This project uses [SonarCloud](https://sonarcloud.io/project/overview?id=EdgeFir
 python3 sonar.py --branch main --output sonar-issues.json --verbose
 ```
 
-See [SONAR_INTEGRATION.md](SONAR_INTEGRATION.md) for details.
+See [CONTRIBUTING.md](CONTRIBUTING.md#sonarcloud-code-quality-analysis) for details.
 
 See [SECURITY.md](SECURITY.md) for security vulnerability reporting procedures.
 
