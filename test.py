@@ -415,11 +415,9 @@ class BasicTest(TestCase):
             created_sample = None
             for s in samples:
                 print(
-                    f"  Sample: {
-                        s.name} UUID: {
-                        s.uuid} Dimensions: {
-                        s.width}x{
-                        s.height}")
+                    f"  Sample: {s.name} UUID: {s.uuid} "
+                    f"Dimensions: {s.width}x{s.height}"
+                )
                 if s.name == image_filename:
                     created_sample = s
                     break
@@ -484,8 +482,9 @@ class BasicTest(TestCase):
             ), "Downloaded data should match original byte-for-byte"
 
             print(
-                f"✓ Downloaded image matches original ({
-                    len(downloaded_data)} bytes)")
+                f"✓ Downloaded image matches original "
+                f"({len(downloaded_data)} bytes)"
+            )
 
             print("\n✓ Test passed: populate_samples with automatic upload")
 
@@ -564,8 +563,9 @@ class BasicTest(TestCase):
                 print(f"  Downloaded: {image_name}")
 
         print(
-            f"Downloaded {
-                len(downloaded_images)} sample images for verification")
+            f"Downloaded {len(downloaded_images)} sample images "
+            f"for verification"
+        )
 
         # Create a test dataset with random suffix to avoid conflicts
         random_suffix = "".join(
