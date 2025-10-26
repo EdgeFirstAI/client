@@ -470,7 +470,7 @@ def check_analysis_freshness(
 ) -> Optional[datetime]:
     """Check and report on analysis freshness."""
     analysis_date = client.get_analysis_date(project_key, branch)
-    
+
     if not analysis_date:
         if verbose:
             print("Could not determine analysis date", file=sys.stderr)
