@@ -65,7 +65,9 @@ class SonarCloudClient:
         url = f"{self.host_url}/api/qualitygates/project_status"
         params = {"projectKey": project_key}
 
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response = requests.get(
+            url, headers=self.headers, params=params, timeout=30
+        )
         response.raise_for_status()
         return response.json()
 
@@ -76,12 +78,17 @@ class SonarCloudClient:
         url = f"{self.host_url}/api/measures/component"
         params = {
             "component": project_key,
-            "metricKeys": "bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density",
+            "metricKeys": (
+                "bugs,vulnerabilities,code_smells,security_hotspots,"
+                "coverage,duplicated_lines_density"
+            ),
         }
         if branch:
             params["branch"] = branch
 
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response = requests.get(
+            url, headers=self.headers, params=params, timeout=30
+        )
         response.raise_for_status()
         return response.json()
 
@@ -106,9 +113,13 @@ class SonarCloudClient:
                 # Parse ISO 8601 datetime
                 date_str = analyses[0].get("date")
                 if date_str:
-                    return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    return datetime.fromisoformat(
+                        date_str.replace("Z", "+00:00")
+                    )
         except Exception as e:
-            print(f"Warning: Could not fetch analysis date: {e}", file=sys.stderr)
+            print(
+                f"Warning: Could not fetch analysis date: {e}", file=sys.stderr
+            )
 
         return None
 
@@ -169,12 +180,28 @@ class SonarCloudClient:
         if not rule_keys:
             return []
 
-        params = {
-            "rule_keys": ",".join(rule_keys),
-            "f": "name,htmlDesc,severity,lang,type",
-        }
+        rules = []
+        for key in rule_keys:
+            try:
+                response = requests.get(
+                    f"{self.host_url}/api/rules/show",
+                    params={"key": key, "organization": self.organization},
+                    headers=self.headers,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                data = response.json()
+                if "rule" in data:
+                    rules.append(data["rule"])
+            except requests.exceptions.HTTPError as e:
+                # Skip rules that don't exist or can't be fetched
+                print(
+                    f"⚠️  Warning: Could not fetch rule {key}: {e}",
+                    file=sys.stderr,
+                )
+                continue
 
-        return self._get_paginated("/api/rules/search", params, "rules")
+        return rules
 
 
 class CopilotFormatter:
@@ -261,7 +288,9 @@ class CopilotFormatter:
             "ruleName": rule.get("name", rule_key),
             "message": hotspot.get("message", ""),
             "status": hotspot.get("status", "TO_REVIEW"),
-            "vulnerabilityProbability": hotspot.get("vulnerabilityProbability", ""),
+            "vulnerabilityProbability": hotspot.get(
+                "vulnerabilityProbability", ""
+            ),
             "securityCategory": hotspot.get("securityCategory", ""),
             "creationDate": hotspot.get("creationDate", ""),
             "updateDate": hotspot.get("updateDate", ""),
@@ -297,7 +326,9 @@ class CopilotFormatter:
             "totalHotspots": len(hotspots),
             "bySeverity": severity_counts,
             "byType": type_counts,
-            "analysisDate": analysis_date.isoformat() if analysis_date else None,
+            "analysisDate": (
+                analysis_date.isoformat() if analysis_date else None
+            ),
             "isStale": False,
         }
 
@@ -315,8 +346,8 @@ class CopilotFormatter:
         return summary
 
 
-def main():
-    """Main entry point for the script."""
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
         description="Fetch SonarCloud issues optimized for GitHub Copilot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -380,11 +411,17 @@ Examples:
     )
     parser.add_argument(
         "--severity",
-        help="Filter by severity (comma-separated): BLOCKER,CRITICAL,MAJOR,MINOR,INFO",
+        help=(
+            "Filter by severity (comma-separated): "
+            "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"
+        ),
     )
     parser.add_argument(
         "--type",
-        help="Filter by type (comma-separated): BUG,VULNERABILITY,CODE_SMELL",
+        help=(
+            "Filter by type (comma-separated): "
+            "BUG,VULNERABILITY,CODE_SMELL"
+        ),
     )
     parser.add_argument(
         "--hotspot-status",
@@ -407,6 +444,252 @@ Examples:
         help="Output format (default: copilot)",
     )
 
+    return parser
+
+
+def print_connection_info(args: argparse.Namespace) -> None:
+    """Print connection information if verbose mode is enabled."""
+    if not args.verbose:
+        return
+
+    print(f"Connecting to: {args.host_url}", file=sys.stderr)
+    print(f"Organization: {args.organization}", file=sys.stderr)
+    print(f"Project: {args.project}", file=sys.stderr)
+    if args.branch:
+        print(f"Branch: {args.branch}", file=sys.stderr)
+    if args.pull_request:
+        print(f"Pull Request: {args.pull_request}", file=sys.stderr)
+
+
+def check_analysis_freshness(
+    client: SonarCloudClient,
+    project_key: str,
+    branch: Optional[str],
+    max_age_hours: int,
+    verbose: bool,
+) -> Optional[datetime]:
+    """Check and report on analysis freshness."""
+    analysis_date = client.get_analysis_date(project_key, branch)
+    
+    if not analysis_date:
+        if verbose:
+            print("Could not determine analysis date", file=sys.stderr)
+        return None
+
+    age = datetime.now(timezone.utc) - analysis_date
+    age_hours = age.total_seconds() / 3600
+
+    if verbose:
+        print(
+            f"Last analysis: {analysis_date.isoformat()} "
+            f"({age_hours:.1f} hours ago)",
+            file=sys.stderr,
+        )
+
+    if age_hours > max_age_hours:
+        print(
+            f"⚠️  WARNING: Analysis is {age_hours:.1f} hours old "
+            f"(threshold: {max_age_hours}h)",
+            file=sys.stderr,
+        )
+        print(
+            "    Results may be stale. Consider triggering a "
+            "new analysis.",
+            file=sys.stderr,
+        )
+
+    return analysis_date
+
+
+def fetch_project_status(
+    client: SonarCloudClient, project_key: str, verbose: bool
+) -> Optional[Dict[str, Any]]:
+    """Fetch and optionally print project quality gate status."""
+    try:
+        project_status = client.get_project_status(project_key)
+        if verbose and project_status:
+            qg = project_status.get("projectStatus", {})
+            print(
+                f"Quality Gate: {qg.get('status', 'UNKNOWN')}",
+                file=sys.stderr,
+            )
+        return project_status
+    except Exception as e:
+        if verbose:
+            print(
+                f"Could not fetch quality gate status: {e}",
+                file=sys.stderr,
+            )
+        return None
+
+
+def fetch_issues_and_hotspots(
+    client: SonarCloudClient, args: argparse.Namespace
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Fetch issues and hotspots from SonarCloud."""
+    # Parse filters
+    severities = (
+        [s.strip() for s in args.severity.split(",")]
+        if args.severity
+        else None
+    )
+    types = (
+        [t.strip() for t in args.type.split(",")] if args.type else None
+    )
+
+    # Fetch issues
+    if args.verbose:
+        print("Fetching issues...", file=sys.stderr)
+
+    issues = client.get_issues(
+        args.project,
+        branch=args.branch,
+        pull_request=args.pull_request,
+        resolved=args.include_resolved,
+        severities=severities,
+        types=types,
+    )
+
+    if args.verbose:
+        print(f"Found {len(issues)} issues", file=sys.stderr)
+
+    # Fetch hotspots
+    if args.verbose:
+        print("Fetching security hotspots...", file=sys.stderr)
+
+    hotspots = client.get_hotspots(
+        args.project,
+        branch=args.branch,
+        pull_request=args.pull_request,
+        status=args.hotspot_status,
+    )
+
+    if args.verbose:
+        print(f"Found {len(hotspots)} hotspots", file=sys.stderr)
+
+    return issues, hotspots
+
+
+def fetch_rule_definitions(
+    client: SonarCloudClient,
+    issues: List[Dict[str, Any]],
+    hotspots: List[Dict[str, Any]],
+    verbose: bool,
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch rule definitions for all issues and hotspots."""
+    issue_rule_keys: List[str] = [
+        str(issue.get("rule"))
+        for issue in issues
+        if issue.get("rule") is not None
+    ]
+    hotspot_rule_keys: List[str] = [
+        str(hotspot.get("ruleKey"))
+        for hotspot in hotspots
+        if hotspot.get("ruleKey") is not None
+    ]
+    all_rule_keys: List[str] = list(set(issue_rule_keys + hotspot_rule_keys))
+
+    if verbose:
+        print(
+            f"Fetching {len(all_rule_keys)} rule definitions...",
+            file=sys.stderr,
+        )
+
+    rules = client.get_rules(all_rule_keys)
+    return {rule["key"]: rule for rule in rules}
+
+
+def build_component_map(
+    issues: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """Build a map of components from issues."""
+    component_map = {}
+    for issue in issues:
+        component_key = issue.get("component", "")
+        if component_key and component_key not in component_map:
+            component_map[component_key] = {
+                "key": component_key,
+                "path": component_key,
+            }
+    return component_map
+
+
+def format_output(
+    args: argparse.Namespace,
+    issues: List[Dict[str, Any]],
+    hotspots: List[Dict[str, Any]],
+    rules: Dict[str, Dict[str, Any]],
+    component_map: Dict[str, Dict[str, Any]],
+    analysis_date: Optional[datetime],
+    project_status: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Format the output based on the selected format."""
+    summary = None
+
+    if args.format == "copilot":
+        formatter = CopilotFormatter()
+
+        formatted_issues = [
+            formatter.format_issue(issue, rules, component_map)
+            for issue in issues
+        ]
+        formatted_hotspots = [
+            formatter.format_hotspot(hotspot, rules, component_map)
+            for hotspot in hotspots
+        ]
+
+        summary = formatter.create_summary(
+            formatted_issues,
+            formatted_hotspots,
+            analysis_date,
+            project_status,
+        )
+
+        output = {
+            "version": "1.0",
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "project": {
+                "key": args.project,
+                "organization": args.organization,
+                "branch": args.branch,
+                "pullRequest": args.pull_request,
+            },
+            "summary": summary,
+            "issues": formatted_issues,
+            "hotspots": formatted_hotspots,
+        }
+
+    elif args.format == "json":
+        output = {
+            "issues": issues,
+            "hotspots": hotspots,
+            "rules": list(rules.values()),
+        }
+
+    else:
+        print("SARIF format not yet implemented", file=sys.stderr)
+        sys.exit(1)
+
+    return output, summary
+
+
+def print_summary(summary: Dict[str, Any]) -> None:
+    """Print a summary of the results to stderr."""
+    print("\n📊 Summary:", file=sys.stderr)
+    print(f"  Total Issues: {summary['totalIssues']}", file=sys.stderr)
+    print(
+        f"  Security Hotspots: {summary['totalHotspots']}",
+        file=sys.stderr,
+    )
+    if summary["bySeverity"]:
+        print("  By Severity:", file=sys.stderr)
+        for sev, count in sorted(summary["bySeverity"].items()):
+            print(f"    {sev}: {count}", file=sys.stderr)
+
+
+def main():
+    """Main entry point for the script."""
+    parser = create_argument_parser()
     args = parser.parse_args()
 
     # Validate that either branch or pull-request is specified
@@ -415,156 +698,43 @@ Examples:
 
     try:
         # Initialize client
-        client = SonarCloudClient(args.host_url, args.token, args.organization)
+        client = SonarCloudClient(
+            args.host_url, args.token, args.organization
+        )
 
-        if args.verbose:
-            print(f"Connecting to: {args.host_url}", file=sys.stderr)
-            print(f"Organization: {args.organization}", file=sys.stderr)
-            print(f"Project: {args.project}", file=sys.stderr)
-            if args.branch:
-                print(f"Branch: {args.branch}", file=sys.stderr)
-            if args.pull_request:
-                print(f"Pull Request: {args.pull_request}", file=sys.stderr)
+        print_connection_info(args)
 
         # Check analysis freshness
-        analysis_date = client.get_analysis_date(args.project, args.branch)
-        if analysis_date:
-            age = datetime.now(timezone.utc) - analysis_date
-            age_hours = age.total_seconds() / 3600
-
-            if args.verbose:
-                print(
-                    f"Last analysis: {analysis_date.isoformat()} ({age_hours:.1f} hours ago)",
-                    file=sys.stderr,
-                )
-
-            if age_hours > args.max_age_hours:
-                print(
-                    f"⚠️  WARNING: Analysis is {age_hours:.1f} hours old (threshold: {args.max_age_hours}h)",
-                    file=sys.stderr,
-                )
-                print(
-                    "    Results may be stale. Consider triggering a new analysis.",
-                    file=sys.stderr,
-                )
-        else:
-            if args.verbose:
-                print("Could not determine analysis date", file=sys.stderr)
+        analysis_date = check_analysis_freshness(
+            client, args.project, args.branch, args.max_age_hours, args.verbose
+        )
 
         # Fetch project status
-        project_status = None
-        try:
-            project_status = client.get_project_status(args.project)
-            if args.verbose and project_status:
-                qg = project_status.get("projectStatus", {})
-                print(f"Quality Gate: {qg.get('status', 'UNKNOWN')}", file=sys.stderr)
-        except Exception as e:
-            if args.verbose:
-                print(f"Could not fetch quality gate status: {e}", file=sys.stderr)
-
-        # Parse filters
-        severities = [s.strip() for s in args.severity.split(",")] if args.severity else None
-        types = [t.strip() for t in args.type.split(",")] if args.type else None
-
-        # Fetch issues
-        if args.verbose:
-            print("Fetching issues...", file=sys.stderr)
-
-        issues = client.get_issues(
-            args.project,
-            branch=args.branch,
-            pull_request=args.pull_request,
-            resolved=args.include_resolved,
-            severities=severities,
-            types=types,
+        project_status = fetch_project_status(
+            client, args.project, args.verbose
         )
 
-        if args.verbose:
-            print(f"Found {len(issues)} issues", file=sys.stderr)
+        # Fetch issues and hotspots
+        issues, hotspots = fetch_issues_and_hotspots(client, args)
 
-        # Fetch hotspots
-        if args.verbose:
-            print("Fetching security hotspots...", file=sys.stderr)
-
-        hotspots = client.get_hotspots(
-            args.project,
-            branch=args.branch,
-            pull_request=args.pull_request,
-            status=args.hotspot_status,
+        # Fetch rule definitions
+        rule_map = fetch_rule_definitions(
+            client, issues, hotspots, args.verbose
         )
 
-        if args.verbose:
-            print(f"Found {len(hotspots)} hotspots", file=sys.stderr)
+        # Build component map
+        component_map = build_component_map(issues)
 
-        # Fetch rule details
-        issue_rule_keys = list({issue.get("rule") for issue in issues if issue.get("rule")})
-        hotspot_rule_keys = list(
-            {hotspot.get("ruleKey") for hotspot in hotspots if hotspot.get("ruleKey")}
+        # Format output
+        output, summary = format_output(
+            args,
+            issues,
+            hotspots,
+            rule_map,
+            component_map,
+            analysis_date,
+            project_status,
         )
-        all_rule_keys = list(set(issue_rule_keys + hotspot_rule_keys))
-
-        if args.verbose:
-            print(f"Fetching {len(all_rule_keys)} rule definitions...", file=sys.stderr)
-
-        rules = client.get_rules(all_rule_keys)
-        rule_map = {rule["key"]: rule for rule in rules}
-
-        # Build component map from issues and hotspots
-        component_map = {}
-        
-        # Extract components from issues response
-        for issue in issues:
-            component_key = issue.get("component", "")
-            if component_key and component_key not in component_map:
-                component_map[component_key] = {
-                    "key": component_key,
-                    "path": component_key,
-                }
-
-        # Format output based on selected format
-        if args.format == "copilot":
-            # Format for Copilot consumption
-            formatter = CopilotFormatter()
-
-            formatted_issues = [
-                formatter.format_issue(issue, rule_map, component_map)
-                for issue in issues
-            ]
-            formatted_hotspots = [
-                formatter.format_hotspot(hotspot, rule_map, component_map)
-                for hotspot in hotspots
-            ]
-
-            summary = formatter.create_summary(
-                formatted_issues, formatted_hotspots, analysis_date, project_status
-            )
-
-            output = {
-                "version": "1.0",
-                "generatedAt": datetime.now(timezone.utc).isoformat(),
-                "project": {
-                    "key": args.project,
-                    "organization": args.organization,
-                    "branch": args.branch,
-                    "pullRequest": args.pull_request,
-                },
-                "summary": summary,
-                "issues": formatted_issues,
-                "hotspots": formatted_hotspots,
-            }
-
-        elif args.format == "json":
-            # Raw JSON format
-            output = {
-                "issues": issues,
-                "hotspots": hotspots,
-                "rules": rules,
-            }
-
-        else:
-            # SARIF format would go here
-            print("SARIF format not yet implemented", file=sys.stderr)
-            sys.exit(1)
 
         # Write output
         with open(args.output, "w") as f:
@@ -573,15 +743,9 @@ Examples:
         if args.verbose:
             print(f"✅ Report written to: {args.output}", file=sys.stderr)
 
-        # Print summary to stderr
-        if args.format == "copilot":
-            print("\n📊 Summary:", file=sys.stderr)
-            print(f"  Total Issues: {summary['totalIssues']}", file=sys.stderr)
-            print(f"  Security Hotspots: {summary['totalHotspots']}", file=sys.stderr)
-            if summary["bySeverity"]:
-                print("  By Severity:", file=sys.stderr)
-                for sev, count in sorted(summary["bySeverity"].items()):
-                    print(f"    {sev}: {count}", file=sys.stderr)
+        # Print summary
+        if args.format == "copilot" and summary is not None:
+            print_summary(summary)
 
     except requests.exceptions.RequestException as e:
         print(f"❌ API Error: {e}", file=sys.stderr)

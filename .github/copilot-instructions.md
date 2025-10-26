@@ -273,7 +273,7 @@ python -m unittest discover -s . -p "test*.py"
 
 **Download Latest Code Quality Findings:**
 
-To assist with identifying and fixing code quality issues, you can download the latest SonarCloud findings using the improved `sonar.py` script:
+To assist with identifying and fixing code quality issues, you can download the latest SonarCloud findings using the `sonar.py` script:
 
 1. **Set SonarCloud token** (requires user to create token):
    - User must create token at: [SonarCloud Security Settings](https://sonarcloud.io/)
@@ -292,6 +292,7 @@ To assist with identifying and fixing code quality issues, you can download the 
 3. **Use with GitHub Copilot**:
    - The `sonar-issues.json` file contains structured issue data optimized for Copilot
    - Ask: `@workspace Review sonar-issues.json and help me fix the top critical issues`
+   - For specific files: `@workspace Show me all issues in src/client.rs from sonar-issues.json and suggest fixes`
    - Copilot can read file paths, line numbers, rule descriptions, and suggest fixes
    - The file is gitignored and should not be committed
 
@@ -302,6 +303,9 @@ To assist with identifying and fixing code quality issues, you can download the 
    
    # Only bugs and vulnerabilities
    python3 sonar.py --branch main --type BUG,VULNERABILITY -o security-issues.json
+   
+   # Pull request analysis
+   python3 sonar.py --pull-request 123 -o pr-issues.json -v
    ```
 
 **Use Cases:**
@@ -310,7 +314,7 @@ To assist with identifying and fixing code quality issues, you can download the 
 - Systematically addressing technical debt
 - Planning refactoring work with AI-assisted fixes
 
-**See Also:** [SONAR_INTEGRATION.md](../SONAR_INTEGRATION.md) for complete documentation.
+**See Also:** [CONTRIBUTING.md](../CONTRIBUTING.md#sonarcloud-code-quality-analysis) for complete documentation including troubleshooting and CI/CD integration.
 
 **Note**: This is optional - CI/CD automatically runs SonarCloud analysis on all PRs.
 

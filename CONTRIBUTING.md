@@ -197,41 +197,117 @@ cargo llvm-cov --html
 
 ### SonarCloud Code Quality Analysis
 
-The project uses SonarCloud for automated code quality and security analysis. You can download the latest findings locally to assist with fixing issues using GitHub Copilot.
+The project uses SonarCloud for automated code quality and security analysis. The `sonar.py` script fetches current analysis results in a format optimized for GitHub Copilot to help you fix identified issues directly in your IDE.
 
-**Quick Start:**
+**Features:**
+- ✅ Fetch fresh analysis results with staleness detection
+- ✅ Rich metadata optimized for GitHub Copilot interpretation
+- ✅ Filter issues by severity, type, and status
+- ✅ Comprehensive rule descriptions and remediation guidance
+- ✅ Support for both branches and pull requests
 
-1. Create a SonarCloud token:
+#### Quick Start
+
+1. **Create a SonarCloud token:**
    - Visit [SonarCloud](https://sonarcloud.io/)
-   - Navigate to: Account → Security → Generate Tokens
+   - Navigate to: **Account → Security → Generate Tokens**
    - Create a new token with read permissions
 
-2. Set up environment variables:
+2. **Set up environment variables:**
    ```bash
    export SONAR_TOKEN=your_token_here
    export SONAR_ORG=edgefirstai
    export SONAR_PROJECT=EdgeFirstAI_client
    ```
 
-3. Download current findings (optimized for Copilot):
+3. **Fetch current findings (optimized for Copilot):**
    ```bash
+   # All open issues
    python3 sonar.py --branch main --output sonar-issues.json --verbose
+   
+   # Only critical/blocker issues
+   python3 sonar.py --branch main --severity BLOCKER,CRITICAL -o critical.json
+   
+   # Only bugs and vulnerabilities
+   python3 sonar.py --branch main --type BUG,VULNERABILITY -o security.json
    ```
 
-4. Use with GitHub Copilot:
-   - Open `sonar-issues.json` in your IDE
-   - Ask Copilot: `@workspace Review sonar-issues.json and help me fix the top critical issues`
+4. **Use with GitHub Copilot:**
+   - Open `sonar-issues.json` in VS Code
+   - Ask: `@workspace Review sonar-issues.json and help me fix the top 5 critical issues`
+   - For specific files: `@workspace Show me all issues in src/client.rs from sonar-issues.json and suggest fixes`
 
-**Advanced Usage:**
+#### Advanced Usage
 
-See [SONAR_INTEGRATION.md](SONAR_INTEGRATION.md) for complete documentation including:
-- Filtering by severity and type
-- Pull request analysis
-- Staleness detection
-- Multiple output formats
-- CI/CD integration examples
+**Pull Request Analysis:**
+```bash
+python3 sonar.py --pull-request 123 --output pr-issues.json -v
+```
 
-**Note:** The `sonar-issues.json` file is gitignored and should not be committed to the repository.
+**Staleness Detection:**
+```bash
+# Warn if analysis is older than 6 hours
+python3 sonar.py --branch main --max-age-hours 6 -o sonar-issues.json -v
+```
+
+**Include Resolved Issues (for historical analysis):**
+```bash
+python3 sonar.py --branch main --include-resolved -o all-issues.json
+```
+
+**CI/CD Integration Example:**
+```yaml
+- name: Fetch SonarCloud Issues
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    SONAR_ORG: edgefirstai
+    SONAR_PROJECT: EdgeFirstAI_client
+  run: |
+    python3 sonar.py --branch ${{ github.ref_name }} \
+      --severity BLOCKER,CRITICAL \
+      --output sonar-issues.json --verbose
+```
+
+#### Output Format
+
+The script generates JSON optimized for Copilot with:
+- **file**: Relative path from project root
+- **line/endLine**: Precise line numbers
+- **severity**: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
+- **type**: BUG, VULNERABILITY, CODE_SMELL, SECURITY_HOTSPOT
+- **message**: Human-readable description
+- **context.ruleDescription**: Full HTML remediation guidance
+
+#### Troubleshooting
+
+**Authentication Error (401):**
+```bash
+# Verify token is valid
+curl -H "Authorization: Bearer $SONAR_TOKEN" \
+  https://sonarcloud.io/api/authentication/validate
+```
+
+**Stale Analysis Warning:**
+```
+⚠️  WARNING: Analysis is 25.3 hours old (threshold: 24h)
+```
+Solution: Push a new commit or wait for scheduled SonarCloud analysis.
+
+**No Issues Found:**
+Check branch name is correct and analysis exists for that branch using `--verbose`.
+
+**Rate Limiting (429):**
+Wait a few minutes before retrying. SonarCloud limits API requests.
+
+#### Tips for Best Results
+
+1. **Run fresh analyses regularly** - Don't rely on stale data
+2. **Start with high-severity issues** - Use `--severity BLOCKER,CRITICAL`
+3. **Focus on specific types** - Use `--type BUG,VULNERABILITY` for security
+4. **Use verbose mode** - Add `-v` to see detailed progress
+5. **Iterate quickly** - Fix issues, commit, wait for new analysis, repeat
+
+**Note:** The `sonar-issues.json` file is gitignored and should not be committed.
 
 ### Studio Integration Tests
 
