@@ -54,7 +54,10 @@ cargo test --doc --locked
 # Build Python bindings
 maturin develop -m crates/edgefirst-client-py/Cargo.toml
 
-# Run Python tests
+# Run Python tests (RECOMMENDED: use slipcover to match CI/CD behavior)
+python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+
+# Alternative: Run Python tests without coverage (for quick checks)
 python -m unittest discover -s . -p "test*.py"
 
 # Format code (nightly required)
@@ -95,12 +98,27 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
 - Integration tests: `crates/edgefirst-cli/tests/` and `crates/edgefirst-client/src/lib.rs`
 - Test data: Uses EdgeFirst Studio test server with "Unit Testing" project
 - **Coverage**: Use `cargo llvm-cov` with `--doctests` flag
+- **Python testing**: Use `slipcover` (recommended) to match CI/CD behavior - catches syntax errors that standard unittest may miss
 - **Optional**: Run `python3 sonar.py --branch main -o sonar-issues.json` for local SonarCloud analysis
 
 ### Test Execution Strategy
+- **Default: Run with coverage instrumentation** - Low overhead (~10%), provides robust results and coverage visibility
+- **Prefer slipcover for Python tests** - matches CI/CD exactly, strict syntax validation
 - Run tests when credentials are available (especially if `env.sh` exists)
 - If credentials unavailable, rely on CI/CD to run tests (PRs blocked on test failures)
 - CI/CD workflows have stored secrets for full test suite
+- **VS Code users**: Install Coverage Gutters extension to see coverage inline while coding
+
+### Full Coverage Instrumentation (Recommended for Local Development)
+Standard workflow matching CI/CD (~10% performance overhead):
+```bash
+source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
+cargo build --all-features --locked
+maturin develop -m crates/edgefirst-client-py/Cargo.toml
+python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+cargo llvm-cov report --doctests --lcov --output-path lcov.info
+```
+**Performance**: Adds ~4-5 seconds to test suite. Benefits: catch coverage gaps early, see what code paths need tests.
 
 ## Pre-Commit Requirements
 
@@ -133,7 +151,7 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
    cargo test --all-features --locked                             # Rust tests
    cargo test --doc --locked                                      # Doc tests
    maturin develop -m crates/edgefirst-client-py/Cargo.toml      # Build Python bindings
-   python -m unittest discover -s . -p "test*.py"                # Python tests
+   python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python # Python tests (recommended - matches CI/CD)
    ```
 
 5. **Verify no temporary .md files** are staged (e.g., `CHANGES.md`, `UPDATES.md`):

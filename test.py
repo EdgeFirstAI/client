@@ -6,7 +6,7 @@ from pathlib import Path
 from time import sleep
 from unittest import TestCase
 
-from edgefirst_client import AnnotationType, Client
+from edgefirst_client import AnnotationType, Client, Parameter
 from polars import read_ipc
 from tqdm import tqdm
 
@@ -14,7 +14,10 @@ from examples.coco import coco_labels
 
 
 def get_test_data_dir():
-    """Get the test data directory (target/testdata). Creates it if it doesn't exist."""
+    """
+    Get the test data directory (target/testdata).
+    Creates it if it doesn't exist.
+    """
     test_dir = Path(__file__).parent / "target" / "testdata"
     test_dir.mkdir(parents=True, exist_ok=True)
     return test_dir
@@ -171,9 +174,9 @@ class BasicTest(TestCase):
         trainer = next(trainer, None)
         assert trainer is not None
 
-        trainer.set_metrics(client, {"precision": 0.75})
+        trainer.set_metrics(client, {"precision": Parameter.real(0.75)})
         metrics = trainer.metrics(client)
-        assert metrics["precision"] == 0.75
+        assert metrics["precision"] == Parameter.real(0.75)
 
     def test_validation_sessions(self):
         client = self.get_client()
@@ -191,9 +194,9 @@ class BasicTest(TestCase):
         session = next(session, None)
         assert session is not None
 
-        session.set_metrics(client, {"precision": 0.75})
+        session.set_metrics(client, {"precision": Parameter.real(0.75)})
         metrics = session.metrics(client)
-        assert metrics["precision"] == 0.75
+        assert metrics["precision"] == Parameter.real(0.75)
 
     def test_artifacts(self):
         client = self.get_client()
@@ -210,7 +213,7 @@ class BasicTest(TestCase):
         for artifact in artifacts:
             output_path = test_dir / artifact.name
             client.download_artifact(
-                trainer.id, artifact.name, str(output_path))
+                trainer.id, artifact.name, output_path)
 
             # Clean up downloaded file
             if output_path.exists():
@@ -290,7 +293,7 @@ class BasicTest(TestCase):
         print(f"Creating test dataset: {test_dataset_name}")
 
         dataset_id = client.create_dataset(
-            project.id,
+            str(project.id),
             test_dataset_name,
             "Automated test: populate_samples verification",
         )
@@ -429,7 +432,8 @@ class BasicTest(TestCase):
 
             # Verify basic properties
             assert created_sample.name == image_filename
-            assert created_sample.group == "train" or created_sample.group is None
+            assert (created_sample.group == "train" or
+                    created_sample.group is None)
 
             print("\nSample verification:")
             print(f"  ✓ image_name: {created_sample.name}")
@@ -443,7 +447,8 @@ class BasicTest(TestCase):
 
             annotation = annotations[0]
             assert annotation.label == "circle"
-            assert annotation.box2d is not None, "Bounding box should be present"
+            assert annotation.box2d is not None, (
+                "Bounding box should be present")
 
             returned_bbox = annotation.box2d
             print(
@@ -464,7 +469,8 @@ class BasicTest(TestCase):
 
             # Download the image and verify byte-for-byte match
             downloaded_data = created_sample.download(client)
-            assert downloaded_data is not None, "Downloaded data should not be None"
+            assert downloaded_data is not None, (
+                "Downloaded data should not be None")
 
             # Read original file
             with open(str(test_image_path), "rb") as f:
@@ -493,8 +499,16 @@ class BasicTest(TestCase):
             client.delete_dataset(dataset_id)
             print("  ✓ Deleted test dataset")
 
-    def test_deer_dataset_roundtrip(self):
-        """Test downloading Deer dataset and re-uploading to verify data integrity."""
+    def test_deer_dataset_roundtrip(self):  # type: ignore[misc]
+        """
+        Test downloading Deer dataset and re-uploading to verify
+        data integrity.
+
+        Note: This integration test has higher cognitive complexity (19)
+        due to its end-to-end nature - it downloads a dataset, uploads it
+        to a new dataset, and verifies byte-for-byte image integrity and
+        annotation preservation. Refactoring would reduce test clarity.
+        """
         import random
         import string
         import time
@@ -563,7 +577,7 @@ class BasicTest(TestCase):
 
         # Create the test dataset
         test_dataset_id = client.create_dataset(
-            project.id,
+            str(project.id),
             test_dataset_name,
             "Automated test: Deer dataset round-trip verification",
         )
@@ -580,9 +594,10 @@ class BasicTest(TestCase):
             print(f"Created annotation set: {test_annotation_set_id}")
 
             # Copy labels from Deer dataset
-            deer_labels = client.labels(deer_dataset.id)
+            test_dataset = client.dataset(test_dataset_id)
+            deer_labels = deer_dataset.labels(client)
             for label in deer_labels:
-                client.add_label(test_dataset_id, label.name)
+                test_dataset.add_label(client, label.name)
             print(f"Copied {len(deer_labels)} labels")
 
             # Prepare samples for upload
@@ -595,13 +610,8 @@ class BasicTest(TestCase):
 
                 new_sample = Sample()
 
-                # Copy metadata
-                if sample.group:
-                    new_sample.set_group(sample.group)
-                if sample.sequence_name:
-                    new_sample.set_sequence_name(sample.sequence_name)
-                if sample.frame_number:
-                    new_sample.set_frame_number(sample.frame_number)
+                # Note: group, sequence_name, frame_number are read-only
+                # properties set by the server during upload
 
                 # Download and save image to temp file
                 image_data = sample.download(client)
@@ -614,7 +624,8 @@ class BasicTest(TestCase):
 
                     # Copy annotations for this sample
                     sample_annotations = [
-                        ann for ann in deer_annotations if ann.name == sample.image_name]
+                        ann for ann in deer_annotations
+                        if ann.name == sample.image_name]
 
                     for ann in sample_annotations:
                         new_sample.add_annotation(ann)
@@ -652,7 +663,8 @@ class BasicTest(TestCase):
             for original_name, original_data in list(
                     downloaded_images.items())[:3]:
                 uploaded_sample = next(
-                    (s for s in uploaded_samples if s.image_name == original_name), None)
+                    (s for s in uploaded_samples
+                     if s.image_name == original_name), None)
                 if uploaded_sample:
                     uploaded_data = uploaded_sample.download(client)
                     if uploaded_data:
@@ -665,7 +677,8 @@ class BasicTest(TestCase):
                         verified_count += 1
                         print(f"  ✓ Verified: {original_name}")
 
-            assert verified_count > 0, "Should have verified at least one image"
+            assert verified_count > 0, (
+                "Should have verified at least one image")
             print(f"Verified {verified_count} images match byte-for-byte")
 
             # Verify annotations were uploaded

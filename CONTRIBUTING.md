@@ -69,13 +69,19 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 
 4. **Run tests** to ensure everything works:
    ```bash
-   # Rust tests
-   cargo test
-   cargo test --doc
+   # Recommended: Run with coverage instrumentation (adds ~10% overhead, provides robust results)
+   source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
+   cargo build --all-features --locked
+   maturin develop -m crates/edgefirst-client-py/Cargo.toml
+   python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
    
-   # Python tests
-   python -m unittest
+   # Alternative: Quick test without coverage
+   cargo test --all-features --locked
+   cargo test --doc --locked
+   python -m unittest discover -s . -p "test*.py"
    ```
+   
+   **Coverage Benefits**: VS Code users can install the [Coverage Gutters](https://marketplace.visualstudio.com/items?itemName=ryanluker.vscode-coverage-gutters) extension to see directly in the editor which parts of code are covered or not, helpful when making changes to understand if you're modifying something without a direct unit test.
 
 5. **Format your code:**
    ```bash
@@ -187,16 +193,46 @@ cargo test --doc
 
 **Python tests:**
 ```bash
+# Recommended: Run with slipcover to match CI/CD behavior (zero overhead, strict syntax validation)
+python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+
+# Alternative: Quick test without coverage
 python -m unittest
 ```
 
+**Why use slipcover locally?**
+- Matches CI/CD behavior exactly (catches syntax errors that unittest may miss)
+- Zero performance overhead (same execution time as unittest)
+- Generates coverage.xml for local analysis
+- Strict syntax validation prevents CI failures
+
 ### Test Coverage
 
-Generate coverage report:
+Generate Rust coverage report:
 ```bash
 cargo install cargo-llvm-cov
 cargo llvm-cov --html
 ```
+
+For comprehensive coverage testing (matches CI/CD environment):
+```bash
+# Set up coverage instrumentation environment
+source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
+
+# Rebuild with coverage instrumentation
+cargo build --all-features --locked
+
+# Build Python bindings with coverage
+maturin develop -m crates/edgefirst-client-py/Cargo.toml
+
+# Run Python tests with coverage-instrumented Rust
+python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+
+# Generate combined coverage report
+cargo llvm-cov report --doctests --lcov --output-path lcov.info
+```
+
+**Performance impact:** Coverage instrumentation adds ~10% overhead (4-5 seconds for full test suite). **Recommended for local development** to catch coverage gaps early. VS Code users should install the Coverage Gutters extension for inline coverage visibility.
 
 ### SonarCloud Code Quality Analysis
 
