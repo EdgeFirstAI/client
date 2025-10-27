@@ -254,6 +254,15 @@ pub struct Client {
     token_path: Option<PathBuf>,
 }
 
+/// Private context struct for pagination operations
+struct FetchContext<'a> {
+    dataset_id: DatasetID,
+    annotation_set_id: Option<AnnotationSetID>,
+    groups: &'a [String],
+    types: Vec<String>,
+    labels: &'a HashMap<String, u64>,
+}
+
 impl Client {
     /// Create a new unauthenticated client with the default saas server.  To
     /// connect to a different server use the `with_server` method or with the
@@ -824,7 +833,7 @@ impl Client {
             .labels(dataset_id)
             .await?
             .into_iter()
-            .map(|label| (label.name().to_string(), label.index() as u32))
+            .map(|label| (label.name().to_string(), label.index()))
             .collect::<HashMap<_, _>>();
         let total = self
             .samples_count(
@@ -841,25 +850,21 @@ impl Client {
             return Ok(vec![]);
         }
 
-        self.fetch_annotations_paginated(
+        let context = FetchContext {
             dataset_id,
-            annotation_set_id,
-            annotation_types,
+            annotation_set_id: Some(annotation_set_id),
             groups,
-            &labels,
-            total,
-            progress,
-        )
-        .await
+            types: annotation_types.iter().map(|t| t.to_string()).collect(),
+            labels: &labels,
+        };
+
+        self.fetch_annotations_paginated(context, total, progress)
+            .await
     }
 
     async fn fetch_annotations_paginated(
         &self,
-        dataset_id: DatasetID,
-        annotation_set_id: AnnotationSetID,
-        annotation_types: &[AnnotationType],
-        groups: &[String],
-        labels: &HashMap<String, u32>,
+        context: FetchContext<'_>,
         total: usize,
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<Annotation>, Error> {
@@ -869,10 +874,10 @@ impl Client {
 
         loop {
             let params = SamplesListParams {
-                dataset_id,
-                annotation_set_id: Some(annotation_set_id),
-                types: annotation_types.iter().map(|t| t.to_string()).collect(),
-                group_names: groups.to_vec(),
+                dataset_id: context.dataset_id,
+                annotation_set_id: context.annotation_set_id,
+                types: context.types.clone(),
+                group_names: context.groups.to_vec(),
                 continue_token,
             };
 
@@ -885,7 +890,7 @@ impl Client {
                 break;
             }
 
-            self.process_sample_annotations(&result.samples, labels, &mut annotations);
+            self.process_sample_annotations(&result.samples, context.labels, &mut annotations);
 
             if let Some(progress) = &progress {
                 let _ = progress.send(Progress { current, total }).await;
@@ -904,7 +909,7 @@ impl Client {
     fn process_sample_annotations(
         &self,
         samples: &[Sample],
-        labels: &HashMap<String, u32>,
+        labels: &HashMap<String, u64>,
         annotations: &mut Vec<Annotation>,
     ) {
         for sample in samples {
@@ -930,15 +935,8 @@ impl Client {
         }
     }
 
-    /// Helper to set label index from a label map (u32 variant)
-    fn set_label_index_from_map(annotation: &mut Annotation, labels: &HashMap<String, u32>) {
-        if let Some(label) = annotation.label() {
-            annotation.set_label_index(Some(labels[label.as_str()] as u64));
-        }
-    }
-
-    /// Helper to set label index from a label map (u64 variant)
-    fn set_label_index_from_map_u64(annotation: &mut Annotation, labels: &HashMap<String, u64>) {
+    /// Helper to set label index from a label map
+    fn set_label_index_from_map(annotation: &mut Annotation, labels: &HashMap<String, u64>) {
         if let Some(label) = annotation.label() {
             annotation.set_label_index(Some(labels[label.as_str()]));
         }
@@ -998,25 +996,20 @@ impl Client {
             return Ok(vec![]);
         }
 
-        self.fetch_samples_paginated(
+        let context = FetchContext {
             dataset_id,
             annotation_set_id,
-            &types_vec,
             groups,
-            &labels,
-            total,
-            progress,
-        )
-        .await
+            types: types_vec,
+            labels: &labels,
+        };
+
+        self.fetch_samples_paginated(context, total, progress).await
     }
 
     async fn fetch_samples_paginated(
         &self,
-        dataset_id: DatasetID,
-        annotation_set_id: Option<AnnotationSetID>,
-        types: &[String],
-        groups: &[String],
-        labels: &HashMap<String, u64>,
+        context: FetchContext<'_>,
         total: usize,
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<Sample>, Error> {
@@ -1026,10 +1019,10 @@ impl Client {
 
         loop {
             let params = SamplesListParams {
-                dataset_id,
-                annotation_set_id,
-                types: types.to_vec(),
-                group_names: groups.to_vec(),
+                dataset_id: context.dataset_id,
+                annotation_set_id: context.annotation_set_id,
+                types: context.types.clone(),
+                group_names: context.groups.to_vec(),
                 continue_token: continue_token.clone(),
             };
 
@@ -1049,7 +1042,7 @@ impl Client {
                     .map(|s| {
                         let mut anns = s.annotations().to_vec();
                         for ann in &mut anns {
-                            Self::set_label_index_from_map_u64(ann, labels);
+                            Self::set_label_index_from_map(ann, context.labels);
                         }
                         s.with_annotations(anns)
                     })

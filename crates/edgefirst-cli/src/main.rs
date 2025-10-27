@@ -674,48 +674,81 @@ async fn handle_download_annotations(
 }
 
 #[cfg(feature = "polars")]
+fn find_image_folder(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let folder = base_dir.join(name);
+    if folder.exists() && folder.is_dir() {
+        Some(folder)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "polars")]
+fn find_image_zip(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let zip_file = base_dir.join(format!("{}.zip", name));
+    if zip_file.exists() {
+        Some(zip_file)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "polars")]
+fn find_image_source(arrow_path: &PathBuf) -> Result<PathBuf, Error> {
+    use std::path::Path;
+
+    let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
+    let arrow_stem = arrow_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("dataset");
+
+    let mut tried_paths = Vec::new();
+
+    // Try folder with arrow basename
+    if let Some(folder) = find_image_folder(arrow_dir, arrow_stem) {
+        return Ok(folder);
+    }
+    tried_paths.push(arrow_dir.join(arrow_stem).display().to_string() + "/");
+
+    // Try folder with "dataset" name
+    if let Some(folder) = find_image_folder(arrow_dir, "dataset") {
+        return Ok(folder);
+    }
+    tried_paths.push(arrow_dir.join("dataset").display().to_string() + "/");
+
+    // Try zip with arrow basename
+    if let Some(zip) = find_image_zip(arrow_dir, arrow_stem) {
+        return Ok(zip);
+    }
+    tried_paths.push(
+        arrow_dir
+            .join(format!("{}.zip", arrow_stem))
+            .display()
+            .to_string(),
+    );
+
+    // Try zip with "dataset" name
+    if let Some(zip) = find_image_zip(arrow_dir, "dataset") {
+        return Ok(zip);
+    }
+    tried_paths.push(arrow_dir.join("dataset.zip").display().to_string());
+
+    Err(Error::InvalidParameters(format!(
+        "Could not find images. Tried:\n  - {}\nPlease specify --images explicitly.",
+        tried_paths.join("\n  - ")
+    )))
+}
+
+#[cfg(feature = "polars")]
 fn determine_images_path(
     annotations: &Option<PathBuf>,
     images: &Option<PathBuf>,
 ) -> Result<PathBuf, Error> {
-    use std::path::Path;
-
     let images_path = if let Some(img_path) = images {
         img_path.clone()
     } else if let Some(arrow_path) = annotations {
-        let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
-        let arrow_stem = arrow_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("dataset");
-
-        let folder = arrow_dir.join(arrow_stem);
-        if folder.exists() && folder.is_dir() {
-            folder
-        } else {
-            let dataset_folder = arrow_dir.join("dataset");
-            if dataset_folder.exists() && dataset_folder.is_dir() {
-                dataset_folder
-            } else {
-                let zip_file = arrow_dir.join(format!("{}.zip", arrow_stem));
-                if zip_file.exists() {
-                    zip_file
-                } else {
-                    let dataset_zip = arrow_dir.join("dataset.zip");
-                    if dataset_zip.exists() {
-                        dataset_zip
-                    } else {
-                        return Err(Error::InvalidParameters(format!(
-                            "Could not find images. Tried:\n  - {}/\n  - {}/\n  - {}\n  - {}\nPlease specify --images explicitly.",
-                            folder.display(),
-                            dataset_folder.display(),
-                            zip_file.display(),
-                            dataset_zip.display()
-                        )));
-                    }
-                }
-            }
-        }
+        find_image_source(arrow_path)?
     } else {
         return Err(Error::InvalidParameters(
             "When --annotations is not provided, --images must be specified".to_owned(),
@@ -732,93 +765,179 @@ fn determine_images_path(
     Ok(images_path)
 }
 
+/// Extract a 2D bounding box from a DataFrame row.
+///
+/// Attempts to read the "box2d" column as an array of f32 values at the
+/// specified row index. If successful and the array contains at least 4
+/// values, converts from center-based format (cx, cy, width, height) to
+/// corner-based format (x, y, width, height) and returns a Box2d.
+///
+/// Returns Ok(None) if the column doesn't exist, has wrong type, or
+/// insufficient data.
 #[cfg(feature = "polars")]
 fn parse_box2d_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
 ) -> Result<Option<edgefirst_client::Box2d>, Error> {
-    if let Ok(box2d_col) = df.column("box2d")
-        && let Ok(array_chunked) = box2d_col.array()
-        && let Some(array_series) = array_chunked.get_as_series(idx)
-        && let Ok(values) = array_series.f32()
-    {
-        let coords: Vec<f32> = values.into_iter().flatten().collect();
-        if coords.len() >= 4 {
-            let cx = coords[0];
-            let cy = coords[1];
-            let w = coords[2];
-            let h = coords[3];
-            let x = cx - w / 2.0;
-            let y = cy - h / 2.0;
-            let bbox = edgefirst_client::Box2d::new(x, y, w, h);
-            return Ok(Some(bbox));
-        }
+    // Try to get the box2d column
+    let box2d_col = match df.column("box2d") {
+        Ok(col) => col,
+        Err(_) => return Ok(None),
+    };
+
+    // Convert to array type
+    let array_chunked = match box2d_col.array() {
+        Ok(arr) => arr,
+        Err(_) => return Ok(None),
+    };
+
+    // Get the series at the specified index
+    let array_series = match array_chunked.get_as_series(idx) {
+        Some(series) => series,
+        None => return Ok(None),
+    };
+
+    // Extract f32 values
+    let values = match array_series.f32() {
+        Ok(vals) => vals,
+        Err(_) => return Ok(None),
+    };
+
+    let coords: Vec<f32> = values.into_iter().flatten().collect();
+    if coords.len() >= 4 {
+        // Convert from center-based (cx, cy, w, h) to corner-based (x, y, w, h)
+        let cx = coords[0];
+        let cy = coords[1];
+        let w = coords[2];
+        let h = coords[3];
+        let x = cx - w / 2.0;
+        let y = cy - h / 2.0;
+        let bbox = edgefirst_client::Box2d::new(x, y, w, h);
+        return Ok(Some(bbox));
     }
+
     Ok(None)
 }
 
+/// Extract a 3D bounding box from a DataFrame row.
+///
+/// Attempts to read the "box3d" column as an array of f32 values at the
+/// specified row index. If successful and the array contains at least 6
+/// values (x, y, z, width, height, depth), returns a Box3d.
+///
+/// Returns Ok(None) if the column doesn't exist, has wrong type, or
+/// insufficient data.
 #[cfg(feature = "polars")]
 fn parse_box3d_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
 ) -> Result<Option<edgefirst_client::Box3d>, Error> {
-    if let Ok(box3d_col) = df.column("box3d")
-        && let Ok(array_chunked) = box3d_col.array()
-        && let Some(array_series) = array_chunked.get_as_series(idx)
-        && let Ok(values) = array_series.f32()
-    {
-        let coords: Vec<f32> = values.into_iter().flatten().collect();
-        if coords.len() >= 6 {
-            let box3d = edgefirst_client::Box3d::new(
-                coords[0], coords[1], coords[2], coords[3], coords[4], coords[5],
-            );
-            return Ok(Some(box3d));
-        }
+    // Try to get the box3d column
+    let box3d_col = match df.column("box3d") {
+        Ok(col) => col,
+        Err(_) => return Ok(None),
+    };
+
+    // Convert to array type
+    let array_chunked = match box3d_col.array() {
+        Ok(arr) => arr,
+        Err(_) => return Ok(None),
+    };
+
+    // Get the series at the specified index
+    let array_series = match array_chunked.get_as_series(idx) {
+        Some(series) => series,
+        None => return Ok(None),
+    };
+
+    // Extract f32 values
+    let values = match array_series.f32() {
+        Ok(vals) => vals,
+        Err(_) => return Ok(None),
+    };
+
+    let coords: Vec<f32> = values.into_iter().flatten().collect();
+    if coords.len() >= 6 {
+        let box3d = edgefirst_client::Box3d::new(
+            coords[0], coords[1], coords[2], coords[3], coords[4], coords[5],
+        );
+        return Ok(Some(box3d));
     }
+
     Ok(None)
 }
 
+/// Extract a polygon mask from a DataFrame row.
+///
+/// Attempts to read the "mask" column as a list of f32 coordinates at the
+/// specified row index. Coordinates are pairs of (x, y) values, with NaN
+/// values used as separators between multiple polygons in the same mask.
+///
+/// Returns Ok(None) if the column doesn't exist, has wrong type, or
+/// insufficient data.
 #[cfg(feature = "polars")]
 fn parse_mask_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
 ) -> Result<Option<edgefirst_client::Mask>, Error> {
-    if let Ok(mask_col) = df.column("mask")
-        && let Ok(list_chunked) = mask_col.list()
-        && let Some(mask_series) = list_chunked.get_as_series(idx)
-        && let Ok(values) = mask_series.f32()
-    {
-        let coords: Vec<f32> = values.into_iter().flatten().collect();
-        if !coords.is_empty() && coords.len().is_multiple_of(2) {
-            let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
-            let mut current_polygon: Vec<(f32, f32)> = Vec::new();
+    // Try to get the mask column
+    let mask_col = match df.column("mask") {
+        Ok(col) => col,
+        Err(_) => return Ok(None),
+    };
 
-            let mut i = 0;
-            while i < coords.len() {
-                let x = coords[i];
-                let y = coords[i + 1];
+    // Convert to list type
+    let list_chunked = match mask_col.list() {
+        Ok(list) => list,
+        Err(_) => return Ok(None),
+    };
 
-                if x.is_nan() || y.is_nan() {
-                    if !current_polygon.is_empty() {
-                        polygons.push(current_polygon.clone());
-                        current_polygon.clear();
-                    }
-                } else {
-                    current_polygon.push((x, y));
+    // Get the series at the specified index
+    let mask_series = match list_chunked.get_as_series(idx) {
+        Some(series) => series,
+        None => return Ok(None),
+    };
+
+    // Extract f32 values
+    let values = match mask_series.f32() {
+        Ok(vals) => vals,
+        Err(_) => return Ok(None),
+    };
+
+    let coords: Vec<f32> = values.into_iter().flatten().collect();
+    if !coords.is_empty() && coords.len().is_multiple_of(2) {
+        let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
+        let mut current_polygon: Vec<(f32, f32)> = Vec::new();
+
+        // Parse coordinate pairs, using NaN as polygon separator
+        let mut i = 0;
+        while i < coords.len() {
+            let x = coords[i];
+            let y = coords[i + 1];
+
+            if x.is_nan() || y.is_nan() {
+                // NaN signals end of current polygon
+                if !current_polygon.is_empty() {
+                    polygons.push(current_polygon.clone());
+                    current_polygon.clear();
                 }
-                i += 2;
+            } else {
+                current_polygon.push((x, y));
             }
+            i += 2;
+        }
 
-            if !current_polygon.is_empty() {
-                polygons.push(current_polygon);
-            }
+        // Add final polygon if not empty
+        if !current_polygon.is_empty() {
+            polygons.push(current_polygon);
+        }
 
-            if !polygons.is_empty() {
-                let mask = edgefirst_client::Mask::new(polygons);
-                return Ok(Some(mask));
-            }
+        if !polygons.is_empty() {
+            let mask = edgefirst_client::Mask::new(polygons);
+            return Ok(Some(mask));
         }
     }
+
     Ok(None)
 }
 
