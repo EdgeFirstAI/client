@@ -2336,6 +2336,30 @@ where
     Ok(())
 }
 
+/// Upload a file to S3 using multipart upload with presigned URLs.
+///
+/// Splits a file into chunks (100MB each) and uploads them in parallel using
+/// S3 multipart upload protocol. Returns completion parameters with ETags for
+/// finalizing the upload.
+///
+/// This function handles:
+/// - Splitting files into parts based on PART_SIZE (100MB)
+/// - Parallel upload with concurrency limiting (MAX_TASKS = 32)
+/// - Retry logic (up to MAX_RETRIES = 10 per part)
+/// - Progress tracking across all parts
+///
+/// # Arguments
+///
+/// * `http` - HTTP client for making requests
+/// * `part` - Snapshot part info with presigned URLs for each chunk
+/// * `path` - Local file path to upload
+/// * `total` - Total bytes across all files for progress calculation
+/// * `current` - Atomic counter tracking bytes uploaded across all operations
+/// * `progress` - Optional channel for sending progress updates
+///
+/// # Returns
+///
+/// Parameters needed to complete the multipart upload (key, upload_id, ETags)
 async fn upload_multipart(
     http: reqwest::Client,
     part: SnapshotPart,
@@ -2352,6 +2376,7 @@ async fn upload_multipart(
     let upload_id = part.upload_id;
 
     let urls = part.urls.clone();
+    // Pre-allocate ETag slots for all parts
     let etags = Arc::new(tokio::sync::Mutex::new(vec![
         EtagPart {
             etag: "".to_owned(),
@@ -2360,6 +2385,7 @@ async fn upload_multipart(
         n_parts
     ]));
 
+    // Upload all parts in parallel with concurrency limiting
     let tasks = (0..n_parts)
         .map(|part| {
             let http = http.clone();
@@ -2371,9 +2397,11 @@ async fn upload_multipart(
             let current = current.clone();
 
             tokio::spawn(async move {
+                // Acquire semaphore permit to limit concurrent uploads
                 let _permit = sem.acquire().await?;
                 let mut etag = None;
 
+                // Retry upload for this part up to MAX_RETRIES times
                 for attempt in 0..MAX_RETRIES {
                     match upload_part(http.clone(), url.clone(), path.clone(), part, n_parts).await
                     {
@@ -2389,12 +2417,14 @@ async fn upload_multipart(
                 }
 
                 if let Some(etag) = etag {
+                    // Store ETag for this part (needed to complete multipart upload)
                     let mut etags = etags.lock().await;
                     etags[part] = EtagPart {
                         etag,
                         part_number: part + 1,
                     };
 
+                    // Update progress counter
                     let current = current.fetch_add(PART_SIZE, Ordering::SeqCst);
                     if let Some(progress) = &progress {
                         let _ = progress
@@ -2413,6 +2443,7 @@ async fn upload_multipart(
         })
         .collect::<Vec<_>>();
 
+    // Wait for all parts to complete
     join_all(tasks)
         .await
         .into_iter()

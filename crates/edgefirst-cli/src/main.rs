@@ -941,6 +941,26 @@ fn parse_mask_from_dataframe(
     Ok(None)
 }
 
+/// Parse annotations from an Arrow IPC file into a sample map.
+///
+/// Reads an Arrow file containing annotation data and builds a HashMap that
+/// groups annotations by sample name. Each entry contains an optional group
+/// designation and a vector of annotations for that sample.
+///
+/// The function handles multiple annotation geometries per sample (box2d,
+/// box3d, mask) and automatically generates object IDs when multiple
+/// geometries exist for the same annotation to enable object tracking.
+///
+/// # Arguments
+///
+/// * `annotations` - Optional path to Arrow IPC file containing annotations
+/// * `should_upload_annotations` - Whether to parse annotation data or just
+///   sample names
+///
+/// # Returns
+///
+/// HashMap mapping sample names to (group, annotations) tuples. If
+/// `should_upload_annotations` is false, annotation vectors will be empty.
 #[cfg(feature = "polars")]
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
@@ -961,7 +981,9 @@ fn parse_annotations_from_arrow(
             .finish()
             .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
 
+        // Process each row in the DataFrame
         for idx in 0..df.height() {
+            // Extract required sample name (must exist)
             let name = df
                 .column("name")
                 .map_err(|e| Error::InvalidParameters(format!("Missing 'name' column: {}", e)))?
@@ -973,6 +995,7 @@ fn parse_annotations_from_arrow(
                 .ok_or_else(|| Error::InvalidParameters("Missing name value".to_owned()))?
                 .to_string();
 
+            // Extract optional group designation (train/val/test)
             let sample_group = df
                 .column("group")
                 .ok()
@@ -980,6 +1003,7 @@ fn parse_annotations_from_arrow(
                 .and_then(|s| s.get(idx))
                 .map(|s| s.to_string());
 
+            // Get or create entry for this sample
             let entry = samples_map
                 .entry(name.clone())
                 .or_insert((sample_group, Vec::new()));
@@ -989,6 +1013,7 @@ fn parse_annotations_from_arrow(
                 let mut geometry_count = 0;
                 let mut annotation = edgefirst_client::Annotation::new();
 
+                // Extract label if present and non-empty
                 if let Some(label) = df
                     .column("label")
                     .ok()
@@ -1001,6 +1026,7 @@ fn parse_annotations_from_arrow(
                     has_annotation = true;
                 }
 
+                // Extract object_id if present and non-empty
                 let object_id = df
                     .column("object_id")
                     .ok()
@@ -1018,6 +1044,7 @@ fn parse_annotations_from_arrow(
                     annotation.set_object_id(Some(obj_id.clone()));
                 }
 
+                // Try to extract each geometry type - samples can have multiple
                 if let Some(box2d) = parse_box2d_from_dataframe(&df, idx)? {
                     annotation.set_box2d(Some(box2d));
                     has_annotation = true;
@@ -1036,11 +1063,13 @@ fn parse_annotations_from_arrow(
                     geometry_count += 1;
                 }
 
+                // Auto-generate object_id for multi-geometry annotations to enable tracking
                 if geometry_count > 1 && object_id.is_none() {
                     let generated_uuid = uuid::Uuid::new_v4().to_string();
                     annotation.set_object_id(Some(generated_uuid));
                 }
 
+                // Only add annotation if it has at least one geometry or label
                 if has_annotation {
                     entry.1.push(annotation);
                 }
