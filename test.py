@@ -498,15 +498,99 @@ class BasicTest(TestCase):
             client.delete_dataset(dataset_id)
             print("  ✓ Deleted test dataset")
 
+    def _download_deer_samples_and_images(
+            self, client, deer_dataset, annotation_set, download_dir):
+        """Download samples, annotations, and images from Deer dataset."""
+        print("Downloading samples from Deer dataset...")
+        deer_samples = client.samples(
+            deer_dataset.id, annotation_set.id, groups=[])
+        print(f"Downloaded {len(deer_samples)} samples")
+        assert len(deer_samples) > 0, "Deer dataset should have samples"
+
+        print("Downloading annotations...")
+        deer_annotations = client.annotations(annotation_set.id, groups=[])
+        print(f"Downloaded {len(deer_annotations)} annotations")
+
+        print("Downloading sample images...")
+        downloaded_images = {}
+        for idx, sample in enumerate(deer_samples[:5]):  # First 5 samples
+            image_data = sample.download(client)
+            if image_data:
+                image_name = sample.image_name or f"sample_{idx}.jpg"
+                image_path = download_dir / image_name
+                image_path.write_bytes(image_data)
+                downloaded_images[image_name] = image_data
+                print(f"  Downloaded: {image_name}")
+
+        print(
+            f"Downloaded {len(downloaded_images)} sample images "
+            f"for verification"
+        )
+        return deer_samples, deer_annotations, downloaded_images
+
+    def _prepare_upload_samples(
+            self, deer_samples, deer_annotations, download_dir, client):
+        """Prepare samples for upload to test dataset."""
+        from edgefirst_client import Sample, SampleFile
+
+        print("Preparing samples for upload...")
+        upload_samples = []
+
+        for idx, sample in enumerate(deer_samples[:10]):
+            new_sample = Sample()
+            image_data = sample.download(client)
+            if image_data:
+                image_name = sample.image_name or f"sample_{idx}.jpg"
+                temp_path = download_dir / image_name
+                temp_path.write_bytes(image_data)
+                new_sample.add_file(SampleFile("image", str(temp_path)))
+
+                sample_annotations = [
+                    ann for ann in deer_annotations
+                    if ann.name == sample.image_name]
+                for ann in sample_annotations:
+                    new_sample.add_annotation(ann)
+
+                upload_samples.append(new_sample)
+
+        print(f"Prepared {len(upload_samples)} samples for upload")
+        assert len(
+            upload_samples) > 0, "Should have samples prepared for upload"
+        return upload_samples
+
+    def _verify_uploaded_images(
+            self, client, uploaded_samples, downloaded_images):
+        """Verify uploaded images match originals byte-for-byte."""
+        verified_count = 0
+        for original_name, original_data in list(
+                downloaded_images.items())[:3]:
+            uploaded_sample = next(
+                (s for s in uploaded_samples
+                 if s.image_name == original_name), None)
+            if uploaded_sample:
+                uploaded_data = uploaded_sample.download(client)
+                if uploaded_data:
+                    assert len(original_data) == len(
+                        uploaded_data
+                    ), f"Image {original_name} should have same size"
+                    assert (
+                        original_data == uploaded_data
+                    ), f"Image {original_name} should match byte-for-byte"
+                    verified_count += 1
+                    print(f"  ✓ Verified: {original_name}")
+
+        assert verified_count > 0, (
+            "Should have verified at least one image")
+        print(f"Verified {verified_count} images match byte-for-byte")
+
     def test_deer_dataset_roundtrip(self):  # type: ignore[misc]
         """
         Test downloading Deer dataset and re-uploading to verify
         data integrity.
 
-        Note: This integration test has higher cognitive complexity (19)
-        due to its end-to-end nature - it downloads a dataset, uploads it
+        Note: This integration test downloads a dataset, uploads it
         to a new dataset, and verifies byte-for-byte image integrity and
-        annotation preservation. Refactoring would reduce test clarity.
+        annotation preservation.
         """
         import random
         import string
@@ -522,66 +606,35 @@ class BasicTest(TestCase):
         datasets = client.datasets(project.id, "Deer")
         deer_dataset = next((d for d in datasets if d.name == "Deer"), None)
         assert deer_dataset is not None, "Deer dataset should exist"
-
         print(f"Found Deer dataset: {deer_dataset.uid}")
 
         # Get annotation sets
         annotation_sets = client.annotation_sets(deer_dataset.id)
         assert len(annotation_sets) > 0
         annotation_set = annotation_sets[0]
-
         print(f"Using annotation set: {annotation_set.uid}")
 
-        # Download all samples from Deer dataset
-        print("Downloading samples from Deer dataset...")
-        deer_samples = client.samples(
-            deer_dataset.id, annotation_set.id, groups=[])
-
-        print(f"Downloaded {len(deer_samples)} samples")
-        assert len(deer_samples) > 0, "Deer dataset should have samples"
-
-        # Download annotations
-        print("Downloading annotations...")
-        deer_annotations = client.annotations(annotation_set.id, groups=[])
-
-        print(f"Downloaded {len(deer_annotations)} annotations")
-
-        # Download a few sample images to verify data integrity
-        print("Downloading sample images...")
+        # Download data from Deer dataset
         test_dir = get_test_data_dir()
         download_dir = test_dir / f"deer_download_{int(time.time())}"
         download_dir.mkdir(parents=True, exist_ok=True)
 
-        downloaded_images = {}
-        for idx, sample in enumerate(deer_samples[:5]):  # First 5 samples
-            image_data = sample.download(client)
-            if image_data:
-                image_name = sample.image_name or f"sample_{idx}.jpg"
-                image_path = download_dir / image_name
-                image_path.write_bytes(image_data)
-                downloaded_images[image_name] = image_data
-                print(f"  Downloaded: {image_name}")
-
-        print(
-            f"Downloaded {len(downloaded_images)} sample images "
-            f"for verification"
-        )
+        deer_samples, deer_annotations, downloaded_images = (
+            self._download_deer_samples_and_images(
+                client, deer_dataset, annotation_set, download_dir))
 
         # Create a test dataset with random suffix to avoid conflicts
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         test_dataset_name = f"Deer Test {random_suffix}"
-
         print(f"Creating test dataset: {test_dataset_name}")
 
-        # Create the test dataset
         test_dataset_id = client.create_dataset(
             str(project.id),
             test_dataset_name,
             "Automated test: Deer dataset round-trip verification",
         )
-
         print(f"Created test dataset: {test_dataset_id}")
 
         try:
@@ -590,7 +643,6 @@ class BasicTest(TestCase):
             test_annotation_set_id = client.create_annotation_set(
                 test_dataset_id, "Default", "Default annotation set"
             )
-
             print(f"Created annotation set: {test_annotation_set_id}")
 
             # Copy labels from Deer dataset
@@ -600,48 +652,14 @@ class BasicTest(TestCase):
                 test_dataset.add_label(client, label.name)
             print(f"Copied {len(deer_labels)} labels")
 
-            # Prepare samples for upload
-            print("Preparing samples for upload...")
-            upload_samples = []
+            # Prepare and upload samples
+            upload_samples = self._prepare_upload_samples(
+                deer_samples, deer_annotations, download_dir, client)
 
-            # Limit to first 10 samples for testing
-            for idx, sample in enumerate(deer_samples[:10]):
-                from edgefirst_client import Sample, SampleFile
-
-                new_sample = Sample()
-
-                # Note: group, sequence_name, frame_number are read-only
-                # properties set by the server during upload
-
-                # Download and save image to temp file
-                image_data = sample.download(client)
-                if image_data:
-                    image_name = sample.image_name or f"sample_{idx}.jpg"
-                    temp_path = download_dir / image_name
-                    temp_path.write_bytes(image_data)
-
-                    new_sample.add_file(SampleFile("image", str(temp_path)))
-
-                    # Copy annotations for this sample
-                    sample_annotations = [
-                        ann for ann in deer_annotations
-                        if ann.name == sample.image_name]
-
-                    for ann in sample_annotations:
-                        new_sample.add_annotation(ann)
-
-                    upload_samples.append(new_sample)
-
-            print(f"Prepared {len(upload_samples)} samples for upload")
-            assert len(
-                upload_samples) > 0, "Should have samples prepared for upload"
-
-            # Upload samples
             print("Uploading samples to test dataset...")
             results = client.populate_samples(
                 test_dataset_id, test_annotation_set_id, upload_samples
             )
-
             print(f"Uploaded {len(results)} samples")
 
             # Give the server time to process
@@ -652,39 +670,18 @@ class BasicTest(TestCase):
             uploaded_samples = client.samples(
                 test_dataset_id, test_annotation_set_id, groups=[]
             )
-
             print(f"Found {len(uploaded_samples)} uploaded samples")
             assert len(uploaded_samples) == len(
                 results
             ), "Should have same number of uploaded samples"
 
-            # Verify a few images match byte-for-byte
-            verified_count = 0
-            for original_name, original_data in list(
-                    downloaded_images.items())[:3]:
-                uploaded_sample = next(
-                    (s for s in uploaded_samples
-                     if s.image_name == original_name), None)
-                if uploaded_sample:
-                    uploaded_data = uploaded_sample.download(client)
-                    if uploaded_data:
-                        assert len(original_data) == len(
-                            uploaded_data
-                        ), f"Image {original_name} should have same size"
-                        assert (
-                            original_data == uploaded_data
-                        ), f"Image {original_name} should match byte-for-byte"
-                        verified_count += 1
-                        print(f"  ✓ Verified: {original_name}")
-
-            assert verified_count > 0, (
-                "Should have verified at least one image")
-            print(f"Verified {verified_count} images match byte-for-byte")
+            # Verify images match byte-for-byte
+            self._verify_uploaded_images(
+                client, uploaded_samples, downloaded_images)
 
             # Verify annotations were uploaded
             uploaded_annotations = client.annotations(
                 test_annotation_set_id, groups=[])
-
             print(f"Found {len(uploaded_annotations)} uploaded annotations")
             assert len(
                 uploaded_annotations) > 0, "Should have uploaded annotations"
