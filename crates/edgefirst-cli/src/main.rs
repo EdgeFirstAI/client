@@ -2,7 +2,9 @@
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
 use clap::{Parser, Subcommand};
-use edgefirst_client::{AnnotationType, Client, Error, FileType, Progress};
+use edgefirst_client::{
+    AnnotationType, Client, Dataset, Error, FileType, Progress, TrainingSession,
+};
 use inquire::{Password, PasswordDisplayMode};
 use std::{fs::File, path::PathBuf};
 
@@ -412,6 +414,42 @@ async fn handle_project(client: &Client, project_id: String) -> Result<(), Error
     Ok(())
 }
 
+async fn print_dataset_details(
+    client: &Client,
+    dataset: &Dataset,
+    show_labels: bool,
+    show_annotation_sets: bool,
+) -> Result<(), Error> {
+    println!(
+        "[{}] {}: {}",
+        dataset.uid(),
+        dataset.name(),
+        dataset.description()
+    );
+
+    if show_labels {
+        let labels = client.labels(dataset.id()).await?;
+        println!("Labels:");
+        for label in labels {
+            println!("    [{}] {}", label.id(), label.name());
+        }
+    }
+
+    if show_annotation_sets {
+        let annotation_sets = client.annotation_sets(dataset.id()).await?;
+        println!("Annotation Sets:");
+        for annotation_set in annotation_sets {
+            println!(
+                "[{}] {}: {}",
+                annotation_set.uid(),
+                annotation_set.name(),
+                annotation_set.description(),
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn handle_datasets(
     client: &Client,
     project_id: Option<String>,
@@ -424,33 +462,7 @@ async fn handle_datasets(
             .datasets(project_id.try_into()?, name.as_deref())
             .await?;
         for dataset in datasets {
-            println!(
-                "[{}] {}: {}",
-                dataset.uid(),
-                dataset.name(),
-                dataset.description()
-            );
-
-            if labels {
-                let labels = client.labels(dataset.id()).await?;
-                println!("Labels:");
-                for label in labels {
-                    println!("    [{}] {}", label.id(), label.name());
-                }
-            }
-
-            if annotation_sets {
-                let annotation_sets = client.annotation_sets(dataset.id()).await?;
-                println!("Annotation Sets:");
-                for annotation_set in annotation_sets {
-                    println!(
-                        "[{}] {}: {}",
-                        annotation_set.uid(),
-                        annotation_set.name(),
-                        annotation_set.description(),
-                    );
-                }
-            }
+            print_dataset_details(client, &dataset, labels, annotation_sets).await?;
         }
     } else {
         let projects = client.projects(None).await?;
@@ -1127,6 +1139,23 @@ async fn handle_experiment(client: &Client, experiment_id: String) -> Result<(),
     Ok(())
 }
 
+async fn print_training_session_with_artifacts(
+    client: &Client,
+    session: &TrainingSession,
+) -> Result<(), Error> {
+    println!(
+        "{} ({}) {}",
+        session.uid(),
+        session.task().status(),
+        session.name()
+    );
+
+    for artifact in client.artifacts(session.id()).await? {
+        println!("    - {}", artifact.name());
+    }
+    Ok(())
+}
+
 async fn handle_training_sessions(
     client: &Client,
     experiment_id: Option<String>,
@@ -1137,16 +1166,7 @@ async fn handle_training_sessions(
             .training_sessions(experiment_id.try_into()?, name.as_deref())
             .await?;
         for session in sessions {
-            println!(
-                "{} ({}) {}",
-                session.uid(),
-                session.task().status(),
-                session.name()
-            );
-
-            for artifact in client.artifacts(session.id()).await? {
-                println!("    - {}", artifact.name());
-            }
+            print_training_session_with_artifacts(client, &session).await?;
         }
     } else {
         let projects = client.projects(None).await?;
@@ -1157,16 +1177,7 @@ async fn handle_training_sessions(
                     .training_sessions(trainer.id(), name.as_deref())
                     .await?;
                 for session in sessions {
-                    println!(
-                        "{} ({}) {}",
-                        session.uid(),
-                        session.task().status(),
-                        session.name()
-                    );
-
-                    for artifact in client.artifacts(session.id()).await? {
-                        println!("    - {}", artifact.name());
-                    }
+                    print_training_session_with_artifacts(client, &session).await?;
                 }
             }
         }
