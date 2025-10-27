@@ -92,31 +92,31 @@ class TestParameter(unittest.TestCase):
         p = ec.Parameter.integer(42)
 
         # Should equal same integer
-        self.assertTrue(p == 42)
+        self.assertEqual(p, 42)
 
         # Should equal close float (within epsilon)
-        self.assertTrue(p == 42.0)
+        self.assertEqual(p, 42.0)
 
         # Should not equal different value
-        self.assertFalse(p == 43)
+        self.assertNotEqual(p, 43)
 
     def test_equality_real(self):
         """Test equality comparison for Real parameters."""
         p = ec.Parameter.real(0.75)
 
         # Should equal same float
-        self.assertTrue(p == 0.75)
+        self.assertEqual(p, 0.75)
 
         # Should equal very close float (within epsilon 1e-9)
-        self.assertTrue(p == 0.75000000001)
-        self.assertTrue(p == 0.74999999999)
+        self.assertEqual(p, 0.75000000001)
+        self.assertEqual(p, 0.74999999999)
 
         # Should equal equivalent integer
         p_int = ec.Parameter.real(42.0)
-        self.assertTrue(p_int == 42)
+        self.assertEqual(p_int, 42)
 
         # Should not equal different value
-        self.assertFalse(p == 0.76)
+        self.assertNotEqual(p, 0.76)
 
     def test_equality_boolean(self):
         """Test equality comparison for Boolean parameters."""
@@ -124,17 +124,18 @@ class TestParameter(unittest.TestCase):
         p_false = ec.Parameter.boolean(False)
 
         # Testing Parameter.__eq__ with boolean literals (intentional)
-        self.assertTrue(p_true == True)  # noqa: E712
-        self.assertTrue(p_false == False)  # noqa: E712
-        self.assertFalse(p_true == False)  # noqa: E712
-        self.assertFalse(p_false == True)  # noqa: E712
+        # Using assertTrue/assertFalse with == to test __eq__ implementation
+        self.assertTrue(p_true == True)  # noqa: E712  # NOSONAR
+        self.assertFalse(p_false == True)  # noqa: E712  # NOSONAR
+        self.assertTrue(p_false == False)  # noqa: E712  # NOSONAR
+        self.assertFalse(p_true == False)  # noqa: E712  # NOSONAR
 
     def test_equality_string(self):
         """Test equality comparison for String parameters."""
         p = ec.Parameter.string("hello")
 
-        self.assertTrue(p == "hello")
-        self.assertFalse(p == "world")
+        self.assertEqual(p, "hello")
+        self.assertNotEqual(p, "world")
 
     def test_type_conversions(self):
         """Test type conversion magic methods."""
@@ -226,7 +227,7 @@ class TestParameter(unittest.TestCase):
         # Instead, we verify the equality works as expected:
 
         p = ec.Parameter.real(0.75)
-        self.assertTrue(p == 0.75)  # This is what test.py does
+        self.assertEqual(p, 0.75)  # This is what test.py does
 
         # Also verify math.isclose() would work if needed
         import math

@@ -35,10 +35,10 @@ if __name__ == "__main__":
 
         with tqdm(total=0, desc=f"Fetching {group} Samples") as bar:
 
-            def progress(current, total):
-                if total != bar.total:
-                    bar.reset(total)
-                bar.update(current - bar.n)
+            def fetch_progress(current, total, pbar=bar):
+                if total != pbar.total:
+                    pbar.reset(total)
+                pbar.update(current - pbar.n)
 
             samples = client.samples(
                 dataset_id=dataset.id,
@@ -46,7 +46,7 @@ if __name__ == "__main__":
                 annotation_types=[AnnotationType.Box2d],
                 groups=[group],
                 types=[FileType.Image],
-                progress=progress,
+                progress=fetch_progress,
             )
 
         for sample in tqdm(samples, desc=f"Saving {group} Samples"):
@@ -66,15 +66,15 @@ if __name__ == "__main__":
 
         with tqdm(total=0, desc=f"Downloading {group} Images") as bar:
 
-            def progress(current, total):
-                if total != bar.total:
-                    bar.reset(total)
-                bar.update(current - bar.n)
+            def download_progress(current, total, pbar=bar):
+                if total != pbar.total:
+                    pbar.reset(total)
+                pbar.update(current - pbar.n)
 
             client.download_dataset(
                 dataset_id=dataset.id,
                 groups=[group],
                 types=[FileType.Image],
                 output=f"{args.output}/{group}",
-                progress=progress,
+                progress=download_progress,
             )
