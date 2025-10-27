@@ -824,7 +824,7 @@ impl Client {
             .labels(dataset_id)
             .await?
             .into_iter()
-            .map(|label| (label.name().to_string(), label.index()))
+            .map(|label| (label.name().to_string(), label.index() as u32))
             .collect::<HashMap<_, _>>();
         let total = self
             .samples_count(
@@ -836,13 +836,36 @@ impl Client {
             )
             .await?
             .total as usize;
+
+        if total == 0 {
+            return Ok(vec![]);
+        }
+
+        self.fetch_annotations_paginated(
+            dataset_id,
+            annotation_set_id,
+            annotation_types,
+            groups,
+            &labels,
+            total,
+            progress,
+        )
+        .await
+    }
+
+    async fn fetch_annotations_paginated(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: AnnotationSetID,
+        annotation_types: &[AnnotationType],
+        groups: &[String],
+        labels: &HashMap<String, u32>,
+        total: usize,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<Vec<Annotation>, Error> {
         let mut annotations = vec![];
         let mut continue_token: Option<String> = None;
         let mut current = 0;
-
-        if total == 0 {
-            return Ok(annotations);
-        }
 
         loop {
             let params = SamplesListParams {
@@ -862,31 +885,7 @@ impl Client {
                 break;
             }
 
-            for sample in result.samples {
-                // If there are no annotations for the sample, create an empty
-                // annotation for the sample so that it is included in the result.
-                if sample.annotations().is_empty() {
-                    let mut annotation = Annotation::new();
-                    annotation.set_sample_id(sample.id());
-                    annotation.set_name(sample.name());
-                    annotation.set_group(sample.group().cloned());
-                    annotation.set_sequence_name(sample.sequence_name().cloned());
-                    annotations.push(annotation);
-                    continue;
-                }
-
-                sample.annotations().iter().for_each(|annotation| {
-                    let mut annotation = annotation.clone();
-                    annotation.set_sample_id(sample.id());
-                    annotation.set_name(sample.name());
-                    annotation.set_group(sample.group().cloned());
-                    annotation.set_sequence_name(sample.sequence_name().cloned());
-                    if let Some(label) = annotation.label() {
-                        annotation.set_label_index(Some(labels[label.as_str()]));
-                    }
-                    annotations.push(annotation);
-                });
-            }
+            self.process_sample_annotations(&result.samples, labels, &mut annotations);
 
             if let Some(progress) = &progress {
                 let _ = progress.send(Progress { current, total }).await;
@@ -898,11 +897,51 @@ impl Client {
             }
         }
 
-        if let Some(progress) = progress {
-            drop(progress);
-        }
-
+        drop(progress);
         Ok(annotations)
+    }
+
+    fn process_sample_annotations(
+        &self,
+        samples: &[Sample],
+        labels: &HashMap<String, u32>,
+        annotations: &mut Vec<Annotation>,
+    ) {
+        for sample in samples {
+            if sample.annotations().is_empty() {
+                let mut annotation = Annotation::new();
+                annotation.set_sample_id(sample.id());
+                annotation.set_name(sample.name());
+                annotation.set_group(sample.group().cloned());
+                annotation.set_sequence_name(sample.sequence_name().cloned());
+                annotations.push(annotation);
+                continue;
+            }
+
+            for annotation in sample.annotations() {
+                let mut annotation = annotation.clone();
+                annotation.set_sample_id(sample.id());
+                annotation.set_name(sample.name());
+                annotation.set_group(sample.group().cloned());
+                annotation.set_sequence_name(sample.sequence_name().cloned());
+                Self::set_label_index_from_map(&mut annotation, labels);
+                annotations.push(annotation);
+            }
+        }
+    }
+
+    /// Helper to set label index from a label map (u32 variant)
+    fn set_label_index_from_map(annotation: &mut Annotation, labels: &HashMap<String, u32>) {
+        if let Some(label) = annotation.label() {
+            annotation.set_label_index(Some(labels[label.as_str()] as u64));
+        }
+    }
+
+    /// Helper to set label index from a label map (u64 variant)
+    fn set_label_index_from_map_u64(annotation: &mut Annotation, labels: &HashMap<String, u64>) {
+        if let Some(label) = annotation.label() {
+            annotation.set_label_index(Some(labels[label.as_str()]));
+        }
     }
 
     pub async fn samples_count(
@@ -939,7 +978,7 @@ impl Client {
         types: &[FileType],
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<Sample>, Error> {
-        let types = annotation_types
+        let types_vec = annotation_types
             .iter()
             .map(|t| t.to_string())
             .chain(types.iter().map(|t| t.to_string()))
@@ -955,19 +994,41 @@ impl Client {
             .await?
             .total as usize;
 
+        if total == 0 {
+            return Ok(vec![]);
+        }
+
+        self.fetch_samples_paginated(
+            dataset_id,
+            annotation_set_id,
+            &types_vec,
+            groups,
+            &labels,
+            total,
+            progress,
+        )
+        .await
+    }
+
+    async fn fetch_samples_paginated(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        types: &[String],
+        groups: &[String],
+        labels: &HashMap<String, u64>,
+        total: usize,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<Vec<Sample>, Error> {
         let mut samples = vec![];
         let mut continue_token: Option<String> = None;
         let mut current = 0;
-
-        if total == 0 {
-            return Ok(samples);
-        }
 
         loop {
             let params = SamplesListParams {
                 dataset_id,
                 annotation_set_id,
-                types: types.clone(),
+                types: types.to_vec(),
                 group_names: groups.to_vec(),
                 continue_token: continue_token.clone(),
             };
@@ -988,9 +1049,7 @@ impl Client {
                     .map(|s| {
                         let mut anns = s.annotations().to_vec();
                         for ann in &mut anns {
-                            if let Some(label) = ann.label() {
-                                ann.set_label_index(Some(labels[label.as_str()]));
-                            }
+                            Self::set_label_index_from_map_u64(ann, labels);
                         }
                         s.with_annotations(anns)
                     })
@@ -1007,10 +1066,7 @@ impl Client {
             }
         }
 
-        if let Some(progress) = progress {
-            drop(progress);
-        }
-
+        drop(progress);
         Ok(samples)
     }
 
@@ -1113,70 +1169,12 @@ impl Client {
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
         use crate::api::SamplesPopulateParams;
-        use std::path::Path;
 
-        // Track which files need to be uploaded: (sample_uuid, file_type, local_path,
-        // basename)
+        // Track which files need to be uploaded
         let mut files_to_upload: Vec<(String, String, PathBuf, String)> = Vec::new();
 
-        // Process samples to detect local files, extract basenames, and generate UUIDs
-        let samples: Vec<Sample> = samples
-            .into_iter()
-            .map(|mut sample| {
-                // Generate UUID if not provided
-                if sample.uuid.is_none() {
-                    sample.uuid = Some(uuid::Uuid::new_v4().to_string());
-                }
-
-                // Safe: We just ensured uuid is Some above
-                let sample_uuid = sample.uuid.clone().expect("UUID just set above");
-
-                // Process files: detect local paths and queue for upload
-                let updated_files: Vec<crate::SampleFile> = sample
-                    .files
-                    .iter()
-                    .map(|file| {
-                        if let Some(filename) = file.filename() {
-                            let path = Path::new(filename);
-
-                            // Check if this is a valid local file path
-                            if path.exists() && path.is_file() {
-                                // Get the basename
-                                if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
-                                    // For image files, try to extract dimensions if not already set
-                                    if file.file_type() == "image"
-                                        && (sample.width.is_none() || sample.height.is_none())
-                                        && let Ok(size) = imagesize::size(path)
-                                    {
-                                        sample.width = Some(size.width as u32);
-                                        sample.height = Some(size.height as u32);
-                                    }
-
-                                    // Store the full path for later upload
-                                    files_to_upload.push((
-                                        sample_uuid.clone(),
-                                        file.file_type().to_string(),
-                                        path.to_path_buf(),
-                                        basename.to_string(),
-                                    ));
-
-                                    // Return SampleFile with just the basename
-                                    return crate::SampleFile::with_filename(
-                                        file.file_type().to_string(),
-                                        basename.to_string(),
-                                    );
-                                }
-                            }
-                        }
-                        // Return the file unchanged if not a local path
-                        file.clone()
-                    })
-                    .collect();
-
-                sample.files = updated_files;
-                sample
-            })
-            .collect();
+        // Process samples to detect local files and generate UUIDs
+        let samples = self.prepare_samples_for_upload(samples, &mut files_to_upload)?;
 
         let has_files_to_upload = !files_to_upload.is_empty();
 
@@ -1184,11 +1182,7 @@ impl Client {
         let params = SamplesPopulateParams {
             dataset_id,
             annotation_set_id,
-            presigned_urls: if has_files_to_upload {
-                Some(true)
-            } else {
-                Some(false)
-            },
+            presigned_urls: Some(has_files_to_upload),
             samples,
         };
 
@@ -1198,47 +1192,131 @@ impl Client {
 
         // Upload files if we have any
         if has_files_to_upload {
-            // Build a map from (sample_uuid, basename) -> local_path
-            let mut upload_map: HashMap<(String, String), PathBuf> = HashMap::new();
-            for (uuid, _file_type, path, basename) in files_to_upload {
-                upload_map.insert((uuid, basename), path);
-            }
-
-            let http = self.http.clone();
-
-            // Extract the data we need for parallel upload
-            let upload_tasks: Vec<_> = results
-                .iter()
-                .map(|result| (result.uuid.clone(), result.urls.clone()))
-                .collect();
-
-            parallel_foreach_items(upload_tasks, progress.clone(), move |(uuid, urls)| {
-                let http = http.clone();
-                let upload_map = upload_map.clone();
-
-                async move {
-                    // Upload all files for this sample
-                    for url_info in &urls {
-                        if let Some(local_path) =
-                            upload_map.get(&(uuid.clone(), url_info.filename.clone()))
-                        {
-                            // Upload the file
-                            upload_file_to_presigned_url(
-                                http.clone(),
-                                &url_info.url,
-                                local_path.clone(),
-                            )
-                            .await?;
-                        }
-                    }
-
-                    Ok(())
-                }
-            })
-            .await?;
+            self.upload_sample_files(&results, files_to_upload, progress)
+                .await?;
         }
 
         Ok(results)
+    }
+
+    fn prepare_samples_for_upload(
+        &self,
+        samples: Vec<Sample>,
+        files_to_upload: &mut Vec<(String, String, PathBuf, String)>,
+    ) -> Result<Vec<Sample>, Error> {
+        Ok(samples
+            .into_iter()
+            .map(|mut sample| {
+                // Generate UUID if not provided
+                if sample.uuid.is_none() {
+                    sample.uuid = Some(uuid::Uuid::new_v4().to_string());
+                }
+
+                let sample_uuid = sample.uuid.clone().expect("UUID just set above");
+
+                // Process files: detect local paths and queue for upload
+                let files_copy = sample.files.clone();
+                let updated_files: Vec<crate::SampleFile> = files_copy
+                    .iter()
+                    .map(|file| {
+                        self.process_sample_file(file, &sample_uuid, &mut sample, files_to_upload)
+                    })
+                    .collect();
+
+                sample.files = updated_files;
+                sample
+            })
+            .collect())
+    }
+
+    fn process_sample_file(
+        &self,
+        file: &crate::SampleFile,
+        sample_uuid: &str,
+        sample: &mut Sample,
+        files_to_upload: &mut Vec<(String, String, PathBuf, String)>,
+    ) -> crate::SampleFile {
+        use std::path::Path;
+
+        if let Some(filename) = file.filename() {
+            let path = Path::new(filename);
+
+            // Check if this is a valid local file path
+            if path.exists() && path.is_file() {
+                if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
+                    // For image files, try to extract dimensions if not already set
+                    if file.file_type() == "image"
+                        && (sample.width.is_none() || sample.height.is_none())
+                        && let Ok(size) = imagesize::size(path)
+                    {
+                        sample.width = Some(size.width as u32);
+                        sample.height = Some(size.height as u32);
+                    }
+
+                    // Store the full path for later upload
+                    files_to_upload.push((
+                        sample_uuid.to_string(),
+                        file.file_type().to_string(),
+                        path.to_path_buf(),
+                        basename.to_string(),
+                    ));
+
+                    // Return SampleFile with just the basename
+                    return crate::SampleFile::with_filename(
+                        file.file_type().to_string(),
+                        basename.to_string(),
+                    );
+                }
+            }
+        }
+        // Return the file unchanged if not a local path
+        file.clone()
+    }
+
+    async fn upload_sample_files(
+        &self,
+        results: &[crate::SamplesPopulateResult],
+        files_to_upload: Vec<(String, String, PathBuf, String)>,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<(), Error> {
+        // Build a map from (sample_uuid, basename) -> local_path
+        let mut upload_map: HashMap<(String, String), PathBuf> = HashMap::new();
+        for (uuid, _file_type, path, basename) in files_to_upload {
+            upload_map.insert((uuid, basename), path);
+        }
+
+        let http = self.http.clone();
+
+        // Extract the data we need for parallel upload
+        let upload_tasks: Vec<_> = results
+            .iter()
+            .map(|result| (result.uuid.clone(), result.urls.clone()))
+            .collect();
+
+        parallel_foreach_items(upload_tasks, progress.clone(), move |(uuid, urls)| {
+            let http = http.clone();
+            let upload_map = upload_map.clone();
+
+            async move {
+                // Upload all files for this sample
+                for url_info in &urls {
+                    if let Some(local_path) =
+                        upload_map.get(&(uuid.clone(), url_info.filename.clone()))
+                    {
+                        // Upload the file
+                        upload_file_to_presigned_url(
+                            http.clone(),
+                            &url_info.url,
+                            local_path.clone(),
+                        )
+                        .await?;
+                    }
+                }
+
+                Ok(())
+            }
+        })
+        .await
     }
 
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
@@ -2089,64 +2167,90 @@ impl Client {
         }
 
         for attempt in 0..MAX_RETRIES {
-            let res = match self
-                .http
-                .post(format!("{}/api", self.url))
-                .header("Accept", "application/json")
-                .header("User-Agent", "EdgeFirst Client")
-                .header("Authorization", format!("Bearer {}", self.token().await))
-                .json(&request)
-                .send()
-                .await
-            {
-                Ok(res) => res,
-                Err(err) => {
-                    warn!("Socket Error: {:?}", err);
-                    continue;
-                }
-            };
-
-            if res.status().is_success() {
-                let body = res.bytes().await?;
-
-                if log_enabled!(Level::Trace) {
-                    trace!("RPC Response: {}", String::from_utf8_lossy(&body));
-                }
-
-                let response: RpcResponse<RpcResult> = match serde_json::from_slice(&body) {
-                    Ok(response) => response,
-                    Err(err) => {
-                        error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
-                        return Err(err.into());
-                    }
-                };
-
-                // FIXME: Studio Server always returns 999 as the id.
-                // if request.id.to_string() != response.id {
-                //     return Err(Error::InvalidRpcId(response.id));
-                // }
-
-                if let Some(error) = response.error {
-                    return Err(Error::RpcError(error.code, error.message));
-                } else if let Some(result) = response.result {
-                    return Ok(result);
-                } else {
-                    return Err(Error::InvalidResponse);
-                }
-            } else {
-                let err = res.error_for_status_ref().unwrap_err();
-                warn!("HTTP Error {}: {}", err, res.text().await?);
+            match self.try_rpc_request(&request, attempt).await {
+                Ok(result) => return Ok(result),
+                Err(Error::MaxRetriesExceeded(_)) => continue,
+                Err(err) => return Err(err),
             }
+        }
 
+        Err(Error::MaxRetriesExceeded(MAX_RETRIES))
+    }
+
+    async fn try_rpc_request<Params, RpcResult>(
+        &self,
+        request: &RpcRequest<Params>,
+        attempt: u32,
+    ) -> Result<RpcResult, Error>
+    where
+        Params: Serialize,
+        RpcResult: DeserializeOwned,
+    {
+        let res = match self
+            .http
+            .post(format!("{}/api", self.url))
+            .header("Accept", "application/json")
+            .header("User-Agent", "EdgeFirst Client")
+            .header("Authorization", format!("Bearer {}", self.token().await))
+            .json(&request)
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => {
+                warn!("Socket Error: {:?}", err);
+                return Err(Error::MaxRetriesExceeded(attempt));
+            }
+        };
+
+        if res.status().is_success() {
+            self.process_rpc_response(res).await
+        } else {
+            let err = res.error_for_status_ref().unwrap_err();
+            warn!("HTTP Error {}: {}", err, res.text().await?);
             warn!(
                 "Retrying RPC request (attempt {}/{})...",
                 attempt + 1,
                 MAX_RETRIES
             );
             tokio::time::sleep(Duration::from_secs(1) * attempt).await;
+            Err(Error::MaxRetriesExceeded(attempt))
+        }
+    }
+
+    async fn process_rpc_response<RpcResult>(
+        &self,
+        res: reqwest::Response,
+    ) -> Result<RpcResult, Error>
+    where
+        RpcResult: DeserializeOwned,
+    {
+        let body = res.bytes().await?;
+
+        if log_enabled!(Level::Trace) {
+            trace!("RPC Response: {}", String::from_utf8_lossy(&body));
         }
 
-        Err(Error::MaxRetriesExceeded(MAX_RETRIES))
+        let response: RpcResponse<RpcResult> = match serde_json::from_slice(&body) {
+            Ok(response) => response,
+            Err(err) => {
+                error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
+                return Err(err.into());
+            }
+        };
+
+        // FIXME: Studio Server always returns 999 as the id.
+        // if request.id.to_string() != response.id {
+        //     return Err(Error::InvalidRpcId(response.id));
+        // }
+
+        if let Some(error) = response.error {
+            Err(Error::RpcError(error.code, error.message))
+        } else if let Some(result) = response.result {
+            Ok(result)
+        } else {
+            Err(Error::InvalidResponse)
+        }
     }
 }
 

@@ -1083,101 +1083,122 @@ fn test_training_session_with_artifacts() -> Result<(), Box<dyn std::error::Erro
 
 // ===== Artifact Tests =====
 
-#[test]
-fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
-    use std::fs;
+/// Generic helper to extract values from CLI output using different strategies
+fn extract_from_output<F>(output: &str, extractor: F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    extractor(output)
+}
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
-    cmd.arg("projects").arg("--name").arg("Unit Testing");
+/// Extracts the first ID in brackets from the first line (e.g., "[123] Name")
+fn extract_first_id(output: &str) -> Option<String> {
+    extract_from_output(output, |o| {
+        o.lines()
+            .next()
+            .and_then(|line| line.split(']').next())
+            .and_then(|s| s.trim_start_matches('[').parse::<String>().ok())
+    })
+}
 
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
-
-    let project_id = output_str
-        .lines()
-        .next()
-        .and_then(|line| line.split(']').next())
-        .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
-
-    if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
-        cmd.arg("experiments")
-            .arg(&proj_id)
-            .arg("--name")
-            .arg("Unit Testing");
-
-        let output = cmd.ok()?.stdout;
-        let output_str = String::from_utf8(output)?;
-
-        let exp_id = output_str
-            .lines()
+/// Finds experiment ID for "Unit Testing" project
+fn find_experiment_id(output: &str) -> Option<String> {
+    extract_from_output(output, |o| {
+        o.lines()
             .find(|line| line.contains("Unit Testing") && line.contains('['))
             .and_then(|line| {
                 line.split('[')
                     .nth(1)
                     .and_then(|s| s.split(']').next())
                     .map(|s| s.trim().to_string())
-            });
+            })
+    })
+}
 
-        if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
-            cmd.arg("training-sessions")
-                .arg(&id)
-                .arg("--name")
-                .arg("modelpack-960x540");
+/// Finds training session ID by matching session name
+fn find_training_session_id(output: &str, name: &str) -> Option<String> {
+    extract_from_output(output, |o| {
+        o.lines()
+            .find(|line| line.contains(name))
+            .and_then(|line| line.split_whitespace().next())
+            .map(|s| s.to_string())
+    })
+}
 
-            let output = cmd.ok()?.stdout;
-            let output_str = String::from_utf8(output)?;
+/// Extracts artifact name from bulleted list (e.g., "- artifact.tar.gz")
+fn extract_artifact_name(output: &str) -> Option<String> {
+    extract_from_output(output, |o| {
+        o.lines()
+            .find(|line| line.trim().starts_with("- "))
+            .map(|line| line.trim().trim_start_matches("- ").to_string())
+    })
+}
 
-            let session_id = output_str
-                .lines()
-                .find(|line| line.contains("modelpack-960x540"))
-                .and_then(|line| line.split_whitespace().next())
-                .map(|s| s.to_string());
+#[test]
+fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs;
 
-            if let Some(sid) = session_id {
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
-                cmd.arg("training-session").arg(&sid).arg("--artifacts");
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("projects").arg("--name").arg("Unit Testing");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
 
-                let output = cmd.ok()?.stdout;
-                let output_str = String::from_utf8(output)?;
+    let proj_id = extract_first_id(&output_str).ok_or("Failed to extract project ID")?;
 
-                // Extract first artifact name
-                let artifact_name = output_str
-                    .lines()
-                    .find(|line| line.trim().starts_with("- "))
-                    .map(|line| line.trim().trim_start_matches("- ").to_string());
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("experiments")
+        .arg(&proj_id)
+        .arg("--name")
+        .arg("Unit Testing");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
 
-                if let Some(name) = artifact_name {
-                    // Use target/testdata directory for downloads
-                    let test_dir = get_test_data_dir();
-                    let output_file =
-                        test_dir.join(format!("artifact_{}_{}", std::process::id(), name));
+    let exp_id = find_experiment_id(&output_str).ok_or("Failed to find experiment ID")?;
 
-                    // Clean up any existing file
-                    if output_file.exists() {
-                        fs::remove_file(&output_file)?;
-                    }
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("training-sessions")
+        .arg(&exp_id)
+        .arg("--name")
+        .arg("modelpack-960x540");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
 
-                    let mut cmd = Command::cargo_bin("edgefirst-client")?;
-                    cmd.arg("download-artifact")
-                        .arg(&sid)
-                        .arg(&name)
-                        .arg("--output")
-                        .arg(&output_file);
+    let session_id = find_training_session_id(&output_str, "modelpack-960x540")
+        .ok_or("Failed to find training session")?;
 
-                    cmd.assert().success();
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("training-session")
+        .arg(&session_id)
+        .arg("--artifacts");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
 
-                    // Verify file was downloaded
-                    assert!(output_file.exists());
-                    println!("Downloaded artifact to {:?}", output_file);
+    let artifact_name = extract_artifact_name(&output_str).ok_or("Failed to find artifact name")?;
 
-                    // Clean up
-                    fs::remove_file(&output_file)?;
-                }
-            }
-        }
+    // Use target/testdata directory for downloads
+    let test_dir = get_test_data_dir();
+    let output_file = test_dir.join(format!("artifact_{}_{}", std::process::id(), artifact_name));
+
+    // Clean up any existing file
+    if output_file.exists() {
+        fs::remove_file(&output_file)?;
     }
+
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("download-artifact")
+        .arg(&session_id)
+        .arg(&artifact_name)
+        .arg("--output")
+        .arg(&output_file);
+
+    cmd.assert().success();
+
+    // Verify file was downloaded
+    assert!(output_file.exists());
+    println!("Downloaded artifact to {:?}", output_file);
+
+    // Clean up
+    fs::remove_file(&output_file)?;
 
     Ok(())
 }

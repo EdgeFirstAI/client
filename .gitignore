@@ -20,6 +20,7 @@ __pycache__
 *.onnx
 *.tflite
 *.rtm
+*.profraw 
 
 .DS_Store
 *.disabled

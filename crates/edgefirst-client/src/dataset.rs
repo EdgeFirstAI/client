@@ -1151,103 +1151,67 @@ pub struct Group {
 }
 
 #[cfg(feature = "polars")]
-pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Error> {
-    use itertools::Itertools;
+fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<String>)> {
     use log::warn;
     use std::path::Path;
+
+    let name = ann.name.as_ref()?;
+
+    let name = Path::new(name).file_stem()?.to_str()?;
+
+    match &ann.sequence_name {
+        Some(sequence) => match name.strip_prefix(sequence) {
+            Some(frame) => Some((
+                sequence.clone(),
+                Some(frame.trim_start_matches('_').to_owned()),
+            )),
+            None => {
+                warn!(
+                    "image_name {} does not match sequence_name {}",
+                    name, sequence
+                );
+                None
+            }
+        },
+        None => Some((name.to_string(), None)),
+    }
+}
+
+#[cfg(feature = "polars")]
+fn convert_mask_to_series(mask: &Mask) -> Series {
+    use polars::series::Series;
+
+    let mut list = Vec::new();
+    for polygon in &mask.polygon {
+        for &(x, y) in polygon {
+            list.push(x);
+            list.push(y);
+        }
+        // Separate polygons with NaN
+        list.push(f32::NAN);
+    }
+
+    // Remove the last NaN if it exists
+    let list = if !list.is_empty() {
+        list[..list.len() - 1].to_vec()
+    } else {
+        vec![]
+    };
+
+    Series::new("mask".into(), list)
+}
+
+#[cfg(feature = "polars")]
+pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Error> {
+    use itertools::Itertools;
 
     let (names, frames, objects, labels, label_indices, groups, masks, boxes2d, boxes3d) =
         annotations
             .iter()
-            .map(|ann| {
-                let name = match &ann.name {
-                    Some(name) => name,
-                    None => {
-                        warn!("annotation missing image name, skipping");
-                        return (
-                            String::new(),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        );
-                    }
-                };
+            .filter_map(|ann| {
+                let (name, frame) = extract_annotation_name(ann)?;
 
-                let name = match Path::new(name).file_stem().and_then(|s| s.to_str()) {
-                    Some(n) => n,
-                    None => {
-                        warn!("annotation has invalid image name, skipping");
-                        return (
-                            String::new(),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        );
-                    }
-                };
-
-                let (name, frame) = match &ann.sequence_name {
-                    Some(sequence) => match name.strip_prefix(sequence) {
-                        Some(frame) => (
-                            sequence.clone(),
-                            Some(frame.trim_start_matches('_').to_owned()),
-                        ),
-                        None => {
-                            warn!(
-                                "image_name {} does not match sequence_name {}",
-                                name, sequence
-                            );
-                            return (
-                                String::new(),
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                            );
-                        }
-                    },
-                    None => (name.to_string(), None),
-                };
-
-                let masks = match &ann.mask {
-                    Some(seg) => {
-                        use polars::series::Series;
-
-                        let mut list = Vec::new();
-                        for polygon in &seg.polygon {
-                            for &(x, y) in polygon {
-                                list.push(x);
-                                list.push(y);
-                            }
-                            // Separate polygons with NaN
-                            list.push(f32::NAN);
-                        }
-
-                        // Remove the last NaN if it exists
-                        let list = if !list.is_empty() {
-                            list[..list.len() - 1].to_vec()
-                        } else {
-                            vec![]
-                        };
-
-                        Some(Series::new("mask".into(), list))
-                    }
-                    None => Option::<Series>::None,
-                };
+                let masks = ann.mask.as_ref().map(convert_mask_to_series);
 
                 let box2d = ann.box2d.as_ref().map(|box2d| {
                     Series::new(
@@ -1263,7 +1227,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
                     )
                 });
 
-                (
+                Some((
                     name,
                     frame,
                     ann.object_id.clone(),
@@ -1273,7 +1237,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
                     masks,
                     box2d,
                     box3d,
-                )
+                ))
             })
             .multiunzip::<(
                 Vec<_>, // names
