@@ -19,7 +19,13 @@ fn warn_uid_deprecated(py: Python<'_>, type_name: &str) -> PyResult<()> {
          Use str({}.id) instead.",
         type_name, type_name
     );
-    warnings.call_method1("warn", (message, py.get_type::<pyo3::exceptions::PyDeprecationWarning>()))?;
+    warnings.call_method1(
+        "warn",
+        (
+            message,
+            py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
     Ok(())
 }
 

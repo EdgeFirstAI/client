@@ -250,9 +250,19 @@ mod tests {
 
     #[test]
     fn test_config_error_wrapping() {
-        // 1. Create inner error - ConfigError requires building a config that fails
-        let inner_err =
-            config::Config::builder().build().and_then(|c| c.try_deserialize::<String>()).unwrap_err();
+        // 1. Create inner error - Force a config error by trying to deserialize empty
+        //    config to a required struct
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct RequiredField {
+            required: String,
+        }
+
+        let inner_err = config::Config::builder()
+            .build()
+            .unwrap()
+            .try_deserialize::<RequiredField>()
+            .unwrap_err();
         // 2. Capture inner error string
         let inner_str = inner_err.to_string();
         // 3. Wrap to custom Error type

@@ -1570,13 +1570,7 @@ pub struct TaskInfo {
 
 impl Display for TaskInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {}: {}",
-            self.id,
-            self.workflow(),
-            self.description()
-        )
+        write!(f, "{} {}: {}", self.id, self.workflow(), self.description())
     }
 }
 
@@ -1741,5 +1735,778 @@ impl Artifact {
 
     pub fn model_type(&self) -> &str {
         &self.model_type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== OrganizationID Tests ==========
+    #[test]
+    fn test_organization_id_from_u64() {
+        let id = OrganizationID::from(12345);
+        assert_eq!(id.value(), 12345);
+    }
+
+    #[test]
+    fn test_organization_id_display() {
+        let id = OrganizationID::from(0xabc123);
+        assert_eq!(format!("{}", id), "org-abc123");
+    }
+
+    #[test]
+    fn test_organization_id_try_from_str_valid() {
+        let id = OrganizationID::try_from("org-abc123").unwrap();
+        assert_eq!(id.value(), 0xabc123);
+    }
+
+    #[test]
+    fn test_organization_id_try_from_str_invalid_prefix() {
+        let result = OrganizationID::try_from("invalid-abc123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'org-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_organization_id_try_from_str_invalid_hex() {
+        let result = OrganizationID::try_from("org-xyz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_organization_id_try_from_str_empty() {
+        let result = OrganizationID::try_from("org-");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_organization_id_into_u64() {
+        let id = OrganizationID::from(54321);
+        let value: u64 = id.into();
+        assert_eq!(value, 54321);
+    }
+
+    // ========== ProjectID Tests ==========
+    #[test]
+    fn test_project_id_from_u64() {
+        let id = ProjectID::from(78910);
+        assert_eq!(id.value(), 78910);
+    }
+
+    #[test]
+    fn test_project_id_display() {
+        let id = ProjectID::from(0xdef456);
+        assert_eq!(format!("{}", id), "p-def456");
+    }
+
+    #[test]
+    fn test_project_id_from_str_valid() {
+        let id = ProjectID::from_str("p-def456").unwrap();
+        assert_eq!(id.value(), 0xdef456);
+    }
+
+    #[test]
+    fn test_project_id_try_from_str_valid() {
+        let id = ProjectID::try_from("p-123abc").unwrap();
+        assert_eq!(id.value(), 0x123abc);
+    }
+
+    #[test]
+    fn test_project_id_try_from_string_valid() {
+        let id = ProjectID::try_from("p-456def".to_string()).unwrap();
+        assert_eq!(id.value(), 0x456def);
+    }
+
+    #[test]
+    fn test_project_id_from_str_invalid_prefix() {
+        let result = ProjectID::from_str("proj-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'p-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_project_id_from_str_invalid_hex() {
+        let result = ProjectID::from_str("p-notahex");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_project_id_into_u64() {
+        let id = ProjectID::from(99999);
+        let value: u64 = id.into();
+        assert_eq!(value, 99999);
+    }
+
+    // ========== ExperimentID Tests ==========
+    #[test]
+    fn test_experiment_id_from_u64() {
+        let id = ExperimentID::from(1193046);
+        assert_eq!(id.value(), 1193046);
+    }
+
+    #[test]
+    fn test_experiment_id_display() {
+        let id = ExperimentID::from(0x123abc);
+        assert_eq!(format!("{}", id), "exp-123abc");
+    }
+
+    #[test]
+    fn test_experiment_id_from_str_valid() {
+        let id = ExperimentID::from_str("exp-456def").unwrap();
+        assert_eq!(id.value(), 0x456def);
+    }
+
+    #[test]
+    fn test_experiment_id_try_from_str_valid() {
+        let id = ExperimentID::try_from("exp-789abc").unwrap();
+        assert_eq!(id.value(), 0x789abc);
+    }
+
+    #[test]
+    fn test_experiment_id_try_from_string_valid() {
+        let id = ExperimentID::try_from("exp-fedcba".to_string()).unwrap();
+        assert_eq!(id.value(), 0xfedcba);
+    }
+
+    #[test]
+    fn test_experiment_id_from_str_invalid_prefix() {
+        let result = ExperimentID::from_str("experiment-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'exp-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_experiment_id_from_str_invalid_hex() {
+        let result = ExperimentID::from_str("exp-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_experiment_id_into_u64() {
+        let id = ExperimentID::from(777777);
+        let value: u64 = id.into();
+        assert_eq!(value, 777777);
+    }
+
+    // ========== TrainingSessionID Tests ==========
+    #[test]
+    fn test_training_session_id_from_u64() {
+        let id = TrainingSessionID::from(7901234);
+        assert_eq!(id.value(), 7901234);
+    }
+
+    #[test]
+    fn test_training_session_id_display() {
+        let id = TrainingSessionID::from(0xabc123);
+        assert_eq!(format!("{}", id), "t-abc123");
+    }
+
+    #[test]
+    fn test_training_session_id_from_str_valid() {
+        let id = TrainingSessionID::from_str("t-abc123").unwrap();
+        assert_eq!(id.value(), 0xabc123);
+    }
+
+    #[test]
+    fn test_training_session_id_try_from_str_valid() {
+        let id = TrainingSessionID::try_from("t-deadbeef").unwrap();
+        assert_eq!(id.value(), 0xdeadbeef);
+    }
+
+    #[test]
+    fn test_training_session_id_try_from_string_valid() {
+        let id = TrainingSessionID::try_from("t-cafebabe".to_string()).unwrap();
+        assert_eq!(id.value(), 0xcafebabe);
+    }
+
+    #[test]
+    fn test_training_session_id_from_str_invalid_prefix() {
+        let result = TrainingSessionID::from_str("training-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 't-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_training_session_id_from_str_invalid_hex() {
+        let result = TrainingSessionID::from_str("t-qqq");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_training_session_id_into_u64() {
+        let id = TrainingSessionID::from(123456);
+        let value: u64 = id.into();
+        assert_eq!(value, 123456);
+    }
+
+    // ========== ValidationSessionID Tests ==========
+    #[test]
+    fn test_validation_session_id_from_u64() {
+        let id = ValidationSessionID::from(3456789);
+        assert_eq!(id.value(), 3456789);
+    }
+
+    #[test]
+    fn test_validation_session_id_display() {
+        let id = ValidationSessionID::from(0x34c985);
+        assert_eq!(format!("{}", id), "v-34c985");
+    }
+
+    #[test]
+    fn test_validation_session_id_try_from_str_valid() {
+        let id = ValidationSessionID::try_from("v-deadbeef").unwrap();
+        assert_eq!(id.value(), 0xdeadbeef);
+    }
+
+    #[test]
+    fn test_validation_session_id_try_from_string_valid() {
+        let id = ValidationSessionID::try_from("v-12345678".to_string()).unwrap();
+        assert_eq!(id.value(), 0x12345678);
+    }
+
+    #[test]
+    fn test_validation_session_id_try_from_str_invalid_prefix() {
+        let result = ValidationSessionID::try_from("validation-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'v-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_validation_session_id_try_from_str_invalid_hex() {
+        let result = ValidationSessionID::try_from("v-xyz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validation_session_id_into_u64() {
+        let id = ValidationSessionID::from(987654);
+        let value: u64 = id.into();
+        assert_eq!(value, 987654);
+    }
+
+    // ========== SnapshotID Tests ==========
+    #[test]
+    fn test_snapshot_id_from_u64() {
+        let id = SnapshotID::from(111222);
+        assert_eq!(id.value(), 111222);
+    }
+
+    #[test]
+    fn test_snapshot_id_display() {
+        let id = SnapshotID::from(0xaabbcc);
+        assert_eq!(format!("{}", id), "ss-aabbcc");
+    }
+
+    #[test]
+    fn test_snapshot_id_try_from_str_valid() {
+        let id = SnapshotID::try_from("ss-aabbcc").unwrap();
+        assert_eq!(id.value(), 0xaabbcc);
+    }
+
+    #[test]
+    fn test_snapshot_id_try_from_str_invalid_prefix() {
+        let result = SnapshotID::try_from("snapshot-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'ss-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_snapshot_id_try_from_str_invalid_hex() {
+        let result = SnapshotID::try_from("ss-ggg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_snapshot_id_into_u64() {
+        let id = SnapshotID::from(333444);
+        let value: u64 = id.into();
+        assert_eq!(value, 333444);
+    }
+
+    // ========== TaskID Tests ==========
+    #[test]
+    fn test_task_id_from_u64() {
+        let id = TaskID::from(555666);
+        assert_eq!(id.value(), 555666);
+    }
+
+    #[test]
+    fn test_task_id_display() {
+        let id = TaskID::from(0x123456);
+        assert_eq!(format!("{}", id), "task-123456");
+    }
+
+    #[test]
+    fn test_task_id_from_str_valid() {
+        let id = TaskID::from_str("task-123456").unwrap();
+        assert_eq!(id.value(), 0x123456);
+    }
+
+    #[test]
+    fn test_task_id_try_from_str_valid() {
+        let id = TaskID::try_from("task-abcdef").unwrap();
+        assert_eq!(id.value(), 0xabcdef);
+    }
+
+    #[test]
+    fn test_task_id_try_from_string_valid() {
+        let id = TaskID::try_from("task-fedcba".to_string()).unwrap();
+        assert_eq!(id.value(), 0xfedcba);
+    }
+
+    #[test]
+    fn test_task_id_from_str_invalid_prefix() {
+        let result = TaskID::from_str("t-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'task-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_task_id_from_str_invalid_hex() {
+        let result = TaskID::from_str("task-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_task_id_into_u64() {
+        let id = TaskID::from(777888);
+        let value: u64 = id.into();
+        assert_eq!(value, 777888);
+    }
+
+    // ========== DatasetID Tests ==========
+    #[test]
+    fn test_dataset_id_from_u64() {
+        let id = DatasetID::from(1193046);
+        assert_eq!(id.value(), 1193046);
+    }
+
+    #[test]
+    fn test_dataset_id_display() {
+        let id = DatasetID::from(0x123abc);
+        assert_eq!(format!("{}", id), "ds-123abc");
+    }
+
+    #[test]
+    fn test_dataset_id_from_str_valid() {
+        let id = DatasetID::from_str("ds-456def").unwrap();
+        assert_eq!(id.value(), 0x456def);
+    }
+
+    #[test]
+    fn test_dataset_id_try_from_str_valid() {
+        let id = DatasetID::try_from("ds-789abc").unwrap();
+        assert_eq!(id.value(), 0x789abc);
+    }
+
+    #[test]
+    fn test_dataset_id_try_from_string_valid() {
+        let id = DatasetID::try_from("ds-fedcba".to_string()).unwrap();
+        assert_eq!(id.value(), 0xfedcba);
+    }
+
+    #[test]
+    fn test_dataset_id_from_str_invalid_prefix() {
+        let result = DatasetID::from_str("dataset-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'ds-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_dataset_id_from_str_invalid_hex() {
+        let result = DatasetID::from_str("ds-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dataset_id_into_u64() {
+        let id = DatasetID::from(111111);
+        let value: u64 = id.into();
+        assert_eq!(value, 111111);
+    }
+
+    // ========== AnnotationSetID Tests ==========
+    #[test]
+    fn test_annotation_set_id_from_u64() {
+        let id = AnnotationSetID::from(222333);
+        assert_eq!(id.value(), 222333);
+    }
+
+    #[test]
+    fn test_annotation_set_id_display() {
+        let id = AnnotationSetID::from(0xabcdef);
+        assert_eq!(format!("{}", id), "as-abcdef");
+    }
+
+    #[test]
+    fn test_annotation_set_id_from_str_valid() {
+        let id = AnnotationSetID::from_str("as-abcdef").unwrap();
+        assert_eq!(id.value(), 0xabcdef);
+    }
+
+    #[test]
+    fn test_annotation_set_id_try_from_str_valid() {
+        let id = AnnotationSetID::try_from("as-123456").unwrap();
+        assert_eq!(id.value(), 0x123456);
+    }
+
+    #[test]
+    fn test_annotation_set_id_try_from_string_valid() {
+        let id = AnnotationSetID::try_from("as-fedcba".to_string()).unwrap();
+        assert_eq!(id.value(), 0xfedcba);
+    }
+
+    #[test]
+    fn test_annotation_set_id_from_str_invalid_prefix() {
+        let result = AnnotationSetID::from_str("annotation-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'as-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_annotation_set_id_from_str_invalid_hex() {
+        let result = AnnotationSetID::from_str("as-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_annotation_set_id_into_u64() {
+        let id = AnnotationSetID::from(444555);
+        let value: u64 = id.into();
+        assert_eq!(value, 444555);
+    }
+
+    // ========== SampleID Tests ==========
+    #[test]
+    fn test_sample_id_from_u64() {
+        let id = SampleID::from(666777);
+        assert_eq!(id.value(), 666777);
+    }
+
+    #[test]
+    fn test_sample_id_display() {
+        let id = SampleID::from(0x987654);
+        assert_eq!(format!("{}", id), "s-987654");
+    }
+
+    #[test]
+    fn test_sample_id_try_from_str_valid() {
+        let id = SampleID::try_from("s-987654").unwrap();
+        assert_eq!(id.value(), 0x987654);
+    }
+
+    #[test]
+    fn test_sample_id_try_from_str_invalid_prefix() {
+        let result = SampleID::try_from("sample-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 's-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_sample_id_try_from_str_invalid_hex() {
+        let result = SampleID::try_from("s-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sample_id_into_u64() {
+        let id = SampleID::from(888999);
+        let value: u64 = id.into();
+        assert_eq!(value, 888999);
+    }
+
+    // ========== AppId Tests ==========
+    #[test]
+    fn test_app_id_from_u64() {
+        let id = AppId::from(123123);
+        assert_eq!(id.value(), 123123);
+    }
+
+    #[test]
+    fn test_app_id_display() {
+        let id = AppId::from(0x456789);
+        assert_eq!(format!("{}", id), "app-456789");
+    }
+
+    #[test]
+    fn test_app_id_try_from_str_valid() {
+        let id = AppId::try_from("app-456789").unwrap();
+        assert_eq!(id.value(), 0x456789);
+    }
+
+    #[test]
+    fn test_app_id_try_from_str_invalid_prefix() {
+        let result = AppId::try_from("application-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'app-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_app_id_try_from_str_invalid_hex() {
+        let result = AppId::try_from("app-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_app_id_into_u64() {
+        let id = AppId::from(321321);
+        let value: u64 = id.into();
+        assert_eq!(value, 321321);
+    }
+
+    // ========== ImageId Tests ==========
+    #[test]
+    fn test_image_id_from_u64() {
+        let id = ImageId::from(789789);
+        assert_eq!(id.value(), 789789);
+    }
+
+    #[test]
+    fn test_image_id_display() {
+        let id = ImageId::from(0xabcd1234);
+        assert_eq!(format!("{}", id), "im-abcd1234");
+    }
+
+    #[test]
+    fn test_image_id_try_from_str_valid() {
+        let id = ImageId::try_from("im-abcd1234").unwrap();
+        assert_eq!(id.value(), 0xabcd1234);
+    }
+
+    #[test]
+    fn test_image_id_try_from_str_invalid_prefix() {
+        let result = ImageId::try_from("image-123");
+        assert!(result.is_err());
+        match result {
+            Err(Error::InvalidParameters(msg)) => {
+                assert!(msg.contains("must start with 'im-'"));
+            }
+            _ => panic!("Expected InvalidParameters error"),
+        }
+    }
+
+    #[test]
+    fn test_image_id_try_from_str_invalid_hex() {
+        let result = ImageId::try_from("im-zzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_image_id_into_u64() {
+        let id = ImageId::from(987987);
+        let value: u64 = id.into();
+        assert_eq!(value, 987987);
+    }
+
+    // ========== ID Type Hash and Equality Tests ==========
+    #[test]
+    fn test_id_types_equality() {
+        let id1 = ProjectID::from(12345);
+        let id2 = ProjectID::from(12345);
+        let id3 = ProjectID::from(54321);
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_id_types_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(DatasetID::from(100));
+        set.insert(DatasetID::from(200));
+        set.insert(DatasetID::from(100)); // duplicate
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&DatasetID::from(100)));
+        assert!(set.contains(&DatasetID::from(200)));
+    }
+
+    #[test]
+    fn test_id_types_copy_clone() {
+        let id1 = ExperimentID::from(999);
+        let id2 = id1; // Copy
+        let id3 = id1.clone(); // Clone
+
+        assert_eq!(id1, id2);
+        assert_eq!(id1, id3);
+    }
+
+    // ========== Edge Cases ==========
+    #[test]
+    fn test_id_zero_value() {
+        let id = ProjectID::from(0);
+        assert_eq!(format!("{}", id), "p-0");
+        assert_eq!(id.value(), 0);
+    }
+
+    #[test]
+    fn test_id_max_value() {
+        let id = ProjectID::from(u64::MAX);
+        assert_eq!(format!("{}", id), "p-ffffffffffffffff");
+        assert_eq!(id.value(), u64::MAX);
+    }
+
+    #[test]
+    fn test_id_round_trip_conversion() {
+        let original = 0xdeadbeef_u64;
+        let id = TrainingSessionID::from(original);
+        let back: u64 = id.into();
+        assert_eq!(original, back);
+    }
+
+    #[test]
+    fn test_id_case_insensitive_hex() {
+        // Hexadecimal parsing should handle both upper and lowercase
+        let id1 = DatasetID::from_str("ds-ABCDEF").unwrap();
+        let id2 = DatasetID::from_str("ds-abcdef").unwrap();
+        assert_eq!(id1.value(), id2.value());
+    }
+
+    #[test]
+    fn test_id_with_leading_zeros() {
+        let id = ProjectID::from_str("p-00001234").unwrap();
+        assert_eq!(id.value(), 0x1234);
+    }
+
+    // ========== Parameter Tests ==========
+    #[test]
+    fn test_parameter_integer() {
+        let param = Parameter::Integer(42);
+        match param {
+            Parameter::Integer(val) => assert_eq!(val, 42),
+            _ => panic!("Expected Integer variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_real() {
+        let param = Parameter::Real(3.14);
+        match param {
+            Parameter::Real(val) => assert_eq!(val, 3.14),
+            _ => panic!("Expected Real variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_boolean() {
+        let param = Parameter::Boolean(true);
+        match param {
+            Parameter::Boolean(val) => assert!(val),
+            _ => panic!("Expected Boolean variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_string() {
+        let param = Parameter::String("test".to_string());
+        match param {
+            Parameter::String(val) => assert_eq!(val, "test"),
+            _ => panic!("Expected String variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_array() {
+        let param = Parameter::Array(vec![
+            Parameter::Integer(1),
+            Parameter::Integer(2),
+            Parameter::Integer(3),
+        ]);
+        match param {
+            Parameter::Array(arr) => assert_eq!(arr.len(), 3),
+            _ => panic!("Expected Array variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_object() {
+        let mut map = HashMap::new();
+        map.insert("key".to_string(), Parameter::Integer(100));
+        let param = Parameter::Object(map);
+        match param {
+            Parameter::Object(obj) => {
+                assert_eq!(obj.len(), 1);
+                assert!(obj.contains_key("key"));
+            }
+            _ => panic!("Expected Object variant"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_clone() {
+        let param1 = Parameter::Integer(42);
+        let param2 = param1.clone();
+        assert_eq!(param1, param2);
+    }
+
+    #[test]
+    fn test_parameter_nested() {
+        let inner_array = Parameter::Array(vec![Parameter::Integer(1), Parameter::Integer(2)]);
+        let outer_array = Parameter::Array(vec![inner_array.clone(), inner_array]);
+
+        match outer_array {
+            Parameter::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+            }
+            _ => panic!("Expected Array variant"),
+        }
     }
 }

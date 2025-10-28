@@ -237,20 +237,32 @@ EOF
    - Adhere to test code style suggestions (assertGreater, assertTrue/False).
    - Missing type stub warnings indicate `.pyi` needs updates
 
-4. **Run tests** (if credentials available):
+4. **Verify build succeeds** - **MUST BUILD WITHOUT ERRORS**:
    ```bash
-   cargo test --all-features --locked                             # Rust tests
-   cargo test --doc --locked                                      # Doc tests
-   maturin develop -m crates/edgefirst-client-py/Cargo.toml      # Build Python bindings
-   python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python # Python tests (recommended - matches CI/CD)
+   cargo build --all-features --locked  # MUST succeed - check for compile errors
+   cargo clippy --all-features --all-targets --locked  # MUST pass with no errors
    ```
+   **CRITICAL**: If build or clippy fails, do NOT proceed. Fix all errors first.
 
-5. **Verify no temporary .md files** are staged (e.g., `CHANGES.md`, `UPDATES.md`):
+5. **Run tests** (if credentials available) - **ALL TESTS MUST PASS**:
+   ```bash
+   cargo test --all-features --locked                             # Rust tests - MUST PASS
+   cargo test --doc --locked                                      # Doc tests - MUST PASS
+   maturin develop -m crates/edgefirst-client-py/Cargo.toml      # Build Python bindings - MUST BUILD
+   python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python # Python tests - MUST PASS
+   ```
+   **CRITICAL**: If ANY test fails, do NOT commit. Fix the failures first.
+   - Rust tests failing? Check error output and fix the code
+   - Build failing? Check compiler errors and fix syntax/type issues
+   - Python tests failing? Check test output and fix the issue
+   - If credentials unavailable, rely on CI/CD (but prefer local testing)
+
+6. **Verify no temporary .md files** are staged (e.g., `CHANGES.md`, `UPDATES.md`):
    - Temporary documentation for explaining changes is okay during development
    - **MUST ask user before committing** any new .md file not already tracked in git
    - User decides if temporary docs add long-term value or create clutter
 
-6. **Audit workflow documentation** if applicable:
+7. **Audit workflow documentation** if applicable:
    - Quick check: Do changes affect `.github/workflows/*.yml`?
    - If yes: Verify `.github/WORKFLOW_ARCHITECTURE.md` accurately describes workflow structure
    - Full audit only when workflow files are modified

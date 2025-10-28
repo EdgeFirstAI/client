@@ -74,6 +74,13 @@ jobs:
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
+      - name: Verify nextest output
+        if: always()
+        run: |
+          echo "Checking for nextest output files..."
+          find target/nextest -name "*.xml" || echo "No XML files found in target/nextest"
+          ls -la target/nextest/ci/ || echo "target/nextest/ci directory not found"
+
       - name: Run Rust doc tests
         run: cargo test --doc --locked
         env:
@@ -96,10 +103,10 @@ jobs:
 
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@3a74b2957438d0b6e2e61d67b05318aa25c9e6c6 # v2.20.0
-        if: always()
+        if: success() || failure()
         with:
           files: |
-            target/nextest/ci/junit.xml
+            target/nextest/ci/*.xml
             target/python/TEST-*.xml
           check_name: Test Results (Rust + Python)
           comment_title: EdgeFirst Client Test Results

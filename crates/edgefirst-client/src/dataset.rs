@@ -1297,10 +1297,7 @@ mod tests {
     #[test]
     fn test_file_type_try_from_str() {
         assert_eq!(FileType::try_from("image").unwrap(), FileType::Image);
-        assert_eq!(
-            FileType::try_from("lidar.pcd").unwrap(),
-            FileType::LidarPcd
-        );
+        assert_eq!(FileType::try_from("lidar.pcd").unwrap(), FileType::LidarPcd);
         assert_eq!(
             FileType::try_from("lidar.png").unwrap(),
             FileType::LidarDepth
@@ -1486,7 +1483,7 @@ mod tests {
     #[test]
     fn test_sample_name_extraction() {
         let mut sample = Sample::new();
-        
+
         // Test basic image name
         sample.image_name = Some("test_image.jpg".to_string());
         assert_eq!(sample.name(), Some("test_image".to_string()));
@@ -1527,7 +1524,7 @@ mod tests {
     #[test]
     fn test_annotation_setters() {
         let mut ann = Annotation::new();
-        
+
         ann.set_label(Some("car".to_string()));
         assert_eq!(ann.label(), Some(&"car".to_string()));
 
@@ -1542,7 +1539,10 @@ mod tests {
 
     #[test]
     fn test_sample_file_with_url() {
-        let file = SampleFile::with_url("lidar.pcd".to_string(), "https://example.com/file.pcd".to_string());
+        let file = SampleFile::with_url(
+            "lidar.pcd".to_string(),
+            "https://example.com/file.pcd".to_string(),
+        );
         assert_eq!(file.file_type(), "lidar.pcd");
         assert_eq!(file.url(), Some("https://example.com/file.pcd"));
         assert_eq!(file.filename(), None);
@@ -1559,14 +1559,14 @@ mod tests {
     #[test]
     fn test_label_accessors() {
         use serde_json::json;
-        
+
         let label_json = json!({
             "id": 123,
             "dataset_id": 456,
             "index": 5,
             "name": "car"
         });
-        
+
         let label: Label = serde_json::from_value(label_json).unwrap();
         assert_eq!(label.id(), 123);
         assert_eq!(label.index(), 5);
@@ -1577,16 +1577,15 @@ mod tests {
     #[test]
     fn test_label_display() {
         use serde_json::json;
-        
+
         let label_json = json!({
             "id": 1,
             "dataset_id": 100,
             "index": 0,
             "name": "person"
         });
-        
+
         let label: Label = serde_json::from_value(label_json).unwrap();
         assert_eq!(format!("{}", label), "person");
     }
 }
-
