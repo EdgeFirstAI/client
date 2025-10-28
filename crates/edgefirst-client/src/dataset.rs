@@ -222,17 +222,13 @@ pub struct Dataset {
 
 impl Display for Dataset {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {}", self.uid(), self.name)
+        write!(f, "{} {}", self.id, self.name)
     }
 }
 
 impl Dataset {
     pub fn id(&self) -> DatasetID {
         self.id
-    }
-
-    pub fn uid(&self) -> String {
-        self.id.to_string()
     }
 
     pub fn project_id(&self) -> ProjectID {
@@ -296,17 +292,13 @@ pub struct AnnotationSet {
 
 impl Display for AnnotationSet {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {}", self.uid(), self.name)
+        write!(f, "{} {}", self.id, self.name)
     }
 }
 
 impl AnnotationSet {
     pub fn id(&self) -> AnnotationSetID {
         self.id
-    }
-
-    pub fn uid(&self) -> String {
-        self.id.to_string()
     }
 
     pub fn dataset_id(&self) -> DatasetID {
@@ -511,7 +503,9 @@ impl Display for Sample {
         write!(
             f,
             "{} {}",
-            self.uid().unwrap_or_else(|| "unknown".to_string()),
+            self.id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             self.image_name().unwrap_or("unknown")
         )
     }
@@ -548,10 +542,6 @@ impl Sample {
 
     pub fn id(&self) -> Option<SampleID> {
         self.id
-    }
-
-    pub fn uid(&self) -> Option<String> {
-        self.id.map(|id| id.to_string())
     }
 
     pub fn name(&self) -> Option<String> {
@@ -727,7 +717,7 @@ pub trait TypeName {
     fn type_name() -> String;
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Box3d {
     x: f32,
     y: f32,
@@ -792,7 +782,7 @@ impl Box3d {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Box2d {
     h: f32,
     w: f32,
@@ -841,7 +831,7 @@ impl Box2d {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Mask {
     pub polygon: Vec<Vec<(f32, f32)>>,
 }
@@ -1288,3 +1278,315 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
         boxes3d,
     ])?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_file_type_display() {
+        assert_eq!(FileType::Image.to_string(), "image");
+        assert_eq!(FileType::LidarPcd.to_string(), "lidar.pcd");
+        assert_eq!(FileType::LidarDepth.to_string(), "lidar.png");
+        assert_eq!(FileType::LidarReflect.to_string(), "lidar.jpg");
+        assert_eq!(FileType::RadarPcd.to_string(), "radar.pcd");
+        assert_eq!(FileType::RadarCube.to_string(), "radar.png");
+    }
+
+    #[test]
+    fn test_file_type_try_from_str() {
+        assert_eq!(FileType::try_from("image").unwrap(), FileType::Image);
+        assert_eq!(
+            FileType::try_from("lidar.pcd").unwrap(),
+            FileType::LidarPcd
+        );
+        assert_eq!(
+            FileType::try_from("lidar.png").unwrap(),
+            FileType::LidarDepth
+        );
+        assert_eq!(
+            FileType::try_from("lidar.jpg").unwrap(),
+            FileType::LidarReflect
+        );
+        assert_eq!(FileType::try_from("radar.pcd").unwrap(), FileType::RadarPcd);
+        assert_eq!(
+            FileType::try_from("radar.png").unwrap(),
+            FileType::RadarCube
+        );
+
+        // Test invalid type
+        assert!(FileType::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn test_file_type_from_str() {
+        assert_eq!(FileType::from_str("image").unwrap(), FileType::Image);
+        assert_eq!(FileType::from_str("lidar.pcd").unwrap(), FileType::LidarPcd);
+    }
+
+    #[test]
+    fn test_file_type_round_trip() {
+        let types = vec![
+            FileType::Image,
+            FileType::LidarPcd,
+            FileType::LidarDepth,
+            FileType::LidarReflect,
+            FileType::RadarPcd,
+            FileType::RadarCube,
+        ];
+
+        for file_type in types {
+            let s = file_type.to_string();
+            let parsed = FileType::try_from(s.as_str()).unwrap();
+            assert_eq!(parsed, file_type);
+        }
+    }
+
+    #[test]
+    fn test_annotation_type_display() {
+        assert_eq!(AnnotationType::Box2d.to_string(), "box2d");
+        assert_eq!(AnnotationType::Box3d.to_string(), "box3d");
+        assert_eq!(AnnotationType::Mask.to_string(), "mask");
+    }
+
+    #[test]
+    fn test_annotation_type_try_from_str() {
+        assert_eq!(
+            AnnotationType::try_from("box2d").unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::try_from("box3d").unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::try_from("mask").unwrap(),
+            AnnotationType::Mask
+        );
+
+        // Test invalid type
+        assert!(AnnotationType::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn test_annotation_type_from_string() {
+        assert_eq!(
+            AnnotationType::from("box2d".to_string()),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::from("box3d".to_string()),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::from("mask".to_string()),
+            AnnotationType::Mask
+        );
+
+        // Invalid defaults to Box2d for backward compatibility
+        assert_eq!(
+            AnnotationType::from("invalid".to_string()),
+            AnnotationType::Box2d
+        );
+    }
+
+    #[test]
+    fn test_annotation_type_round_trip() {
+        let types = vec![
+            AnnotationType::Box2d,
+            AnnotationType::Box3d,
+            AnnotationType::Mask,
+        ];
+
+        for ann_type in types {
+            let s = ann_type.to_string();
+            let parsed = AnnotationType::try_from(s.as_str()).unwrap();
+            assert_eq!(parsed, ann_type);
+        }
+    }
+
+    #[test]
+    fn test_box2d_new() {
+        let bbox = Box2d::new(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(bbox.left(), 10.0);
+        assert_eq!(bbox.top(), 20.0);
+        assert_eq!(bbox.width(), 100.0);
+        assert_eq!(bbox.height(), 50.0);
+    }
+
+    #[test]
+    fn test_box2d_center() {
+        let bbox = Box2d::new(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(bbox.cx(), 60.0); // 10 + 100/2
+        assert_eq!(bbox.cy(), 45.0); // 20 + 50/2
+    }
+
+    #[test]
+    fn test_box2d_accessors() {
+        let bbox = Box2d::new(0.0, 0.0, 640.0, 480.0);
+        assert_eq!(bbox.left(), 0.0);
+        assert_eq!(bbox.top(), 0.0);
+        assert_eq!(bbox.width(), 640.0);
+        assert_eq!(bbox.height(), 480.0);
+        assert_eq!(bbox.cx(), 320.0);
+        assert_eq!(bbox.cy(), 240.0);
+    }
+
+    #[test]
+    fn test_box3d_new() {
+        let bbox = Box3d::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
+        assert_eq!(bbox.cx(), 1.0);
+        assert_eq!(bbox.cy(), 2.0);
+        assert_eq!(bbox.cz(), 3.0);
+        assert_eq!(bbox.width(), 4.0);
+        assert_eq!(bbox.height(), 5.0);
+        assert_eq!(bbox.length(), 6.0);
+    }
+
+    #[test]
+    fn test_box3d_corners() {
+        let bbox = Box3d::new(10.0, 20.0, 30.0, 4.0, 6.0, 8.0);
+        // Center at (10, 20, 30), dimensions (4, 6, 8)
+        assert_eq!(bbox.left(), 8.0); // 10 - 4/2
+        assert_eq!(bbox.top(), 17.0); // 20 - 6/2
+        assert_eq!(bbox.front(), 26.0); // 30 - 8/2
+    }
+
+    #[test]
+    fn test_box3d_accessors() {
+        let bbox = Box3d::new(0.0, 0.0, 0.0, 2.0, 3.0, 4.0);
+        assert_eq!(bbox.cx(), 0.0);
+        assert_eq!(bbox.cy(), 0.0);
+        assert_eq!(bbox.cz(), 0.0);
+        assert_eq!(bbox.width(), 2.0);
+        assert_eq!(bbox.height(), 3.0);
+        assert_eq!(bbox.length(), 4.0);
+        assert_eq!(bbox.left(), -1.0);
+        assert_eq!(bbox.top(), -1.5);
+        assert_eq!(bbox.front(), -2.0);
+    }
+
+    #[test]
+    fn test_mask_new() {
+        let polygon = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+        let mask = Mask::new(polygon.clone());
+        assert_eq!(mask.polygon, polygon);
+    }
+
+    #[test]
+    fn test_sample_new() {
+        let sample = Sample::new();
+        assert_eq!(sample.id(), None);
+        assert_eq!(sample.image_name(), None);
+        assert_eq!(sample.width(), None);
+        assert_eq!(sample.height(), None);
+    }
+
+    #[test]
+    fn test_sample_name_extraction() {
+        let mut sample = Sample::new();
+        
+        // Test basic image name
+        sample.image_name = Some("test_image.jpg".to_string());
+        assert_eq!(sample.name(), Some("test_image".to_string()));
+
+        // Test with .camera suffix
+        sample.image_name = Some("test_image.camera.jpg".to_string());
+        assert_eq!(sample.name(), Some("test_image".to_string()));
+
+        // Test with no extension
+        sample.image_name = Some("test_image".to_string());
+        assert_eq!(sample.name(), Some("test_image".to_string()));
+    }
+
+    #[test]
+    fn test_sample_accessors() {
+        let mut sample = Sample::new();
+        sample.image_name = Some("test.jpg".to_string());
+        sample.width = Some(1920);
+        sample.height = Some(1080);
+        sample.group = Some("group1".to_string());
+
+        assert_eq!(sample.image_name(), Some("test.jpg"));
+        assert_eq!(sample.width(), Some(1920));
+        assert_eq!(sample.height(), Some(1080));
+        assert_eq!(sample.group(), Some(&"group1".to_string()));
+    }
+
+    #[test]
+    fn test_annotation_new() {
+        let ann = Annotation::new();
+        assert_eq!(ann.sample_id(), None);
+        assert_eq!(ann.label(), None);
+        assert_eq!(ann.box2d(), None);
+        assert_eq!(ann.box3d(), None);
+        assert_eq!(ann.mask(), None);
+    }
+
+    #[test]
+    fn test_annotation_setters() {
+        let mut ann = Annotation::new();
+        
+        ann.set_label(Some("car".to_string()));
+        assert_eq!(ann.label(), Some(&"car".to_string()));
+
+        ann.set_label_index(Some(42));
+        assert_eq!(ann.label_index(), Some(42));
+
+        let bbox = Box2d::new(10.0, 20.0, 100.0, 50.0);
+        ann.set_box2d(Some(bbox.clone()));
+        assert!(ann.box2d().is_some());
+        assert_eq!(ann.box2d().unwrap().left(), 10.0);
+    }
+
+    #[test]
+    fn test_sample_file_with_url() {
+        let file = SampleFile::with_url("lidar.pcd".to_string(), "https://example.com/file.pcd".to_string());
+        assert_eq!(file.file_type(), "lidar.pcd");
+        assert_eq!(file.url(), Some("https://example.com/file.pcd"));
+        assert_eq!(file.filename(), None);
+    }
+
+    #[test]
+    fn test_sample_file_with_filename() {
+        let file = SampleFile::with_filename("image".to_string(), "test.jpg".to_string());
+        assert_eq!(file.file_type(), "image");
+        assert_eq!(file.filename(), Some("test.jpg"));
+        assert_eq!(file.url(), None);
+    }
+
+    #[test]
+    fn test_label_accessors() {
+        use serde_json::json;
+        
+        let label_json = json!({
+            "id": 123,
+            "dataset_id": 456,
+            "index": 5,
+            "name": "car"
+        });
+        
+        let label: Label = serde_json::from_value(label_json).unwrap();
+        assert_eq!(label.id(), 123);
+        assert_eq!(label.index(), 5);
+        assert_eq!(label.name(), "car");
+        assert_eq!(label.to_string(), "car");
+    }
+
+    #[test]
+    fn test_label_display() {
+        use serde_json::json;
+        
+        let label_json = json!({
+            "id": 1,
+            "dataset_id": 100,
+            "index": 0,
+            "name": "person"
+        });
+        
+        let label: Label = serde_json::from_value(label_json).unwrap();
+        assert_eq!(format!("{}", label), "person");
+    }
+}
+

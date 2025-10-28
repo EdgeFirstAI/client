@@ -36,7 +36,7 @@ edgefirst.yaml
 
 *.html
 
-lcov.info
+lcov*.info
 
 THIRD_PARTY*
 

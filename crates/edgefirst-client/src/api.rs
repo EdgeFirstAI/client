@@ -1024,17 +1024,13 @@ pub struct Experiment {
 
 impl Display for Experiment {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {}", self.uid(), self.name)
+        write!(f, "{} {}", self.id, self.name)
     }
 }
 
 impl Experiment {
     pub fn id(&self) -> ExperimentID {
         self.id
-    }
-
-    pub fn uid(&self) -> String {
-        self.id.to_string()
     }
 
     pub fn project_id(&self) -> ProjectID {
@@ -1095,17 +1091,13 @@ pub struct TrainingSession {
 
 impl Display for TrainingSession {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {}", self.uid(), self.name())
+        write!(f, "{} {}", self.id, self.name())
     }
 }
 
 impl TrainingSession {
     pub fn id(&self) -> TrainingSessionID {
         self.id
-    }
-
-    pub fn uid(&self) -> String {
-        self.id.to_string()
     }
 
     pub fn name(&self) -> &str {
@@ -1361,10 +1353,6 @@ impl ValidationSession {
         self.id
     }
 
-    pub fn uid(&self) -> String {
-        self.id.to_string()
-    }
-
     pub fn name(&self) -> &str {
         self.task.name()
     }
@@ -1526,10 +1514,6 @@ impl Task {
         self.id
     }
 
-    pub fn uid(&self) -> String {
-        self.id.to_string()
-    }
-
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -1560,7 +1544,7 @@ impl Display for Task {
         write!(
             f,
             "{} [{:?} {}] {}",
-            self.uid(),
+            self.id,
             self.manager(),
             self.workflow(),
             self.name()
@@ -1589,7 +1573,7 @@ impl Display for TaskInfo {
         write!(
             f,
             "{} {}: {}",
-            self.uid(),
+            self.id,
             self.workflow(),
             self.description()
         )
@@ -1599,10 +1583,6 @@ impl Display for TaskInfo {
 impl TaskInfo {
     pub fn id(&self) -> TaskID {
         self.id
-    }
-
-    pub fn uid(&self) -> String {
-        self.id.to_string()
     }
 
     pub fn project_id(&self) -> Option<ProjectID> {

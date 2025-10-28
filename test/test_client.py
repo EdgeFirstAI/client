@@ -58,3 +58,27 @@ class ClientTest(TestCase):
         print(f"Organization: {org.name}")
         print(f"ID: {org.id.value}")
         print(f"Credits: {org.credits}")
+
+    def test_project_by_id(self):
+        """Test project() retrieves a single project by ID."""
+        client = get_client()
+
+        # First get all projects to find a valid project ID
+        projects = client.projects()
+        self.assertGreater(len(projects), 0)
+        assert len(projects) > 0
+
+        # Get the first project's ID
+        first_project = projects[0]
+        self.assertIsNotNone(first_project)
+        assert first_project is not None
+        self.assertIsNotNone(first_project.id)
+        assert first_project.id is not None
+
+        # Now retrieve that same project by ID
+        project = client.project(first_project.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.id.value, first_project.id.value)
+        self.assertEqual(project.name, first_project.name)
+        print(f"Retrieved project: {project.name} (ID: {project.id.value})")

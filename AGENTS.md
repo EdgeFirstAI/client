@@ -99,11 +99,11 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
   * Keep type stubs synchronized with implementation (run Pylance checks before committing)
 
 ### Testing
-- **Target**: SonarCloud clean, full test coverage
+- **Target**: 80%+ code coverage, SonarCloud clean
 - Unit tests: In same file as implementation (Rust) or test files (Python)
 - Integration tests: `crates/edgefirst-cli/tests/` and `crates/edgefirst-client/src/lib.rs`
 - Test data: Uses EdgeFirst Studio test server with "Unit Testing" project
-- **Coverage**: Use `cargo llvm-cov` with `--doctests` flag
+- **Coverage**: Use `cargo llvm-cov` (omit `--doctests` to avoid requiring nightly toolchain)
 - **Python testing**: Use `slipcover` (recommended) to match CI/CD behavior - catches syntax errors that standard unittest may miss
 - **Optional**: Run `python3 sonar.py --branch main -o sonar-issues.json` for local SonarCloud analysis
 
@@ -115,16 +115,97 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
 - CI/CD workflows have stored secrets for full test suite
 - **VS Code users**: Install Coverage Gutters extension to see coverage inline while coding
 
-### Full Coverage Instrumentation (Recommended for Local Development)
-Standard workflow matching CI/CD (~10% performance overhead):
+### Complete Coverage Analysis (Recommended for Local Development)
+
+Generate comprehensive coverage report combining all test suites (Rust unit + CLI + Python):
+
 ```bash
-source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
+# 1. Clean previous coverage data
+cargo llvm-cov clean
+
+# 2. Set up coverage environment (must be sourced before ALL builds)
+source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
+
+# 3. Build Rust code with coverage instrumentation
 cargo build --all-features --locked
+
+# 4. Build Python bindings (inherits coverage environment from step 2)
 maturin develop -m crates/edgefirst-client-py/Cargo.toml
+
+# 5. Run Python tests (exercises instrumented Rust code through PyO3)
 python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
-cargo llvm-cov report --doctests --lcov --output-path lcov.info
+
+# 6. Run CLI tests (adds CLI coverage)
+cargo test --package edgefirst-cli --locked
+
+# 7. Generate combined coverage reports
+cargo llvm-cov report --lcov --output-path lcov.info  # For Codecov/SonarCloud
+cargo llvm-cov report                                  # Human-readable summary
+
+# 8. Analyze Python coverage
+python3 -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); root = tree.getroot(); print(f\"Python Coverage: {float(root.attrib['line-rate'])*100:.2f}% ({int(root.attrib['lines-covered'])}/{int(root.attrib['lines-valid'])} lines)\")"
 ```
-**Performance**: Adds ~4-5 seconds to test suite. Benefits: catch coverage gaps early, see what code paths need tests.
+
+**What this does**:
+- Step 2 exports `RUSTFLAGS` and other environment variables for coverage instrumentation
+- Step 4 builds Python bindings with coverage enabled (inherits from step 2)
+- Step 5 runs Python tests against instrumented Rust code (PyO3 bindings)
+- Step 6 runs CLI integration tests
+- Step 7 generates reports combining all coverage data from all test suites
+
+**Expected Results**:
+- All tests passing
+- Overall coverage ≥80%
+
+**Performance**: Adds ~2 minutes total. Benefits: catch coverage gaps early, verify Python tests exercise Rust code.
+**Note**: Omit `--doctests` flag to avoid requiring nightly toolchain for coverage runs.
+
+#### Coverage Summary Script
+
+Generate a comprehensive coverage summary report:
+
+```bash
+python3 << 'EOF'
+import xml.etree.ElementTree as ET
+
+tree = ET.parse('coverage.xml')
+root = tree.getroot()
+
+print("\n" + "="*70)
+print("  COMPREHENSIVE TEST COVERAGE SUMMARY")
+print("="*70 + "\n")
+
+# Get Rust coverage from most recent cargo llvm-cov report output
+# Update these numbers manually after running cargo llvm-cov report
+print("📊 RUST COVERAGE (Unit + CLI + Python-exercised):")
+print("  Run 'cargo llvm-cov report' to see detailed breakdown")
+print()
+
+# Python coverage
+total_lines = int(root.attrib['lines-valid'])
+covered_lines = int(root.attrib['lines-covered'])
+coverage_pct = float(root.attrib['line-rate']) * 100
+
+print(f"🐍 PYTHON TEST COVERAGE: {coverage_pct:.2f}% ({covered_lines}/{total_lines} lines)")
+
+files = []
+for package in root.findall('.//class'):
+    filename = package.attrib['filename']
+    line_rate = float(package.attrib['line-rate']) * 100
+    lines = package.findall('.//line')
+    total = len(lines)
+    covered = sum(1 for line in lines if int(line.attrib['hits']) > 0)
+    files.append((filename, line_rate, covered, total))
+
+files.sort(key=lambda x: x[1], reverse=True)
+
+for filename, pct, covered, total in files:
+    status = "✅" if pct >= 80 else "⚠️"
+    print(f"  ├─ {filename}: {pct:.2f}% ({covered}/{total}) {status}")
+
+print("\n" + "="*70)
+EOF
+```
 
 ## Pre-Commit Requirements
 

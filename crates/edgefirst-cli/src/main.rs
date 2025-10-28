@@ -425,7 +425,7 @@ async fn print_dataset_details(
 ) -> Result<(), Error> {
     println!(
         "[{}] {}: {}",
-        dataset.uid(),
+        dataset.id(),
         dataset.name(),
         dataset.description()
     );
@@ -444,7 +444,7 @@ async fn print_dataset_details(
         for annotation_set in annotation_sets {
             println!(
                 "[{}] {}: {}",
-                annotation_set.uid(),
+                annotation_set.id(),
                 annotation_set.name(),
                 annotation_set.description(),
             );
@@ -474,7 +474,7 @@ async fn handle_datasets(
             for dataset in datasets {
                 println!(
                     "[{}] {}: {}",
-                    dataset.uid(),
+                    dataset.id(),
                     dataset.name(),
                     dataset.description()
                 );
@@ -493,7 +493,7 @@ async fn handle_dataset(
     let dataset = client.dataset(dataset_id.clone().try_into()?).await?;
     println!(
         "[{}] {}: {}",
-        dataset.uid(),
+        dataset.id(),
         dataset.name(),
         dataset.description()
     );
@@ -512,7 +512,7 @@ async fn handle_dataset(
         for annotation_set in annotation_sets {
             println!(
                 "[{}] {}: {}",
-                annotation_set.uid(),
+                annotation_set.id(),
                 annotation_set.name(),
                 annotation_set.description(),
             );
@@ -1362,7 +1362,7 @@ async fn handle_experiments(
         for experiment in experiments {
             println!(
                 "    [{}] {}: {}",
-                experiment.uid(),
+                experiment.id(),
                 experiment.name(),
                 experiment.description()
             );
@@ -1375,7 +1375,7 @@ async fn handle_experiment(client: &Client, experiment_id: String) -> Result<(),
     let experiment = client.experiment(experiment_id.try_into()?).await?;
     println!(
         "[{}] {}: {}",
-        experiment.uid(),
+        experiment.id(),
         experiment.name(),
         experiment.description()
     );
@@ -1388,7 +1388,7 @@ async fn print_training_session_with_artifacts(
 ) -> Result<(), Error> {
     println!(
         "{} ({}) {}",
-        session.uid(),
+        session.id(),
         session.task().status(),
         session.name()
     );
@@ -1440,7 +1440,7 @@ async fn handle_training_session(
         .await?;
     println!(
         "{} ({}) {}",
-        session.uid(),
+        session.id(),
         session.task().status(),
         session.name()
     );
