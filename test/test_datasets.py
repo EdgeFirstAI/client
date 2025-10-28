@@ -1,283 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-from os import environ
-from pathlib import Path
-from time import sleep
+"""
+Tests for dataset operations including populate_samples and roundtrip.
+
+These integration tests verify:
+- Sample population with automatic file upload
+- Annotation creation and verification
+- Image download and byte-for-byte integrity
+- Dataset roundtrip (download + re-upload)
+"""
+
+import random
+import string
+import time
 from unittest import TestCase
 
-from edgefirst_client import AnnotationType, Client, Parameter
-from polars import read_ipc
-from tqdm import tqdm
-
-from examples.coco import coco_labels
+from edgefirst_client import Annotation, Box2d, Sample, SampleFile
+from PIL import Image, ImageDraw
+from test import get_client, get_test_data_dir
 
 
-def get_test_data_dir():
-    """
-    Get the test data directory (target/testdata).
-    Creates it if it doesn't exist.
-    """
-    test_dir = Path(__file__).parent / "target" / "testdata"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    return test_dir
-
-
-class BasicTest(TestCase):
-    def get_client(self):
-        return Client(token=environ.get("STUDIO_TOKEN"))
-
-    def test_version(self):
-        client = Client()
-        version = client.version()
-        assert version != ""
-
-    def test_token(self):
-        client = self.get_client()
-        token = client.token()
-        assert token != ""
-        print(f"Token: {token}")
-        print(f"Token Expiration: {client.token_expiration}")
-        print(f"Username: {client.username}")
-        print(f"Server: {client.url}")
-
-        sleep(2)  # Wait for 2 seconds to ensure token renewal updates the time
-
-        client.renew_token()
-        new_token = client.token()
-        assert new_token != ""
-        assert token != new_token
-        print(f"New Token Expiration: {client.token_expiration}")
-
-    def test_organization(self):
-        client = self.get_client()
-        org = client.organization()
-        assert org is not None
-        assert org.id is not None
-        assert org.name is not None
-        assert org.credits is not None
-        print(f"Organization: {org.name}")
-        print(f"ID: {org.id.value}")
-        print(f"Credits: {org.credits}")
-
-    def test_projects(self):
-        client = self.get_client()
-        projects = client.projects()
-        assert len(projects) > 0
-
-    def test_project(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")
-        assert project is not None
-        assert len(project) == 1
-        assert project[0].name == "Unit Testing"
-
-    def test_datasets(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        datasets = project.datasets(client)
-        assert len(datasets) > 0
-
-        for dataset in datasets:
-            ds = client.dataset(dataset.id)
-            assert ds is not None
-            assert ds.name == dataset.name
-
-            ds = client.datasets(project.id, dataset.name)
-            assert len(ds) > 0
-            ds = ds[0]
-            assert dataset.name in ds.name
-
-    def test_labels(self):
-        client = self.get_client()
-        projects = client.projects("Unit Testing")
-        project_id = projects[0].id
-        self.assertIsNotNone(project_id)
-
-        dataset = client.datasets(project_id, "Test Labels")[0]
-        for label in dataset.labels(client):
-            label.remove(client)
-
-        dataset.add_label(client, "test")
-        assert len(dataset.labels(client)) == 1
-
-        dataset.remove_label(client, "test")
-        assert len(dataset.labels(client)) == 0
-
-    def test_coco_labels(self):
-        client = self.get_client()
-        project = client.projects("Sample Project")[0]
-        dataset = client.datasets(project.id, "COCO")
-        # Filter to avoid fetching the COCO People dataset.
-        dataset = filter(lambda d: d.name == "COCO", dataset)
-        dataset = next(dataset, None)
-        assert dataset is not None
-        labels = dataset.labels(client)
-
-        assert len(labels) == 80
-        for label in labels:
-            assert label.name == coco_labels[label.index]
-
-    def test_annotations_set(self):
-        client = self.get_client()
-        projects = client.projects("Sample Project")
-        project_id = projects[0].id
-        self.assertIsNotNone(project_id)
-
-        dataset = client.datasets(project_id, "COCO")
-        # Filter to avoid fetching the COCO People dataset.
-        dataset = filter(lambda d: d.name == "COCO", dataset)
-        dataset = next(dataset, None)
-        assert dataset is not None
-
-        test_dir = get_test_data_dir()
-        arrow_file = test_dir / "coco.arrow"
-
-        with tqdm(total=0, unit="", unit_scale=True, unit_divisor=1000) as bar:
-
-            def progress(current, total):
-                if total != bar.total:
-                    bar.reset(total)
-                bar.update(current - bar.n)
-
-            annotation_set = client.annotation_sets(dataset.id)[0]
-            df = client.annotations_dataframe(
-                annotation_set_id=annotation_set.id,
-                groups=["val"],
-                annotation_types=[AnnotationType.Box2d],
-                progress=progress,
-            )
-            df.write_ipc(str(arrow_file))
-        df = read_ipc(str(arrow_file))
-        assert len(df.unique("name")) == 5000
-
-        # Clean up
-        if arrow_file.exists():
-            arrow_file.unlink()
-
-    def test_training_sessions(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainers = client.training_sessions(experiment.id)
-        assert len(trainers) > 0
-
-        for trainer in trainers:
-            t = client.training_session(trainer.id)
-            assert t.id.value == trainer.id.value
-            assert t.name == trainer.name
-            assert t.description == trainer.description
-            assert t.dataset_params is not None
-            assert t.model_params is not None
-
-        trainer = filter(lambda s: s.name == "modelpack-usermanaged", trainers)
-        trainer = next(trainer, None)
-        assert trainer is not None
-
-        trainer.set_metrics(client, {"precision": Parameter.real(0.75)})
-        metrics = trainer.metrics(client)
-        assert metrics["precision"] == Parameter.real(0.75)
-
-    def test_validation_sessions(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        sessions = client.validation_sessions(project.id)
-        assert len(sessions) > 0
-
-        for session in sessions:
-            s = client.validation_session(session.id)
-            assert s.id.value == session.id.value
-            assert s.name == session.name
-            assert s.description == session.description
-
-        session = filter(lambda s: s.name == "modelpack-usermanaged", sessions)
-        session = next(session, None)
-        assert session is not None
-
-        session.set_metrics(client, {"precision": Parameter.real(0.75)})
-        metrics = session.metrics(client)
-        assert metrics["precision"] == Parameter.real(0.75)
-
-    def test_artifacts(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(
-            experiment.id, "modelpack-960x540")[0]
-        assert trainer.uid.startswith("t-")
-        artifacts = client.artifacts(trainer.id)
-        assert len(artifacts) > 0
-
-        test_dir = get_test_data_dir()
-
-        for artifact in artifacts:
-            output_path = test_dir / artifact.name
-            client.download_artifact(
-                trainer.id, artifact.name, output_path)
-
-            # Clean up downloaded file
-            if output_path.exists():
-                output_path.unlink()
-
-    def test_checkpoints(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        experiment = client.experiments(project.id, "Unit Testing")[0]
-        trainer = client.training_sessions(
-            experiment.id, "modelpack-usermanaged")[0]
-        assert trainer.uid.startswith("t-")
-
-        test_dir = get_test_data_dir()
-        checkpoint_file = test_dir / "checkpoint_py.txt"
-
-        with open(str(checkpoint_file), "w") as f:
-            f.write("Checkpoint from Python")
-
-        trainer.upload_checkpoint(client, str(checkpoint_file))
-        ckpt = trainer.download_checkpoint(client, "checkpoint_py.txt")
-        assert ckpt == b"Checkpoint from Python"
-
-        # Clean up
-        if checkpoint_file.exists():
-            checkpoint_file.unlink()
-
-    def test_tasks(self):
-        client = self.get_client()
-        project = client.projects("Unit Testing")[0]
-        tasks = client.tasks("modelpack-usermanaged")
-        tasks = [client.task_info(t.id) for t in tasks]
-        tasks = filter(lambda t: t.project_id.value == project.id.value, tasks)
-        task = next(tasks, None)
-        assert task is not None
-
-        t = client.task_status(task.id, "export")
-        assert t.status == "export"
-
-        client.set_stages(task.id, [("export", "Export Model")])
-        client.update_stage(
-            task_id=task.id,
-            stage="export",
-            status="running",
-            message="Exporting the model",
-            percentage=25,
-        )
-
-        task = client.task_info(task.id)
-        assert len(task.stages) == 1
-        assert task.stages["export"].message == "Exporting the model"
-        assert task.stages["export"].status == "running"
-        assert task.stages["export"].percentage == 25
+class DatasetTest(TestCase):
+    """Test suite for dataset operations and integration scenarios."""
 
     def test_populate_samples(self):
         """Test populating samples with automatic file upload."""
-        import random
-        import string
-        import time
-
-        from edgefirst_client import Annotation, Box2d, Sample, SampleFile
-        from PIL import Image, ImageDraw
-
-        client = self.get_client()
+        client = get_client()
 
         # Find the Unit Testing project
         projects = client.projects("Unit Testing")
@@ -437,11 +186,13 @@ class BasicTest(TestCase):
             print(f"  ✓ image_name: {created_sample.name}")
             print(f"  ✓ group: {created_sample.group}")
             print(
-                f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
+                f"  ✓ annotations: {len(created_sample.annotations)} "
+                f"item(s)")
 
             # Verify annotations are returned correctly
             annotations = created_sample.annotations
-            assert len(annotations) == 1, "Should have exactly one annotation"
+            assert len(annotations) == 1, (
+                "Should have exactly one annotation")
 
             annotation = annotations[0]
             assert annotation.label == "circle"
@@ -450,7 +201,8 @@ class BasicTest(TestCase):
 
             returned_bbox = annotation.box2d
             print(
-                f"\nReturned bbox (normalized): ({returned_bbox.left:.3f}, "
+                f"\nReturned bbox (normalized): "
+                f"({returned_bbox.left:.3f}, "
                 f"{returned_bbox.top:.3f}, {returned_bbox.width:.3f}, "
                 f"{returned_bbox.height:.3f})"
             )
@@ -486,7 +238,8 @@ class BasicTest(TestCase):
                 f"({len(downloaded_data)} bytes)"
             )
 
-            print("\n✓ Test passed: populate_samples with automatic upload")
+            print(
+                "\n✓ Test passed: populate_samples with automatic upload")
 
         finally:
             # Clean up temporary file
@@ -531,8 +284,6 @@ class BasicTest(TestCase):
     def _prepare_upload_samples(
             self, deer_samples, deer_annotations, download_dir, client):
         """Prepare samples for upload to test dataset."""
-        from edgefirst_client import Sample, SampleFile
-
         print("Preparing samples for upload...")
         upload_samples = []
 
@@ -555,7 +306,8 @@ class BasicTest(TestCase):
 
         print(f"Prepared {len(upload_samples)} samples for upload")
         assert len(
-            upload_samples) > 0, "Should have samples prepared for upload"
+            upload_samples) > 0, (
+                "Should have samples prepared for upload")
         return upload_samples
 
     def _verify_uploaded_images(
@@ -589,14 +341,10 @@ class BasicTest(TestCase):
         data integrity.
 
         Note: This integration test downloads a dataset, uploads it
-        to a new dataset, and verifies byte-for-byte image integrity and
-        annotation preservation.
+        to a new dataset, and verifies byte-for-byte image integrity
+        and annotation preservation.
         """
-        import random
-        import string
-        import time
-
-        client = self.get_client()
+        client = get_client()
 
         # Find the Unit Testing project and Deer dataset (read-only)
         projects = client.projects("Unit Testing")
@@ -684,7 +432,8 @@ class BasicTest(TestCase):
                 test_annotation_set_id, groups=[])
             print(f"Found {len(uploaded_annotations)} uploaded annotations")
             assert len(
-                uploaded_annotations) > 0, "Should have uploaded annotations"
+                uploaded_annotations) > 0, (
+                    "Should have uploaded annotations")
 
             print("\n✅ Round-trip test completed successfully!")
 
@@ -700,3 +449,67 @@ class BasicTest(TestCase):
             if download_dir.exists():
                 shutil.rmtree(download_dir)
             print("  ✓ Cleaned up downloaded files")
+
+
+class TestLabels(TestCase):
+    """Test label management operations."""
+
+    def test_labels_add_remove(self):
+        """Test adding and removing labels with random label names."""
+        client = get_client()
+
+        # Find Unit Testing project and Test Labels dataset
+        projects = client.projects("Unit Testing")
+        self.assertGreater(
+            len(projects),
+            0,
+            "Unit Testing project should exist")
+        project = projects[0]
+
+        datasets = client.datasets(project.id, "Test Labels")
+        self.assertGreater(
+            len(datasets),
+            0,
+            "Test Labels dataset should exist")
+        dataset = datasets[0]
+
+        # Generate random label name to avoid conflicts
+        random_suffix = random.randint(0, 2**64 - 1)
+        test_label = f"test_{random_suffix:x}"
+
+        # Get initial label count
+        initial_labels = dataset.labels(client)
+        initial_count = len(initial_labels)
+
+        # Verify random label doesn't exist
+        label_names = [label.name for label in initial_labels]
+        self.assertNotIn(
+            test_label,
+            label_names,
+            f"Random label '{test_label}' should not exist yet")
+
+        # Add test label
+        dataset.add_label(client, test_label)
+        labels_after_add = dataset.labels(client)
+        self.assertEqual(
+            len(labels_after_add),
+            initial_count + 1,
+            "Should have one more label after adding")
+        label_names_after = [label.name for label in labels_after_add]
+        self.assertIn(
+            test_label,
+            label_names_after,
+            f"Label '{test_label}' should exist after adding")
+
+        # Remove test label
+        dataset.remove_label(client, test_label)
+        labels_after_remove = dataset.labels(client)
+        self.assertEqual(
+            len(labels_after_remove),
+            initial_count,
+            "Should have same label count as initial after removing")
+        label_names_final = [label.name for label in labels_after_remove]
+        self.assertNotIn(
+            test_label,
+            label_names_final,
+            f"Label '{test_label}' should not exist after removing")

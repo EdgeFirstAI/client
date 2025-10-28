@@ -6,7 +6,10 @@ use edgefirst_client::{
     AnnotationType, Client, Dataset, Error, FileType, Progress, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
-use std::{fs::File, path::PathBuf};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -694,7 +697,7 @@ fn find_image_zip(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(feature = "polars")]
-fn find_image_source(arrow_path: &PathBuf) -> Result<PathBuf, Error> {
+fn find_image_source(arrow_path: &Path) -> Result<PathBuf, Error> {
     use std::path::Path;
 
     let arrow_dir = arrow_path.parent().unwrap_or_else(|| Path::new("."));
@@ -1687,5 +1690,126 @@ async fn main() -> Result<(), Error> {
         Command::ValidationSession { session_id } => {
             handle_validation_session(&client, session_id).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_image_extension() {
+        // Valid extensions
+        assert!(is_valid_image_extension("jpg"));
+        assert!(is_valid_image_extension("JPG"));
+        assert!(is_valid_image_extension("jpeg"));
+        assert!(is_valid_image_extension("JPEG"));
+        assert!(is_valid_image_extension("png"));
+        assert!(is_valid_image_extension("PNG"));
+        assert!(is_valid_image_extension("bmp"));
+        assert!(is_valid_image_extension("tiff"));
+        assert!(is_valid_image_extension("tif"));
+        assert!(is_valid_image_extension("webp"));
+
+        // Invalid extensions
+        assert!(!is_valid_image_extension("txt"));
+        assert!(!is_valid_image_extension("pdf"));
+        assert!(!is_valid_image_extension("doc"));
+        assert!(!is_valid_image_extension(""));
+    }
+
+    #[test]
+    fn test_find_image_folder_exists() {
+        let temp_dir = std::env::temp_dir();
+        let test_folder = temp_dir.join("test_images_folder");
+        std::fs::create_dir_all(&test_folder).unwrap();
+
+        let result = find_image_folder(&temp_dir, "test_images_folder");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), test_folder);
+
+        std::fs::remove_dir(&test_folder).unwrap();
+    }
+
+    #[test]
+    fn test_find_image_folder_not_exists() {
+        let temp_dir = std::env::temp_dir();
+        let result = find_image_folder(&temp_dir, "nonexistent_folder_12345");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_image_zip_exists() {
+        let temp_dir = std::env::temp_dir();
+        let test_zip = temp_dir.join("test_images.zip");
+        std::fs::File::create(&test_zip).unwrap();
+
+        let result = find_image_zip(&temp_dir, "test_images");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), test_zip);
+
+        std::fs::remove_file(&test_zip).unwrap();
+    }
+
+    #[test]
+    fn test_find_image_zip_not_exists() {
+        let temp_dir = std::env::temp_dir();
+        let result = find_image_zip(&temp_dir, "nonexistent_zip_12345");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_image_source_with_folder() {
+        let temp_dir = std::env::temp_dir();
+        let arrow_file = temp_dir.join("test_annotations.arrow");
+        let test_folder = temp_dir.join("test_annotations");
+        std::fs::create_dir_all(&test_folder).unwrap();
+
+        let result = find_image_source(&arrow_file);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), test_folder);
+
+        std::fs::remove_dir(&test_folder).unwrap();
+    }
+
+    #[test]
+    fn test_find_image_source_with_zip() {
+        let temp_dir = std::env::temp_dir();
+        let arrow_file = temp_dir.join("test_annotations2.arrow");
+        let test_zip = temp_dir.join("test_annotations2.zip");
+        std::fs::File::create(&test_zip).unwrap();
+
+        let result = find_image_source(&arrow_file);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), test_zip);
+
+        std::fs::remove_file(&test_zip).unwrap();
+    }
+
+    #[test]
+    fn test_determine_images_path_explicit() {
+        let temp_dir = std::env::temp_dir();
+        let test_folder = temp_dir.join("test_images_explicit");
+        std::fs::create_dir_all(&test_folder).unwrap();
+
+        let result = determine_images_path(&None, &Some(test_folder.clone()));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), test_folder);
+
+        std::fs::remove_dir(&test_folder).unwrap();
+    }
+
+    #[test]
+    fn test_determine_images_path_from_annotations() {
+        let temp_dir = std::env::temp_dir();
+        let arrow_file = temp_dir.join("annotations.arrow");
+        let test_folder = temp_dir.join("annotations");
+        std::fs::create_dir_all(&test_folder).unwrap();
+
+        let result = determine_images_path(&Some(arrow_file), &None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), test_folder);
+
+        std::fs::remove_dir(&test_folder).unwrap();
     }
 }

@@ -1235,31 +1235,32 @@ impl Client {
             let path = Path::new(filename);
 
             // Check if this is a valid local file path
-            if path.exists() && path.is_file() {
-                if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
-                    // For image files, try to extract dimensions if not already set
-                    if file.file_type() == "image"
-                        && (sample.width.is_none() || sample.height.is_none())
-                        && let Ok(size) = imagesize::size(path)
-                    {
-                        sample.width = Some(size.width as u32);
-                        sample.height = Some(size.height as u32);
-                    }
-
-                    // Store the full path for later upload
-                    files_to_upload.push((
-                        sample_uuid.to_string(),
-                        file.file_type().to_string(),
-                        path.to_path_buf(),
-                        basename.to_string(),
-                    ));
-
-                    // Return SampleFile with just the basename
-                    return crate::SampleFile::with_filename(
-                        file.file_type().to_string(),
-                        basename.to_string(),
-                    );
+            if path.exists()
+                && path.is_file()
+                && let Some(basename) = path.file_name().and_then(|s| s.to_str())
+            {
+                // For image files, try to extract dimensions if not already set
+                if file.file_type() == "image"
+                    && (sample.width.is_none() || sample.height.is_none())
+                    && let Ok(size) = imagesize::size(path)
+                {
+                    sample.width = Some(size.width as u32);
+                    sample.height = Some(size.height as u32);
                 }
+
+                // Store the full path for later upload
+                files_to_upload.push((
+                    sample_uuid.to_string(),
+                    file.file_type().to_string(),
+                    path.to_path_buf(),
+                    basename.to_string(),
+                ));
+
+                // Return SampleFile with just the basename
+                return crate::SampleFile::with_filename(
+                    file.file_type().to_string(),
+                    basename.to_string(),
+                );
             }
         }
         // Return the file unchanged if not a local path

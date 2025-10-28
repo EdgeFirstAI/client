@@ -127,6 +127,104 @@ class Parameter:
         """
         ...
 
+    def variant_type(self) -> str:
+        """
+        Get the variant type name.
+
+        Returns one of: "Integer", "Real", "Boolean", "String",
+        "Array", "Object"
+
+        This is an alias for type_name() for consistency with Rust API.
+        """
+        ...
+
+    def as_integer(self) -> Optional[int]:
+        """
+        Extract as Python int if this is an Integer parameter.
+
+        Returns None if this is not an Integer parameter.
+
+        Examples:
+            >>> p = Parameter.integer(42)
+            >>> p.as_integer()  # Returns: 42
+            >>> Parameter.real(3.14).as_integer()  # Returns: None
+        """
+        ...
+
+    def as_real(self) -> Optional[float]:
+        """
+        Extract as Python float if this is a Real parameter.
+
+        Returns None if this is not a Real parameter.
+
+        Examples:
+            >>> p = Parameter.real(3.14)
+            >>> p.as_real()  # Returns: 3.14
+            >>> Parameter.integer(42).as_real()  # Returns: None
+        """
+        ...
+
+    def as_boolean(self) -> Optional[bool]:
+        """
+        Extract as Python bool if this is a Boolean parameter.
+
+        Returns None if this is not a Boolean parameter.
+
+        Examples:
+            >>> p = Parameter.boolean(True)
+            >>> p.as_boolean()  # Returns: True
+            >>> Parameter.integer(1).as_boolean()  # Returns: None
+        """
+        ...
+
+    def as_string(self) -> Optional[str]:
+        """
+        Extract as Python str if this is a String parameter.
+
+        Returns None if this is not a String parameter.
+
+        Examples:
+            >>> p = Parameter.string("hello")
+            >>> p.as_string()  # Returns: "hello"
+            >>> Parameter.integer(42).as_string()  # Returns: None
+        """
+        ...
+
+    def as_array(self) -> Optional[List[Any]]:
+        """
+        Extract as Python list if this is an Array parameter.
+
+        Returns None if this is not an Array parameter.
+        Elements are converted to native Python types recursively.
+
+        Examples:
+            >>> p = Parameter.array([
+            ...     Parameter.integer(1),
+            ...     Parameter.real(2.5),
+            ...     Parameter.string("test")
+            ... ])
+            >>> p.as_array()  # Returns: [1, 2.5, "test"]
+            >>> Parameter.integer(42).as_array()  # Returns: None
+        """
+        ...
+
+    def as_object(self) -> Optional[Dict[str, Any]]:
+        """
+        Extract as Python dict if this is an Object parameter.
+
+        Returns None if this is not an Object parameter.
+        Values are converted to native Python types recursively.
+
+        Examples:
+            >>> p = Parameter.object({
+            ...     "count": Parameter.integer(42),
+            ...     "ratio": Parameter.real(3.14)
+            ... })
+            >>> p.as_object()  # Returns: {"count": 42, "ratio": 3.14}
+            >>> Parameter.integer(42).as_object()  # Returns: None
+        """
+        ...
+
     def __int__(self) -> int:
         """Convert to Python int (works for Integer, Real, Boolean)."""
         ...
@@ -3084,3 +3182,39 @@ class Client:
             Error: If the task or stage does not exist or the request fails.
         """
         ...
+
+
+def version() -> str:
+    """
+    Get the version of the edgefirst_client library.
+
+    Returns:
+        The version string (e.g., "0.3.0").
+
+    Examples:
+        >>> import edgefirst_client as ec
+        >>> print(ec.version())
+        0.3.0
+    """
+    ...
+
+
+def is_polars_enabled() -> bool:
+    """
+    Check if the Polars feature is enabled in this build.
+
+    The Polars feature enables DataFrame support for annotations and
+    other data structures. It is enabled at compile time with the
+    'polars' feature flag.
+
+    Returns:
+        True if Polars support is compiled in, False otherwise.
+
+    Examples:
+        >>> import edgefirst_client as ec
+        >>> if ec.is_polars_enabled():
+        ...     df = client.annotations_dataframe(annotation_set_id)
+        ... else:
+        ...     annotations = client.annotations(annotation_set_id)
+    """
+    ...

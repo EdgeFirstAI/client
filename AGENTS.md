@@ -91,6 +91,12 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
 - Use autopep8 for automatic formatting and compliance fixes
 - Mirror Rust examples in Python docstrings
 - Maintain `.pyi` type stubs for IDE support in `crates/edgefirst-client-py/edgefirst_client.pyi`
+- **Pylance type checking**: Code must be Pylance-clean (VS Code's Python language server)
+  * All `.pyi` stubs must have complete type annotations
+  * Use type narrowing patterns for Optional types: `self.assertIsNotNone(x)` followed by `assert x is not None`
+  * Prefer specific assertions: `assertGreater(len(x), 0)` over `assertTrue(len(x) > 0)`
+  * Prefer `assertTrue(x)` / `assertFalse(x)` over `assertEqual(x, True/False)` for boolean checks
+  * Keep type stubs synchronized with implementation (run Pylance checks before committing)
 
 ### Testing
 - **Target**: SonarCloud clean, full test coverage
@@ -145,6 +151,10 @@ cargo llvm-cov report --doctests --lcov --output-path lcov.info
    cargo clippy --fix --allow-dirty --all-features --all-targets # Fix lints
    autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi # Format Python (PEP-8)
    ```
+   **Pylance verification** (VS Code users): Check Problems panel for Python type errors
+   - No errors in production code (`crates/edgefirst-client-py/`, `*.py`, `examples/`)
+   - Adhere to test code style suggestions (assertGreater, assertTrue/False).
+   - Missing type stub warnings indicate `.pyi` needs updates
 
 4. **Run tests** (if credentials available):
    ```bash
@@ -281,6 +291,10 @@ client.download_dataset(id, &["image"], path, Some(tx)).await?;
 4. **Test credentials**: Integration tests need credentials - missing vars causes test failures (rely on CI if unavailable)
 5. **Import formatting**: Use `imports_granularity = 'Crate'` (rustfmt.toml) - imports grouped by crate
 6. **Nightly Rust**: Formatting requires nightly (`cargo +nightly fmt`), configured in `rustfmt.toml`
+7. **Pylance type narrowing**: After `self.assertIsNotNone(x)`, add `assert x is not None` for type checker
+   - Pylance cannot infer that unittest assertions narrow Optional types
+   - Pattern: `self.assertIsNotNone(x)` → `assert x is not None` → use x safely
+   - Eliminates false positives: "Object of type None is not subscriptable"
 
 ## Key Reference Files
 

@@ -151,6 +151,105 @@ impl Parameter {
         }
     }
 
+    /// Get the integer value (returns None if not an Integer)
+    fn as_integer(&self) -> Option<i64> {
+        match self {
+            Parameter::Integer(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Get the real value (returns None if not a Real)
+    fn as_real(&self) -> Option<f64> {
+        match self {
+            Parameter::Real(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Get the boolean value (returns None if not a Boolean)
+    fn as_boolean(&self) -> Option<bool> {
+        match self {
+            Parameter::Boolean(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Get the string value (returns None if not a String)
+    fn as_string(&self) -> Option<String> {
+        match self {
+            Parameter::String(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Get the variant type name ("Integer", "Real", "Boolean", "String",
+    /// "Array", "Object")
+    fn variant_type(&self) -> &str {
+        match self {
+            Parameter::Integer(_) => "Integer",
+            Parameter::Real(_) => "Real",
+            Parameter::Boolean(_) => "Boolean",
+            Parameter::String(_) => "String",
+            Parameter::Array(_) => "Array",
+            Parameter::Object(_) => "Object",
+        }
+    }
+
+    /// Get the array as a Python list with native Python types (returns None if
+    /// not an Array)
+    fn as_array(&self, py: Python<'_>) -> Option<PyObject> {
+        match self {
+            Parameter::Array(v) => {
+                let list = pyo3::types::PyList::empty(py);
+                for item in v {
+                    let py_value = match item {
+                        Parameter::Integer(i) => (*i).into_pyobject(py).ok()?.into_any().unbind(),
+                        Parameter::Real(r) => (*r).into_pyobject(py).ok()?.into_any().unbind(),
+                        Parameter::Boolean(b) => {
+                            (*b).into_pyobject(py).ok()?.to_owned().into_any().unbind()
+                        }
+                        Parameter::String(s) => {
+                            s.as_str().into_pyobject(py).ok()?.into_any().unbind()
+                        }
+                        Parameter::Array(_) => item.as_array(py)?,
+                        Parameter::Object(_) => item.as_object(py)?,
+                    };
+                    list.append(py_value).ok()?;
+                }
+                Some(list.unbind().into_any())
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the object as a Python dict with native Python types (returns None
+    /// if not an Object)
+    fn as_object(&self, py: Python<'_>) -> Option<PyObject> {
+        match self {
+            Parameter::Object(v) => {
+                let dict = pyo3::types::PyDict::new(py);
+                for (k, item) in v {
+                    let py_value = match item {
+                        Parameter::Integer(i) => (*i).into_pyobject(py).ok()?.into_any().unbind(),
+                        Parameter::Real(r) => (*r).into_pyobject(py).ok()?.into_any().unbind(),
+                        Parameter::Boolean(b) => {
+                            (*b).into_pyobject(py).ok()?.to_owned().into_any().unbind()
+                        }
+                        Parameter::String(s) => {
+                            s.as_str().into_pyobject(py).ok()?.into_any().unbind()
+                        }
+                        Parameter::Array(_) => item.as_array(py)?,
+                        Parameter::Object(_) => item.as_object(py)?,
+                    };
+                    dict.set_item(k, py_value).ok()?;
+                }
+                Some(dict.unbind().into_any())
+            }
+            _ => None,
+        }
+    }
+
     /// Convert to Python int
     fn __int__(&self) -> PyResult<i64> {
         match self {
@@ -283,16 +382,23 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for Parameter {
     type Error = Error;
 
     fn try_from(value: Bound<'py, PyAny>) -> Result<Self, Self::Error> {
+        // First check if it's already a Parameter object
+        if let Ok(param) = value.extract::<Parameter>() {
+            return Ok(param);
+        }
+
+        // Check bool FIRST because in Python, bool is a subclass of int
+        if let Ok(v) = value.extract::<bool>() {
+            return Ok(Parameter::Boolean(v));
+        }
+
+        // Check int BEFORE float because int can be extracted as float
         if let Ok(v) = value.extract::<i64>() {
             return Ok(Parameter::Integer(v));
         }
 
         if let Ok(v) = value.extract::<f64>() {
             return Ok(Parameter::Real(v));
-        }
-
-        if let Ok(v) = value.extract::<bool>() {
-            return Ok(Parameter::Boolean(v));
         }
 
         if let Ok(v) = value.extract::<String>() {
@@ -405,6 +511,14 @@ impl ProjectID {
     fn __repr__(&self) -> String {
         format!("ProjectID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -461,6 +575,14 @@ impl DatasetID {
 
     fn __repr__(&self) -> String {
         format!("DatasetID('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
     }
 }
 
@@ -519,6 +641,14 @@ impl ExperimentID {
     fn __repr__(&self) -> String {
         format!("ExperimentID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -565,6 +695,22 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for OrganizationID {
 impl OrganizationID {
     #[getter]
     pub fn value(&self) -> u64 {
+        self.0.value()
+    }
+
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("OrganizationID('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
         self.0.value()
     }
 }
@@ -623,6 +769,14 @@ impl SampleID {
     fn __repr__(&self) -> String {
         format!("SampleID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -679,6 +833,14 @@ impl AnnotationSetID {
 
     fn __repr__(&self) -> String {
         format!("AnnotationSetID('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
     }
 }
 
@@ -737,6 +899,14 @@ impl TaskID {
     fn __repr__(&self) -> String {
         format!("TaskID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -794,6 +964,14 @@ impl TrainingSessionID {
     fn __repr__(&self) -> String {
         format!("TrainingSessionID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -849,6 +1027,14 @@ impl ValidationSessionID {
 
     fn __repr__(&self) -> String {
         format!("ValidationSessionID('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
     }
 }
 
@@ -906,6 +1092,14 @@ impl SnapshotID {
     fn __repr__(&self) -> String {
         format!("SnapshotID('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -961,6 +1155,14 @@ impl ImageId {
 
     fn __repr__(&self) -> String {
         format!("ImageId('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
     }
 }
 
@@ -1018,6 +1220,14 @@ impl SequenceId {
     fn __repr__(&self) -> String {
         format!("SequenceId('{}')", self.0)
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -1071,6 +1281,14 @@ impl AppId {
 
     fn __repr__(&self) -> String {
         format!("AppId('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
     }
 }
 
@@ -3191,6 +3409,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Stage>()?;
 
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;
 
     Ok(())
 }
@@ -3198,4 +3417,16 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
+}
+
+#[pyfunction]
+pub fn is_polars_enabled() -> bool {
+    #[cfg(feature = "polars")]
+    {
+        true
+    }
+    #[cfg(not(feature = "polars"))]
+    {
+        false
+    }
 }
