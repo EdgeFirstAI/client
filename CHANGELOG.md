@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tests simple errors (InvalidResponse, NotImplemented, etc.) display correct messages
 
 ### Changed
+- CLI: Refactored Arrow annotation parsing to eliminate type complexity warning
+  - `parse_annotations_from_arrow` now returns `Vec<Sample>` directly instead of intermediate HashMap
+  - Merged `build_samples_from_map` logic into single function for cleaner architecture
+  - Added 9 comprehensive test cases covering all code paths and edge cases
 - **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
   - Polars operations (casting, DataFrame construction) now properly propagate errors
   - Callers must handle the Result with `?` or `.unwrap()` / `.expect()`

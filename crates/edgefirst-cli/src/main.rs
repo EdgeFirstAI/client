@@ -962,16 +962,14 @@ fn parse_mask_from_dataframe(
 ///
 /// # Returns
 ///
-/// HashMap mapping sample names to (group, annotations) tuples. If
+/// Vec of samples with image files, optional groups, and annotations. If
 /// `should_upload_annotations` is false, annotation vectors will be empty.
 #[cfg(feature = "polars")]
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
+    images_path: &PathBuf,
     should_upload_annotations: bool,
-) -> Result<
-    std::collections::HashMap<String, (Option<String>, Vec<edgefirst_client::Annotation>)>,
-    Error
-> {
+) -> Result<Vec<edgefirst_client::Sample>, Error> {
     use polars::prelude::*;
     use std::{collections::HashMap, fs::File};
 
@@ -1080,7 +1078,28 @@ fn parse_annotations_from_arrow(
         }
     }
 
-    Ok(samples_map)
+    // Convert HashMap to Vec<Sample> by resolving image paths
+    let mut samples = Vec::new();
+    for (image_name, (sample_group, annotations)) in samples_map {
+        let image_path = find_image_path_for_sample(images_path, &image_name)?;
+
+        let image_file = edgefirst_client::SampleFile::with_filename(
+            "image".to_string(),
+            image_path.to_str().unwrap().to_string(),
+        );
+
+        let sample = edgefirst_client::Sample {
+            image_name: Some(image_name),
+            group: sample_group,
+            files: vec![image_file],
+            annotations,
+            ..Default::default()
+        };
+
+        samples.push(sample);
+    }
+
+    Ok(samples)
 }
 
 #[cfg(feature = "polars")]
@@ -1113,38 +1132,6 @@ fn find_image_path_for_sample(images_path: &PathBuf, image_name: &str) -> Result
             "ZIP file support not yet implemented".to_owned(),
         ))
     }
-}
-
-#[cfg(feature = "polars")]
-fn build_samples_from_map(
-    samples_map: std::collections::HashMap<
-        String,
-        (Option<String>, Vec<edgefirst_client::Annotation>),
-    >,
-    images_path: &PathBuf,
-) -> Result<Vec<edgefirst_client::Sample>, Error> {
-    let mut samples = Vec::new();
-
-    for (image_name, (sample_group, annotations)) in samples_map {
-        let image_path = find_image_path_for_sample(images_path, &image_name)?;
-
-        let image_file = edgefirst_client::SampleFile::with_filename(
-            "image".to_string(),
-            image_path.to_str().unwrap().to_string(),
-        );
-
-        let sample = edgefirst_client::Sample {
-            image_name: Some(image_name.clone()),
-            group: sample_group,
-            files: vec![image_file],
-            annotations,
-            ..Default::default()
-        };
-
-        samples.push(sample);
-    }
-
-    Ok(samples)
 }
 
 #[cfg(feature = "polars")]
@@ -1245,13 +1232,10 @@ async fn handle_upload_dataset(
     // Determine images path
     let images_path = determine_images_path(&annotations, &images)?;
 
-    // Parse annotations from Arrow if provided
+    // Parse annotations from Arrow if provided, or build samples from directory
     let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
-    let samples_map = parse_annotations_from_arrow(&annotations, should_upload_annotations)?;
-
-    // Build samples
-    let samples = if !samples_map.is_empty() {
-        build_samples_from_map(samples_map, &images_path)?
+    let samples = if annotations.is_some() {
+        parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations)?
     } else {
         build_samples_from_directory(&images_path)?
     };
@@ -1811,5 +1795,349 @@ mod tests {
         assert_eq!(result.unwrap(), test_folder);
 
         std::fs::remove_dir(&test_folder).unwrap();
+    }
+
+    #[cfg(feature = "polars")]
+    mod arrow_parsing_tests {
+        use super::*;
+        use polars::prelude::*;
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        fn create_test_arrow_file(
+            path: &PathBuf,
+            names: Vec<&str>,
+            groups: Option<Vec<Option<&str>>>,
+            labels: Option<Vec<Option<&str>>>,
+            box2d_data: Option<Vec<Option<(f64, f64, f64, f64)>>>,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let name_series = Series::new("name".into(), names);
+
+            let mut df = DataFrame::new(vec![name_series.into_column()])?;
+
+            // Add optional group column
+            if let Some(group_values) = groups {
+                let group_series = Series::new("group".into(), group_values);
+                df = df.hstack(&[group_series.into_column()])?;
+            }
+
+            // Add optional label column
+            if let Some(label_values) = labels {
+                let label_series = Series::new("label".into(), label_values);
+                df = df.hstack(&[label_series.into_column()])?;
+            }
+
+            // Add optional box2d columns
+            if let Some(boxes) = box2d_data {
+                let x_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.0)).collect();
+                let y_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.1)).collect();
+                let w_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.2)).collect();
+                let h_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.3)).collect();
+
+                df = df.hstack(&[
+                    Series::new("box2d_x".into(), x_values).into_column(),
+                    Series::new("box2d_y".into(), y_values).into_column(),
+                    Series::new("box2d_w".into(), w_values).into_column(),
+                    Series::new("box2d_h".into(), h_values).into_column(),
+                ])?;
+            }
+
+            let mut file = std::fs::File::create(path)?;
+            IpcWriter::new(&mut file).finish(&mut df)?;
+            Ok(())
+        }
+
+        fn create_test_images_dir(
+            dir: &PathBuf,
+            image_names: Vec<&str>,
+        ) -> Result<(), std::io::Error> {
+            std::fs::create_dir_all(dir)?;
+            for name in image_names {
+                let image_path = dir.join(name);
+                let mut file = std::fs::File::create(image_path)?;
+                // Write minimal valid PNG header
+                file.write_all(&[
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+                ])?;
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_with_groups() {
+            let test_dir = std::env::temp_dir().join("arrow_test_with_groups");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create test data
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image2.jpg", "image3.jpg"],
+                Some(vec![Some("train"), Some("val"), Some("test")]),
+                Some(vec![Some("cat"), Some("dog"), Some("bird")]),
+                Some(vec![Some((10.0, 20.0, 30.0, 40.0)), None, Some((5.0, 5.0, 15.0, 15.0))]),
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg", "image2.jpg", "image3.jpg"])
+                .unwrap();
+
+            // Test parsing with annotations
+            let result = parse_annotations_from_arrow(&Some(arrow_file.clone()), &images_dir, true);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 3);
+
+            // Verify groups are present
+            let train_sample = samples.iter().find(|s| s.group == Some("train".to_string()));
+            assert!(train_sample.is_some());
+
+            let val_sample = samples.iter().find(|s| s.group == Some("val".to_string()));
+            assert!(val_sample.is_some());
+
+            let test_sample = samples.iter().find(|s| s.group == Some("test".to_string()));
+            assert!(test_sample.is_some());
+
+            // Verify annotations were parsed
+            let cat_sample = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image1.jpg"));
+            assert!(cat_sample.is_some());
+            assert_eq!(cat_sample.unwrap().annotations.len(), 1);
+            assert_eq!(
+                cat_sample.unwrap().annotations[0].label(),
+                Some(&"cat".to_string())
+            );
+
+            // Verify image without box2d has only label annotation
+            let dog_sample = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image2.jpg"));
+            assert!(dog_sample.is_some());
+            assert_eq!(dog_sample.unwrap().annotations.len(), 1);
+            assert_eq!(
+                dog_sample.unwrap().annotations[0].label(),
+                Some(&"dog".to_string())
+            );
+            assert!(dog_sample.unwrap().annotations[0].box2d().is_none());
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_without_groups() {
+            let test_dir = std::env::temp_dir().join("arrow_test_no_groups");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create test data without groups column
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["img1.png", "img2.png"],
+                None, // No groups
+                Some(vec![Some("person"), Some("car")]),
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["img1.png", "img2.png"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 2);
+
+            // Verify all groups are None
+            for sample in &samples {
+                assert!(sample.group.is_none());
+            }
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_without_annotations() {
+            let test_dir = std::env::temp_dir().join("arrow_test_no_annotations");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["photo1.jpg", "photo2.jpg"],
+                Some(vec![Some("train"), Some("val")]),
+                None, // No labels
+                None, // No boxes
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["photo1.jpg", "photo2.jpg"]).unwrap();
+
+            // Test parsing WITHOUT uploading annotations
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 2);
+
+            // Verify no annotations were added
+            for sample in &samples {
+                assert_eq!(sample.annotations.len(), 0);
+            }
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_missing_image() {
+            let test_dir = std::env::temp_dir().join("arrow_test_missing_image");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["exists.jpg", "missing.jpg"],
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            // Only create one image
+            create_test_images_dir(&images_dir, vec!["exists.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false);
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Image file not found"));
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_empty_file() {
+            let test_dir = std::env::temp_dir().join("arrow_test_empty");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            create_test_arrow_file(&arrow_file, vec![], None, None, None).unwrap();
+            std::fs::create_dir_all(&images_dir).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 0);
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_none() {
+            let images_dir = std::env::temp_dir().join("arrow_test_none");
+            std::fs::create_dir_all(&images_dir).unwrap();
+
+            let result = parse_annotations_from_arrow(&None, &images_dir, false);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 0);
+
+            // Cleanup
+            std::fs::remove_dir_all(&images_dir).ok();
+        }
+
+        #[test]
+        fn test_find_image_path_for_sample_zip_not_supported() {
+            let test_dir = std::env::temp_dir().join("arrow_test_zip");
+            let zip_file = test_dir.join("images.zip");
+
+            // Create a zip file (not a directory)
+            std::fs::create_dir_all(&test_dir).unwrap();
+            std::fs::File::create(&zip_file).unwrap();
+
+            let result = find_image_path_for_sample(&zip_file, "test.jpg");
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("ZIP file support not yet implemented"));
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_find_image_path_with_extension_variations() {
+            let test_dir = std::env::temp_dir().join("arrow_test_extensions");
+            std::fs::create_dir_all(&test_dir).unwrap();
+
+            // Create image with .camera.jpg extension
+            let image_path = test_dir.join("image1.camera.jpg");
+            std::fs::File::create(&image_path).unwrap();
+
+            // Should find the image when searching for "image1"
+            let result = find_image_path_for_sample(&test_dir, "image1");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), image_path);
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_multiple_rows_same_image() {
+            let test_dir = std::env::temp_dir().join("arrow_test_multi_annotations");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with multiple annotations for same image
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg", "image2.jpg"],
+                Some(vec![Some("train"), Some("train"), Some("val")]),
+                Some(vec![Some("cat"), Some("dog"), Some("bird")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                    Some((5.0, 5.0, 10.0, 10.0)),
+                ]),
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg", "image2.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(result.is_ok());
+            let samples = result.unwrap();
+
+            // Should have 2 samples (image1 and image2)
+            assert_eq!(samples.len(), 2);
+
+            // image1 should have 2 annotations
+            let image1_sample = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image1.jpg"));
+            assert!(image1_sample.is_some());
+            assert_eq!(image1_sample.unwrap().annotations.len(), 2);
+
+            // image2 should have 1 annotation
+            let image2_sample = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image2.jpg"));
+            assert!(image2_sample.is_some());
+            assert_eq!(image2_sample.unwrap().annotations.len(), 1);
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
     }
 }
