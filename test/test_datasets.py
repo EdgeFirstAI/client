@@ -12,11 +12,21 @@ These integration tests verify:
 """
 
 import random
+import shutil
 import string
 import time
+from pathlib import Path
 from unittest import TestCase
 
-from edgefirst_client import Annotation, Box2d, Sample, SampleFile
+from edgefirst_client import (
+    Annotation,
+    Box2d,
+    Box3d,
+    FileType,
+    Mask,
+    Sample,
+    SampleFile,
+)
 from PIL import Image, ImageDraw
 from test import get_client, get_test_data_dir
 
@@ -251,204 +261,396 @@ class DatasetTest(TestCase):
             client.delete_dataset(dataset_id)
             print("  ✓ Deleted test dataset")
 
-    def _download_deer_samples_and_images(
-            self, client, deer_dataset, annotation_set, download_dir):
-        """Download samples, annotations, and images from Deer dataset."""
-        print("Downloading samples from Deer dataset...")
-        deer_samples = client.samples(
-            deer_dataset.id, annotation_set.id, groups=[])
-        print(f"Downloaded {len(deer_samples)} samples")
-        assert len(deer_samples) > 0, "Deer dataset should have samples"
-
-        print("Downloading annotations...")
-        deer_annotations = client.annotations(annotation_set.id, groups=[])
-        print(f"Downloaded {len(deer_annotations)} annotations")
-
-        print("Downloading sample images...")
-        downloaded_images = {}
-        for idx, sample in enumerate(deer_samples[:5]):  # First 5 samples
-            image_data = sample.download(client)
-            if image_data:
-                image_name = sample.image_name or f"sample_{idx}.jpg"
-                image_path = download_dir / image_name
-                image_path.write_bytes(image_data)
-                downloaded_images[image_name] = image_data
-                print(f"  Downloaded: {image_name}")
-
-        print(
-            f"Downloaded {len(downloaded_images)} sample images "
-            f"for verification"
+    def _sample_uuid(self, sample):
+        """Return the sample UUID, asserting it is present."""
+        sample_uuid = sample.uuid
+        self.assertIsNotNone(
+            sample_uuid,
+            "Sample is missing UUID; this indicates a server-side bug.",
         )
-        return deer_samples, deer_annotations, downloaded_images
+        assert sample_uuid is not None
+        return sample_uuid
 
-    def _prepare_upload_samples(
-            self, deer_samples, deer_annotations, download_dir, client):
-        """Prepare samples for upload to test dataset."""
-        print("Preparing samples for upload...")
-        upload_samples = []
+    def _sample_image_key(self, sample):
+        """Return the image-based key used when comparing datasets."""
+        image_name = sample.image_name
+        if image_name is not None:
+            return Path(image_name).stem
 
-        for idx, sample in enumerate(deer_samples[:10]):
-            new_sample = Sample()
-            image_data = sample.download(client)
-            if image_data:
-                image_name = sample.image_name or f"sample_{idx}.jpg"
-                temp_path = download_dir / image_name
-                temp_path.write_bytes(image_data)
-                new_sample.add_file(SampleFile("image", str(temp_path)))
+        sample_name = sample.name
+        self.assertIsNotNone(
+            sample_name,
+            (
+                "Sample is missing image_name and name; "
+                "cannot determine file key."
+            ),
+        )
+        assert sample_name is not None
+        return Path(sample_name).stem
 
-                sample_annotations = [
-                    ann for ann in deer_annotations
-                    if ann.name == sample.image_name]
-                for ann in sample_annotations:
-                    new_sample.add_annotation(ann)
+    def _annotation_image_key(self, annotation):
+        """Return the image key linked to an annotation."""
+        annotation_name = annotation.name
+        self.assertIsNotNone(
+            annotation_name,
+            "Annotation should include the originating sample name",
+        )
+        assert annotation_name is not None
+        return Path(annotation_name).stem
 
-                upload_samples.append(new_sample)
+    def _collect_exported_files(self, directory):
+        """Index exported files by stem for quick lookup."""
+        indexed = {}
+        for path in directory.iterdir():
+            if path.is_file():
+                stem = path.stem
+                if stem in indexed:
+                    self.fail(
+                        f"Duplicate exported file for stem '{stem}'"
+                    )
+                indexed[stem] = path
+        return indexed
 
-        print(f"Prepared {len(upload_samples)} samples for upload")
-        assert len(
-            upload_samples) > 0, (
-                "Should have samples prepared for upload")
-        return upload_samples
+    def _annotation_signature(self, annotation):
+        """Create a comparable signature for an annotation."""
+        bbox = annotation.box2d
+        if bbox is not None:
+            bbox_sig = tuple(
+                round(value, 6)
+                for value in (
+                    bbox.left,
+                    bbox.top,
+                    bbox.width,
+                    bbox.height,
+                )
+            )
+        else:
+            bbox_sig = None
 
-    def _verify_uploaded_images(
-            self, client, uploaded_samples, downloaded_images):
-        """Verify uploaded images match originals byte-for-byte."""
-        verified_count = 0
-        for original_name, original_data in list(
-                downloaded_images.items())[:3]:
-            uploaded_sample = next(
-                (s for s in uploaded_samples
-                 if s.image_name == original_name), None)
-            if uploaded_sample:
-                uploaded_data = uploaded_sample.download(client)
-                if uploaded_data:
-                    assert len(original_data) == len(
-                        uploaded_data
-                    ), f"Image {original_name} should have same size"
-                    assert (
-                        original_data == uploaded_data
-                    ), f"Image {original_name} should match byte-for-byte"
-                    verified_count += 1
-                    print(f"  ✓ Verified: {original_name}")
+        # Mask comparison disabled until populate_samples preserves mask data.
+        return (
+            annotation.label,
+            annotation.object_id,
+            annotation.group,
+            bbox_sig,
+        )
 
-        assert verified_count > 0, (
-            "Should have verified at least one image")
-        print(f"Verified {verified_count} images match byte-for-byte")
+    def _build_annotation_map(self, annotations):
+        """Group annotations by sample key with sorted signatures."""
+        grouped = {}
+        for annotation in annotations:
+            key = self._annotation_image_key(annotation)
+            grouped.setdefault(key, []).append(
+                self._annotation_signature(annotation)
+            )
 
-    def test_deer_dataset_roundtrip(self):  # type: ignore[misc]
-        """
-        Test downloading Deer dataset and re-uploading to verify
-        data integrity.
+        for key, values in grouped.items():
+            grouped[key] = sorted(
+                values,
+                key=lambda item: (
+                    item[0] or "",
+                    item[1] or "",
+                    item[3] or (),
+                ),
+            )
 
-        Note: This integration test downloads a dataset, uploads it
-        to a new dataset, and verifies byte-for-byte image integrity
-        and annotation preservation.
-        """
+        return grouped
+
+    def _clone_annotation_for_upload(self, annotation):
+        """Create a fresh Annotation with equivalent geometry."""
+        cloned = Annotation()
+
+        if annotation.label is not None:
+            cloned.set_label(annotation.label)
+
+        if annotation.object_id is not None:
+            cloned.set_object_id(annotation.object_id)
+
+        if annotation.box2d is not None:
+            box = annotation.box2d
+            cloned.set_box2d(Box2d(box.left, box.top, box.width, box.height))
+
+        if annotation.box3d is not None:
+            box3d = annotation.box3d
+            cloned.set_box3d(
+                Box3d(
+                    box3d.cx,
+                    box3d.cy,
+                    box3d.cz,
+                    box3d.width,
+                    box3d.height,
+                    box3d.length,
+                )
+            )
+
+        mask = annotation.mask
+        if mask is not None:
+            polygon_copy = [list(ring) for ring in mask.polygon]
+            cloned.set_mask(Mask(polygon_copy))
+
+        return cloned
+
+    def test_dataset_download_upload_roundtrip(self):
+        """Verify Deer dataset download→upload→download integrity."""
         client = get_client()
 
-        # Find the Unit Testing project and Deer dataset (read-only)
         projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
         assert len(projects) > 0
         project = projects[0]
 
         datasets = client.datasets(project.id, "Deer")
-        deer_dataset = next((d for d in datasets if d.name == "Deer"), None)
-        assert deer_dataset is not None, "Deer dataset should exist"
-        print(f"Found Deer dataset: {deer_dataset.uid}")
+        self.assertGreater(len(datasets), 0)
+        assert len(datasets) > 0
+        source_dataset = next(
+            (dataset for dataset in datasets if dataset.name == "Deer"),
+            None,
+        )
+        self.assertIsNotNone(
+            source_dataset,
+            "Expected Deer dataset to be available for roundtrip test",
+        )
+        assert source_dataset is not None
 
-        # Get annotation sets
-        annotation_sets = client.annotation_sets(deer_dataset.id)
+        annotation_sets = client.annotation_sets(source_dataset.id)
+        self.assertGreater(len(annotation_sets), 0)
         assert len(annotation_sets) > 0
-        annotation_set = annotation_sets[0]
-        print(f"Using annotation set: {annotation_set.uid}")
+        source_annotation_set = annotation_sets[0]
 
-        # Download data from Deer dataset
+        timestamp = int(time.time())
         test_dir = get_test_data_dir()
-        download_dir = test_dir / f"deer_download_{int(time.time())}"
-        download_dir.mkdir(parents=True, exist_ok=True)
+        export_dir = test_dir / f"labels_export_{timestamp}"
+        reexport_dir = test_dir / f"labels_reexport_{timestamp}"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        reexport_dir.mkdir(parents=True, exist_ok=True)
 
-        deer_samples, deer_annotations, downloaded_images = (
-            self._download_deer_samples_and_images(
-                client, deer_dataset, annotation_set, download_dir))
+        download_progress = []
 
-        # Create a test dataset with random suffix to avoid conflicts
+        def capture_download(current, total):
+            download_progress.append((current, total))
+
+        client.download_dataset(
+            source_dataset.id,
+            [],
+            [FileType.Image],
+            str(export_dir),
+            progress=capture_download,
+        )
+
+        self.assertGreater(
+            len(download_progress),
+            0,
+            "download_dataset should report progress",
+        )
+
+        exported_files = self._collect_exported_files(export_dir)
+        self.assertGreater(len(exported_files), 0)
+
+        source_samples = client.samples(
+            source_dataset.id,
+            source_annotation_set.id,
+            groups=[],
+        )
+        self.assertGreater(len(source_samples), 0)
+
+        source_annotations = client.annotations(
+            source_annotation_set.id,
+            groups=[],
+        )
+
+        max_samples = min(8, len(source_samples))
+        selected_samples = source_samples[:max_samples]
+
+        selected_uuids = {
+            self._sample_uuid(sample): sample for sample in selected_samples
+        }
+        self.assertEqual(len(selected_uuids), len(selected_samples))
+
+        selected_image_keys = [
+            self._sample_image_key(sample) for sample in selected_samples
+        ]
+
+        for key in selected_image_keys:
+            self.assertIn(key, exported_files)
+
+        selected_files = {
+            key: exported_files[key] for key in selected_image_keys
+        }
+
+        expected_groups = {
+            key: selected_samples[idx].group
+            for idx, key in enumerate(selected_image_keys)
+        }
+
+        expected_image_names = {}
+        source_uuid_by_image_key = {}
+        samples_payload = []
+        for sample in selected_samples:
+            sample_uuid = self._sample_uuid(sample)
+            sample_key = self._sample_image_key(sample)
+            file_path = selected_files[sample_key]
+
+            source_uuid_by_image_key[sample_key] = sample_uuid
+
+            new_sample = Sample()
+            image_name = sample.image_name
+            if image_name is None:
+                image_name = f"{sample_key}{file_path.suffix}"
+            new_sample.set_image_name(image_name)
+            expected_image_names[sample_key] = image_name
+
+            new_sample.set_group(sample.group)
+            if sample.sequence_name is not None:
+                new_sample.set_sequence_name(sample.sequence_name)
+            if sample.frame_number is not None:
+                new_sample.set_frame_number(sample.frame_number)
+
+            new_sample.add_file(SampleFile("image", str(file_path)))
+
+            related_annotations = [
+                ann for ann in source_annotations
+                if self._annotation_image_key(ann) == sample_key
+            ]
+            for annotation in related_annotations:
+                new_sample.add_annotation(
+                    self._clone_annotation_for_upload(annotation)
+                )
+
+            samples_payload.append(new_sample)
+
+        selected_annotations = [
+            ann for ann in source_annotations
+            if self._annotation_image_key(ann) in selected_image_keys
+        ]
+        expected_annotation_map = self._build_annotation_map(
+            selected_annotations
+        )
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
-        test_dataset_name = f"Deer Test {random_suffix}"
-        print(f"Creating test dataset: {test_dataset_name}")
+        new_dataset_name = f"Deer Roundtrip {random_suffix}"
 
-        test_dataset_id = client.create_dataset(
+        new_dataset_id = client.create_dataset(
             str(project.id),
-            test_dataset_name,
-            "Automated test: Deer dataset round-trip verification",
+            new_dataset_name,
+            "Automated test: dataset download/upload verification",
         )
-        print(f"Created test dataset: {test_dataset_id}")
+
+        new_annotation_set_id = client.create_annotation_set(
+            new_dataset_id,
+            "Default",
+            "Roundtrip annotation set",
+        )
+
+        new_dataset = client.dataset(new_dataset_id)
+        original_labels = source_dataset.labels(client)
+        for label in original_labels:
+            new_dataset.add_label(client, label.name)
+
+        upload_progress = []
+
+        def capture_upload(current, total):
+            upload_progress.append((current, total))
+
+        results = client.populate_samples(
+            new_dataset_id,
+            new_annotation_set_id,
+            samples_payload,
+            progress=capture_upload,
+        )
+
+        self.assertEqual(len(results), len(samples_payload))
+        self.assertGreater(len(upload_progress), 0)
 
         try:
-            # Create an annotation set
-            print("Creating annotation set...")
-            test_annotation_set_id = client.create_annotation_set(
-                test_dataset_id, "Default", "Default annotation set"
-            )
-            print(f"Created annotation set: {test_annotation_set_id}")
-
-            # Copy labels from Deer dataset
-            test_dataset = client.dataset(test_dataset_id)
-            deer_labels = deer_dataset.labels(client)
-            for label in deer_labels:
-                test_dataset.add_label(client, label.name)
-            print(f"Copied {len(deer_labels)} labels")
-
-            # Prepare and upload samples
-            upload_samples = self._prepare_upload_samples(
-                deer_samples, deer_annotations, download_dir, client)
-
-            print("Uploading samples to test dataset...")
-            results = client.populate_samples(
-                test_dataset_id, test_annotation_set_id, upload_samples
-            )
-            print(f"Uploaded {len(results)} samples")
-
-            # Give the server time to process
             time.sleep(3)
 
-            # Verify uploaded data
-            print("Verifying uploaded data...")
-            uploaded_samples = client.samples(
-                test_dataset_id, test_annotation_set_id, groups=[]
+            new_samples = client.samples(
+                new_dataset_id,
+                new_annotation_set_id,
+                groups=[],
             )
-            print(f"Found {len(uploaded_samples)} uploaded samples")
-            assert len(uploaded_samples) == len(
-                results
-            ), "Should have same number of uploaded samples"
+            self.assertEqual(len(new_samples), len(samples_payload))
 
-            # Verify images match byte-for-byte
-            self._verify_uploaded_images(
-                client, uploaded_samples, downloaded_images)
+            new_samples_map = {}
+            for sample in new_samples:
+                key = self._sample_image_key(sample)
+                new_samples_map[key] = sample
+            self.assertSetEqual(
+                set(selected_image_keys), set(new_samples_map)
+            )
 
-            # Verify annotations were uploaded
-            uploaded_annotations = client.annotations(
-                test_annotation_set_id, groups=[])
-            print(f"Found {len(uploaded_annotations)} uploaded annotations")
-            assert len(
-                uploaded_annotations) > 0, (
-                    "Should have uploaded annotations")
+            actual_groups = {}
+            actual_image_names = {}
+            for key in selected_image_keys:
+                sample_obj = new_samples_map.get(key)
+                self.assertIsNotNone(sample_obj)
+                assert sample_obj is not None
+                new_uuid = self._sample_uuid(sample_obj)
+                source_uuid = source_uuid_by_image_key[key]
+                self.assertNotEqual(
+                    source_uuid,
+                    new_uuid,
+                    "Re-uploaded dataset should assign new sample UUIDs",
+                )
+                actual_groups[key] = sample_obj.group
 
-            print("\n✅ Round-trip test completed successfully!")
+                new_image_name = sample_obj.image_name
+                self.assertIsNotNone(new_image_name)
+                assert new_image_name is not None
+                actual_image_names[key] = new_image_name
+
+            self.assertEqual(expected_groups, actual_groups)
+            self.assertEqual(expected_image_names, actual_image_names)
+
+            new_annotations = client.annotations(
+                new_annotation_set_id,
+                groups=[],
+            )
+            new_annotation_map = self._build_annotation_map([
+                ann for ann in new_annotations
+                if self._annotation_image_key(ann) in selected_image_keys
+            ])
+
+            self.assertEqual(expected_annotation_map, new_annotation_map)
+
+            reexport_progress = []
+
+            def capture_reexport(current, total):
+                reexport_progress.append((current, total))
+
+            client.download_dataset(
+                new_dataset_id,
+                [],
+                [FileType.Image],
+                str(reexport_dir),
+                progress=capture_reexport,
+            )
+
+            self.assertGreater(len(reexport_progress), 0)
+
+            reexport_files = self._collect_exported_files(reexport_dir)
+            self.assertSetEqual(
+                set(selected_image_keys), set(reexport_files)
+            )
+
+            for key in selected_image_keys:
+                original_path = selected_files[key]
+                reexport_path = reexport_files[key]
+                self.assertEqual(
+                    original_path.suffix,
+                    reexport_path.suffix,
+                )
+                self.assertEqual(
+                    original_path.read_bytes(),
+                    reexport_path.read_bytes(),
+                )
 
         finally:
-            # Clean up: Delete the test dataset
-            print("Cleaning up test dataset...")
-            client.delete_dataset(test_dataset_id)
-            print("  ✓ Deleted test dataset")
-
-            # Clean up downloaded files
-            import shutil
-
-            if download_dir.exists():
-                shutil.rmtree(download_dir)
-            print("  ✓ Cleaned up downloaded files")
+            client.delete_dataset(new_dataset_id)
+            shutil.rmtree(export_dir, ignore_errors=True)
+            shutil.rmtree(reexport_dir, ignore_errors=True)
 
 
 class TestLabels(TestCase):

@@ -1426,6 +1426,28 @@ class Sample:
         """Set the image filename for this sample."""
         ...
 
+    def set_group(self, group: Optional[str]) -> None:
+        """Set the dataset split (train/val/test) for this sample."""
+        ...
+
+    def set_sequence_name(self, sequence_name: Optional[str]) -> None:
+        """Set the sequence name for this sample."""
+        ...
+
+    def set_sequence_uuid(self, sequence_uuid: Optional[str]) -> None:
+        """Set the unique sequence identifier for this sample."""
+        ...
+
+    def set_sequence_description(
+        self, sequence_description: Optional[str]
+    ) -> None:
+        """Set the sequence description for this sample."""
+        ...
+
+    def set_frame_number(self, frame_number: Optional[int]) -> None:
+        """Set the frame number for this sample."""
+        ...
+
     def add_file(self, file: SampleFile) -> None:
         """Add a file (image, LiDAR, etc.) to this sample."""
         ...

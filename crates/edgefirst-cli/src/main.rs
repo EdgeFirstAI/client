@@ -1801,8 +1801,7 @@ mod tests {
     mod arrow_parsing_tests {
         use super::*;
         use polars::prelude::*;
-        use std::io::Write;
-        use std::path::PathBuf;
+        use std::{io::Write, path::PathBuf};
 
         fn create_test_arrow_file(
             path: &PathBuf,
@@ -1880,7 +1879,11 @@ mod tests {
                 vec!["image1.jpg", "image2.jpg", "image3.jpg"],
                 Some(vec![Some("train"), Some("val"), Some("test")]),
                 Some(vec![Some("cat"), Some("dog"), Some("bird")]),
-                Some(vec![Some((10.0, 20.0, 30.0, 40.0)), None, Some((5.0, 5.0, 15.0, 15.0))]),
+                Some(vec![
+                    Some((10.0, 20.0, 30.0, 40.0)),
+                    None,
+                    Some((5.0, 5.0, 15.0, 15.0)),
+                ]),
             )
             .unwrap();
 
@@ -1894,7 +1897,9 @@ mod tests {
             assert_eq!(samples.len(), 3);
 
             // Verify groups are present
-            let train_sample = samples.iter().find(|s| s.group == Some("train".to_string()));
+            let train_sample = samples
+                .iter()
+                .find(|s| s.group == Some("train".to_string()));
             assert!(train_sample.is_some());
 
             let val_sample = samples.iter().find(|s| s.group == Some("val".to_string()));
@@ -2014,10 +2019,12 @@ mod tests {
 
             let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false);
             assert!(result.is_err());
-            assert!(result
-                .unwrap_err()
-                .to_string()
-                .contains("Image file not found"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Image file not found")
+            );
 
             // Cleanup
             std::fs::remove_dir_all(&test_dir).ok();
@@ -2066,10 +2073,12 @@ mod tests {
 
             let result = find_image_path_for_sample(&zip_file, "test.jpg");
             assert!(result.is_err());
-            assert!(result
-                .unwrap_err()
-                .to_string()
-                .contains("ZIP file support not yet implemented"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ZIP file support not yet implemented")
+            );
 
             // Cleanup
             std::fs::remove_dir_all(&test_dir).ok();

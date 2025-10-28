@@ -14,6 +14,22 @@ from test import get_client
 class TestIDTypes(unittest.TestCase):
     """Test suite for ID type string formatting and conversions."""
 
+    def _get_reference_dataset(self, client):
+        """Return the Test Labels dataset from the Unit Testing project."""
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+
+        datasets = client.datasets(project.id, "Test Labels")
+        self.assertGreater(len(datasets), 0)
+        dataset = next(
+            (item for item in datasets if item.name == "Test Labels"),
+            None,
+        )
+        self.assertIsNotNone(dataset, "Test Labels dataset should exist")
+        assert dataset is not None
+        return project, dataset
+
     # =========================================================================
     # ID String Format Tests (using string parsing)
     # =========================================================================
@@ -46,11 +62,7 @@ class TestIDTypes(unittest.TestCase):
     def test_dataset_id_format(self):
         """Test DatasetID string format is 'ds-xxx'."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        dataset = datasets[0]
+        _, dataset = self._get_reference_dataset(client)
         str_id = str(dataset.id)
         self.assertTrue(str_id.startswith("ds-"))
         # Verify hex part
@@ -61,11 +73,9 @@ class TestIDTypes(unittest.TestCase):
     def test_annotation_set_id_format(self):
         """Test AnnotationSetID string format is 'as-xxx'."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        annotation_sets = client.annotation_sets(str(datasets[0].id))
+        _, dataset = self._get_reference_dataset(client)
+
+        annotation_sets = client.annotation_sets(str(dataset.id))
         self.assertGreater(len(annotation_sets), 0)
         as_obj = annotation_sets[0]
         str_id = str(as_obj.id)
@@ -78,11 +88,9 @@ class TestIDTypes(unittest.TestCase):
     def test_sample_id_format(self):
         """Test SampleID string format is 's-xxx'."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        samples = client.samples(str(datasets[0].id))
+        _, dataset = self._get_reference_dataset(client)
+
+        samples = client.samples(str(dataset.id))
         self.assertGreater(len(samples), 0)
         sample = samples[0]
         sample_id = sample.id
@@ -202,11 +210,7 @@ class TestIDTypes(unittest.TestCase):
     def test_dataset_id_uid_consistency(self):
         """Test Dataset.id() and Dataset.uid() return consistent values."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        dataset = datasets[0]
+        _, dataset = self._get_reference_dataset(client)
         # Get id as ID object
         id_obj = dataset.id
         # Get uid as string
@@ -219,11 +223,9 @@ class TestIDTypes(unittest.TestCase):
     def test_annotation_set_id_uid_consistency(self):
         """Test AnnotationSet.id() and AnnotationSet.uid() consistent."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        annotation_sets = client.annotation_sets(str(datasets[0].id))
+        _, dataset = self._get_reference_dataset(client)
+
+        annotation_sets = client.annotation_sets(str(dataset.id))
         self.assertGreater(len(annotation_sets), 0)
         as_obj = annotation_sets[0]
         # Get id as ID object
@@ -328,11 +330,9 @@ class TestIDTypes(unittest.TestCase):
     def test_sample_id_uid_consistency(self):
         """Test Sample.id() and Sample.uid() are consistent."""
         client = get_client()
-        projects = client.projects()
-        self.assertGreater(len(projects), 0)
-        datasets = client.datasets(str(projects[0].id))
-        self.assertGreater(len(datasets), 0)
-        samples = client.samples(str(datasets[0].id))
+        _, dataset = self._get_reference_dataset(client)
+
+        samples = client.samples(str(dataset.id))
         self.assertGreater(len(samples), 0)
         sample = samples[0]
         # Sample.id is Optional
