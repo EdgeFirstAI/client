@@ -215,3 +215,481 @@ impl std::error::Error for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // Tests for wrapped error types - follow the pattern:
+    // 1. Create inner error
+    // 2. Capture inner error string
+    // 3. Wrap to custom Error type
+    // 4. Capture wrapped error string
+    // 5. Verify inner string is substring of wrapped string
+
+    #[test]
+    fn test_io_error_wrapping() {
+        // 1. Create inner error
+        let inner_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("I/O error: "));
+    }
+
+    #[test]
+    fn test_config_error_wrapping() {
+        // 1. Create inner error - ConfigError requires building a config that fails
+        let inner_err =
+            config::Config::builder().build().and_then(|c| c.try_deserialize::<String>()).unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("Configuration error: "));
+    }
+
+    #[test]
+    fn test_json_error_wrapping() {
+        // 1. Create inner error - invalid JSON
+        let inner_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("JSON error: "));
+    }
+
+    #[test]
+    fn test_url_parse_error_wrapping() {
+        // 1. Create inner error - invalid URL
+        let inner_err = url::Url::parse("not a valid url").unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("URL parse error: "));
+    }
+
+    #[test]
+    fn test_env_error_wrapping() {
+        // 1. Create inner error - missing environment variable
+        let inner_err = std::env::var("NONEXISTENT_VAR_12345").unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("Environment variable error: "));
+    }
+
+    #[test]
+    fn test_strip_prefix_error_wrapping() {
+        // 1. Create inner error - strip non-existent prefix
+        let path = Path::new("/foo/bar");
+        let prefix = Path::new("/baz");
+        let inner_err = path.strip_prefix(prefix).unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("Path prefix error: "));
+    }
+
+    #[test]
+    fn test_parse_int_error_wrapping() {
+        // 1. Create inner error - invalid integer string
+        let inner_err = "not a number".parse::<i32>().unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("Integer parse error: "));
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_polars_error_wrapping() {
+        // 1. Create inner error - duplicate column names cause an error
+        use polars::prelude::*;
+        let inner_err = DataFrame::new(vec![
+            Series::new("a".into(), &[1, 2, 3]).into(),
+            Series::new("a".into(), &[4, 5, 6]).into(),
+        ])
+        .unwrap_err();
+        // 2. Capture inner error string
+        let inner_str = inner_err.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err: Error = inner_err.into();
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify inner string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&inner_str),
+            "Wrapped error '{}' should contain inner error '{}'",
+            wrapped_str,
+            inner_str
+        );
+        assert!(wrapped_str.starts_with("Polars error: "));
+    }
+
+    // Tests for wrapped primitive types - follow the pattern:
+    // 1. Create random primitive value
+    // 2. Capture the primitive as string
+    // 3. Wrap to custom Error type
+    // 4. Capture wrapped error string
+    // 5. Verify primitive string is substring of wrapped string
+
+    #[test]
+    fn test_max_retries_exceeded() {
+        // 1. Create primitive value
+        let retry_count = 42u32;
+        // 2. Capture primitive as string
+        let primitive_str = retry_count.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::MaxRetriesExceeded(retry_count);
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(&primitive_str),
+            "Wrapped error '{}' should contain retry count '{}'",
+            wrapped_str,
+            primitive_str
+        );
+        assert!(wrapped_str.starts_with("Maximum retries"));
+    }
+
+    #[test]
+    fn test_rpc_error() {
+        // 1. Create primitive values
+        let error_code = -32600;
+        let error_msg = "Invalid Request";
+        // 2. Capture primitives as strings
+        let code_str = error_code.to_string();
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::RpcError(error_code, error_msg.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive strings are substrings of wrapped string
+        assert!(
+            wrapped_str.contains(&code_str),
+            "Wrapped error '{}' should contain error code '{}'",
+            wrapped_str,
+            code_str
+        );
+        assert!(
+            wrapped_str.contains(error_msg),
+            "Wrapped error '{}' should contain error message '{}'",
+            wrapped_str,
+            error_msg
+        );
+        assert!(wrapped_str.starts_with("RPC error"));
+    }
+
+    #[test]
+    fn test_invalid_rpc_id() {
+        // 1. Create primitive value
+        let invalid_id = "not-a-valid-id-123";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::InvalidRpcId(invalid_id.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(invalid_id),
+            "Wrapped error '{}' should contain invalid ID '{}'",
+            wrapped_str,
+            invalid_id
+        );
+        assert!(wrapped_str.starts_with("Invalid RPC ID: "));
+    }
+
+    #[test]
+    fn test_invalid_file_type() {
+        // 1. Create primitive value
+        let file_type = "unknown_format";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::InvalidFileType(file_type.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(file_type),
+            "Wrapped error '{}' should contain file type '{}'",
+            wrapped_str,
+            file_type
+        );
+        assert!(wrapped_str.starts_with("Invalid file type: "));
+    }
+
+    #[test]
+    fn test_invalid_annotation_type() {
+        // 1. Create primitive value
+        let annotation_type = "unsupported_annotation";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::InvalidAnnotationType(annotation_type.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(annotation_type),
+            "Wrapped error '{}' should contain annotation type '{}'",
+            wrapped_str,
+            annotation_type
+        );
+        assert!(wrapped_str.starts_with("Invalid annotation type: "));
+    }
+
+    #[test]
+    fn test_unsupported_format() {
+        // 1. Create primitive value
+        let format = "xyz_format";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::UnsupportedFormat(format.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(format),
+            "Wrapped error '{}' should contain format '{}'",
+            wrapped_str,
+            format
+        );
+        assert!(wrapped_str.starts_with("Unsupported format: "));
+    }
+
+    #[test]
+    fn test_missing_images() {
+        // 1. Create primitive value
+        let details = "image001.jpg, image002.jpg";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::MissingImages(details.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(details),
+            "Wrapped error '{}' should contain details '{}'",
+            wrapped_str,
+            details
+        );
+        assert!(wrapped_str.starts_with("Missing images: "));
+    }
+
+    #[test]
+    fn test_missing_annotations() {
+        // 1. Create primitive value
+        let details = "annotations.json";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::MissingAnnotations(details.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(details),
+            "Wrapped error '{}' should contain details '{}'",
+            wrapped_str,
+            details
+        );
+        assert!(wrapped_str.starts_with("Missing annotations: "));
+    }
+
+    #[test]
+    fn test_missing_label() {
+        // 1. Create primitive value
+        let label = "person";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::MissingLabel(label.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(label),
+            "Wrapped error '{}' should contain label '{}'",
+            wrapped_str,
+            label
+        );
+        assert!(wrapped_str.starts_with("Missing label: "));
+    }
+
+    #[test]
+    fn test_invalid_parameters() {
+        // 1. Create primitive value
+        let params = "batch_size must be positive";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::InvalidParameters(params.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(params),
+            "Wrapped error '{}' should contain params '{}'",
+            wrapped_str,
+            params
+        );
+        assert!(wrapped_str.starts_with("Invalid parameters: "));
+    }
+
+    #[test]
+    fn test_feature_not_enabled() {
+        // 1. Create primitive value
+        let feature = "polars";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::FeatureNotEnabled(feature.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(feature),
+            "Wrapped error '{}' should contain feature '{}'",
+            wrapped_str,
+            feature
+        );
+        assert!(wrapped_str.starts_with("Feature not enabled: "));
+    }
+
+    #[test]
+    fn test_invalid_etag() {
+        // 1. Create primitive value
+        let etag = "malformed-etag-value";
+        // 2. Capture primitive as string (already a string)
+        // 3. Wrap to custom Error type
+        let wrapped_err = Error::InvalidEtag(etag.to_string());
+        // 4. Capture wrapped error string
+        let wrapped_str = wrapped_err.to_string();
+        // 5. Verify primitive string is substring of wrapped string
+        assert!(
+            wrapped_str.contains(etag),
+            "Wrapped error '{}' should contain etag '{}'",
+            wrapped_str,
+            etag
+        );
+        assert!(wrapped_str.starts_with("Invalid ETag header: "));
+    }
+
+    // Tests for simple errors without wrapped content
+    // Just verify they can be created and displayed
+
+    #[test]
+    fn test_invalid_response() {
+        let err = Error::InvalidResponse;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Invalid server response");
+    }
+
+    #[test]
+    fn test_not_implemented() {
+        let err = Error::NotImplemented;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Not implemented");
+    }
+
+    #[test]
+    fn test_part_too_large() {
+        let err = Error::PartTooLarge;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "File part size exceeds maximum limit");
+    }
+
+    #[test]
+    fn test_empty_token() {
+        let err = Error::EmptyToken;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Authentication token is empty");
+    }
+
+    #[test]
+    fn test_invalid_token() {
+        let err = Error::InvalidToken;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Invalid authentication token");
+    }
+
+    #[test]
+    fn test_token_expired() {
+        let err = Error::TokenExpired;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Authentication token has expired");
+    }
+
+    #[test]
+    fn test_unauthorized() {
+        let err = Error::Unauthorized;
+        let err_str = err.to_string();
+        assert_eq!(err_str, "Unauthorized access");
+    }
+}

@@ -633,6 +633,10 @@ class Project:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(Project.id)`` instead. This property will be removed
+            in a future version.
         """
         ...
 
@@ -682,6 +686,10 @@ class AnnotationSet:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(AnnotationSet.id)`` instead. This property will be
+            removed in a future version.
         """
         ...
 
@@ -721,6 +729,10 @@ class Label:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(Label.id)`` instead. This property will be removed
+            in a future version.
         """
         ...
 
@@ -801,6 +813,10 @@ class Dataset:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(Dataset.id)`` instead. This property will be removed
+            in a future version.
         """
         ...
 
@@ -1223,6 +1239,19 @@ class PresignedUrl:
         ...
 
 
+class SamplesCountResult:
+    """
+    Result of counting samples in a dataset.
+
+    Contains the total number of samples matching the specified criteria.
+    """
+
+    @property
+    def total(self) -> int:
+        """The total number of samples."""
+        ...
+
+
 class SamplesPopulateResult:
     """
     Result of populating a sample into a dataset.
@@ -1420,6 +1449,10 @@ class Sample:
         """
         The unique string identifier for the object.
 
+        .. deprecated::
+            Use ``str(Sample.id)`` if id is not None. This property will be
+            removed in a future version.
+
         Returns:
             Optional[str]: The UID, or None if not set.
         """
@@ -1614,6 +1647,10 @@ class Experiment:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(Experiment.id)`` instead. This property will be
+            removed in a future version.
         """
         ...
 
@@ -1658,6 +1695,10 @@ class Task:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(Task.id)`` instead. This property will be removed
+            in a future version.
         """
         ...
 
@@ -1812,6 +1853,10 @@ class TaskInfo:
     def uid(self) -> str:
         """
         Returns the unique string identifier for the task.
+
+        .. deprecated::
+            Use ``str(TaskInfo.id)`` instead. This property will be
+            removed in a future version.
 
         Returns:
             str: The task UID.
@@ -2013,6 +2058,10 @@ class TrainingSession:
     def uid(self) -> str:
         """
         The unique string identifier for the object.
+
+        .. deprecated::
+            Use ``str(TrainingSession.id)`` instead. This property will
+            be removed in a future version.
         """
         ...
 
@@ -2237,6 +2286,10 @@ class ValidationSession:
     def uid(self) -> str:
         """
         Returns the unique string identifier of the validation session.
+
+        .. deprecated::
+            Use ``str(ValidationSession.id)`` instead. This property will
+            be removed in a future version.
 
         Returns:
             str: The validation session UID.
@@ -2630,18 +2683,28 @@ class Client:
         """
         ...
 
-    def labels(self, client: Client, dataset_id: DatasetUID) -> List[Label]:
+    def labels(self, dataset_id: DatasetUID) -> List[Label]:
         """Get the labels associated with the dataset."""
         ...
 
-    def add_label(
-        self, client: Client, dataset_id: DatasetUID, name: str
-    ) -> None:
+    def add_label(self, dataset_id: DatasetUID, name: str) -> None:
         """Add a label to the dataset."""
         ...
 
-    def remove_label(self, client: Client, label_id: int) -> None:
+    def remove_label(self, label_id: int) -> None:
         """Remove a label from the dataset."""
+        ...
+
+    def update_label(self, label: Label) -> None:
+        """
+        Update the properties of a label.
+
+        Args:
+            label (Label): The label to update with modified properties.
+
+        Raises:
+            Error: If the label does not exist or cannot be updated.
+        """
         ...
 
     def create_dataset(
@@ -2811,6 +2874,35 @@ class Client:
 
         Returns:
             DataFrame: A Polars DataFrame containing the annotations.
+        """
+        ...
+
+    def samples_count(
+        self,
+        dataset_id: DatasetUID,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        annotation_types: List[AnnotationType] = [],
+        groups: List[str] = [],
+        types: List[FileType] = [FileType.Image],
+    ) -> SamplesCountResult:
+        """
+        Count samples in a dataset without fetching them.
+
+        This method returns only the total count of samples matching the
+        specified criteria, which is much faster than fetching all samples
+        when you only need to know how many exist.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            annotation_set_id (AnnotationSetUID): The ID of the annotation
+                                                set to filter by.
+            annotation_types (List[AnnotationType]): Types of annotations
+                                                        to include.
+            groups (List[str]): Dataset groups to include.
+            types (List[FileType]): Type of files to include.
+
+        Returns:
+            SamplesCountResult: Object with total count of matching samples.
         """
         ...
 

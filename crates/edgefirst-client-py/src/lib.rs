@@ -8,6 +8,21 @@ use pyo3::{
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr};
 use tokio::sync::mpsc;
 
+/// Emit a deprecation warning for uid() methods.
+///
+/// This function calls Python's warnings.warn() to notify users that the
+/// uid() method is deprecated and will be removed in a future version.
+fn warn_uid_deprecated(py: Python<'_>, type_name: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let message = format!(
+        "{}.uid is deprecated and will be removed in a future version. \
+         Use str({}.id) instead.",
+        type_name, type_name
+    );
+    warnings.call_method1("warn", (message, py.get_type::<pyo3::exceptions::PyDeprecationWarning>()))?;
+    Ok(())
+}
+
 #[cfg(feature = "polars")]
 use pyo3_polars::PyDataFrame;
 
@@ -1464,8 +1479,9 @@ impl Project {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.id().to_string()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "Project")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -1540,8 +1556,9 @@ impl Dataset {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "Dataset")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -1666,8 +1683,9 @@ impl AnnotationSet {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "AnnotationSet")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -1708,8 +1726,9 @@ impl Experiment {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "Experiment")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -1740,8 +1759,9 @@ impl TrainingSession {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "TrainingSession")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -1875,8 +1895,9 @@ impl ValidationSession {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "ValidationSession")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -2002,8 +2023,9 @@ impl Task {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "Task")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -2048,8 +2070,9 @@ impl TaskInfo {
     }
 
     #[getter]
-    pub fn uid(&self) -> String {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
+        warn_uid_deprecated(py, "TaskInfo")?;
+        Ok(self.0.id().to_string())
     }
 
     #[getter]
@@ -2274,6 +2297,12 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    pub fn project<'py>(&self, project_id: Bound<'py, PyAny>) -> Result<Project, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        Ok(Project(self.0.project(project_id.0).await?))
+    }
+
+    #[tokio_wrap::sync]
     pub fn dataset<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Dataset, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         Ok(Dataset(self.0.dataset(dataset_id.0).await?))
@@ -2318,6 +2347,11 @@ impl Client {
     #[tokio_wrap::sync]
     pub fn remove_label(&self, label_id: u64) -> Result<(), Error> {
         Ok(self.0.remove_label(label_id).await?)
+    }
+
+    #[tokio_wrap::sync]
+    pub fn update_label(&self, label: &Label) -> Result<(), Error> {
+        Ok(self.0.update_label(&label.0).await?)
     }
 
     #[tokio_wrap::sync]
@@ -2484,6 +2518,55 @@ impl Client {
         }?;
 
         Ok(df)
+    }
+
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image]))]
+    #[tokio_wrap::sync]
+    pub fn samples_count<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        annotation_types: Vec<AnnotationType>,
+        groups: Vec<String>,
+        types: Vec<FileType>,
+    ) -> Result<SamplesCountResult, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id = match annotation_set_id {
+            Some(id) => Some(id.try_into()?),
+            None => None,
+        };
+        let annotation_types = annotation_types
+            .into_iter()
+            .map(|x| match x {
+                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
+                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
+            })
+            .collect::<Vec<_>>();
+
+        let types = types
+            .into_iter()
+            .map(|x| match x {
+                FileType::Image => edgefirst_client::FileType::Image,
+                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
+                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
+                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
+                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
+                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+            })
+            .collect::<Vec<_>>();
+
+        Ok(SamplesCountResult(
+            self.0
+                .samples_count(
+                    dataset_id.0,
+                    annotation_set_id.map(|x: AnnotationSetID| x.0),
+                    &annotation_types,
+                    &groups,
+                    &types,
+                )
+                .await?,
+        ))
     }
 
     #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None))]
@@ -3091,6 +3174,17 @@ impl PresignedUrl {
 }
 
 #[pyclass(module = "edgefirst_client")]
+pub struct SamplesCountResult(edgefirst_client::SamplesCountResult);
+
+#[pymethods]
+impl SamplesCountResult {
+    #[getter]
+    pub fn total(&self) -> u64 {
+        self.0.total
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
 pub struct SamplesPopulateResult(edgefirst_client::SamplesPopulateResult);
 
 #[pymethods]
@@ -3250,8 +3344,9 @@ impl Sample {
     }
 
     #[getter]
-    pub fn uid(&self) -> Option<String> {
-        self.0.uid()
+    pub fn uid(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        warn_uid_deprecated(py, "Sample")?;
+        Ok(self.0.id().map(|id| id.to_string()))
     }
 
     #[getter]
@@ -3401,6 +3496,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FileType>()?;
     m.add_class::<Annotation>()?;
     m.add_class::<PresignedUrl>()?;
+    m.add_class::<SamplesCountResult>()?;
     m.add_class::<SamplesPopulateResult>()?;
     m.add_class::<DatasetParams>()?;
     m.add_class::<Parameter>()?;

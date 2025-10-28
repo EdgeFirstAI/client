@@ -19,12 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `__str__()` and `__repr__()`: String representations
   - `__eq__()`: Equality comparison with epsilon tolerance (1e-9) for numeric types
   - Enables natural Python usage: `float(param)`, `int(param)`, `param == 0.75`
+- Test coverage: Added comprehensive ID type tests in `test/test_ids.py`
+  - Validates string format for all 13 ID types (OrganizationID, ProjectID, DatasetID, etc.)
+  - Verifies consistency between `.uid` property and `str(.id)` for 9 classes
+- Test coverage: Added 27 unit tests to `error.rs` validating error wrapping behavior
+  - Tests all wrapped error types (IoError, JsonError, HttpError, etc.) preserve inner error messages
+  - Tests primitive-wrapped errors (RpcError, InvalidFileType, etc.) include original values
+  - Tests simple errors (InvalidResponse, NotImplemented, etc.) display correct messages
 
 ### Changed
 - **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
   - Polars operations (casting, DataFrame construction) now properly propagate errors
   - Callers must handle the Result with `?` or `.unwrap()` / `.expect()`
   - Improves robustness by eliminating panics in dataframe construction
+
+### Deprecated
+- Python bindings: All `.uid` properties are now deprecated
+  - Affected classes: Project, Dataset, AnnotationSet, Experiment, TrainingSession, ValidationSession, Task, TaskInfo, Sample
+  - Emits `DeprecationWarning` when accessed: "X.uid is deprecated and will be removed in a future version. Use str(X.id) instead."
+  - Migration path: Replace `obj.uid` with `str(obj.id)`
+  - Backward compatible: Properties still functional but will be removed in next major version
 
 ### Fixed
 - Eliminated all `unwrap()` calls from library code (client.rs, dataset.rs, error.rs)
