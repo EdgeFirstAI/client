@@ -2383,7 +2383,7 @@ mod tests {
     fn test_id_types_copy_clone() {
         let id1 = ExperimentID::from(999);
         let id2 = id1; // Copy
-        let id3 = id1.clone(); // Clone
+        let id3 = id1; // Also Copy (no need for clone())
 
         assert_eq!(id1, id2);
         assert_eq!(id1, id3);
@@ -2438,9 +2438,9 @@ mod tests {
 
     #[test]
     fn test_parameter_real() {
-        let param = Parameter::Real(3.14);
+        let param = Parameter::Real(2.5);
         match param {
-            Parameter::Real(val) => assert_eq!(val, 3.14),
+            Parameter::Real(val) => assert_eq!(val, 2.5),
             _ => panic!("Expected Real variant"),
         }
     }

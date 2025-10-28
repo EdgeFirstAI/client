@@ -970,7 +970,7 @@ fn parse_annotations_from_arrow(
     should_upload_annotations: bool,
 ) -> Result<
     std::collections::HashMap<String, (Option<String>, Vec<edgefirst_client::Annotation>)>,
-    Error,
+    Error
 > {
     use polars::prelude::*;
     use std::{collections::HashMap, fs::File};

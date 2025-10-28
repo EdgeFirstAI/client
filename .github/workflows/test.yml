@@ -12,29 +12,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Code quality checks and tests (combined - both use nightly)
+  # Code quality checks and tests (stable rust with nightly for formatting only)
   lint-and-test:
     name: Lint, Test, and Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Install Rust toolchain
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: clippy, llvm-tools-preview
+
+      - name: Install nightly Rust toolchain (formatting only)
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: nightly
-          components: clippy, rustfmt, llvm-tools-preview
+          components: rustfmt
 
-      # Single cache for both linting and testing (both use nightly)
+      # Cache for stable rust builds and tests
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1 # v2.8.1
         with:
-          key: nightly-lint-test
-          shared-key: "nightly"
+          key: stable-lint-test
+          shared-key: "stable"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features --locked
@@ -54,9 +60,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Run Rust doc tests (before coverage instrumentation)
+        run: cargo test --doc --locked
+        env:
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+
       - name: Set up coverage environment
         run: |
-          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage --doctests)
+          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
           echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
           echo "RUSTDOCFLAGS=$RUSTDOCFLAGS" >> $GITHUB_ENV
           echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
@@ -80,13 +93,6 @@ jobs:
           echo "Checking for nextest output files..."
           find target/nextest -name "*.xml" || echo "No XML files found in target/nextest"
           ls -la target/nextest/ci/ || echo "target/nextest/ci directory not found"
-
-      - name: Run Rust doc tests
-        run: cargo test --doc --locked
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
       - name: Install Python dependencies
         run: |
@@ -119,7 +125,7 @@ jobs:
           check_run_annotations: all tests, skipped tests
 
       - name: Generate coverage report
-        run: cargo llvm-cov report --doctests --lcov --output-path lcov.info
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload Rust coverage to Codecov
         uses: codecov/codecov-action@af09b5e394c93991b95a5e7646aeb90c1917f78f # v5.5.1
