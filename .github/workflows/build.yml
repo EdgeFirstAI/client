@@ -9,6 +9,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned Rust version for CI/CD - update manually to control Rust upgrades
+  # This ensures consistent builds and allows testing before upgrading
+  RUST_STABLE_VERSION: "1.90"
 
 jobs:
   build-cli:
@@ -54,7 +57,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
           targets: ${{ matrix.target }}
 
       # Use Swatinem/rust-cache for proper incremental compilation caching
@@ -160,7 +163,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
           targets: ${{ matrix.target }}
 
       - name: Set up Python
