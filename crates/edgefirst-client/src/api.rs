@@ -910,7 +910,7 @@ pub struct SamplesListResult {
 
 /// Parameters for populating (importing) samples into a dataset.
 ///
-/// Used with the `samples.populate` API to create new samples in a dataset,
+/// Used with the `samples.populate2` API to create new samples in a dataset,
 /// optionally with annotations and sensor data files.
 #[derive(Serialize, Clone, Debug)]
 pub struct SamplesPopulateParams {
@@ -922,7 +922,7 @@ pub struct SamplesPopulateParams {
     pub samples: Vec<Sample>,
 }
 
-/// Result from the `samples.populate` API call.
+/// Result from the `samples.populate2` API call.
 ///
 /// The API returns an array of populated sample results, one for each sample
 /// that was submitted. Each result contains the sample UUID and presigned URLs

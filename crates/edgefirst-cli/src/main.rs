@@ -685,7 +685,6 @@ fn find_image_folder(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> 
         None
     }
 }
-
 #[cfg(feature = "polars")]
 fn find_image_zip(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     let zip_file = base_dir.join(format!("{}.zip", name));
@@ -788,25 +787,35 @@ fn parse_box2d_from_dataframe(
         Err(_) => return Ok(None),
     };
 
-    // Convert to array type
-    let array_chunked = match box2d_col.array() {
-        Ok(arr) => arr,
-        Err(_) => return Ok(None),
+    let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
+        if let Ok(vals) = series.f32() {
+            return Some(vals.into_iter().flatten().collect());
+        }
+
+        if let Ok(vals) = series.f64() {
+            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+        }
+
+        None
     };
 
-    // Get the series at the specified index
-    let array_series = match array_chunked.get_as_series(idx) {
-        Some(series) => series,
+    let coords = if let Ok(array_chunked) = box2d_col.array() {
+        array_chunked
+            .get_as_series(idx)
+            .and_then(|series| extract_coords(series.clone()))
+    } else if let Ok(list_chunked) = box2d_col.list() {
+        list_chunked
+            .get_as_series(idx)
+            .and_then(|series| extract_coords(series.clone()))
+    } else {
+        None
+    };
+
+    let coords = match coords {
+        Some(values) => values,
         None => return Ok(None),
     };
 
-    // Extract f32 values
-    let values = match array_series.f32() {
-        Ok(vals) => vals,
-        Err(_) => return Ok(None),
-    };
-
-    let coords: Vec<f32> = values.into_iter().flatten().collect();
     if coords.len() >= 4 {
         // Convert from center-based (cx, cy, w, h) to corner-based (x, y, w, h)
         let cx = coords[0];
@@ -841,25 +850,35 @@ fn parse_box3d_from_dataframe(
         Err(_) => return Ok(None),
     };
 
-    // Convert to array type
-    let array_chunked = match box3d_col.array() {
-        Ok(arr) => arr,
-        Err(_) => return Ok(None),
+    let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
+        if let Ok(vals) = series.f32() {
+            return Some(vals.into_iter().flatten().collect());
+        }
+
+        if let Ok(vals) = series.f64() {
+            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+        }
+
+        None
     };
 
-    // Get the series at the specified index
-    let array_series = match array_chunked.get_as_series(idx) {
-        Some(series) => series,
+    let coords = if let Ok(array_chunked) = box3d_col.array() {
+        array_chunked
+            .get_as_series(idx)
+            .and_then(|series| extract_coords(series.clone()))
+    } else if let Ok(list_chunked) = box3d_col.list() {
+        list_chunked
+            .get_as_series(idx)
+            .and_then(|series| extract_coords(series.clone()))
+    } else {
+        None
+    };
+
+    let coords = match coords {
+        Some(values) => values,
         None => return Ok(None),
     };
 
-    // Extract f32 values
-    let values = match array_series.f32() {
-        Ok(vals) => vals,
-        Err(_) => return Ok(None),
-    };
-
-    let coords: Vec<f32> = values.into_iter().flatten().collect();
     if coords.len() >= 6 {
         let box3d = edgefirst_client::Box3d::new(
             coords[0], coords[1], coords[2], coords[3], coords[4], coords[5],
@@ -901,13 +920,13 @@ fn parse_mask_from_dataframe(
         None => return Ok(None),
     };
 
-    // Extract f32 values
-    let values = match mask_series.f32() {
-        Ok(vals) => vals,
-        Err(_) => return Ok(None),
+    let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
+        values.into_iter().flatten().collect()
+    } else if let Ok(values) = mask_series.f64() {
+        values.into_iter().flatten().map(|val| val as f32).collect()
+    } else {
+        return Ok(None);
     };
-
-    let coords: Vec<f32> = values.into_iter().flatten().collect();
     if !coords.is_empty() && coords.len().is_multiple_of(2) {
         let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
         let mut current_polygon: Vec<(f32, f32)> = Vec::new();
@@ -1809,42 +1828,60 @@ mod tests {
             groups: Option<Vec<Option<&str>>>,
             labels: Option<Vec<Option<&str>>>,
             box2d_data: Option<Vec<Option<(f64, f64, f64, f64)>>>,
+            mask_data: Option<Vec<Option<Vec<(f32, f32)>>>>,
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Ensure parent directory exists
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
 
-            let name_series = Series::new("name".into(), names);
-
-            let mut df = DataFrame::new(vec![name_series.into_column()])?;
+            let mut columns = vec![Series::new("name".into(), names).into_column()];
 
             // Add optional group column
             if let Some(group_values) = groups {
-                let group_series = Series::new("group".into(), group_values);
-                df = df.hstack(&[group_series.into_column()])?;
+                columns.push(Series::new("group".into(), group_values).into_column());
             }
 
             // Add optional label column
             if let Some(label_values) = labels {
-                let label_series = Series::new("label".into(), label_values);
-                df = df.hstack(&[label_series.into_column()])?;
+                columns.push(Series::new("label".into(), label_values).into_column());
             }
 
-            // Add optional box2d columns
+            // Add optional box2d column (list of [cx, cy, w, h])
             if let Some(boxes) = box2d_data {
-                let x_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.0)).collect();
-                let y_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.1)).collect();
-                let w_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.2)).collect();
-                let h_values: Vec<Option<f64>> = boxes.iter().map(|b| b.map(|v| v.3)).collect();
+                let list = ListChunked::from_iter(boxes.into_iter().map(|box_opt| {
+                    box_opt.map(|(cx, cy, w, h)| {
+                        Series::new(
+                            PlSmallStr::from_static(""),
+                            vec![cx as f32, cy as f32, w as f32, h as f32],
+                        )
+                    })
+                }));
 
-                df = df.hstack(&[
-                    Series::new("box2d_x".into(), x_values).into_column(),
-                    Series::new("box2d_y".into(), y_values).into_column(),
-                    Series::new("box2d_w".into(), w_values).into_column(),
-                    Series::new("box2d_h".into(), h_values).into_column(),
-                ])?;
+                let mut series = list.into_series();
+                series.rename(PlSmallStr::from_static("box2d"));
+                columns.push(series.into_column());
             }
+
+            // Add optional mask column (list of polygon coordinates)
+            if let Some(masks) = mask_data {
+                let list = ListChunked::from_iter(masks.into_iter().map(|mask_opt| {
+                    mask_opt.map(|polygon| {
+                        let mut coords = Vec::with_capacity(polygon.len() * 2);
+                        for (x, y) in polygon {
+                            coords.push(x);
+                            coords.push(y);
+                        }
+                        Series::new(PlSmallStr::from_static(""), coords)
+                    })
+                }));
+
+                let mut series = list.into_series();
+                series.rename(PlSmallStr::from_static("mask"));
+                columns.push(series.into_column());
+            }
+
+            let mut df = DataFrame::new(columns)?;
 
             let mut file = std::fs::File::create(path)?;
             IpcWriter::new(&mut file).finish(&mut df)?;
@@ -1884,6 +1921,7 @@ mod tests {
                     None,
                     Some((5.0, 5.0, 15.0, 15.0)),
                 ]),
+                None,
             )
             .unwrap();
 
@@ -1913,25 +1951,76 @@ mod tests {
                 .iter()
                 .find(|s| s.image_name.as_deref() == Some("image1.jpg"));
             assert!(cat_sample.is_some());
-            assert_eq!(cat_sample.unwrap().annotations.len(), 1);
-            assert_eq!(
-                cat_sample.unwrap().annotations[0].label(),
-                Some(&"cat".to_string())
-            );
+            let cat_sample = cat_sample.unwrap();
+            assert_eq!(cat_sample.annotations.len(), 1);
+            assert_eq!(cat_sample.annotations[0].label(), Some(&"cat".to_string()));
+            let cat_bbox = cat_sample.annotations[0]
+                .box2d()
+                .expect("cat sample should include box2d geometry");
+            assert!((cat_bbox.width() - 30.0).abs() < f32::EPSILON);
+            assert!((cat_bbox.height() - 40.0).abs() < f32::EPSILON);
 
             // Verify image without box2d has only label annotation
             let dog_sample = samples
                 .iter()
                 .find(|s| s.image_name.as_deref() == Some("image2.jpg"));
             assert!(dog_sample.is_some());
-            assert_eq!(dog_sample.unwrap().annotations.len(), 1);
-            assert_eq!(
-                dog_sample.unwrap().annotations[0].label(),
-                Some(&"dog".to_string())
-            );
-            assert!(dog_sample.unwrap().annotations[0].box2d().is_none());
+            let dog_sample = dog_sample.unwrap();
+            assert_eq!(dog_sample.annotations.len(), 1);
+            assert_eq!(dog_sample.annotations[0].label(), Some(&"dog".to_string()));
+            assert!(dog_sample.annotations[0].box2d().is_none());
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_with_masks() {
+            let test_dir = std::env::temp_dir().join("arrow_test_with_masks");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["mask1.png"],
+                Some(vec![Some("train")]),
+                Some(vec![Some("segment")]),
+                None,
+                Some(vec![Some(vec![
+                    (0.0_f32, 0.0_f32),
+                    (1.0_f32, 0.0_f32),
+                    (1.0_f32, 1.0_f32),
+                    (0.0_f32, 1.0_f32),
+                ])]),
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["mask1.png"]).unwrap();
+
+            let samples =
+                parse_annotations_from_arrow(&Some(arrow_file.clone()), &images_dir, true)
+                    .expect("Arrow parsing should succeed");
+
+            assert_eq!(samples.len(), 1);
+            let annotations = &samples[0].annotations;
+            assert_eq!(annotations.len(), 1, "Mask annotation should be preserved");
+
+            let mask = annotations[0]
+                .mask()
+                .expect("Annotation should include mask geometry");
+            assert_eq!(mask.polygon.len(), 1);
+            let ring = &mask.polygon[0];
+            assert_eq!(ring.len(), 4);
+            assert_eq!(
+                ring,
+                &vec![
+                    (0.0_f32, 0.0_f32),
+                    (1.0_f32, 0.0_f32),
+                    (1.0_f32, 1.0_f32),
+                    (0.0_f32, 1.0_f32),
+                ]
+            );
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
 
@@ -1947,6 +2036,7 @@ mod tests {
                 vec!["img1.png", "img2.png"],
                 None, // No groups
                 Some(vec![Some("person"), Some("car")]),
+                None,
                 None,
             )
             .unwrap();
@@ -1979,6 +2069,7 @@ mod tests {
                 Some(vec![Some("train"), Some("val")]),
                 None, // No labels
                 None, // No boxes
+                None,
             )
             .unwrap();
 
@@ -2011,6 +2102,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -2036,7 +2128,7 @@ mod tests {
             let arrow_file = test_dir.join("annotations.arrow");
             let images_dir = test_dir.join("images");
 
-            create_test_arrow_file(&arrow_file, vec![], None, None, None).unwrap();
+            create_test_arrow_file(&arrow_file, vec![], None, None, None, None).unwrap();
             std::fs::create_dir_all(&images_dir).unwrap();
 
             let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false);
@@ -2119,6 +2211,7 @@ mod tests {
                     Some((30.0, 30.0, 40.0, 40.0)),
                     Some((5.0, 5.0, 10.0, 10.0)),
                 ]),
+                None,
             )
             .unwrap();
 

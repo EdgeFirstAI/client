@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Backward compatible: Properties still functional but will be removed in next major version
 
 ### Fixed
+- Rust client: Updated samples.populate2 annotation serialization to match server schema
+  - Emits annotations as a flat array with nested `box2d`/`box3d` geometry objects
+  - Segmentation masks serialize as polygon arrays (`"mask": [[[x, y], ...]]`)
+  - Backwards-compatible deserialization still accepts legacy map payloads
 - Eliminated all `unwrap()` calls from library code (client.rs, dataset.rs, error.rs)
   - Download functions: Fixed file path and content-length handling
   - Multipart uploads: Fixed part key validation and ETag parsing

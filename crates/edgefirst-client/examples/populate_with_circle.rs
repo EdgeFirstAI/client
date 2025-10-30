@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-//! Test the samples.populate API with a real image and bounding box annotation.
+//! Test the samples.populate2 API with a real image and bounding box annotation.
 //!
 //! This example creates a 640x480 image with a red circle in the top-left
 //! quadrant and uploads it with a bounding box annotation around the circle.
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Error> {
     println!("{}", sample_json);
 
     // Call populate API with progress tracking
-    println!("\nCalling samples.populate API with annotation_set_id...");
+    println!("\nCalling samples.populate2 API with annotation_set_id...");
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
 

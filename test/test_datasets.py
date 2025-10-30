@@ -11,6 +11,7 @@ These integration tests verify:
 - Dataset roundtrip (download + re-upload)
 """
 
+import os
 import random
 import shutil
 import string
@@ -327,22 +328,72 @@ class DatasetTest(TestCase):
         else:
             bbox_sig = None
 
-        # Mask comparison disabled until populate_samples preserves mask data.
+        mask = annotation.mask
+        if mask is not None:
+            mask_sig = tuple(
+                tuple(
+                    (round(point[0], 6), round(point[1], 6))
+                    for point in polygon
+                )
+                for polygon in mask.polygon
+            )
+        else:
+            mask_sig = None
+
         return (
             annotation.label,
             annotation.object_id,
             annotation.group,
             bbox_sig,
+            mask_sig,
         )
 
+    def _merge_annotation_signature(self, entries, signature):
+        """Merge a partial annotation into the existing list if possible."""
+
+        sig_identity = signature[:3]
+
+        for idx, existing in enumerate(entries):
+            if existing[:3] != sig_identity:
+                continue
+
+            updated_bbox = (
+                existing[3] if existing[3] is not None else signature[3]
+            )
+            updated_mask = (
+                existing[4] if existing[4] is not None else signature[4]
+            )
+
+            if updated_bbox != existing[3] or updated_mask != existing[4]:
+                entries[idx] = (
+                    existing[0],
+                    existing[1],
+                    existing[2],
+                    updated_bbox,
+                    updated_mask,
+                )
+                return True
+
+        return False
+
     def _build_annotation_map(self, annotations):
-        """Group annotations by sample key with sorted signatures."""
+        """Group annotations by sample key with sorted signatures.
+
+        Server responses may split a logical annotation into multiple entries
+        (e.g., one row containing the bounding box and a companion row with
+        the mask geometry). We merge those partial rows back together so the
+        comparison remains stable regardless of how the backend chooses to
+        fan out the geometries.
+        """
+
         grouped = {}
         for annotation in annotations:
             key = self._annotation_image_key(annotation)
-            grouped.setdefault(key, []).append(
-                self._annotation_signature(annotation)
-            )
+            signature = self._annotation_signature(annotation)
+
+            entries = grouped.setdefault(key, [])
+            if not self._merge_annotation_signature(entries, signature):
+                entries.append(signature)
 
         for key, values in grouped.items():
             grouped[key] = sorted(
@@ -351,6 +402,7 @@ class DatasetTest(TestCase):
                     item[0] or "",
                     item[1] or "",
                     item[3] or (),
+                    item[4] or (),
                 ),
             )
 
@@ -390,7 +442,7 @@ class DatasetTest(TestCase):
 
         return cloned
 
-    def test_dataset_download_upload_roundtrip(self):
+    def test_dataset_download_upload_roundtrip(self):  # noqa: C901
         """Verify Deer dataset download→upload→download integrity."""
         client = get_client()
 
@@ -563,6 +615,9 @@ class DatasetTest(TestCase):
         self.assertEqual(len(results), len(samples_payload))
         self.assertGreater(len(upload_progress), 0)
 
+        keep_dataset_env = os.getenv("EDGEFIRST_KEEP_ROUNDTRIP_DATASET", "")
+        keep_dataset = keep_dataset_env.lower() in {"1", "true", "yes"}
+
         try:
             time.sleep(3)
 
@@ -648,7 +703,13 @@ class DatasetTest(TestCase):
                 )
 
         finally:
-            client.delete_dataset(new_dataset_id)
+            if keep_dataset:
+                print(
+                    "Skipping dataset deletion for manual verification "
+                    "(EDGEFIRST_KEEP_ROUNDTRIP_DATASET set)."
+                )
+            else:
+                client.delete_dataset(new_dataset_id)
             shutil.rmtree(export_dir, ignore_errors=True)
             shutil.rmtree(reexport_dir, ignore_errors=True)
 

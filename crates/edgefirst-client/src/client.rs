@@ -1063,7 +1063,7 @@ impl Client {
         Ok(samples)
     }
 
-    /// Populates (imports) samples into a dataset using the `samples.populate`
+    /// Populates (imports) samples into a dataset using the `samples.populate2`
     /// API.
     ///
     /// This method creates new samples in the specified dataset, optionally
@@ -1180,7 +1180,7 @@ impl Client {
         };
 
         let results: Vec<crate::SamplesPopulateResult> = self
-            .rpc("samples.populate".to_owned(), Some(params))
+            .rpc("samples.populate2".to_owned(), Some(params))
             .await?;
 
         // Upload files if we have any

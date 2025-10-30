@@ -362,7 +362,7 @@ pub struct Sample {
     pub location: Option<Location>,
     /// Additional sensor files (LiDAR, radar, depth maps, etc.).
     /// When deserializing from samples.list: Vec<SampleFile>
-    /// When serializing for samples.populate: HashMap<String, String>
+    /// When serializing for samples.populate2: HashMap<String, String>
     /// (file_type -> filename)
     #[serde(
         default,
@@ -424,42 +424,13 @@ where
         .unwrap_or_default())
 }
 
-// Custom serializer for annotations field - converts Vec<Annotation> to
-// format expected by server: {"bbox": [...], "box3d": [...], "mask": [...]}
+// Custom serializer for annotations field - serializes to a flat Vec<Annotation>
+// to match the updated samples.populate2 contract (annotations array)
 fn serialize_annotations<S>(annotations: &Vec<Annotation>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    use serde::ser::SerializeMap;
-
-    // Group annotations by type
-    let mut bbox_annotations = Vec::new();
-    let mut box3d_annotations = Vec::new();
-    let mut mask_annotations = Vec::new();
-
-    for ann in annotations {
-        if ann.box2d().is_some() {
-            bbox_annotations.push(ann);
-        } else if ann.box3d().is_some() {
-            box3d_annotations.push(ann);
-        } else if ann.mask().is_some() {
-            mask_annotations.push(ann);
-        }
-    }
-
-    let mut map = serializer.serialize_map(Some(3))?;
-
-    if !bbox_annotations.is_empty() {
-        map.serialize_entry("bbox", &bbox_annotations)?;
-    }
-    if !box3d_annotations.is_empty() {
-        map.serialize_entry("box3d", &box3d_annotations)?;
-    }
-    if !mask_annotations.is_empty() {
-        map.serialize_entry("mask", &mask_annotations)?;
-    }
-
-    map.end()
+    serde::Serialize::serialize(annotations, serializer)
 }
 
 // Custom deserializer for annotations field - converts server format back to
@@ -831,7 +802,7 @@ impl Box2d {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mask {
     pub polygon: Vec<Vec<(f32, f32)>>,
 }
@@ -845,6 +816,36 @@ impl TypeName for Mask {
 impl Mask {
     pub fn new(polygon: Vec<Vec<(f32, f32)>>) -> Self {
         Self { polygon }
+    }
+}
+
+impl serde::Serialize for Mask {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(&self.polygon, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Mask {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum MaskFormat {
+            Polygon { polygon: Vec<Vec<(f32, f32)>> },
+            Direct(Vec<Vec<(f32, f32)>>),
+        }
+
+        match MaskFormat::deserialize(deserializer)? {
+            MaskFormat::Polygon { polygon } => Ok(Self { polygon }),
+            MaskFormat::Direct(polygon) => Ok(Self { polygon }),
+        }
     }
 }
 
@@ -947,22 +948,12 @@ impl Serialize for Annotation {
             map.serialize_entry("label_index", &label_index)?;
         }
 
-        // Flatten box2d fields
         if let Some(ref box2d) = self.box2d {
-            map.serialize_entry("x", &box2d.x)?;
-            map.serialize_entry("y", &box2d.y)?;
-            map.serialize_entry("w", &box2d.w)?;
-            map.serialize_entry("h", &box2d.h)?;
+            map.serialize_entry("box2d", box2d)?;
         }
 
-        // Flatten box3d fields
         if let Some(ref box3d) = self.box3d {
-            map.serialize_entry("x", &box3d.x)?;
-            map.serialize_entry("y", &box3d.y)?;
-            map.serialize_entry("z", &box3d.z)?;
-            map.serialize_entry("w", &box3d.w)?;
-            map.serialize_entry("h", &box3d.h)?;
-            map.serialize_entry("l", &box3d.l)?;
+            map.serialize_entry("box3d", box3d)?;
         }
 
         if let Some(ref mask) = self.mask {
@@ -1472,6 +1463,28 @@ mod tests {
     }
 
     #[test]
+    fn test_mask_deserialize_legacy_object() {
+        let legacy = serde_json::json!({
+            "mask": {
+                "polygon": [[
+                    [0.0_f32, 0.0_f32],
+                    [1.0_f32, 0.0_f32],
+                    [1.0_f32, 1.0_f32]
+                ]]
+            }
+        });
+
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            mask: Mask,
+        }
+
+        let parsed: Wrapper = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.mask.polygon.len(), 1);
+        assert_eq!(parsed.mask.polygon[0].len(), 3);
+    }
+
+    #[test]
     fn test_sample_new() {
         let sample = Sample::new();
         assert_eq!(sample.id(), None);
@@ -1587,5 +1600,35 @@ mod tests {
 
         let label: Label = serde_json::from_value(label_json).unwrap();
         assert_eq!(format!("{}", label), "person");
+    }
+
+    #[test]
+    fn debug_mask_annotation_serialization() {
+        let polygon = vec![vec![(0.0_f32, 0.0_f32), (1.0_f32, 0.0_f32), (1.0_f32, 1.0_f32)]];
+
+        let mut annotation = Annotation::new();
+        annotation.set_label(Some("test".to_string()));
+        annotation.set_box2d(Some(Box2d::new(10.0, 20.0, 30.0, 40.0)));
+        annotation.set_mask(Some(Mask::new(polygon)));
+
+        let mut sample = Sample::new();
+        sample.annotations.push(annotation);
+
+        let json = serde_json::to_value(&sample).unwrap();
+        println!("{}", serde_json::to_string_pretty(&sample).unwrap());
+        let annotations = json
+            .get("annotations")
+            .and_then(|value| value.as_array())
+            .expect("annotations serialized as array");
+        assert_eq!(annotations.len(), 1);
+
+        let annotation_json = annotations[0].as_object().expect("annotation object");
+        assert!(annotation_json.contains_key("box2d"));
+        assert!(annotation_json.contains_key("mask"));
+        assert!(!annotation_json.contains_key("x"));
+        assert!(annotation_json
+            .get("mask")
+            .and_then(|value| value.as_array())
+            .is_some());
     }
 }
