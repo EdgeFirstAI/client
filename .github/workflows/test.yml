@@ -10,21 +10,26 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Pinned Rust version for CI/CD - update manually to control Rust upgrades
+  # This ensures consistent builds and allows testing before upgrading
+  RUST_STABLE_VERSION: "1.90"
 
 jobs:
-  # Code quality checks and tests (stable rust with nightly for formatting only)
+  # Code quality checks and tests (pinned stable rust with nightly for formatting only)
   lint-and-test:
     name: Lint, Test, and Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
+      # Install pinned stable Rust first to make it the default toolchain
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
           components: clippy, llvm-tools-preview
 
+      # Install nightly separately for formatting only (does NOT change default)
       - name: Install nightly Rust toolchain (formatting only)
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -181,7 +186,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
