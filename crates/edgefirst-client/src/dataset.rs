@@ -424,8 +424,9 @@ where
         .unwrap_or_default())
 }
 
-// Custom serializer for annotations field - serializes to a flat Vec<Annotation>
-// to match the updated samples.populate2 contract (annotations array)
+// Custom serializer for annotations field - serializes to a flat
+// Vec<Annotation> to match the updated samples.populate2 contract (annotations
+// array)
 fn serialize_annotations<S>(annotations: &Vec<Annotation>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -1604,7 +1605,11 @@ mod tests {
 
     #[test]
     fn debug_mask_annotation_serialization() {
-        let polygon = vec![vec![(0.0_f32, 0.0_f32), (1.0_f32, 0.0_f32), (1.0_f32, 1.0_f32)]];
+        let polygon = vec![vec![
+            (0.0_f32, 0.0_f32),
+            (1.0_f32, 0.0_f32),
+            (1.0_f32, 1.0_f32),
+        ]];
 
         let mut annotation = Annotation::new();
         annotation.set_label(Some("test".to_string()));
@@ -1626,9 +1631,11 @@ mod tests {
         assert!(annotation_json.contains_key("box2d"));
         assert!(annotation_json.contains_key("mask"));
         assert!(!annotation_json.contains_key("x"));
-        assert!(annotation_json
-            .get("mask")
-            .and_then(|value| value.as_array())
-            .is_some());
+        assert!(
+            annotation_json
+                .get("mask")
+                .and_then(|value| value.as_array())
+                .is_some()
+        );
     }
 }

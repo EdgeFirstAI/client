@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-//! Test the samples.populate2 API with a real image and bounding box annotation.
+//! Test the samples.populate2 API with a real image and bounding box
+//! annotation.
 //!
 //! This example creates a 640x480 image with a red circle in the top-left
 //! quadrant and uploads it with a bounding box annotation around the circle.
