@@ -1,7 +1,7 @@
 # EdgeFirst Dataset Format Specification
 
-**Version**: 2.1.0  
-**Last Updated**: January 30, 2025  
+**Version**: 2025.10  
+**Last Updated**: 31 October, 2025  
 **Status**: ACTIVE
 
 ---
@@ -304,21 +304,27 @@ EdgeFirst supports two annotation formats optimized for different use cases.
     ('name', String),
     ('frame', UInt64),
     ('object_reference', String),
-    ('label_name', Categorical(ordering='physical')),
+    ('label', Categorical(ordering='physical')),
     ('label_index', UInt64),
     ('group', Categorical(ordering='physical')),
     ('mask', List(Float32)),
-    ('box2d', Struct({'cx': Float32, 'cy': Float32, 'w': Float32, 'h': Float32})),
-    ('box3d', Struct({'x': Float32, 'y': Float32, 'z': Float32, 'w': Float32, 'h': Float32, 'l': Float32})),
-    ('size', Struct({'width': UInt32, 'height': UInt32})),  # Image dimensions
-    ('location', Struct({'lat': Float32, 'lon': Float32, 'alt': Float32})),  # GPS coordinates (optional)
-    ('pose', Struct({'yaw': Float32, 'pitch': Float32, 'roll': Float32}))  # IMU orientation in degrees (optional)
+    ('box2d', Array(Float32, shape=(4,))),  # [cx, cy, w, h]
+    ('box3d', Array(Float32, shape=(6,))),  # [x, y, z, w, h, l]
+    ('size', Array(UInt32, shape=(2,))),  # [width, height] - OPTIONAL
+    ('location', Array(Float32, shape=(2,))),  # [lat, lon] - OPTIONAL
+    ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll] - OPTIONAL
+    ('degradation', String)  # OPTIONAL
 )
 ```
 
-**Note**: Sample metadata fields (size, location, pose) are repeated for each annotation row from the same sample since the DataFrame is flat.
+**Note**: Sample metadata fields (size, location, pose, degradation) are optional columns added in version 2025.10. Files from earlier versions will not have these columns.
 
-**Struct types**: Geometry and sensor fields use Polars Struct types with named fields for clarity and type safety. Access fields using dot notation (e.g., `df['box2d'].struct.field('cx')`).
+**Array formats**:
+- **box2d**: `[cx, cy, w, h]` - center coordinates and dimensions
+- **box3d**: `[x, y, z, w, h, l]` - center coordinates and dimensions  
+- **size**: `[width, height]` - image dimensions in pixels (new in 2025.10)
+- **location**: `[lat, lon]` - GPS coordinates (latitude, longitude)
+- **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees (new in 2025.10)
 
 **Characteristics**:
 - Columnar compression (smaller file size)
@@ -407,11 +413,11 @@ df = pl.read_ipc("dataset.arrow")
 | **File Size** | Smaller (columnar compression) | Larger (text-based) |
 | **Performance** | Fast batch operations | Moderate (parse overhead) |
 | **Readability** | Requires viewer/library | Human-readable text |
-| **Sample Metadata** | Repeated per row (size, location, pose structs) | Nested in sample object |
+| **Sample Metadata** | Optional columns: size, location, pose arrays (2025.10+) | Nested in sample object |
 | **Unannotated Samples** | Included (one row with null annotations to preserve metadata) | Included (empty array) |
 | **Editing** | Programmatic (Polars API) | Manual or programmatic |
-| **Box2D Format** | `Struct{cx, cy, w, h}` (center) | `{x, y, w, h}` (left/top) |
-| **Box3D Format** | `Struct{x, y, z, w, h, l}` (center) | `{x, y, z, w, h, l}` (center) |
+| **Box2D Format** | `[cx, cy, w, h]` array (center) | `{x, y, w, h}` object (left/top) |
+| **Box3D Format** | `[x, y, z, w, h, l]` array (center) | `{x, y, z, w, h, l}` object (center) |
 | **Mask Format** | Flat list with NaN separators | Nested list of polygons |
 | **Best For** | Analysis, training, querying | Editing, API, distribution |
 
@@ -675,31 +681,31 @@ box3d: [0.45, 0.12, 0.03, 0.08, 0.06, 0.15]
 
 ### Sample Metadata
 
-Sample-level metadata (image dimensions, GPS, IMU) is available in **both JSON and DataFrame formats**.
+Sample-level metadata (image dimensions, GPS, IMU, degradation) is available in **both JSON and DataFrame formats**.
 
-**DataFrame representation**: Struct types with named fields, repeated for each annotation row (flat structure)  
+**DataFrame representation**: Array columns, repeated for each annotation row (flat structure)  
 **JSON representation**: Nested objects in sample (one copy per sample)
 
 #### size (width, height)
-**Type**: `Struct{width: UInt32, height: UInt32}` (DataFrame), `Integer` fields (JSON)  
+**Type**: `Array(UInt32, shape=(2,))` (DataFrame), `Integer` fields (JSON)  
 **Description**: Image dimensions in pixels
 
-**DataFrame**: Struct column `size` with named fields `width` and `height`, repeated per row  
+**DataFrame**: Array column `size` = `[width, height]`, repeated per row  
 **JSON**: Separate top-level `width` and `height` fields
 
 **Example**:
 ```python
 # DataFrame (all rows from same sample have same size)
-shape: (3, 12)
-┌────────────┬───────┬────────────┬───────┐
-│ name       │ frame │ size       │ ...   │
-├────────────┼───────┼────────────┼───────┤
-│ sample_001 │ 0     │ {1920,1080}│ ...   │
-│ sample_001 │ 0     │ {1920,1080}│ ...   │
-│ sample_001 │ 0     │ {1920,1080}│ ...   │
-└────────────┴───────┴────────────┴───────┘
+shape: (3, 13)
+┌────────────┬───────┬─────────────┬───────┐
+│ name       │ frame │ size        │ ...   │
+├────────────┼───────┼─────────────┼───────┤
+│ sample_001 │ 0     │ [1920,1080] │ ...   │
+│ sample_001 │ 0     │ [1920,1080] │ ...   │
+│ sample_001 │ 0     │ [1920,1080] │ ...   │
+└────────────┴───────┴─────────────┴───────┘
 
-# Access fields: df['size'].struct.field('width')
+# Access: df['size'][0] = width, df['size'][1] = height
 
 # JSON (separate width/height fields)
 {
@@ -711,7 +717,7 @@ shape: (3, 12)
 ```
 
 #### sensors
-**Type**: `Struct` (DataFrame), `Object` (JSON)  
+**Type**: `Array` (DataFrame), `Object` (JSON)  
 **Description**: Multi-sensor metadata (GPS, IMU)
 
 ##### GPS Location
@@ -721,8 +727,8 @@ shape: (3, 12)
 - MCAP `/gps` topic (NavSat)
 - User-provided coordinates
 
-**DataFrame**: `location` column as `Struct{lat: Float32, lon: Float32, alt: Float32}` with named fields  
-**JSON**: Nested object with `latitude`, `longitude`, `altitude` fields
+**DataFrame**: `location` column as `Array(Float32, shape=(2,))` = `[lat, lon]` (new in 2025.10)  
+**JSON**: Nested object with `latitude`, `longitude` fields
 
 **JSON structure**:
 ```json
@@ -730,8 +736,7 @@ shape: (3, 12)
   "sensors": {
     "gps": {
       "latitude": 37.7749,
-      "longitude": -122.4194,
-      "altitude": 10.5
+      "longitude": -122.4194
     }
   }
 }
@@ -739,11 +744,13 @@ shape: (3, 12)
 
 **DataFrame structure**:
 ```python
-# location column: Struct with named fields
-{lat: 37.7749, lon: -122.4194, alt: 10.5}
+# location column: Array [lat, lon]
+[37.7749, -122.4194]
 
-# Access fields: df['location'].struct.field('lat')
+# Access: df['location'][0] = lat, [1] = lon
 ```
+
+**Note**: Altitude support may be added in a future version when Studio adds support for it.
 
 **Rust type**: `Option<Location>` with `gps: Option<GpsData>`
 
@@ -754,7 +761,7 @@ shape: (3, 12)
 - IMU sensor readings
 - User-provided orientation
 
-**DataFrame**: `pose` column as `Struct{yaw: Float32, pitch: Float32, roll: Float32}` in degrees  
+**DataFrame**: `pose` column as `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` in degrees  
 **JSON**: Nested object with `roll`, `pitch`, `yaw` fields
 
 **Format**: All values in degrees
@@ -774,10 +781,10 @@ shape: (3, 12)
 
 **DataFrame structure**:
 ```python
-# pose column: Struct with named fields
-{yaw: 45.3, pitch: -1.2, roll: 0.5}
+# pose column: Array [yaw, pitch, roll]
+[45.3, -1.2, 0.5]
 
-# Access fields: df['pose'].struct.field('yaw')
+# Access: df['pose'][0] = yaw, [1] = pitch, [2] = roll
 ```
 
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
@@ -877,47 +884,56 @@ samples = load_json("annotations.json")
 annotations = []
 for sample in samples:
     # Extract sample metadata once
-    size = {"width": sample.get("width"), "height": sample.get("height")}
+    size = [sample.get("width"), sample.get("height")]  # Array [width, height]
     
-    # GPS: JSON nested object → DataFrame struct {lat, lon, alt}
+    # GPS: JSON nested object → DataFrame array [lat, lon]
     location = None
     if sample.get("sensors", {}).get("gps"):
         gps_data = sample["sensors"]["gps"]
-        location = {
-            "lat": gps_data["latitude"],
-            "lon": gps_data["longitude"],
-            "alt": gps_data["altitude"]
-        }
+        location = [
+            gps_data["latitude"],
+            gps_data["longitude"]
+        ]
     
-    # IMU: JSON nested object → DataFrame struct {yaw, pitch, roll}
+    # IMU: JSON nested object → DataFrame array [yaw, pitch, roll]
     pose = None
     if sample.get("sensors", {}).get("imu"):
         imu_data = sample["sensors"]["imu"]
-        pose = {
-            "yaw": imu_data["yaw"],
-            "pitch": imu_data["pitch"],
-            "roll": imu_data["roll"]
-        }
+        pose = [
+            imu_data["yaw"],
+            imu_data["pitch"],
+            imu_data["roll"]
+        ]
+    
+    degradation = sample.get("degradation")  # Degradation field (new in 2025.10)
     
     for ann in sample["annotations"]:
         row = {
             "name": extract_name(sample["image_name"]),
             "frame": sample.get("frame_number"),
             "object_reference": ann.get("object_reference"),
-            "label_name": ann["label_name"],
+            "label": ann["label_name"],  # Column name: 'label'
             "label_index": ann.get("label_index"),
-            "group": sample.get("group"),
+            "group": sample.get("group"),  # JSON field 'group' → column 'group'
             "mask": flatten_mask(ann.get("mask")),  # Flatten with NaN
-            "box2d": {  # Struct {cx, cy, w, h}
-                "cx": ann["box2d"]["x"] + ann["box2d"]["w"] / 2,
-                "cy": ann["box2d"]["y"] + ann["box2d"]["h"] / 2,
-                "w": ann["box2d"]["w"],
-                "h": ann["box2d"]["h"]
-            },
-            "box3d": ann.get("box3d"),  # Already struct format
-            "size": size,       # Sample metadata repeated per row
-            "location": location,
-            "pose": pose,
+            "box2d": [  # Array [cx, cy, w, h]
+                ann["box2d"]["x"] + ann["box2d"]["w"] / 2,  # cx
+                ann["box2d"]["y"] + ann["box2d"]["h"] / 2,  # cy
+                ann["box2d"]["w"],
+                ann["box2d"]["h"]
+            ],
+            "box3d": [  # Array [x, y, z, w, h, l]
+                ann["box3d"]["x"],
+                ann["box3d"]["y"],
+                ann["box3d"]["z"],
+                ann["box3d"]["w"],
+                ann["box3d"]["h"],
+                ann["box3d"]["l"]
+            ] if ann.get("box3d") else None,
+            "size": size,          # Sample metadata (new in 2025.10)
+            "location": location,  # GPS array [lat, lon]
+            "pose": pose,          # IMU array [yaw, pitch, roll]
+            "degradation": degradation,
         }
         annotations.append(row)
 
@@ -927,11 +943,14 @@ df.write_ipc("annotations.arrow")
 
 **Key conversions**:
 1. **Unnest**: One row per annotation (from nested structure)
-2. **Sample metadata**: Repeated for each annotation row from same sample as struct values
-3. **GPS conversion**: `{"latitude": lat, "longitude": lon, "altitude": alt}` → struct `{lat, lon, alt}`
-4. **IMU conversion**: `{"roll": r, "pitch": p, "yaw": y}` → struct `{yaw, pitch, roll}`
-5. **Box2D**: `{x, y, w, h}` → struct `{cx: x+w/2, cy: y+h/2, w, h}`
-6. **Mask**: Nested lists → Flat list with NaN separators
+2. **Column names**: JSON `label_name` → DataFrame `label`, JSON `group` → DataFrame `group`
+3. **Sample metadata**: Optional columns added in 2025.10 (size, location, pose, degradation)
+4. **GPS conversion**: `{"latitude": lat, "longitude": lon}` → array `[lat, lon]`
+5. **IMU conversion**: `{"roll": r, "pitch": p, "yaw": y}` → array `[yaw, pitch, roll]`
+6. **Box2D**: `{x, y, w, h}` → array `[cx: x+w/2, cy: y+h/2, w, h]`
+7. **Box3D**: `{x, y, z, w, h, l}` → array `[x, y, z, w, h, l]`
+8. **Mask**: Nested lists → Flat list with NaN separators
+9. **Size**: Separate width/height → array `[width, height]`
 
 ### DataFrame → JSON
 
@@ -945,52 +964,75 @@ samples = []
 for (name, frame), group_df in df.groupby(["name", "frame"]):
     # Get sample metadata (same for all rows in group)
     first_row = group_df.row(0, named=True)
-    size = first_row["size"]
     
-    # GPS: DataFrame struct {lat, lon, alt} → JSON nested object
+    # Extract optional metadata columns (new in 2025.10)
+    size_array = first_row.get("size")  # Array [width, height]
+    
+    # GPS: DataFrame array [lat, lon] → JSON nested object
     gps_data = None
-    if first_row["location"]:
+    if first_row.get("location"):
+        loc = first_row["location"]  # Array [lat, lon]
         gps_data = {
-            "latitude": first_row["location"]["lat"],
-            "longitude": first_row["location"]["lon"],
-            "altitude": first_row["location"]["alt"]
+            "latitude": loc[0],   # lat
+            "longitude": loc[1]   # lon
         }
     
-    # IMU: DataFrame struct {yaw, pitch, roll} → JSON nested object
+    # IMU: DataFrame array [yaw, pitch, roll] → JSON nested object
     imu_data = None
-    if first_row["pose"]:
+    if first_row.get("pose"):
+        pose_array = first_row["pose"]  # Array [yaw, pitch, roll]
         imu_data = {
-            "yaw": first_row["pose"]["yaw"],
-            "pitch": first_row["pose"]["pitch"],
-            "roll": first_row["pose"]["roll"]
+            "yaw": pose_array[0],
+            "pitch": pose_array[1],
+            "roll": pose_array[2]
         }
     
     # Build annotations
     annotations = []
     for row in group_df.iter_rows(named=True):
+        box2d_array = row["box2d"]  # Array [cx, cy, w, h]
         ann = {
-            "label_name": row["label_name"],
+            "label_name": row["label"],  # DataFrame column 'label' → JSON 'label_name'
             "label_index": row["label_index"],
             "object_reference": row["object_reference"],
-            "box2d": {  # Struct {cx, cy, w, h} → JSON {x, y, w, h}
-                "x": row["box2d"]["cx"] - row["box2d"]["w"] / 2,
-                "y": row["box2d"]["cy"] - row["box2d"]["h"] / 2,
-                "w": row["box2d"]["w"],
-                "h": row["box2d"]["h"]
+            "box2d": {  # Array [cx, cy, w, h] → JSON {x, y, w, h}
+                "x": box2d_array[0] - box2d_array[2] / 2,  # cx - w/2
+                "y": box2d_array[1] - box2d_array[3] / 2,  # cy - h/2
+                "w": box2d_array[2],
+                "h": box2d_array[3]
             },
             "mask": {"polygon": unflatten_mask(row["mask"])},  # NaN → nested lists
-            "box3d": row["box3d"],  # Struct fields already match JSON
         }
+        
+        # Box3D: Array [x, y, z, w, h, l] → JSON {x, y, z, w, h, l}
+        if row.get("box3d"):
+            box3d_array = row["box3d"]
+            ann["box3d"] = {
+                "x": box3d_array[0],
+                "y": box3d_array[1],
+                "z": box3d_array[2],
+                "w": box3d_array[3],
+                "h": box3d_array[4],
+                "l": box3d_array[5]
+            }
+        
         annotations.append(ann)
     
     sample = {
         "image_name": f"{name}_{frame}.camera.jpeg" if frame else f"{name}.jpg",
         "frame_number": frame,
-        "width": size["width"],
-        "height": size["height"],
-        "group": first_row["group"],
+        "group": first_row["group"],  # DataFrame column 'group' → JSON 'group'
         "annotations": annotations,
     }
+    
+    # Add optional size metadata (new in 2025.10)
+    if size_array:
+        sample["width"] = size_array[0]
+        sample["height"] = size_array[1]
+    
+    # Add degradation if present (new in 2025.10)
+    if first_row.get("degradation"):
+        sample["degradation"] = first_row["degradation"]
     
     # Add sensors if present
     if gps_data or imu_data:
@@ -1007,11 +1049,14 @@ save_json(samples, "annotations.json")
 
 **Key conversions**:
 1. **Nest**: Group annotations by sample (name, frame)
-2. **Sample metadata**: Extract struct fields from first row (same for all rows in group)
-3. **GPS conversion**: struct `{lat, lon, alt}` → `{"latitude": lat, "longitude": lon, "altitude": alt}`
-4. **IMU conversion**: struct `{yaw, pitch, roll}` → `{"yaw": y, "pitch": p, "roll": r}`
-5. **Box2D**: struct `{cx, cy, w, h}` → `{x: cx-w/2, y: cy-h/2, w, h}`
-6. **Mask**: Flat list → Split on NaN, nest into polygon lists
+2. **Column names**: DataFrame `label` → JSON `label_name`, DataFrame `group` → JSON `group`
+3. **Optional metadata**: Check for size, location, pose, degradation columns (added in 2025.10)
+4. **GPS conversion**: array `[lat, lon]` → `{"latitude": lat, "longitude": lon}`
+5. **IMU conversion**: array `[yaw, pitch, roll]` → `{"yaw": y, "pitch": p, "roll": r}`
+6. **Box2D**: array `[cx, cy, w, h]` → `{x: cx-w/2, y: cy-h/2, w, h}`
+7. **Box3D**: array `[x, y, z, w, h, l]` → `{x, y, z, w, h, l}`
+8. **Mask**: Flat list → Split on NaN, nest into polygon lists
+9. **Size**: array `[width, height]` → separate width/height fields
 
 ---
 
@@ -1086,227 +1131,127 @@ save_json(samples, "annotations.json")
 
 ## Version History
 
-### Version 2.1.0 (2025.10) - Current
+### Version 2025.10 - Current
 
-**Major Schema Enhancement: Struct Types**
+**Comprehensive Specification Update**
 
-This version introduces Polars Struct types for geometry and sensor fields, replacing array-based representations with named fields for improved usability and type safety.
+This version provides a complete formalization of the EdgeFirst Dataset Format, documenting both JSON and DataFrame (Arrow) formats with detailed schemas, conversion guidelines, and best practices. No breaking changes were made to existing formats.
 
-#### Breaking Changes
+#### Specification Enhancements
 
-**Type Changes** (Array → Struct with named fields):
-- `box2d`: `Array(Float32, shape=(4,))` → `Struct{cx: Float32, cy: Float32, w: Float32, h: Float32}`
-- `box3d`: `Array(Float32, shape=(6,))` → `Struct{x: Float32, y: Float32, z: Float32, w: Float32, h: Float32, l: Float32}`
-- `location`: `Array(Float64, shape=(2,))` → `Struct{lat: Float32, lon: Float32, alt: Float32}` (**added altitude**)
-- `pose`: `Array(Float64, shape=(3,))` → `Struct{yaw: Float32, pitch: Float32, roll: Float32}`
+**JSON Format Formalization**:
+- Complete schema definition for all annotation types (Box2D, Box3D, mask)
+- Documented sample metadata structure (width, height, sensors)
+- Formalized GPS and IMU sensor data representation
+- Clarified field naming conventions and data types
+- Added degradation field for visual quality tracking
 
-**New Fields**:
-- `object_reference` (String): Object tracking identifier for multi-frame tracking
-- `label_index` (UInt64): Numerical index of label (complements label_name)
-- `size` (Struct{width: UInt32, height: UInt32}): Combined image dimensions
-- `degradation` (String): Visual quality indicator (implemented in Client, Studio support pending)
+**DataFrame Format Documentation**:
+- Detailed Arrow/Parquet schema with exact data types
+- Documented array formats for geometry (box2d, box3d)
+- Added optional sample metadata columns for richer analysis
+- Clarified column naming (label, group) for consistency
 
-**Data Type Changes**:
-- `name`: Categorical → String (more flexible)
-- `group`: Enum → Categorical (maintains same field name)
-- `label_name`: Remains Categorical (replaces legacy `label` Enum)
+**Conversion Guidelines**:
+- Step-by-step JSON ↔ DataFrame conversion examples
+- Format-specific considerations (Box2D center vs corner, mask flattening)
+- Handling of optional fields and missing data
 
-#### Benefits of Struct Types
+#### New Optional DataFrame Columns
 
-1. **Named field access**: `df['box2d'].struct.field('cx')` instead of `df['box2d'][0]`
-2. **Self-documenting schema**: Field names visible in schema definition
-3. **Type safety**: Polars validates field names at runtime
-4. **IDE support**: Autocomplete works with named fields
-5. **No memorization**: Don't need to remember array index meanings
-6. **Lossless GPS**: Altitude preserved (was discarded in array version)
+**Sample Metadata** (backward compatible additions):
+- `size`: `Array(UInt32, shape=(2,))` = `[width, height]` - Image dimensions
+- `location`: `Array(Float32, shape=(2,))` = `[lat, lon]` - GPS coordinates
+- `pose`: `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` - IMU orientation in degrees
+- `degradation`: `String` - Visual quality indicator (fog, rain, obstruction, low light)
 
-#### Migration from 2025.01
+**Note**: These columns are optional. DataFrames from version 2025.01 without these columns remain fully valid.
 
-**Array to Struct Conversion**
+#### Column Names (Unchanged)
 
-This migration shows how to convert between Array and Struct representations for fields that changed types.
+**DataFrame column names** (backward compatible):
+- `label` (Categorical): Label name - standard since 2025.01
+- `group` (Categorical): Dataset split (train/val/test) - standard since 2025.01
+- `object_reference` (String): UUID for object tracking - standard since 2025.01
+- `label_index` (UInt64): Numerical label index - standard since 2025.01
 
-##### Python (Polars)
+#### Benefits
+
+1. **Formalized specification**: Complete documentation of JSON and DataFrame formats
+2. **Richer metadata**: Access sample properties (size, GPS, IMU) directly in DataFrame
+3. **Visual quality tracking**: Filter/analyze by degradation level for adverse conditions
+4. **Better DX**: Clear conversion guidelines and format comparison
+5. **Backward compatible**: Optional additions don't break existing code or files
+
+#### Backward Compatibility
+
+**No migration required**: DataFrames from 2025.01 remain fully compatible. New columns are optional.
 
 ```python
-import polars as pl
+# 2025.01 DataFrame (9 columns) - still valid
+df_old = load_arrow("annotations_2025_01.arrow")
+# Works as before: name, frame, object_reference, label, label_index, 
+#                  group, mask, box2d, box3d
 
-# Load legacy DataFrame with Array columns
-df_legacy = pl.read_parquet("dataset_2025.01.arrow")
+# 2025.10 DataFrame (13 columns) - with optional metadata
+df_new = load_arrow("annotations_2025_10.arrow")
+# Additional columns available (if present):
+if 'size' in df_new.columns:
+    width = df_new['size'][0]
+    height = df_new['size'][1]
 
-# Convert Arrays to Structs
-df_new = df_legacy.with_columns([
-    # box2d: Array[4] → Struct{cx, cy, w, h}
-    pl.struct([
-        pl.col("box2d").list.get(0).alias("cx"),
-        pl.col("box2d").list.get(1).alias("cy"),
-        pl.col("box2d").list.get(2).alias("w"),
-        pl.col("box2d").list.get(3).alias("h"),
-    ]).alias("box2d"),
-    
-    # box3d: Array[6] → Struct{x, y, z, w, h, l}
-    pl.struct([
-        pl.col("box3d").list.get(0).alias("x"),
-        pl.col("box3d").list.get(1).alias("y"),
-        pl.col("box3d").list.get(2).alias("z"),
-        pl.col("box3d").list.get(3).alias("w"),
-        pl.col("box3d").list.get(4).alias("h"),
-        pl.col("box3d").list.get(5).alias("l"),
-    ]).alias("box3d"),
-    
-    # location: Array[2] → Struct{lat, lon, alt} (add altitude field)
-    pl.struct([
-        pl.col("location").list.get(1).alias("lat"),  # Array stores [lon, lat]
-        pl.col("location").list.get(0).alias("lon"),
-        pl.lit(None, dtype=pl.Float32).alias("alt"),  # Altitude not in legacy
-    ]).alias("location"),
-    
-    # pose: Array[3] → Struct{yaw, pitch, roll}
-    pl.struct([
-        pl.col("pose").list.get(0).alias("yaw"),
-        pl.col("pose").list.get(1).alias("pitch"),
-        pl.col("pose").list.get(2).alias("roll"),
-    ]).alias("pose"),
-])
+if 'location' in df_new.columns:
+    lat = df_new['location'][0]
+    lon = df_new['location'][1]
 
-# Convert Structs back to Arrays (for backward compatibility)
-df_legacy_compat = df_new.with_columns([
-    # box2d: Struct{cx, cy, w, h} → Array[4]
-    pl.concat_list([
-        pl.col("box2d").struct.field("cx"),
-        pl.col("box2d").struct.field("cy"),
-        pl.col("box2d").struct.field("w"),
-        pl.col("box2d").struct.field("h"),
-    ]).alias("box2d"),
-    
-    # location: Struct{lat, lon, alt} → Array[2] (drops altitude!)
-    pl.concat_list([
-        pl.col("location").struct.field("lon"),
-        pl.col("location").struct.field("lat"),
-    ]).alias("location"),
-    
-    # pose: Struct{yaw, pitch, roll} → Array[3]
-    pl.concat_list([
-        pl.col("pose").struct.field("yaw"),
-        pl.col("pose").struct.field("pitch"),
-        pl.col("pose").struct.field("roll"),
-    ]).alias("pose"),
-])
+if 'pose' in df_new.columns:
+    yaw = df_new['pose'][0]
+    pitch = df_new['pose'][1]
+    roll = df_new['pose'][2]
+
+if 'degradation' in df_new.columns:
+    quality = df_new['degradation']
 ```
 
-##### Rust (Polars)
+#### Notes
 
-```rust
-use polars::prelude::*;
+- **Specification scope**: Comprehensive documentation of JSON and DataFrame formats, conversion patterns, and usage guidelines
+- **Format stability**: Array-based types retained for simplicity and backward compatibility
+- **Future enhancements**: Polars Struct types may be introduced in future version for named field access
+- **Implementation status**: Degradation field supported in EdgeFirst Client; Studio support planned
+- **GPS altitude**: May be added in future version when Studio adds support
 
-// Load legacy DataFrame with Array columns
-let df_legacy = ParquetReader::new(File::open("dataset_2025.01.arrow")?)
-    .finish()?;
+### Version 2025.01
 
-// Convert Arrays to Structs
-let df_new = df_legacy.lazy()
-    .with_columns([
-        // box2d: Array[4] → Struct{cx, cy, w, h}
-        as_struct(vec![
-            col("box2d").list().get(lit(0)).alias("cx"),
-            col("box2d").list().get(lit(1)).alias("cy"),
-            col("box2d").list().get(lit(2)).alias("w"),
-            col("box2d").list().get(lit(3)).alias("h"),
-        ]).alias("box2d"),
-        
-        // box3d: Array[6] → Struct{x, y, z, w, h, l}
-        as_struct(vec![
-            col("box3d").list().get(lit(0)).alias("x"),
-            col("box3d").list().get(lit(1)).alias("y"),
-            col("box3d").list().get(lit(2)).alias("z"),
-            col("box3d").list().get(lit(3)).alias("w"),
-            col("box3d").list().get(lit(4)).alias("h"),
-            col("box3d").list().get(lit(5)).alias("l"),
-        ]).alias("box3d"),
-        
-        // location: Array[2] → Struct{lat, lon, alt}
-        as_struct(vec![
-            col("location").list().get(lit(1)).alias("lat"),  // [lon, lat]
-            col("location").list().get(lit(0)).alias("lon"),
-            lit(NULL).cast(DataType::Float32).alias("alt"),
-        ]).alias("location"),
-        
-        // pose: Array[3] → Struct{yaw, pitch, roll}
-        as_struct(vec![
-            col("pose").list().get(lit(0)).alias("yaw"),
-            col("pose").list().get(lit(1)).alias("pitch"),
-            col("pose").list().get(lit(2)).alias("roll"),
-        ]).alias("pose"),
-    ])
-    .collect()?;
+**Initial Format** (EdgeFirst Studio published format)
 
-// Convert Structs back to Arrays (for backward compatibility)
-let df_legacy_compat = df_new.lazy()
-    .with_columns([
-        // box2d: Struct{cx, cy, w, h} → Array[4]
-        concat_list([
-            col("box2d").struct_().field_by_name("cx"),
-            col("box2d").struct_().field_by_name("cy"),
-            col("box2d").struct_().field_by_name("w"),
-            col("box2d").struct_().field_by_name("h"),
-        ])?.alias("box2d"),
-        
-        // location: Struct{lat, lon, alt} → Array[2] (drops altitude!)
-        concat_list([
-            col("location").struct_().field_by_name("lon"),
-            col("location").struct_().field_by_name("lat"),
-        ])?.alias("location"),
-        
-        // pose: Struct{yaw, pitch, roll} → Array[3]
-        concat_list([
-            col("pose").struct_().field_by_name("yaw"),
-            col("pose").struct_().field_by_name("pitch"),
-            col("pose").struct_().field_by_name("roll"),
-        ])?.alias("pose"),
-    ])
-    .collect()?;
-```
+Baseline format with core annotation fields. Sample metadata (width, height, GPS, IMU) available only in JSON format, not in DataFrame.
 
-**Field Access Changes**:
+**DataFrame Schema** (9 columns):
 ```python
-# Old (2025.01): Array index access
-box_center_x = df['box2d'][0]
-latitude = df['location'][1]
-yaw = df['pose'][0]
-
-# New (2025.10): Named field access
-box_center_x = df['box2d'].struct.field('cx')
-latitude = df['location'].struct.field('lat')
-yaw = df['pose'].struct.field('yaw')
+(
+    ('name', String),
+    ('frame', UInt64),
+    ('object_reference', String),
+    ('label', Categorical),
+    ('label_index', UInt64),
+    ('group', Categorical),
+    ('mask', List(Float32)),
+    ('box2d', Array(Float32, shape=(4,))),  # [cx, cy, w, h]
+    ('box3d', Array(Float32, shape=(6,))),  # [x, y, z, w, h, l]
+)
 ```
 
-**Schema Changes**:
-- Add new columns: `object_reference`, `label_index`, `size`, `degradation`
-- Convert arrays to structs: box2d, box3d, location, pose
-- Preserve GPS altitude in `location` struct (previously discarded)
-
-### Version 2025.01 - Legacy
-
-**Array-Based Schema** (EdgeFirst Studio published format)
-
-Used flat array types for geometry and sensor data:
-- `box2d`: `Array(Float32, shape=(4,))` = `[xc, yc, width, height]`
-- `box3d`: `Array(Float32, shape=(6,))` = `[x, y, z, depth, width, height]`
-- `location`: `Array(Float64, shape=(2,))` = `[longitude, latitude]` (no altitude)
-- `pose`: `Array(Float64, shape=(3,))` = `[roll, pitch, yaw]`
-
-**Limitations**:
-- Required memorizing array index meanings
-- GPS altitude lost during JSON → DataFrame conversion
-- No IDE autocomplete for field access
-- Less self-documenting schema
+**Characteristics**:
+- Minimal schema with core annotation fields only
+- Sample metadata (width, height, GPS, IMU) available only in JSON format
+- Compatible with 2025.10 (new columns are optional additions)
 
 ---
 
 ## Further Reading
 
-- **EdgeFirst Client**: Python and Rust SDK documentation
-- **EdgeFirst Studio**: Web platform for annotation and dataset management
-- **Training Pipelines**: Integration with TensorFlow and PyTorch
-- **MCAP Format**: Multi-sensor recording format
+- **[EdgeFirst Client](http://github.com/EdgeFirstAI/client)**: Python and Rust SDK documentation
+- **[EdgeFirst Studio](http://doc.edgefirst.ai/test/)**: Web platform for annotation and dataset management
+- [MCAP Format](https://mcap.dev)**: Multi-sensor recording format
 - **Polars Documentation**: https://pola.rs/
