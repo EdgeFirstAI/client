@@ -443,10 +443,7 @@ where
     Ok(value
         .map(|v| match v {
             FilesFormat::Vec(files) => files,
-            FilesFormat::Map(map) => map
-                .into_iter()
-                .map(|(file_type, filename)| SampleFile::with_filename(file_type, filename))
-                .collect(),
+            FilesFormat::Map(map) => convert_files_map_to_vec(map),
         })
         .unwrap_or_default())
 }
@@ -480,19 +477,7 @@ where
     Ok(value
         .map(|v| match v {
             AnnotationsFormat::Vec(annotations) => annotations,
-            AnnotationsFormat::Map(map) => {
-                let mut all_annotations = Vec::new();
-                if let Some(bbox_anns) = map.get("bbox") {
-                    all_annotations.extend(bbox_anns.clone());
-                }
-                if let Some(box3d_anns) = map.get("box3d") {
-                    all_annotations.extend(box3d_anns.clone());
-                }
-                if let Some(mask_anns) = map.get("mask") {
-                    all_annotations.extend(mask_anns.clone());
-                }
-                all_annotations
-            }
+            AnnotationsFormat::Map(map) => convert_annotations_map_to_vec(map),
         })
         .unwrap_or_default())
 }
@@ -623,14 +608,7 @@ impl Sample {
         client: &Client,
         file_type: FileType,
     ) -> Result<Option<Vec<u8>>, Error> {
-        let url = match file_type {
-            FileType::Image => self.image_url.as_ref(),
-            file => self
-                .files
-                .iter()
-                .find(|f| f.r#type == file.to_string())
-                .and_then(|f| f.url.as_ref()),
-        };
+        let url = resolve_file_url(&file_type, self.image_url.as_deref(), &self.files);
 
         Ok(match url {
             Some(url) => Some(client.download(url).await?),
@@ -703,12 +681,71 @@ pub struct GpsData {
     pub lon: f64,
 }
 
+impl GpsData {
+    /// Validate GPS coordinates are within valid ranges.
+    ///
+    /// Checks if latitude and longitude values are within valid geographic
+    /// ranges. Helps catch data corruption or API issues early.
+    ///
+    /// # Returns
+    /// `Ok(())` if valid, `Err(String)` with descriptive error message
+    /// otherwise
+    ///
+    /// # Valid Ranges
+    /// - Latitude: -90.0 to +90.0 degrees
+    /// - Longitude: -180.0 to +180.0 degrees
+    ///
+    /// # Examples
+    /// ```
+    /// use edgefirst_client::GpsData;
+    ///
+    /// let gps = GpsData { lat: 37.7749, lon: -122.4194 };
+    /// assert!(gps.validate().is_ok());
+    ///
+    /// let bad_gps = GpsData { lat: 100.0, lon: 0.0 };
+    /// assert!(bad_gps.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        validate_gps_coordinates(self.lat, self.lon)
+    }
+}
+
 /// IMU orientation data (roll, pitch, yaw in degrees).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ImuData {
     pub roll: f64,
     pub pitch: f64,
     pub yaw: f64,
+}
+
+impl ImuData {
+    /// Validate IMU orientation angles are within valid ranges.
+    ///
+    /// Checks if roll, pitch, and yaw values are finite and within reasonable
+    /// ranges. Helps catch data corruption or sensor errors early.
+    ///
+    /// # Returns
+    /// `Ok(())` if valid, `Err(String)` with descriptive error message
+    /// otherwise
+    ///
+    /// # Valid Ranges
+    /// - Roll: -180.0 to +180.0 degrees
+    /// - Pitch: -90.0 to +90.0 degrees (typical gimbal lock range)
+    /// - Yaw: -180.0 to +180.0 degrees (or 0 to 360, normalized)
+    ///
+    /// # Examples
+    /// ```
+    /// use edgefirst_client::ImuData;
+    ///
+    /// let imu = ImuData { roll: 10.0, pitch: 5.0, yaw: 90.0 };
+    /// assert!(imu.validate().is_ok());
+    ///
+    /// let bad_imu = ImuData { roll: 200.0, pitch: 0.0, yaw: 0.0 };
+    /// assert!(bad_imu.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        validate_imu_orientation(self.roll, self.pitch, self.yaw)
+    }
 }
 
 #[allow(dead_code)]
@@ -1579,6 +1616,150 @@ fn extract_sample_name(image_name: &str) -> String {
         .unwrap_or_else(|| name.clone())
 }
 
+/// Resolve file URL for a given file type from sample data.
+///
+/// Pure function that extracts the URL resolution logic from
+/// `Sample::download()`. Returns `Some(url)` if the file exists, `None`
+/// otherwise.
+///
+/// # Examples
+/// - Image: Uses `image_url` field
+/// - Other files: Searches `files` array by type matching
+///
+/// # Arguments
+/// * `file_type` - The type of file to resolve (e.g., "image", "lidar.pcd")
+/// * `image_url` - The sample's image URL (for FileType::Image)
+/// * `files` - The sample's file list (for other file types)
+fn resolve_file_url<'a>(
+    file_type: &FileType,
+    image_url: Option<&'a str>,
+    files: &'a [SampleFile],
+) -> Option<&'a str> {
+    match file_type {
+        FileType::Image => image_url,
+        file => files
+            .iter()
+            .find(|f| f.r#type == file.to_string())
+            .and_then(|f| f.url.as_deref()),
+    }
+}
+
+// ============================================================================
+// DESERIALIZATION FORMAT CONVERSION HELPERS
+// ============================================================================
+
+/// Convert files HashMap format to Vec<SampleFile>.
+///
+/// Pure function that handles the conversion from the server's populate API
+/// format (HashMap<String, String>) to the internal Vec<SampleFile>
+/// representation.
+///
+/// # Arguments
+/// * `map` - HashMap where key is file type (e.g., "lidar.pcd") and value is
+///   filename
+fn convert_files_map_to_vec(map: HashMap<String, String>) -> Vec<SampleFile> {
+    map.into_iter()
+        .map(|(file_type, filename)| SampleFile::with_filename(file_type, filename))
+        .collect()
+}
+
+/// Convert annotations grouped format to flat Vec<Annotation>.
+///
+/// Pure function that handles the conversion from the server's legacy format
+/// (HashMap<String, Vec<Annotation>>) to the flat Vec<Annotation>
+/// representation.
+///
+/// # Arguments
+/// * `map` - HashMap where keys are annotation types ("bbox", "box3d", "mask")
+fn convert_annotations_map_to_vec(map: HashMap<String, Vec<Annotation>>) -> Vec<Annotation> {
+    let mut all_annotations = Vec::new();
+    if let Some(bbox_anns) = map.get("bbox") {
+        all_annotations.extend(bbox_anns.clone());
+    }
+    if let Some(box3d_anns) = map.get("box3d") {
+        all_annotations.extend(box3d_anns.clone());
+    }
+    if let Some(mask_anns) = map.get("mask") {
+        all_annotations.extend(mask_anns.clone());
+    }
+    all_annotations
+}
+
+// ============================================================================
+// GPS/IMU VALIDATION HELPERS
+// ============================================================================
+
+/// Validate GPS coordinates are within valid ranges.
+///
+/// Pure function that checks if latitude and longitude values are within valid
+/// geographic ranges. Helps catch data corruption or API issues early.
+///
+/// # Arguments
+/// * `lat` - Latitude in degrees
+/// * `lon` - Longitude in degrees
+///
+/// # Returns
+/// `Ok(())` if valid, `Err(String)` with descriptive error message otherwise
+///
+/// # Valid Ranges
+/// - Latitude: -90.0 to +90.0 degrees
+/// - Longitude: -180.0 to +180.0 degrees
+fn validate_gps_coordinates(lat: f64, lon: f64) -> Result<(), String> {
+    if !lat.is_finite() {
+        return Err(format!("GPS latitude is not finite: {}", lat));
+    }
+    if !lon.is_finite() {
+        return Err(format!("GPS longitude is not finite: {}", lon));
+    }
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err(format!("GPS latitude out of range [-90, 90]: {}", lat));
+    }
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err(format!("GPS longitude out of range [-180, 180]: {}", lon));
+    }
+    Ok(())
+}
+
+/// Validate IMU orientation angles are within valid ranges.
+///
+/// Pure function that checks if roll, pitch, and yaw values are finite and
+/// within reasonable ranges. Helps catch data corruption or sensor errors
+/// early.
+///
+/// # Arguments
+/// * `roll` - Roll angle in degrees
+/// * `pitch` - Pitch angle in degrees
+/// * `yaw` - Yaw angle in degrees
+///
+/// # Returns
+/// `Ok(())` if valid, `Err(String)` with descriptive error message otherwise
+///
+/// # Valid Ranges
+/// - Roll: -180.0 to +180.0 degrees
+/// - Pitch: -90.0 to +90.0 degrees (typical gimbal lock range)
+/// - Yaw: -180.0 to +180.0 degrees (or 0 to 360, normalized)
+fn validate_imu_orientation(roll: f64, pitch: f64, yaw: f64) -> Result<(), String> {
+    if !roll.is_finite() {
+        return Err(format!("IMU roll is not finite: {}", roll));
+    }
+    if !pitch.is_finite() {
+        return Err(format!("IMU pitch is not finite: {}", pitch));
+    }
+    if !yaw.is_finite() {
+        return Err(format!("IMU yaw is not finite: {}", yaw));
+    }
+    if !(-180.0..=180.0).contains(&roll) {
+        return Err(format!("IMU roll out of range [-180, 180]: {}", roll));
+    }
+    if !(-90.0..=90.0).contains(&pitch) {
+        return Err(format!("IMU pitch out of range [-90, 90]: {}", pitch));
+    }
+    if !(-180.0..=180.0).contains(&yaw) {
+        return Err(format!("IMU yaw out of range [-180, 180]: {}", yaw));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // MASK POLYGON CONVERSION HELPERS
 // ============================================================================
@@ -1696,6 +1877,37 @@ mod tests {
         all_annotations
     }
 
+    /// Get the JSON field name for the Annotation group field (for tests).
+    fn annotation_group_field_name() -> &'static str {
+        "group_name"
+    }
+
+    /// Get the JSON field name for the Annotation object_id field (for tests).
+    fn annotation_object_id_field_name() -> &'static str {
+        "object_reference"
+    }
+
+    /// Get the accepted alias for the Annotation object_id field (for tests).
+    fn annotation_object_id_alias() -> &'static str {
+        "object_id"
+    }
+
+    /// Validate that annotation field names match expected values in JSON (for
+    /// tests).
+    fn validate_annotation_field_names(
+        json_str: &str,
+        expected_group: bool,
+        expected_object_ref: bool,
+    ) -> Result<(), String> {
+        if expected_group && !json_str.contains("\"group_name\"") {
+            return Err("Missing expected field: group_name".to_string());
+        }
+        if expected_object_ref && !json_str.contains("\"object_reference\"") {
+            return Err("Missing expected field: object_reference".to_string());
+        }
+        Ok(())
+    }
+
     // ==== FileType Conversion Tests ====
     #[test]
     fn test_file_type_conversions() {
@@ -1808,6 +2020,252 @@ mod tests {
     #[test]
     fn test_extract_sample_name_edge_case_dot_prefix() {
         assert_eq!(extract_sample_name(".jpg"), ".jpg");
+    }
+
+    // ==== File URL Resolution Tests ====
+    #[test]
+    fn test_resolve_file_url_image_type() {
+        let image_url = Some("https://example.com/image.jpg");
+        let files = vec![];
+        let result = resolve_file_url(&FileType::Image, image_url, &files);
+        assert_eq!(result, Some("https://example.com/image.jpg"));
+    }
+
+    #[test]
+    fn test_resolve_file_url_lidar_pcd() {
+        let image_url = Some("https://example.com/image.jpg");
+        let files = vec![
+            SampleFile::with_url(
+                "lidar.pcd".to_string(),
+                "https://example.com/file.pcd".to_string(),
+            ),
+            SampleFile::with_url(
+                "radar.pcd".to_string(),
+                "https://example.com/radar.pcd".to_string(),
+            ),
+        ];
+        let result = resolve_file_url(&FileType::LidarPcd, image_url, &files);
+        assert_eq!(result, Some("https://example.com/file.pcd"));
+    }
+
+    #[test]
+    fn test_resolve_file_url_not_found() {
+        let image_url = Some("https://example.com/image.jpg");
+        let files = vec![SampleFile::with_url(
+            "lidar.pcd".to_string(),
+            "https://example.com/file.pcd".to_string(),
+        )];
+        // Requesting radar.pcd which doesn't exist in files
+        let result = resolve_file_url(&FileType::RadarPcd, image_url, &files);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_file_url_no_image_url() {
+        let image_url = None;
+        let files = vec![];
+        let result = resolve_file_url(&FileType::Image, image_url, &files);
+        assert_eq!(result, None);
+    }
+
+    // ==== Format Conversion Tests ====
+    #[test]
+    fn test_convert_files_map_to_vec_single_file() {
+        let mut map = HashMap::new();
+        map.insert("lidar.pcd".to_string(), "scan001.pcd".to_string());
+
+        let files = convert_files_map_to_vec(map);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_type(), "lidar.pcd");
+        assert_eq!(files[0].filename(), Some("scan001.pcd"));
+    }
+
+    #[test]
+    fn test_convert_files_map_to_vec_multiple_files() {
+        let mut map = HashMap::new();
+        map.insert("lidar.pcd".to_string(), "scan.pcd".to_string());
+        map.insert("radar.pcd".to_string(), "radar.pcd".to_string());
+
+        let files = convert_files_map_to_vec(map);
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_convert_files_map_to_vec_empty() {
+        let map = HashMap::new();
+        let files = convert_files_map_to_vec(map);
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_convert_annotations_map_to_vec_with_bbox() {
+        let mut map = HashMap::new();
+        let bbox_ann = Annotation::new();
+        map.insert("bbox".to_string(), vec![bbox_ann.clone()]);
+
+        let annotations = convert_annotations_map_to_vec(map);
+        assert_eq!(annotations.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_annotations_map_to_vec_all_types() {
+        let mut map = HashMap::new();
+        map.insert("bbox".to_string(), vec![Annotation::new()]);
+        map.insert("box3d".to_string(), vec![Annotation::new()]);
+        map.insert("mask".to_string(), vec![Annotation::new()]);
+
+        let annotations = convert_annotations_map_to_vec(map);
+        assert_eq!(annotations.len(), 3);
+    }
+
+    #[test]
+    fn test_convert_annotations_map_to_vec_empty() {
+        let map = HashMap::new();
+        let annotations = convert_annotations_map_to_vec(map);
+        assert_eq!(annotations.len(), 0);
+    }
+
+    #[test]
+    fn test_convert_annotations_map_to_vec_unknown_type_ignored() {
+        let mut map = HashMap::new();
+        map.insert("unknown".to_string(), vec![Annotation::new()]);
+
+        let annotations = convert_annotations_map_to_vec(map);
+        // Unknown types are ignored
+        assert_eq!(annotations.len(), 0);
+    }
+
+    // ==== Annotation Field Mapping Tests ====
+    #[test]
+    fn test_annotation_group_field_name() {
+        assert_eq!(annotation_group_field_name(), "group_name");
+    }
+
+    #[test]
+    fn test_annotation_object_id_field_name() {
+        assert_eq!(annotation_object_id_field_name(), "object_reference");
+    }
+
+    #[test]
+    fn test_annotation_object_id_alias() {
+        assert_eq!(annotation_object_id_alias(), "object_id");
+    }
+
+    #[test]
+    fn test_validate_annotation_field_names_success() {
+        let json = r#"{"group_name":"train","object_reference":"obj1"}"#;
+        assert!(validate_annotation_field_names(json, true, true).is_ok());
+    }
+
+    #[test]
+    fn test_validate_annotation_field_names_missing_group() {
+        let json = r#"{"object_reference":"obj1"}"#;
+        let result = validate_annotation_field_names(json, true, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("group_name"));
+    }
+
+    #[test]
+    fn test_validate_annotation_field_names_missing_object_ref() {
+        let json = r#"{"group_name":"train"}"#;
+        let result = validate_annotation_field_names(json, false, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("object_reference"));
+    }
+
+    #[test]
+    fn test_annotation_serialization_field_names() {
+        // Test that Annotation serializes with correct field names
+        let mut ann = Annotation::new();
+        ann.set_group(Some("train".to_string()));
+        ann.set_object_id(Some("obj1".to_string()));
+
+        let json = serde_json::to_string(&ann).unwrap();
+        // Verify JSON contains correct field names
+        assert!(validate_annotation_field_names(&json, true, true).is_ok());
+    }
+
+    // ==== GPS/IMU Validation Tests ====
+    #[test]
+    fn test_validate_gps_coordinates_valid() {
+        assert!(validate_gps_coordinates(37.7749, -122.4194).is_ok()); // San Francisco
+        assert!(validate_gps_coordinates(0.0, 0.0).is_ok()); // Null Island
+        assert!(validate_gps_coordinates(90.0, 180.0).is_ok()); // Edge cases
+        assert!(validate_gps_coordinates(-90.0, -180.0).is_ok()); // Edge cases
+    }
+
+    #[test]
+    fn test_validate_gps_coordinates_invalid_latitude() {
+        let result = validate_gps_coordinates(91.0, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("latitude out of range"));
+
+        let result = validate_gps_coordinates(-91.0, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("latitude out of range"));
+    }
+
+    #[test]
+    fn test_validate_gps_coordinates_invalid_longitude() {
+        let result = validate_gps_coordinates(0.0, 181.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("longitude out of range"));
+
+        let result = validate_gps_coordinates(0.0, -181.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("longitude out of range"));
+    }
+
+    #[test]
+    fn test_validate_gps_coordinates_non_finite() {
+        let result = validate_gps_coordinates(f64::NAN, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not finite"));
+
+        let result = validate_gps_coordinates(0.0, f64::INFINITY);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not finite"));
+    }
+
+    #[test]
+    fn test_validate_imu_orientation_valid() {
+        assert!(validate_imu_orientation(0.0, 0.0, 0.0).is_ok());
+        assert!(validate_imu_orientation(45.0, 30.0, 90.0).is_ok());
+        assert!(validate_imu_orientation(180.0, 90.0, -180.0).is_ok()); // Edge cases
+        assert!(validate_imu_orientation(-180.0, -90.0, 180.0).is_ok()); // Edge cases
+    }
+
+    #[test]
+    fn test_validate_imu_orientation_invalid_roll() {
+        let result = validate_imu_orientation(181.0, 0.0, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("roll out of range"));
+
+        let result = validate_imu_orientation(-181.0, 0.0, 0.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_imu_orientation_invalid_pitch() {
+        let result = validate_imu_orientation(0.0, 91.0, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("pitch out of range"));
+
+        let result = validate_imu_orientation(0.0, -91.0, 0.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_imu_orientation_non_finite() {
+        let result = validate_imu_orientation(f64::NAN, 0.0, 0.0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not finite"));
+
+        let result = validate_imu_orientation(0.0, f64::INFINITY, 0.0);
+        assert!(result.is_err());
+
+        let result = validate_imu_orientation(0.0, 0.0, f64::NEG_INFINITY);
+        assert!(result.is_err());
     }
 
     // ==== Polygon Flattening Tests ====
