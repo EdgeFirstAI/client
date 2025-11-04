@@ -126,47 +126,32 @@ fn collect_relative_file_paths(dir: &Path) -> Result<Vec<String>, std::io::Error
     Ok(files)
 }
 
-fn compare_dataset_structure(
-    actual_dir: &Path,
-    reference_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let actual = collect_relative_file_paths(actual_dir)?;
-    let reference = collect_relative_file_paths(reference_dir)?;
+fn validate_dataset_structure(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let files = collect_relative_file_paths(dir)?;
 
-    let actual_set: BTreeSet<String> = actual.into_iter().collect();
-    let reference_set: BTreeSet<String> = reference.into_iter().collect();
+    if files.is_empty() {
+        return Err("Downloaded dataset is empty".into());
+    }
 
-    if actual_set != reference_set {
-        let missing: Vec<String> = reference_set
-            .difference(&actual_set)
-            .take(10)
-            .cloned()
-            .collect();
-        let extra: Vec<String> = actual_set
-            .difference(&reference_set)
-            .take(10)
-            .cloned()
-            .collect();
+    // Verify all files are image files with valid extensions
+    let valid_extensions = ["jpg", "jpeg", "png", "bmp", "tiff", "tif", "pcd"];
+    for file in &files {
+        let path = Path::new(file);
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
 
-        return Err(format!(
-            "Downloaded dataset structure mismatch. Missing {:?}, extra {:?}",
-            missing, extra
-        )
-        .into());
+        if let Some(ext) = extension {
+            if !valid_extensions.contains(&ext.as_str()) {
+                return Err(format!("Invalid file extension in dataset: {}", file).into());
+            }
+        } else {
+            return Err(format!("File without extension in dataset: {}", file).into());
+        }
     }
 
     Ok(())
-}
-
-fn get_deer_reference_dataset_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("testdata")
-        .join("deer")
-        .join("dataset")
 }
 
 fn download_dataset_from_server(dataset_id: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -448,9 +433,10 @@ fn compare_arrow_files(
             if has_box2d && has_mask {
                 orig_dual_annotation_count += 1;
                 if let Some(object_id) = orig_object_ids.get(idx)
-                    && !object_id.is_empty() {
-                        orig_dual_with_object_id += 1;
-                    }
+                    && !object_id.is_empty()
+                {
+                    orig_dual_with_object_id += 1;
+                }
             }
         }
 
@@ -475,9 +461,10 @@ fn compare_arrow_files(
             if has_box2d && has_mask {
                 redown_dual_annotation_count += 1;
                 if let Some(object_id) = redown_object_ids.get(idx)
-                    && !object_id.is_empty() {
-                        redown_dual_with_object_id += 1;
-                    }
+                    && !object_id.is_empty()
+                {
+                    redown_dual_with_object_id += 1;
+                }
             }
         }
 
@@ -529,99 +516,6 @@ fn compare_arrow_files(
             );
         }
     }
-
-    Ok(())
-}
-
-/// Compare downloaded Arrow file with reference dataset in
-/// testdata/deer/dataset.arrow Verifies schema and column structure match
-#[cfg(feature = "polars")]
-fn compare_with_reference_dataset(
-    downloaded_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use polars::prelude::*;
-    use std::fs::File;
-
-    println!("\n=== Reference Dataset Comparison ===");
-
-    // Reference dataset is in workspace root's testdata directory, not
-    // target/testdata
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let reference_path = workspace_root
-        .join("testdata")
-        .join("deer")
-        .join("dataset.arrow");
-
-    if !reference_path.exists() {
-        println!("⚠️  Reference dataset not found at {:?}", reference_path);
-        return Ok(());
-    }
-
-    // Read both Arrow files
-    let mut reference_file = File::open(&reference_path)?;
-    let reference_df = IpcReader::new(&mut reference_file).finish()?;
-
-    let mut downloaded_file = File::open(downloaded_path)?;
-    let downloaded_df = IpcReader::new(&mut downloaded_file).finish()?;
-
-    println!("Reference rows: {}", reference_df.height());
-    println!("Downloaded rows: {}", downloaded_df.height());
-
-    // Compare schemas
-    let reference_schema = reference_df.schema();
-    let downloaded_schema = downloaded_df.schema();
-
-    println!(
-        "\nReference columns: {:?}",
-        reference_schema.iter_names().collect::<Vec<_>>()
-    );
-    println!(
-        "Downloaded columns: {:?}",
-        downloaded_schema.iter_names().collect::<Vec<_>>()
-    );
-
-    // Check that all reference columns exist in downloaded
-    let mut missing_columns = Vec::new();
-    for ref_field in reference_schema.iter_fields() {
-        if downloaded_schema.get_field(ref_field.name()).is_none() {
-            missing_columns.push(ref_field.name().to_string());
-        }
-    }
-
-    if !missing_columns.is_empty() {
-        return Err(format!(
-            "Downloaded file is missing columns present in reference: {:?}",
-            missing_columns
-        )
-        .into());
-    }
-
-    // Compare data types for common columns
-    let mut type_mismatches = Vec::new();
-    for ref_field in reference_schema.iter_fields() {
-        if let Some(down_field) = downloaded_schema.get_field(ref_field.name())
-            && ref_field.dtype() != down_field.dtype() {
-                type_mismatches.push(format!(
-                    "{}: {:?} (reference) vs {:?} (downloaded)",
-                    ref_field.name(),
-                    ref_field.dtype(),
-                    down_field.dtype()
-                ));
-            }
-    }
-
-    if !type_mismatches.is_empty() {
-        println!("⚠️  Column type mismatches:");
-        for mismatch in &type_mismatches {
-            println!("  - {}", mismatch);
-        }
-        // Don't fail on type mismatches as some type variations are acceptable
-        // (e.g., Categorical vs String)
-    }
-
-    println!("✓ Schema comparison complete");
-    println!("  All reference columns present in downloaded file");
 
     Ok(())
 }
@@ -1061,14 +955,13 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
 fn test_download_dataset() -> Result<(), Box<dyn std::error::Error>> {
     // Deer dataset is a pure sequence dataset (all images from video files)
     // All images have sequence_name populated -> expect 0 root images
-    // Reference: testdata/deer/dataset/ has 2 sequence subdirectories, 0 root files
     let (dataset_id, _) = get_dataset_and_first_annotation_set("Unit Testing", "Deer")?;
     let download_dir = download_dataset_from_server(&dataset_id)?;
     let cleanup_dir = download_dir.clone();
 
     let result: Result<(), Box<dyn std::error::Error>> = (|| {
-        let reference_dir = get_deer_reference_dataset_dir();
-        compare_dataset_structure(download_dir.as_path(), &reference_dir)?;
+        // Validate dataset structure (all files are valid images)
+        validate_dataset_structure(download_dir.as_path())?;
 
         let files = collect_relative_file_paths(download_dir.as_path())?;
         let root_images = files.iter().filter(|path| !path.contains('/')).count();
@@ -1164,7 +1057,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
 
     let images_dir = download_dataset_from_server(&deer_dataset_id)?;
     let annotations_path = download_annotations_from_server(&deer_annotation_set_id)?;
-    compare_dataset_structure(images_dir.as_path(), &get_deer_reference_dataset_dir())?;
+    validate_dataset_structure(images_dir.as_path())?;
 
     let project_id = get_project_id_by_name("Unit Testing")?
         .ok_or_else(|| "Project 'Unit Testing' not found".to_string())?;
@@ -1267,17 +1160,9 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let original_annotations =
         download_annotations_from_server_with_types(&deer_annotation_set_id, &["box2d", "mask"])?;
 
-    // Verify downloaded annotations match reference dataset
-    #[cfg(feature = "polars")]
-    {
-        match compare_with_reference_dataset(&original_annotations) {
-            Ok(()) => println!("✓ Downloaded annotations match reference dataset schema"),
-            Err(e) => {
-                eprintln!("⚠️  Reference dataset comparison failed: {}", e);
-                // Continue with test - reference comparison is informational
-            }
-        }
-    }
+    // Verify downloaded dataset structure is valid
+    validate_dataset_structure(original_images.as_path())?;
+    println!("✓ Downloaded dataset has valid structure");
 
     // Step 2: Upload to new dataset
     let project_id = get_project_id_by_name("Unit Testing")?

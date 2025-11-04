@@ -80,6 +80,9 @@ pub use crate::dataset::annotations_dataframe;
 #[cfg(feature = "polars")]
 pub use crate::dataset::samples_dataframe;
 
+#[cfg(feature = "polars")]
+pub use crate::dataset::unflatten_polygon_coordinates;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,9 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Annotation object tracking IDs now correctly preserved through upload/download cycle
-  - Fixed `Annotation.object_id` field serialization: now sends `object_reference` for uploads (server populate API expects this field name)
-  - Downloads continue to accept both `object_id` (new) and `object_reference` (legacy) from server list API
-  - Server has inconsistent field naming: populate expects `object_reference`, list returns `object_id`
+  - Fixed `Annotation.object_id` field serialization: now sends `object_reference` (server consumes and responds with this field name)
+  - Added `object_id` as alias for forward compatibility
 - Sample group assignments now correctly preserved through upload/download cycle
   - Fixed `Sample` struct serialization: now sends `group` field (was incorrectly sending `group_name`)
   - Server expects `group` for uploads, returns `group_name` in queries - client now handles both correctly
@@ -23,12 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Reduces Arrow file size by ~5-10% (integers more efficient than strings)
 
 ### Added
-- Test coverage: CLI roundtrip test now verifies groups and annotations are correctly preserved
-  - Added `compare_arrow_files()` helper function to verify Arrow file contents
-  - Verifies group assignments are preserved through download→upload→download cycle
-  - Verifies mask annotations are preserved (checks non-null mask count)
-  - Verifies box2d annotations are preserved (checks non-null box2d count)
-  - Provides detailed diagnostic output showing which groups/annotations were preserved
+- Mask polygon conversion helpers for public API
+  - Added `unflatten_polygon_coordinates()` function: reconstructs nested polygon structure from flat coordinates with NaN separators
+  - Enables CLI to properly convert Arrow file mask data back to Studio's expected nested format during upload
+  - Public API available for applications that need to parse EdgeFirst Arrow files
 - Comprehensive `DATASET_FORMAT.md` specification (v2.1.0)
   - Consolidated all dataset format documentation into single comprehensive document
   - Added 5 Mermaid diagrams for visual clarity (dataset architecture, format relationships, coordinate systems, format deviations, conversion flow)
@@ -51,13 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `__str__()` and `__repr__()`: String representations
   - `__eq__()`: Equality comparison with epsilon tolerance (1e-9) for numeric types
   - Enables natural Python usage: `float(param)`, `int(param)`, `param == 0.75`
-- Test coverage: Added comprehensive ID type tests in `test/test_ids.py`
-  - Validates string format for all 13 ID types (OrganizationID, ProjectID, DatasetID, etc.)
-  - Verifies consistency between `.uid` property and `str(.id)` for 9 classes
-- Test coverage: Added 27 unit tests to `error.rs` validating error wrapping behavior
-  - Tests all wrapped error types (IoError, JsonError, HttpError, etc.) preserve inner error messages
-  - Tests primitive-wrapped errors (RpcError, InvalidFileType, etc.) include original values
-  - Tests simple errors (InvalidResponse, NotImplemented, etc.) display correct messages
 - New DataFrame API: `samples_dataframe()` function with complete 2025.10 schema support
   - 13-column DataFrame (name, frame, object_reference, label, label_index, group, mask, box2d, box3d, size, location, pose, degradation)
   - Takes `&[Sample]` input for access to all sample metadata (GPS, IMU, degradation)

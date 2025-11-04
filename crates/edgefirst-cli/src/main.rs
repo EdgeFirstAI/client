@@ -940,32 +940,10 @@ fn parse_mask_from_dataframe(
     } else {
         return Ok(None);
     };
-    if !coords.is_empty() && coords.len().is_multiple_of(2) {
-        let mut polygons: Vec<Vec<(f32, f32)>> = Vec::new();
-        let mut current_polygon: Vec<(f32, f32)> = Vec::new();
-
-        // Parse coordinate pairs, using NaN as polygon separator
-        let mut i = 0;
-        while i < coords.len() {
-            let x = coords[i];
-            let y = coords[i + 1];
-
-            if x.is_nan() || y.is_nan() {
-                // NaN signals end of current polygon
-                if !current_polygon.is_empty() {
-                    polygons.push(current_polygon.clone());
-                    current_polygon.clear();
-                }
-            } else {
-                current_polygon.push((x, y));
-            }
-            i += 2;
-        }
-
-        // Add final polygon if not empty
-        if !current_polygon.is_empty() {
-            polygons.push(current_polygon);
-        }
+    if !coords.is_empty() {
+        // Use the unflatten helper to convert flat coords with NaN separators back to
+        // nested polygons
+        let polygons = edgefirst_client::unflatten_polygon_coordinates(&coords);
 
         if !polygons.is_empty() {
             let mask = edgefirst_client::Mask::new(polygons);

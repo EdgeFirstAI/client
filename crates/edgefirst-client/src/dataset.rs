@@ -893,8 +893,8 @@ pub struct Annotation {
     #[serde(rename = "group_name", skip_serializing_if = "Option::is_none")]
     group: Option<String>,
     /// Object tracking identifier across frames.
-    /// JSON field name: "object_reference" for upload (populate), "object_id" for download (list).
-    /// Server has inconsistent naming between upload and download APIs.
+    /// JSON field name: "object_reference" for upload (populate), "object_id"
+    /// for download (list).
     #[serde(
         rename = "object_reference",
         alias = "object_id",
@@ -1118,23 +1118,7 @@ fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
 fn convert_mask_to_series(mask: &Mask) -> Series {
     use polars::series::Series;
 
-    let mut list = Vec::new();
-    for polygon in &mask.polygon {
-        for &(x, y) in polygon {
-            list.push(x);
-            list.push(y);
-        }
-        // Separate polygons with NaN
-        list.push(f32::NAN);
-    }
-
-    // Remove the last NaN if it exists
-    let list = if !list.is_empty() {
-        list[..list.len() - 1].to_vec()
-    } else {
-        vec![]
-    };
-
+    let list = flatten_polygon_coordinates(&mask.polygon);
     Series::new("mask".into(), list)
 }
 
@@ -1595,6 +1579,95 @@ fn extract_sample_name(image_name: &str) -> String {
         .unwrap_or_else(|| name.clone())
 }
 
+// ============================================================================
+// MASK POLYGON CONVERSION HELPERS
+// ============================================================================
+
+/// Flatten polygon coordinates into a flat vector of f32 values for Polars
+/// Series.
+///
+/// Converts nested polygon structure into a flat list of coordinates with
+/// NaN separators between polygons:
+/// - Input: [[(x1, y1), (x2, y2)], [(x3, y3)]]
+/// - Output: [x1, y1, x2, y2, NaN, x3, y3]
+#[cfg(feature = "polars")]
+fn flatten_polygon_coordinates(polygons: &[Vec<(f32, f32)>]) -> Vec<f32> {
+    let mut list = Vec::new();
+
+    for polygon in polygons {
+        for &(x, y) in polygon {
+            list.push(x);
+            list.push(y);
+        }
+        // Separate polygons with NaN
+        if !polygons.is_empty() {
+            list.push(f32::NAN);
+        }
+    }
+
+    // Remove the last NaN if it exists (trailing separator not needed)
+    if !list.is_empty() && list[list.len() - 1].is_nan() {
+        list.pop();
+    }
+
+    list
+}
+
+/// Unflatten coordinates with NaN separators back to nested polygon
+/// structure.
+///
+/// Converts flat list of coordinates with NaN separators back to nested
+/// polygon structure (inverse of flatten_polygon_coordinates):
+/// - Input: [x1, y1, x2, y2, NaN, x3, y3]
+/// - Output: [[(x1, y1), (x2, y2)], [(x3, y3)]]
+///
+/// This function is used when parsing Arrow files to reconstruct the nested
+/// polygon format required by the EdgeFirst Studio API.
+///
+/// # Examples
+///
+/// ```rust
+/// use edgefirst_client::unflatten_polygon_coordinates;
+///
+/// let coords = vec![1.0, 2.0, 3.0, 4.0, f32::NAN, 5.0, 6.0];
+/// let polygons = unflatten_polygon_coordinates(&coords);
+///
+/// assert_eq!(polygons.len(), 2);
+/// assert_eq!(polygons[0], vec![(1.0, 2.0), (3.0, 4.0)]);
+/// assert_eq!(polygons[1], vec![(5.0, 6.0)]);
+/// ```
+#[cfg(feature = "polars")]
+pub fn unflatten_polygon_coordinates(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
+    let mut polygons = Vec::new();
+    let mut current_polygon = Vec::new();
+    let mut i = 0;
+
+    while i < coords.len() {
+        if coords[i].is_nan() {
+            // NaN separator - save current polygon and start new one
+            if !current_polygon.is_empty() {
+                polygons.push(current_polygon.clone());
+                current_polygon.clear();
+            }
+            i += 1;
+        } else if i + 1 < coords.len() {
+            // Have both x and y coordinates
+            current_polygon.push((coords[i], coords[i + 1]));
+            i += 2;
+        } else {
+            // Odd number of coordinates (malformed data) - skip last value
+            i += 1;
+        }
+    }
+
+    // Save the last polygon if not empty
+    if !current_polygon.is_empty() {
+        polygons.push(current_polygon);
+    }
+
+    polygons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1603,36 +1676,6 @@ mod tests {
     // ============================================================================
     // TEST HELPER FUNCTIONS (Pure Logic for Testing)
     // ============================================================================
-
-    /// Flatten polygon coordinates into a flat vector of f32 values for Polars
-    /// Series.
-    ///
-    /// Converts nested polygon structure into a flat list of coordinates with
-    /// NaN separators between polygons:
-    /// - Input: [[(x1, y1), (x2, y2)], [(x3, y3)]]
-    /// - Output: [x1, y1, x2, y2, NaN, x3, y3]
-    #[cfg(feature = "polars")]
-    fn flatten_polygon_coordinates(polygons: &[Vec<(f32, f32)>]) -> Vec<f32> {
-        let mut list = Vec::new();
-
-        for polygon in polygons {
-            for &(x, y) in polygon {
-                list.push(x);
-                list.push(y);
-            }
-            // Separate polygons with NaN
-            if !polygons.is_empty() {
-                list.push(f32::NAN);
-            }
-        }
-
-        // Remove the last NaN if it exists (trailing separator not needed)
-        if !list.is_empty() && list[list.len() - 1].is_nan() {
-            list.pop();
-        }
-
-        list
-    }
 
     /// Flatten legacy grouped annotation format to a single vector.
     ///
@@ -1799,6 +1842,45 @@ mod tests {
         let result = flatten_polygon_coordinates(&polygons);
 
         assert_eq!(result.len(), 0);
+    }
+
+    // ==== Polygon Unflattening Tests ====
+    #[test]
+    #[cfg(feature = "polars")]
+    fn test_unflatten_polygon_coordinates_single_polygon() {
+        let coords = vec![1.0, 2.0, 3.0, 4.0];
+        let result = unflatten_polygon_coordinates(&coords);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 2);
+        assert_eq!(result[0][0], (1.0, 2.0));
+        assert_eq!(result[0][1], (3.0, 4.0));
+    }
+
+    #[test]
+    #[cfg(feature = "polars")]
+    fn test_unflatten_polygon_coordinates_multiple_polygons() {
+        let coords = vec![1.0, 2.0, 3.0, 4.0, f32::NAN, 5.0, 6.0, 7.0, 8.0];
+        let result = unflatten_polygon_coordinates(&coords);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), 2);
+        assert_eq!(result[0][0], (1.0, 2.0));
+        assert_eq!(result[0][1], (3.0, 4.0));
+        assert_eq!(result[1].len(), 2);
+        assert_eq!(result[1][0], (5.0, 6.0));
+        assert_eq!(result[1][1], (7.0, 8.0));
+    }
+
+    #[test]
+    #[cfg(feature = "polars")]
+    fn test_unflatten_polygon_coordinates_roundtrip() {
+        // Test that flatten -> unflatten produces the same result
+        let original = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
+        let flattened = flatten_polygon_coordinates(&original);
+        let result = unflatten_polygon_coordinates(&flattened);
+
+        assert_eq!(result, original);
     }
 
     // ==== Annotation Format Flattening Tests ====
