@@ -77,6 +77,9 @@ pub use crate::{
 #[cfg(feature = "polars")]
 pub use crate::dataset::annotations_dataframe;
 
+#[cfg(feature = "polars")]
+pub use crate::dataset::samples_dataframe;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +132,58 @@ mod tests {
         client.verify_token().await?;
 
         Ok(client)
+    }
+
+    /// Helper: Get training session for "Unit Testing" project
+    async fn get_training_session_for_artifacts() -> Result<TrainingSession, Error> {
+        let client = get_client().await?;
+        let project = client
+            .projects(Some("Unit Testing"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidParameters("Unit Testing project not found".into()))?;
+        let experiment = client
+            .experiments(project.id(), Some("Unit Testing"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidParameters("Unit Testing experiment not found".into()))?;
+        let session = client
+            .training_sessions(experiment.id(), Some("modelpack-960x540"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                Error::InvalidParameters("modelpack-960x540 session not found".into())
+            })?;
+        Ok(session)
+    }
+
+    /// Helper: Get training session for "modelpack-usermanaged"
+    async fn get_training_session_for_checkpoints() -> Result<TrainingSession, Error> {
+        let client = get_client().await?;
+        let project = client
+            .projects(Some("Unit Testing"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidParameters("Unit Testing project not found".into()))?;
+        let experiment = client
+            .experiments(project.id(), Some("Unit Testing"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::InvalidParameters("Unit Testing experiment not found".into()))?;
+        let session = client
+            .training_sessions(experiment.id(), Some("modelpack-usermanaged"))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                Error::InvalidParameters("modelpack-usermanaged session not found".into())
+            })?;
+        Ok(session)
     }
 
     #[tokio::test]
@@ -231,6 +286,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_download_artifact_success() -> Result<(), Error> {
+        let trainer = get_training_session_for_artifacts().await?;
+        let client = get_client().await?;
+        let artifacts = client.artifacts(trainer.id()).await?;
+        assert!(!artifacts.is_empty());
+
+        let test_dir = get_test_data_dir();
+        let artifact = &artifacts[0];
+        let output_path = test_dir.join(artifact.name());
+
+        client
+            .download_artifact(
+                trainer.id(),
+                artifact.name(),
+                Some(output_path.clone()),
+                None,
+            )
+            .await?;
+
+        assert!(output_path.exists());
+        if output_path.exists() {
+            std::fs::remove_file(&output_path)?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_artifact_not_found() -> Result<(), Error> {
+        let trainer = get_training_session_for_artifacts().await?;
+        let client = get_client().await?;
+        let test_dir = get_test_data_dir();
+        let fake_path = test_dir.join("nonexistent_artifact.txt");
+
+        let result = client
+            .download_artifact(
+                trainer.id(),
+                "nonexistent_artifact.txt",
+                Some(fake_path.clone()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(!fake_path.exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_artifacts() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -277,6 +382,77 @@ mod tests {
             .download_artifact(trainer.id(), "fakefile.txt", Some(fake_path.clone()), None)
             .await;
         assert!(res.is_err());
+        assert!(!fake_path.exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_checkpoint_success() -> Result<(), Error> {
+        let trainer = get_training_session_for_checkpoints().await?;
+        let client = get_client().await?;
+        let test_dir = get_test_data_dir();
+
+        // Create temporary test file
+        let checkpoint_path = test_dir.join("test_checkpoint.txt");
+        {
+            let mut f = File::create(&checkpoint_path)?;
+            f.write_all(b"Test Checkpoint Content")?;
+        }
+
+        // Upload the checkpoint
+        trainer
+            .upload(
+                &client,
+                &[(
+                    "checkpoints/test_checkpoint.txt".to_string(),
+                    checkpoint_path.clone(),
+                )],
+            )
+            .await?;
+
+        // Download and verify
+        let download_path = test_dir.join("downloaded_checkpoint.txt");
+        client
+            .download_checkpoint(
+                trainer.id(),
+                "test_checkpoint.txt",
+                Some(download_path.clone()),
+                None,
+            )
+            .await?;
+
+        let content = read_to_string(&download_path)?;
+        assert_eq!(content, "Test Checkpoint Content");
+
+        // Cleanup
+        if checkpoint_path.exists() {
+            std::fs::remove_file(&checkpoint_path)?;
+        }
+        if download_path.exists() {
+            std::fs::remove_file(&download_path)?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_checkpoint_not_found() -> Result<(), Error> {
+        let trainer = get_training_session_for_checkpoints().await?;
+        let client = get_client().await?;
+        let test_dir = get_test_data_dir();
+        let fake_path = test_dir.join("nonexistent_checkpoint.txt");
+
+        let result = client
+            .download_checkpoint(
+                trainer.id(),
+                "nonexistent_checkpoint.txt",
+                Some(fake_path.clone()),
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
         assert!(!fake_path.exists());
 
         Ok(())
@@ -351,6 +527,94 @@ mod tests {
         if checkpoint2_path.exists() {
             std::fs::remove_file(&checkpoint2_path)?;
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_task_retrieval() -> Result<(), Error> {
+        let client = get_client().await?;
+
+        // Test: Get all tasks
+        let tasks = client.tasks(None, None, None, None).await?;
+        assert!(!tasks.is_empty());
+
+        // Test: Get task info for first task
+        let task_id = tasks[0].id();
+        let task_info = client.task_info(task_id).await?;
+        assert_eq!(task_info.id(), task_id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_task_filtering_by_name() -> Result<(), Error> {
+        let client = get_client().await?;
+        let project = client.projects(Some("Unit Testing")).await?;
+        let project = project
+            .first()
+            .expect("'Unit Testing' project should exist");
+
+        // Test: Get tasks by name
+        let tasks = client
+            .tasks(Some("modelpack-usermanaged"), None, None, None)
+            .await?;
+
+        if !tasks.is_empty() {
+            // Get detailed info for each task
+            let task_infos = tasks
+                .into_iter()
+                .map(|t| client.task_info(t.id()))
+                .collect::<Vec<_>>();
+            let task_infos = futures::future::try_join_all(task_infos).await?;
+
+            // Filter by project
+            let filtered = task_infos
+                .into_iter()
+                .filter(|t| t.project_id() == Some(project.id()))
+                .collect::<Vec<_>>();
+
+            if !filtered.is_empty() {
+                assert_eq!(filtered[0].project_id(), Some(project.id()));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_task_status_and_stages() -> Result<(), Error> {
+        let client = get_client().await?;
+
+        // Get first available task
+        let tasks = client.tasks(None, None, None, None).await?;
+        if tasks.is_empty() {
+            return Ok(());
+        }
+
+        let task_id = tasks[0].id();
+
+        // Test: Get task status
+        let status = client.task_status(task_id, "training").await?;
+        assert_eq!(status.id(), task_id);
+        assert_eq!(status.status(), "training");
+
+        // Test: Set stages
+        let stages = [
+            ("download", "Downloading Dataset"),
+            ("train", "Training Model"),
+            ("export", "Exporting Model"),
+        ];
+        client.set_stages(task_id, &stages).await?;
+
+        // Test: Update stage
+        client
+            .update_stage(task_id, "download", "running", "Downloading dataset", 50)
+            .await?;
+
+        // Verify task with updated stages
+        let updated_task = client.task_info(task_id).await?;
+        assert_eq!(updated_task.id(), task_id);
 
         Ok(())
     }

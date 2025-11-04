@@ -25,8 +25,10 @@ indicatif = { workspace = true }
 inquire = { workspace = true }
 polars = { workspace = true, optional = true }
 serde_json = { workspace = true }
+sha1 = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

@@ -154,7 +154,7 @@ async fn main() -> Result<(), Error> {
         sample.width.unwrap(),
         sample.height.unwrap()
     );
-    println!("Group: {}", sample.group.as_ref().unwrap());
+    println!("Group: {}", sample.group().as_ref().unwrap());
     println!("Annotations: {}", sample.annotations.len());
     println!(
         "Bounding Box (pixel): ({:.1}, {:.1}) - {:.1}x{:.1}",

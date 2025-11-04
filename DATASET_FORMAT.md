@@ -303,7 +303,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 (
     ('name', String),
     ('frame', UInt64),
-    ('object_reference', String),
+  ('object_id', String),
     ('label', Categorical(ordering='physical')),
     ('label_index', UInt64),
     ('group', Categorical(ordering='physical')),
@@ -357,7 +357,7 @@ df = pl.read_ipc("dataset.arrow")
   "height": 1080,
   "frame_number": 1,
   "sequence_name": "deer_sequence",
-  "group": "train",
+  "group_name": "train",
   "sensors": {
     "gps": {
       "latitude": 37.7749,
@@ -374,7 +374,7 @@ df = pl.read_ipc("dataset.arrow")
     {
       "label_name": "deer",
       "label_index": 0,
-      "object_reference": "550e8400-e29b-41d4-a716-446655440000",
+  "object_id": "550e8400-e29b-41d4-a716-446655440000",
       "box2d": {
         "x": 0.683854,
         "y": 0.342593,
@@ -452,22 +452,24 @@ df = pl.read_ipc("dataset.arrow")
 - Sequence: `{name}_{frame}.{ext}` → `deer_sequence_042.jpg`
 - Standalone: `{name}.{ext}` → `background.jpg`
 
-#### object_reference
+#### object_id
 **Type**: `String` (nullable)  
-**Description**: Unique identifier for tracking objects across frames and linking different annotation types
+**Description**: Unique identifier for tracking objects across frames and linking different annotation types.
 
 **Use cases**:
-- Tracking same object across video frames
-- Associating box2d with mask for same object
-- Multi-sensor data fusion
+- Tracking the same object across subsequent frames in a sequence
+- Associating multiple annotation geometries (e.g., Box2D + Mask) with one object
+- Multi-sensor data fusion where objects must be synchronized
 
-**Uniqueness**: Must be unique across **entire dataset** for a given object
+**Uniqueness**: Must be unique across the **entire dataset** for a given object.
 
-**Format**: UUID strongly recommended (guaranteed uniqueness)
+**Format**: UUID strongly recommended (guaranteed uniqueness). Legacy exports may use custom identifiers; they remain supported but should be migrated to UUIDs when possible.
 
 **Examples**:
 - `550e8400-e29b-41d4-a716-446655440000` (UUID - recommended)
 - `deer_01`, `car_track_5` (ensure uniqueness manually)
+
+> **Compatibility note**: Prior documentation referred to this field as `object_reference`. The client now uses `object_id` while still accepting `object_reference` when parsing older data.
 
 #### label_name
 **Type**: `Categorical` (String)  
@@ -501,9 +503,10 @@ For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instea
 
 **DataFrame behavior**: Value repeated for each annotation row (table is flat)
 
-**JSON field name**: `group` (at sample level)
-
-**Typical values**: `train`, `val`, `test`
+**JSON field name**: `group_name` (at sample level, EdgeFirst Studio API)
+- **Note**: The EdgeFirst Studio API uses `group_name` for both upload and download
+- Arrow/DataFrame format uses column name `group` for compatibility with ML pipelines
+- When converting between JSON and DataFrame, map `group_name` ↔ `group`
 
 **Typical values**: `train`, `val`, `test`
 
@@ -908,10 +911,10 @@ for sample in samples:
     degradation = sample.get("degradation")  # Degradation field (new in 2025.10)
     
     for ann in sample["annotations"]:
-        row = {
+    row = {
             "name": extract_name(sample["image_name"]),
             "frame": sample.get("frame_number"),
-            "object_reference": ann.get("object_reference"),
+      "object_id": ann.get("object_id") or ann.get("object_reference"),
             "label": ann["label_name"],  # Column name: 'label'
             "label_index": ann.get("label_index"),
             "group": sample.get("group"),  # JSON field 'group' → column 'group'
@@ -994,7 +997,7 @@ for (name, frame), group_df in df.groupby(["name", "frame"]):
         ann = {
             "label_name": row["label"],  # DataFrame column 'label' → JSON 'label_name'
             "label_index": row["label_index"],
-            "object_reference": row["object_reference"],
+      "object_id": row.get("object_id") or row.get("object_reference"),
             "box2d": {  # Array [cx, cy, w, h] → JSON {x, y, w, h}
                 "x": box2d_array[0] - box2d_array[2] / 2,  # cx - w/2
                 "y": box2d_array[1] - box2d_array[3] / 2,  # cy - h/2
@@ -1016,7 +1019,7 @@ for (name, frame), group_df in df.groupby(["name", "frame"]):
                 "l": box3d_array[5]
             }
         
-        annotations.append(ann)
+  annotations.append(ann)
     
     sample = {
         "image_name": f"{name}_{frame}.camera.jpeg" if frame else f"{name}.jpg",
@@ -1172,7 +1175,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 **DataFrame column names** (backward compatible):
 - `label` (Categorical): Label name - standard since 2025.01
 - `group` (Categorical): Dataset split (train/val/test) - standard since 2025.01
-- `object_reference` (String): UUID for object tracking - standard since 2025.01
+- `object_id` (String): UUID for object tracking - standard since 2025.01 (legacy alias `object_reference` accepted on read)
 - `label_index` (UInt64): Numerical label index - standard since 2025.01
 
 #### Benefits
@@ -1190,7 +1193,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 ```python
 # 2025.01 DataFrame (9 columns) - still valid
 df_old = load_arrow("annotations_2025_01.arrow")
-# Works as before: name, frame, object_reference, label, label_index, 
+# Works as before: name, frame, object_id, label, label_index, 
 #                  group, mask, box2d, box3d
 
 # 2025.10 DataFrame (13 columns) - with optional metadata
@@ -1232,7 +1235,7 @@ Baseline format with core annotation fields. Sample metadata (width, height, GPS
 (
     ('name', String),
     ('frame', UInt64),
-    ('object_reference', String),
+    ('object_id', String),
     ('label', Categorical),
     ('label_index', UInt64),
     ('group', Categorical),

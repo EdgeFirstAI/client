@@ -1290,7 +1290,11 @@ class Annotation:
         ...
 
     def set_object_id(self, object_id: Optional[str]) -> None:
-        """Set the object ID for this annotation."""
+        """Set the object identifier for this annotation."""
+        ...
+
+    def set_object_reference(self, object_reference: Optional[str]) -> None:
+        """Legacy alias for :meth:`set_object_id`."""
         ...
 
     def set_box2d(self, box2d: Optional[Box2d]) -> None:
@@ -1356,8 +1360,13 @@ class Annotation:
         A unique identifier for the object associated with this annotation.
 
         Returns:
-            Optional[str]: The object ID or None.
+            Optional[str]: The object identifier or None.
         """
+        ...
+
+    @property
+    def object_reference(self) -> Optional[str]:
+        """Legacy alias for :attr:`object_id`."""
         ...
 
     @property
@@ -2887,6 +2896,10 @@ class Client:
         To get the annotations as a vector of AnnotationGroup objects, use the
         `annotations` method instead.
 
+        .. deprecated::
+            Use ``samples_dataframe()`` for complete 2025.10 schema support.
+            This method will be removed in a future version.
+
         Args:
             annotation_set_id (AnnotationSetUID): ID of the annotation set.
             groups (List[str]): Dataset groups to include.
@@ -2896,6 +2909,38 @@ class Client:
 
         Returns:
             DataFrame: A Polars DataFrame containing the annotations.
+        """
+        ...
+
+    def samples_dataframe(
+        self,
+        dataset_id: DatasetUID,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        groups: List[str] = [],
+        annotation_types: List[AnnotationType] = [],
+        progress: Optional[Progress] = None,
+    ) -> DataFrame:
+        """
+        Get samples as a DataFrame with complete 2025.10 schema.
+
+        This method returns a DataFrame with 13 columns following the
+        EdgeFirst Dataset Format 2025.10 specification, including optional
+        metadata columns (size, location, pose, degradation) that may be
+        populated from sample sensor data.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            annotation_set_id (AnnotationSetUID): Optional annotation set
+                                                filter.
+            groups (List[str]): Dataset groups to include.
+            annotation_types (List[AnnotationType]): Types of annotations to
+                                                     include.
+            progress (Optional[Sender[Progress]]): Optional progress channel.
+
+        Returns:
+            DataFrame: A Polars DataFrame with 13 columns (name, frame,
+                      object_id, label, label_index, group, mask, box2d,
+                      box3d, size, location, pose, degradation).
         """
         ...
 

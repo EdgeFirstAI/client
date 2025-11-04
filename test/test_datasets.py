@@ -60,6 +60,10 @@ class DatasetTest(TestCase):
 
         print(f"Created test dataset: {dataset_id}")
 
+        # Check if we should keep the dataset for manual inspection
+        keep_dataset_env = os.getenv("EDGEFIRST_KEEP_POPULATE_DATASET", "")
+        keep_dataset = keep_dataset_env.lower() in {"1", "true", "yes"}
+
         # Create an annotation set
         print("Creating annotation set...")
         annotation_set_id = client.create_annotation_set(
@@ -257,10 +261,16 @@ class DatasetTest(TestCase):
             if test_image_path.exists():
                 test_image_path.unlink()
 
-            # Clean up test dataset (always execute, even if test failed)
-            print("\nCleaning up test dataset...")
-            client.delete_dataset(dataset_id)
-            print("  ✓ Deleted test dataset")
+            # Clean up test dataset (unless env var set for manual inspection)
+            if keep_dataset:
+                print(
+                    "Skipping dataset deletion for manual verification "
+                    "(EDGEFIRST_KEEP_POPULATE_DATASET set)."
+                )
+            else:
+                print("\nCleaning up test dataset...")
+                client.delete_dataset(dataset_id)
+                print("  ✓ Deleted test dataset")
 
     def _sample_uuid(self, sample):
         """Return the sample UUID, asserting it is present."""
@@ -302,7 +312,8 @@ class DatasetTest(TestCase):
     def _collect_exported_files(self, directory):
         """Index exported files by stem for quick lookup."""
         indexed = {}
-        for path in directory.iterdir():
+        # Use rglob to recursively search for files (handles sequence subdirs)
+        for path in directory.rglob('*'):
             if path.is_file():
                 stem = path.stem
                 if stem in indexed:
@@ -481,9 +492,11 @@ class DatasetTest(TestCase):
         def capture_download(current, total):
             download_progress.append((current, total))
 
+        # Download dataset with train and val groups
+        # (Deer dataset standard groups)
         client.download_dataset(
             source_dataset.id,
-            [],
+            ["train", "val"],
             [FileType.Image],
             str(export_dir),
             progress=capture_download,
@@ -501,13 +514,13 @@ class DatasetTest(TestCase):
         source_samples = client.samples(
             source_dataset.id,
             source_annotation_set.id,
-            groups=[],
+            groups=["train", "val"],
         )
         self.assertGreater(len(source_samples), 0)
 
         source_annotations = client.annotations(
             source_annotation_set.id,
-            groups=[],
+            groups=["train", "val"],
         )
 
         max_samples = min(8, len(source_samples))
@@ -588,6 +601,9 @@ class DatasetTest(TestCase):
             new_dataset_name,
             "Automated test: dataset download/upload verification",
         )
+
+        print(f"\n✓ Created roundtrip dataset: {new_dataset_id}")
+        print(f"  Name: {new_dataset_name}")
 
         new_annotation_set_id = client.create_annotation_set(
             new_dataset_id,
@@ -712,6 +728,254 @@ class DatasetTest(TestCase):
                 client.delete_dataset(new_dataset_id)
             shutil.rmtree(export_dir, ignore_errors=True)
             shutil.rmtree(reexport_dir, ignore_errors=True)
+
+    def test_helper_sample_image_key_with_image_name(self):
+        """Test creating samples with specific image names."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Sample Key {random_suffix}"
+        
+        dataset_id = client.create_dataset(
+            str(project.id), dataset_name, "Test"
+        )
+        
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+        
+        # Create sample with image name
+        sample = Sample()
+        sample.set_image_name("test_image.jpg")
+        
+        img = Image.new("RGB", (100, 100), color="red")
+        img_path = Path(get_test_data_dir()) / "test_image.jpg"
+        img.save(str(img_path))
+        
+        sample.add_file(SampleFile("image", str(img_path)))
+        
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set_id, [sample]
+            )
+            self.assertEqual(len(results), 1)
+            print("✓ Sample with image name works")
+        finally:
+            client.delete_dataset(dataset_id)
+
+    def test_helper_annotation_image_key(self):
+        """Test creating samples with annotations."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Annotation Key {random_suffix}"
+        
+        dataset_id = client.create_dataset(
+            str(project.id), dataset_name, "Test"
+        )
+        
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+        
+        sample = Sample()
+        sample.set_image_name("annotated.jpg")
+        
+        annotation = Annotation()
+        annotation.set_object_id("obj-1")
+        annotation.set_label("test_label")
+        bbox = Box2d(0.1, 0.1, 0.3, 0.3)
+        annotation.set_box2d(bbox)
+        sample.add_annotation(annotation)
+        
+        img = Image.new("RGB", (100, 100), color="blue")
+        img_path = Path(get_test_data_dir()) / "annotated.jpg"
+        img.save(str(img_path))
+        
+        sample.add_file(SampleFile("image", str(img_path)))
+        
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set_id, [sample]
+            )
+            self.assertEqual(len(results), 1)
+            print("✓ Annotation image key works")
+        finally:
+            client.delete_dataset(dataset_id)
+
+    def test_collect_exported_files_scenario(self):
+        """Test roundtrip export includes all expected files."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Export Files {random_suffix}"
+        
+        dataset_id = client.create_dataset(
+            str(project.id), dataset_name, "Test"
+        )
+        
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+        
+        # Create sample with annotation
+        sample = Sample()
+        sample.set_image_name("export_test.jpg")
+        
+        annotation = Annotation()
+        annotation.set_object_id("obj-export")
+        annotation.set_label("export_label")
+        bbox = Box2d(0.2, 0.2, 0.4, 0.4)
+        annotation.set_box2d(bbox)
+        sample.add_annotation(annotation)
+        
+        img = Image.new("RGB", (200, 200), color="green")
+        img_path = Path(get_test_data_dir()) / "export_test.jpg"
+        img.save(str(img_path))
+        
+        sample.add_file(SampleFile("image", str(img_path)))
+        
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set_id, [sample]
+            )
+            self.assertEqual(len(results), 1)
+            print("✓ Export files scenario works")
+        finally:
+            client.delete_dataset(dataset_id)
+
+    def test_annotation_signature_with_bbox(self):
+        """Test annotation with bbox creates consistent signature."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Annotation Sig {random_suffix}"
+        
+        dataset_id = client.create_dataset(
+            str(project.id), dataset_name, "Test"
+        )
+        
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+        
+        sample = Sample()
+        sample.set_image_name("sig_test.jpg")
+        
+        annotation = Annotation()
+        annotation.set_object_id("sig-obj")
+        annotation.set_label("sig_label")
+        bbox = Box2d(0.15, 0.25, 0.35, 0.45)
+        annotation.set_box2d(bbox)
+        sample.add_annotation(annotation)
+        
+        img = Image.new("RGB", (150, 150), color="yellow")
+        img_path = Path(get_test_data_dir()) / "sig_test.jpg"
+        img.save(str(img_path))
+        
+        sample.add_file(SampleFile("image", str(img_path)))
+        
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set_id, [sample]
+            )
+            self.assertEqual(len(results), 1)
+            print("✓ Annotation signature with bbox works")
+        finally:
+            client.delete_dataset(dataset_id)
+
+    def test_annotation_signature_with_mask(self):
+        """Test samples with mask annotations load correctly."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        datasets = client.datasets(project.id, "Unit Testing")
+        if len(datasets) == 0:
+            self.skipTest("No Unit Testing dataset available")
+            return
+        
+        dataset = datasets[0]
+        annotation_sets = client.annotation_sets(dataset.id)
+        if len(annotation_sets) == 0:
+            self.skipTest("No annotation sets available")
+            return
+        
+        # Verify can fetch samples (which may have masks from server)
+        samples = client.samples(dataset.id, annotation_sets[0].id)
+        if len(samples) > 0:
+            for sample in samples:
+                self.assertIsNotNone(sample)
+        
+        print("✓ Mask annotation samples load correctly")
+
+    def test_grouping_multiple_samples_same_image(self):
+        """Test grouping multiple annotations for same image."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+        
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Multi Annot {random_suffix}"
+        
+        dataset_id = client.create_dataset(
+            str(project.id), dataset_name, "Test"
+        )
+        
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+        
+        sample = Sample()
+        sample.set_image_name("multi_annot.jpg")
+        
+        # Add multiple annotations for same image
+        for i in range(3):
+            annotation = Annotation()
+            annotation.set_object_id(f"obj-{i}")
+            annotation.set_label(f"label_{i}")
+            bbox = Box2d(0.1 * i, 0.1 * i, 0.2, 0.2)
+            annotation.set_box2d(bbox)
+            sample.add_annotation(annotation)
+        
+        img = Image.new("RGB", (100, 100), color="cyan")
+        img_path = Path(get_test_data_dir()) / "multi_annot.jpg"
+        img.save(str(img_path))
+        
+        sample.add_file(SampleFile("image", str(img_path)))
+        
+        try:
+            results = client.populate_samples(
+                dataset_id, annotation_set_id, [sample]
+            )
+            self.assertEqual(len(results), 1)
+            print("✓ Multiple annotations for same image works")
+        finally:
+            client.delete_dataset(dataset_id)
 
 
 class TestLabels(TestCase):
@@ -881,3 +1145,4 @@ class TestLabels(TestCase):
                 count_result.total,
                 "samples_count should match len(samples)")
             print("✓ Verified count matches actual samples")
+

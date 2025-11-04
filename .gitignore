@@ -44,3 +44,6 @@ THIRD_PARTY*
 *.1
 
 env.sh
+
+# Server reference clone (excluded from version control)
+server/

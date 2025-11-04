@@ -21,6 +21,7 @@ use reqwest::{Body, header::CONTENT_LENGTH, multipart::Form};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     fs::create_dir_all,
     io::{SeekFrom, Write as _},
     path::{Path, PathBuf},
@@ -45,6 +46,32 @@ use polars::prelude::*;
 static MAX_TASKS: usize = 32;
 static MAX_RETRIES: u32 = 10;
 static PART_SIZE: usize = 100 * 1024 * 1024;
+
+fn sanitize_path_component(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "unnamed".to_string();
+    }
+
+    let component = Path::new(trimmed)
+        .file_name()
+        .unwrap_or_else(|| OsStr::new(trimmed));
+
+    let sanitized: String = component
+        .to_string_lossy()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect();
+
+    if sanitized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        sanitized
+    }
+}
 
 /// Progress information for long-running operations.
 ///
@@ -692,20 +719,46 @@ impl Client {
             async move {
                 for file_type in file_types {
                     if let Some(data) = sample.download(&client, file_type.clone()).await? {
-                        let file_ext = match file_type {
-                            FileType::Image => infer::get(&data)
-                                .expect("Failed to identify image file format for sample")
-                                .extension()
-                                .to_string(),
-                            t => t.to_string(),
+                        let (file_ext, is_image) = match file_type.clone() {
+                            FileType::Image => (
+                                infer::get(&data)
+                                    .expect("Failed to identify image file format for sample")
+                                    .extension()
+                                    .to_string(),
+                                true,
+                            ),
+                            other => (other.to_string(), false),
                         };
 
-                        let file_name = format!(
-                            "{}.{}",
-                            sample.name().unwrap_or_else(|| "unknown".to_string()),
-                            file_ext
-                        );
-                        let file_path = output.join(&file_name);
+                        // Determine target directory based on sequence membership
+                        // - If sequence_name exists: dataset/sequence_name/
+                        // - If no sequence_name: dataset/ (root level)
+                        // NOTE: group (train/val/test) is NOT used for directory structure
+                        let sequence_dir = sample
+                            .sequence_name()
+                            .map(|name| sanitize_path_component(name));
+
+                        let target_dir = sequence_dir
+                            .map(|seq| output.join(seq))
+                            .unwrap_or_else(|| output.clone());
+                        fs::create_dir_all(&target_dir).await?;
+
+                        let sanitized_sample_name = sample
+                            .name()
+                            .map(|name| sanitize_path_component(&name))
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        let image_name = sample.image_name().map(sanitize_path_component);
+
+                        let file_name = if is_image {
+                            image_name.unwrap_or_else(|| {
+                                format!("{}.{}", sanitized_sample_name, file_ext)
+                            })
+                        } else {
+                            format!("{}.{}", sanitized_sample_name, file_ext)
+                        };
+
+                        let file_path = target_dir.join(&file_name);
 
                         let mut file = File::create(&file_path).await?;
                         file.write_all(&data).await?;
@@ -917,8 +970,9 @@ impl Client {
                 let mut annotation = Annotation::new();
                 annotation.set_sample_id(sample.id());
                 annotation.set_name(sample.name());
-                annotation.set_group(sample.group().cloned());
                 annotation.set_sequence_name(sample.sequence_name().cloned());
+                annotation.set_frame_number(sample.frame_number());
+                annotation.set_group(sample.group().cloned());
                 annotations.push(annotation);
                 continue;
             }
@@ -927,12 +981,38 @@ impl Client {
                 let mut annotation = annotation.clone();
                 annotation.set_sample_id(sample.id());
                 annotation.set_name(sample.name());
-                annotation.set_group(sample.group().cloned());
                 annotation.set_sequence_name(sample.sequence_name().cloned());
+                annotation.set_frame_number(sample.frame_number());
+                annotation.set_group(sample.group().cloned());
                 Self::set_label_index_from_map(&mut annotation, labels);
                 annotations.push(annotation);
             }
         }
+    }
+
+    /// Helper to parse frame number from image_name when sequence_name is
+    /// present. This ensures frame_number is always derived from the image
+    /// filename, not from the server's frame_number field (which may be
+    /// inconsistent).
+    ///
+    /// Returns Some(frame_number) if sequence_name is present and frame can be
+    /// parsed, otherwise None.
+    fn parse_frame_from_image_name(
+        image_name: Option<&String>,
+        sequence_name: Option<&String>,
+    ) -> Option<u32> {
+        use std::path::Path;
+
+        let sequence = sequence_name?;
+        let name = image_name?;
+
+        // Extract stem (remove extension)
+        let stem = Path::new(name).file_stem().and_then(|s| s.to_str())?;
+
+        // Parse frame from format: "sequence_XXX" where XXX is the frame number
+        stem.strip_prefix(sequence)
+            .and_then(|suffix| suffix.strip_prefix('_'))
+            .and_then(|frame_str| frame_str.parse::<u32>().ok())
     }
 
     /// Helper to set label index from a label map
@@ -1040,11 +1120,27 @@ impl Client {
                     .samples
                     .into_iter()
                     .map(|s| {
+                        // Use server's frame_number if valid (>= 0 after deserialization)
+                        // Otherwise parse from image_name as fallback
+                        // This ensures we respect explicit frame_number from uploads
+                        // while still handling legacy data that only has filename encoding
+                        let frame_number = s.frame_number.or_else(|| {
+                            Self::parse_frame_from_image_name(
+                                s.image_name.as_ref(),
+                                s.sequence_name.as_ref(),
+                            )
+                        });
+
                         let mut anns = s.annotations().to_vec();
                         for ann in &mut anns {
+                            // Set annotation fields from parent sample
+                            ann.set_name(s.name());
+                            ann.set_group(s.group().cloned());
+                            ann.set_sequence_name(s.sequence_name().cloned());
+                            ann.set_frame_number(frame_number);
                             Self::set_label_index_from_map(ann, context.labels);
                         }
-                        s.with_annotations(anns)
+                        s.with_annotations(anns).with_frame_number(frame_number)
                     })
                     .collect::<Vec<_>>(),
             );
@@ -1345,11 +1441,44 @@ impl Client {
     /// the annotations returned.  Images which do not have any annotations
     /// are included in the result.
     ///
-    /// The result is a DataFrame following the EdgeFirst Dataset Format
-    /// definition.
+    /// Get annotations as a DataFrame (2025.01 schema).
     ///
-    /// To get the annotations as a vector of AnnotationGroup objects, use the
+    /// **DEPRECATED**: Use [`Client::samples_dataframe()`] instead for full
+    /// 2025.10 schema support including optional metadata columns.
+    ///
+    /// The result is a DataFrame following the EdgeFirst Dataset Format
+    /// definition with 9 columns (original schema). Does not include new
+    /// optional columns added in 2025.10.
+    ///
+    /// # Migration
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::Client;
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// # let client = Client::new()?;
+    /// # let dataset_id = 1.into();
+    /// # let annotation_set_id = 1.into();
+    /// # let groups = vec![];
+    /// # let types = vec![];
+    /// // OLD (deprecated):
+    /// let df = client
+    ///     .annotations_dataframe(annotation_set_id, &groups, &types, None)
+    ///     .await?;
+    ///
+    /// // NEW (recommended):
+    /// let df = client
+    ///     .samples_dataframe(dataset_id, Some(annotation_set_id), &groups, &types, None)
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// To get the annotations as a vector of Annotation objects, use the
     /// `annotations` method instead.
+    #[deprecated(
+        since = "0.8.0",
+        note = "Use `samples_dataframe()` for complete 2025.10 schema support"
+    )]
     #[cfg(feature = "polars")]
     pub async fn annotations_dataframe(
         &self,
@@ -1363,7 +1492,61 @@ impl Client {
         let annotations = self
             .annotations(annotation_set_id, groups, types, progress)
             .await?;
+        #[allow(deprecated)]
         annotations_dataframe(&annotations)
+    }
+
+    /// Get samples as a DataFrame with complete 2025.10 schema.
+    ///
+    /// This is the recommended method for obtaining dataset annotations in
+    /// DataFrame format. It includes all sample metadata (size, location,
+    /// pose, degradation) as optional columns.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Dataset identifier
+    /// * `annotation_set_id` - Optional annotation set filter
+    /// * `groups` - Dataset groups to include (train, val, test)
+    /// * `types` - Annotation types to filter (bbox, box3d, mask)
+    /// * `progress` - Optional progress callback
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// # let client = Client::new()?;
+    /// # let dataset_id = 1.into();
+    /// # let annotation_set_id = 1.into();
+    /// let df = client
+    ///     .samples_dataframe(
+    ///         dataset_id,
+    ///         Some(annotation_set_id),
+    ///         &["train".to_string()],
+    ///         &[],
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// println!("DataFrame shape: {:?}", df.shape());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "polars")]
+    pub async fn samples_dataframe(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        groups: &[String],
+        types: &[AnnotationType],
+        progress: Option<Sender<Progress>>,
+    ) -> Result<DataFrame, Error> {
+        use crate::dataset::samples_dataframe;
+
+        let samples = self
+            .samples(dataset_id, annotation_set_id, types, groups, &[], progress)
+            .await?;
+        samples_dataframe(&samples)
     }
 
     /// List available snapshots.  If a name is provided, only snapshots

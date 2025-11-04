@@ -5,3 +5,4 @@ polars
 slipcover
 tqdm
 unittest-xml-reporting
+requests

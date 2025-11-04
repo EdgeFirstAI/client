@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Annotation object tracking IDs now correctly preserved through upload/download cycle
+  - Fixed `Annotation.object_id` field serialization: now sends `object_reference` for uploads (server populate API expects this field name)
+  - Downloads continue to accept both `object_id` (new) and `object_reference` (legacy) from server list API
+  - Server has inconsistent field naming: populate expects `object_reference`, list returns `object_id`
+- Sample group assignments now correctly preserved through upload/download cycle
+  - Fixed `Sample` struct serialization: now sends `group` field (was incorrectly sending `group_name`)
+  - Server expects `group` for uploads, returns `group_name` in queries - client now handles both correctly
+  - Workaround for server bug: batching logic groups by (sequence_uuid, group) tuple to prevent server from assigning all samples in batch to first sample's group
+  - Test comparison now uses (name, frame) tuple as sample key (previously used only name, causing false mismatches)
+- DataFrame frame column now correctly uses integer type (u32) instead of string
+  - `extract_annotation_name()` and `extract_annotation_name_from_sample()` now parse frame numbers from image_name and return `Option<u32>`
+  - Server's frame_number is now preferred when available; filename parsing used as fallback for legacy data
+  - Reduces Arrow file size by ~5-10% (integers more efficient than strings)
+
 ### Added
+- Test coverage: CLI roundtrip test now verifies groups and annotations are correctly preserved
+  - Added `compare_arrow_files()` helper function to verify Arrow file contents
+  - Verifies group assignments are preserved through download→upload→download cycle
+  - Verifies mask annotations are preserved (checks non-null mask count)
+  - Verifies box2d annotations are preserved (checks non-null box2d count)
+  - Provides detailed diagnostic output showing which groups/annotations were preserved
+- Comprehensive `DATASET_FORMAT.md` specification (v2.1.0)
+  - Consolidated all dataset format documentation into single comprehensive document
+  - Added 5 Mermaid diagrams for visual clarity (dataset architecture, format relationships, coordinate systems, format deviations, conversion flow)
+  - Documented JSON vs DataFrame format differences explicitly (Box2D: left/top vs cx/cy, Mask: nested lists vs NaN-separated flat lists, Sample metadata: JSON-only)
+  - Clarified Box2D coordinate system: JSON uses legacy Studio API format (left/top), DataFrame uses ML-standard center-point format (YOLO)
+  - Enhanced mask format documentation: JSON stores nested polygon lists, DataFrame uses flattened coordinates with NaN separators (Polars limitation)
+  - Documented sample metadata fields (width, height, GPS, IMU, degradation) as JSON-only (not in DataFrame)
+  - Complete directory structure examples for sequence-based, image-based, and mixed datasets
+  - Sensor data formats: Camera (JPEG/PNG with EXIF), Radar (PCD + data cube PNG), LiDAR (PCD)
+  - Conversion guidelines with code examples for bidirectional JSON ↔ DataFrame transformation
+  - Best practices for format selection, dataset organization, and annotation quality
 - `AGENTS.md`: Standardized AI coding agent instructions following agents.md specification
   - Project conventions, build commands, and pre-commit requirements
   - Succinct format optimized for AI assistants (GitHub Copilot, Cursor, Aider, etc.)
@@ -26,12 +58,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tests all wrapped error types (IoError, JsonError, HttpError, etc.) preserve inner error messages
   - Tests primitive-wrapped errors (RpcError, InvalidFileType, etc.) include original values
   - Tests simple errors (InvalidResponse, NotImplemented, etc.) display correct messages
+- New DataFrame API: `samples_dataframe()` function with complete 2025.10 schema support
+  - 13-column DataFrame (name, frame, object_reference, label, label_index, group, mask, box2d, box3d, size, location, pose, degradation)
+  - Takes `&[Sample]` input for access to all sample metadata (GPS, IMU, degradation)
+  - Optional columns populated from sample sensor data when available
+  - Rust: `edgefirst_client::samples_dataframe(&[Sample]) -> Result<DataFrame, Error>`
+  - Python: `Client.samples_dataframe(dataset_id, annotation_set_id, groups, annotation_types, progress) -> DataFrame`
+  - CLI: `download` command now generates 13-column Arrow files automatically
+- Sample struct: Added `degradation: Option<String>` field for image quality metadata
 
 ### Changed
+- Documentation consolidation: Removed redundant files
+  - Removed: `JSON_FORMAT_SPECIFICATION.md`, `DATASET_STRUCTURE.md`, `DATASET_DOCS_REVIEW.md`, `JSON_NESTED_ANALYSIS.md`, `JSON_OPTIONAL_FIELDS.md`, `FIELD_RENAMING_SUMMARY.md`
+  - All content merged into comprehensive `DATASET_FORMAT.md`
 - CLI: Refactored Arrow annotation parsing to eliminate type complexity warning
   - `parse_annotations_from_arrow` now returns `Vec<Sample>` directly instead of intermediate HashMap
   - Merged `build_samples_from_map` logic into single function for cleaner architecture
   - Added 9 comprehensive test cases covering all code paths and edge cases
+- DataFrame column names: Fixed incorrect naming to match 2025.10 specification
+  - "label_name" → "label" (categorical annotation class name)
+  - "group_name" → "group" (categorical dataset split: train/val/test)
+  - Affects `annotations_dataframe()` (deprecated) for backward compatibility
+
+### Deprecated
+- `annotations_dataframe()` function - use `samples_dataframe()` instead
+  - Rust: `edgefirst_client::annotations_dataframe(&[Annotation])`
+  - Python: `Client.annotations_dataframe(annotation_set_id, groups, annotation_types, progress)`
+  - Reason: Cannot access sample metadata (width, height, GPS, IMU, degradation) from Annotation struct
+  - Migration: Use `samples_dataframe()` with same parameters plus `dataset_id`
+  - Removal: Planned for v1.0.0 (several minor versions away)
+  - Still works: No breaking changes, will emit deprecation warnings
+
+### Migration Guide
+
+#### Rust API
+```rust
+// OLD (deprecated):
+let annotations = client.annotations(annotation_set_id, &groups, &types, Some(tx)).await?;
+let df = edgefirst_client::annotations_dataframe(&annotations)?;
+
+// NEW:
+let annotation_set = client.annotation_set(annotation_set_id).await?;
+let dataset_id = annotation_set.dataset_id();
+let df = client.samples_dataframe(dataset_id, Some(annotation_set_id), &groups, &types, Some(tx)).await?;
+```
+
+#### Python API
+```python
+# OLD (deprecated):
+df = client.annotations_dataframe(annotation_set_id, ["train"], [], None)
+
+# NEW:
+df = client.samples_dataframe(dataset_id, annotation_set_id, ["train"], [], None)
+```
+
+#### CLI (Automatic)
+The CLI `download` command automatically uses the new API - no user changes required.
+
+#### DataFrame Schema Changes
+- Column count: 9 columns → 13 columns
+- New optional columns: `size` (Array<UInt32, 2>), `location` (Array<Float32, 2>), `pose` (Array<Float32, 3>), `degradation` (String)
+- Column names: `label_name` → `label`, `group_name` → `group`
+- Existing columns unchanged: name, frame, object_reference, label_index, mask, box2d, box3d
+
+### Changed
 - **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
   - Polars operations (casting, DataFrame construction) now properly propagate errors
   - Callers must handle the Result with `?` or `.unwrap()` / `.expect()`

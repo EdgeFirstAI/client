@@ -10,6 +10,7 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
 };
+use walkdir::WalkDir;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -637,9 +638,10 @@ async fn handle_download_annotations(
         }
     });
 
-    let annotations = client
-        .annotations(annotation_set_id.try_into()?, &groups, &types, Some(tx))
-        .await?;
+    // Get the dataset_id from the annotation set
+    let annotation_set_id = annotation_set_id.try_into()?;
+    let annotation_set = client.annotation_set(annotation_set_id).await?;
+    let dataset_id = annotation_set.dataset_id();
 
     let format = output
         .extension()
@@ -648,6 +650,9 @@ async fn handle_download_annotations(
 
     match format {
         Some(ext) if ext == "json" => {
+            let annotations = client
+                .annotations(annotation_set_id, &groups, &types, Some(tx))
+                .await?;
             let mut file = File::create(&output)?;
             file.write_all(serde_json::to_string_pretty(&annotations)?.as_bytes())?;
         }
@@ -656,7 +661,15 @@ async fn handle_download_annotations(
             {
                 use polars::{io::SerWriter as _, prelude::IpcWriter};
 
-                let mut df = edgefirst_client::annotations_dataframe(&annotations)?;
+                let mut df = client
+                    .samples_dataframe(
+                        dataset_id,
+                        Some(annotation_set_id),
+                        &groups,
+                        &types,
+                        Some(tx),
+                    )
+                    .await?;
                 IpcWriter::new(File::create(output).unwrap())
                     .finish(&mut df)
                     .unwrap();
@@ -963,6 +976,61 @@ fn parse_mask_from_dataframe(
     Ok(None)
 }
 
+/// Generates deterministic UUIDs for sequences and samples during upload.
+///
+/// For sequences: Uses SHA-1 hash of "{dataset_id}/{sequence_name}" to generate
+/// a deterministic UUID conforming to RFC 4122 version 5. This ensures all
+/// samples in the same sequence across multiple uploads get the same
+/// sequence_uuid.
+///
+/// For samples: Generates a random UUID for each sample (required by Studio).
+///
+/// These UUIDs are only set during upload and are not persisted to Arrow/JSON
+/// files as they are internal Studio details.
+///
+/// # Arguments
+///
+/// * `samples` - Mutable vector of samples to process
+/// * `dataset_id` - Dataset ID for hash generation
+fn generate_upload_uuids(samples: &mut [edgefirst_client::Sample], dataset_id: &str) {
+    use sha1::{Digest, Sha1};
+    use std::collections::HashMap;
+
+    let mut sequence_uuid_map: HashMap<String, String> = HashMap::new();
+
+    for sample in samples.iter_mut() {
+        // Generate sample UUID (required by Studio for all samples)
+        sample.uuid = Some(uuid::Uuid::new_v4().to_string());
+
+        // Generate sequence_uuid if sample is part of a sequence
+        if let Some(seq_name) = &sample.sequence_name {
+            let seq_uuid = sequence_uuid_map
+                .entry(seq_name.clone())
+                .or_insert_with(|| {
+                    // Create deterministic UUID from hash of dataset_id/sequence_name
+                    // Server respects client-provided sequence_uuid values
+                    // Using SHA-1 to properly conform to RFC 4122 version 5 UUID
+                    let input = format!("{}/{}", dataset_id, seq_name);
+                    let hash = Sha1::digest(input.as_bytes());
+
+                    // Convert first 16 bytes of hash to UUID v5 format
+                    let uuid_bytes: [u8; 16] = hash[..16].try_into().unwrap();
+                    let mut uuid = uuid::Uuid::from_bytes(uuid_bytes);
+
+                    // Set version to 5 (SHA-1 name-based) and variant bits per RFC 4122
+                    let mut bytes = *uuid.as_bytes();
+                    bytes[6] = (bytes[6] & 0x0f) | 0x50; // Version 5
+                    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
+                    uuid = uuid::Uuid::from_bytes(bytes);
+
+                    uuid.to_string()
+                })
+                .clone();
+            sample.sequence_uuid = Some(seq_uuid);
+        }
+    }
+}
+
 /// Parse annotations from an Arrow IPC file into a sample map.
 ///
 /// Reads an Arrow file containing annotation data and builds a HashMap that
@@ -984,6 +1052,50 @@ fn parse_mask_from_dataframe(
 /// Vec of samples with image files, optional groups, and annotations. If
 /// `should_upload_annotations` is false, annotation vectors will be empty.
 #[cfg(feature = "polars")]
+fn create_sequence_aware_batches(
+    samples: Vec<edgefirst_client::Sample>,
+    max_batch_size: usize,
+) -> Vec<Vec<edgefirst_client::Sample>> {
+    use std::collections::HashMap;
+
+    // Group samples by (sequence_uuid, group) to ensure consistent metadata within
+    // each batch. The server has bugs where it only reads certain metadata from
+    // the first sample in each batch:
+    // 1. Sequence metadata (sequence_uuid, sequence_name, sequence_description)
+    // 2. Group assignment
+    //
+    // Therefore, all samples in a batch must belong to the same sequence AND the
+    // same group.
+    //
+    // Non-sequence samples (sequence_uuid == None) are still grouped by group to
+    // avoid the group assignment bug.
+
+    let mut by_sequence_and_group: HashMap<
+        (Option<String>, Option<String>),
+        Vec<edgefirst_client::Sample>,
+    > = HashMap::new();
+
+    for sample in samples {
+        let key = (sample.sequence_uuid.clone(), sample.group.clone());
+        by_sequence_and_group.entry(key).or_default().push(sample);
+    }
+
+    let mut all_batches = Vec::new();
+
+    // Process each sequence+group combination
+    for (_key, mut seq_samples) in by_sequence_and_group {
+        // Split large groups into batches respecting max_batch_size
+        while !seq_samples.is_empty() {
+            let batch_size = seq_samples.len().min(max_batch_size);
+            let batch = seq_samples.drain(..batch_size).collect();
+            all_batches.push(batch);
+        }
+    }
+
+    all_batches
+}
+
+#[cfg(feature = "polars")]
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
     images_path: &PathBuf,
@@ -992,8 +1104,18 @@ fn parse_annotations_from_arrow(
     use polars::prelude::*;
     use std::{collections::HashMap, fs::File};
 
-    let mut samples_map: HashMap<String, (Option<String>, Vec<edgefirst_client::Annotation>)> =
-        HashMap::new();
+    // Map: sample_name -> (group, sequence_name, frame_number, annotations)
+    // sequence_name is Some(name) when frame is not-null, indicating this sample is
+    // part of a sequence
+    let mut samples_map: HashMap<
+        String,
+        (
+            Option<String>,
+            Option<String>,
+            Option<u32>,
+            Vec<edgefirst_client::Annotation>,
+        ),
+    > = HashMap::new();
 
     if let Some(arrow_path) = annotations {
         let mut file = File::open(arrow_path)?;
@@ -1015,40 +1137,101 @@ fn parse_annotations_from_arrow(
                 .ok_or_else(|| Error::InvalidParameters("Missing name value".to_owned()))?
                 .to_string();
 
+            // Strip extension from name if present (handles test data with full filenames)
+            let base_name = name
+                .rsplit_once('.')
+                .and_then(|(base, ext)| {
+                    // Only strip if it looks like an image extension
+                    if matches!(ext, "jpg" | "jpeg" | "png" | "camera") {
+                        Some(base)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(&name);
+
+            // Extract optional frame number (try both string and u32 types)
+            let frame_str = df.column("frame").ok().and_then(|c| {
+                // Try as string first (common format in Arrow files)
+                c.str()
+                    .ok()
+                    .and_then(|s| s.get(idx))
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        // Try as u32 if string fails
+                        c.u32().ok().and_then(|s| s.get(idx)).map(|n| n.to_string())
+                    })
+            });
+
+            // Determine if this is a sequence sample based on frame column
+            // Sequence: frame is not-null → sequence_name = name, image =
+            // name/name_frame.ext Non-sequence: frame is null → no
+            // sequence_name, image = whatever.ext
+            let (sequence_name, frame_number) = match &frame_str {
+                Some(f) if !f.is_empty() => {
+                    let frame_num = f.parse::<u32>().map_err(|_| {
+                        Error::InvalidParameters(format!(
+                            "Invalid frame number '{}' for sequence '{}'",
+                            f, base_name
+                        ))
+                    })?;
+                    (Some(base_name.to_string()), Some(frame_num))
+                }
+                _ => (None, None),
+            };
+
+            // Construct full sample name: "{base_name}_{frame}" if frame exists
+            let sample_name = match &frame_str {
+                Some(f) if !f.is_empty() => format!("{}_{}", base_name, f),
+                _ => base_name.to_string(),
+            };
+
             // Extract optional group designation (train/val/test)
+            // Handle both Categorical and String column types by casting to String
             let sample_group = df
                 .column("group")
                 .ok()
-                .and_then(|c| c.str().ok())
-                .and_then(|s| s.get(idx))
-                .map(|s| s.to_string());
+                .and_then(|c| c.cast(&DataType::String).ok())
+                .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
 
             // Get or create entry for this sample
-            let entry = samples_map
-                .entry(name.clone())
-                .or_insert((sample_group, Vec::new()));
+            let entry = samples_map.entry(sample_name.clone()).or_insert((
+                sample_group,
+                sequence_name.clone(),
+                frame_number,
+                Vec::new(),
+            ));
 
             if should_upload_annotations {
                 let mut has_annotation = false;
                 let mut geometry_count = 0;
                 let mut annotation = edgefirst_client::Annotation::new();
 
+                // Set frame_number if available (parsed earlier from Arrow file)
+                if let Some(ref frame) = frame_str
+                    && let Ok(frame_num) = frame.parse::<u32>()
+                {
+                    annotation.set_frame_number(Some(frame_num));
+                }
+
                 // Extract label if present and non-empty
-                if let Some(label) = df
+                // Handle both Categorical and String column types by casting to String
+                let label = df
                     .column("label")
                     .ok()
-                    .and_then(|c| c.str().ok())
-                    .and_then(|s| s.get(idx))
-                    .map(|s| s.to_string())
-                    && !label.is_empty()
-                {
-                    annotation.set_label(Some(label));
+                    .and_then(|c| c.cast(&DataType::String).ok())
+                    .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()))
+                    .filter(|s: &String| !s.is_empty());
+
+                if let Some(lbl) = label {
+                    annotation.set_label(Some(lbl));
                     has_annotation = true;
                 }
 
                 // Extract object_id if present and non-empty
                 let object_id = df
                     .column("object_id")
+                    .or_else(|_| df.column("object_reference"))
                     .ok()
                     .and_then(|c| c.str().ok())
                     .and_then(|s| s.get(idx))
@@ -1083,7 +1266,8 @@ fn parse_annotations_from_arrow(
                     geometry_count += 1;
                 }
 
-                // Auto-generate object_id for multi-geometry annotations to enable tracking
+                // Auto-generate object_id for multi-geometry annotations to enable
+                // tracking
                 if geometry_count > 1 && object_id.is_none() {
                     let generated_uuid = uuid::Uuid::new_v4().to_string();
                     annotation.set_object_id(Some(generated_uuid));
@@ -1091,16 +1275,47 @@ fn parse_annotations_from_arrow(
 
                 // Only add annotation if it has at least one geometry or label
                 if has_annotation {
-                    entry.1.push(annotation);
+                    entry.3.push(annotation);
                 }
             }
         }
     }
 
+    if samples_map.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let image_index = build_image_index(images_path.as_path())?;
+
     // Convert HashMap to Vec<Sample> by resolving image paths
     let mut samples = Vec::new();
-    for (image_name, (sample_group, annotations)) in samples_map {
-        let image_path = find_image_path_for_sample(images_path, &image_name)?;
+    for (sample_name, (sample_group, arrow_sequence_name, arrow_frame_number, mut annotations)) in
+        samples_map
+    {
+        let image_path = find_image_path_for_sample(&image_index, &sample_name)?;
+
+        // Get the actual image filename with extension from the resolved path
+        let image_filename = image_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::InvalidParameters("Invalid image path".to_string()))?
+            .to_string();
+
+        // Use sequence_name and frame_number from Arrow file (not from filesystem)
+        // Requirement: sequence_name is based on the "name" column when "frame" is
+        // not-null
+        let sequence_name = arrow_sequence_name.clone();
+        let frame_number = arrow_frame_number;
+
+        // Update all annotations with sample metadata (name, sequence, group, frame)
+        for annotation in &mut annotations {
+            annotation.set_name(Some(image_filename.clone()));
+            annotation.set_sequence_name(sequence_name.clone());
+            annotation.set_group(sample_group.clone());
+            if let Some(frame) = frame_number {
+                annotation.set_frame_number(Some(frame));
+            }
+        }
 
         let image_file = edgefirst_client::SampleFile::with_filename(
             "image".to_string(),
@@ -1108,8 +1323,10 @@ fn parse_annotations_from_arrow(
         );
 
         let sample = edgefirst_client::Sample {
-            image_name: Some(image_name),
+            image_name: Some(image_filename),
             group: sample_group,
+            sequence_name,
+            frame_number,
             files: vec![image_file],
             annotations,
             ..Default::default()
@@ -1122,35 +1339,119 @@ fn parse_annotations_from_arrow(
 }
 
 #[cfg(feature = "polars")]
-fn find_image_path_for_sample(images_path: &PathBuf, image_name: &str) -> Result<PathBuf, Error> {
-    if images_path.is_dir() {
-        let entries = std::fs::read_dir(images_path)?;
-        let mut found_path = None;
+fn build_image_index(
+    images_path: &Path,
+) -> Result<std::collections::HashMap<String, Vec<PathBuf>>, Error> {
+    if !images_path.is_dir() {
+        return Err(Error::InvalidParameters(
+            "ZIP file support not yet implemented".to_owned(),
+        ));
+    }
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-                && file_name.starts_with(image_name)
-                && (file_name == image_name
-                    || file_name
-                        .strip_prefix(image_name)
-                        .map(|s| s.starts_with('.'))
-                        .unwrap_or(false))
-            {
-                found_path = Some(path);
-                break;
-            }
+    let mut index: std::collections::HashMap<String, Vec<PathBuf>> =
+        std::collections::HashMap::new();
+
+    for entry in WalkDir::new(images_path) {
+        let entry = entry.map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read images directory: {}", e))
+        })?;
+
+        if !entry.file_type().is_file() {
+            continue;
         }
 
-        found_path.ok_or_else(|| {
-            Error::InvalidParameters(format!("Image file not found for sample: {}", image_name))
-        })
-    } else {
-        Err(Error::InvalidParameters(
-            "ZIP file support not yet implemented".to_owned(),
-        ))
+        let path = entry.path().to_path_buf();
+
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if !is_valid_image_extension(ext) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            Error::InvalidParameters(format!("Invalid filename: {}", path.display()))
+        })?;
+
+        for key in generate_image_lookup_keys(file_name) {
+            index.entry(key).or_default().push(path.clone());
+        }
     }
+
+    Ok(index)
+}
+
+#[cfg(feature = "polars")]
+fn generate_image_lookup_keys(file_name: &str) -> Vec<String> {
+    let mut keys = vec![file_name.to_string()];
+
+    if let Some((stem, _ext)) = file_name.rsplit_once('.') {
+        keys.push(stem.to_string());
+        if let Some(stripped) = stem.strip_suffix(".camera")
+            && !stripped.is_empty()
+        {
+            keys.push(stripped.to_string());
+        }
+    }
+
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+#[cfg(feature = "polars")]
+fn find_image_path_for_sample(
+    image_index: &std::collections::HashMap<String, Vec<PathBuf>>,
+    image_name: &str,
+) -> Result<PathBuf, Error> {
+    // Extension priority order: .camera.* takes precedence over plain extensions
+    const EXTENSIONS: &[&str] = &[
+        ".camera.jpg",
+        ".camera.jpeg",
+        ".camera.png",
+        ".jpg",
+        ".jpeg",
+        ".png",
+    ];
+
+    // Try each extension in priority order
+    for ext in EXTENSIONS {
+        let candidate = format!("{}{}", image_name, ext);
+        if let Some(paths) = image_index.get(&candidate) {
+            match paths.len() {
+                0 => continue,
+                1 => return Ok(paths[0].clone()),
+                _ => {
+                    return Err(Error::InvalidParameters(format!(
+                        "Multiple image matches found for '{}': {:?}",
+                        candidate, paths
+                    )));
+                }
+            }
+        }
+    }
+
+    Err(Error::InvalidParameters(format!(
+        "Image file not found for sample: {}",
+        image_name
+    )))
+}
+
+#[cfg(feature = "polars")]
+fn extract_sequence_name(images_root: &Path, image_path: &Path) -> Option<String> {
+    if let Ok(relative) = image_path.strip_prefix(images_root)
+        && let Some(parent) = relative.parent()
+    {
+        let mut components = parent.components();
+        if let Some(std::path::Component::Normal(os_str)) = components.next() {
+            let sequence = os_str.to_string_lossy().into_owned();
+            if !sequence.is_empty() {
+                return Some(sequence);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(feature = "polars")]
@@ -1166,18 +1467,19 @@ fn is_valid_image_extension(ext: &str) -> bool {
 fn build_samples_from_directory(
     images_path: &PathBuf,
 ) -> Result<Vec<edgefirst_client::Sample>, Error> {
-    let mut samples = Vec::new();
-
     if !images_path.is_dir() {
         return Err(Error::InvalidParameters(
             "ZIP file support not yet implemented".to_owned(),
         ));
     }
 
-    let entries = std::fs::read_dir(images_path)?;
+    let mut samples = Vec::new();
 
-    for entry in entries {
-        let entry = entry?;
+    for entry in WalkDir::new(images_path) {
+        let entry = entry.map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read images directory: {}", e))
+        })?;
+
         let path = entry.path();
 
         if !path.is_file() {
@@ -1207,7 +1509,7 @@ fn build_samples_from_directory(
 
         let sample = edgefirst_client::Sample {
             image_name: Some(file_name),
-            group: None,
+            sequence_name: extract_sequence_name(images_path.as_path(), path),
             files: vec![image_file],
             annotations: Vec::new(),
             ..Default::default()
@@ -1253,7 +1555,7 @@ async fn handle_upload_dataset(
 
     // Parse annotations from Arrow if provided, or build samples from directory
     let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
-    let samples = if annotations.is_some() {
+    let mut samples = if annotations.is_some() {
         parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations)?
     } else {
         build_samples_from_directory(&images_path)?
@@ -1264,6 +1566,10 @@ async fn handle_upload_dataset(
             "No samples to upload. Check that images exist.".to_owned(),
         ));
     }
+
+    // Generate UUIDs for upload (sample.uuid and sequence_uuid for sequences)
+    // These are required by Studio but not persisted to Arrow/JSON files
+    generate_upload_uuids(&mut samples, &dataset_id);
 
     println!(
         "Uploading {} samples to dataset {}...",
@@ -1301,21 +1607,38 @@ async fn handle_upload_dataset(
         None
     };
 
-    for (batch_num, batch) in samples.chunks(BATCH_SIZE).enumerate() {
-        if samples.len() > BATCH_SIZE {
-            println!(
-                "Uploading batch {}/{} ({} samples)...",
-                batch_num + 1,
-                samples.len().div_ceil(BATCH_SIZE),
-                batch.len()
-            );
-        }
+    // Group samples by sequence to work around server bug where all samples in a
+    // batch are assigned to the sequence of the first sample only.
+    // Non-sequence samples (sequence_uuid == None) are grouped together.
+    let batches = create_sequence_aware_batches(samples, BATCH_SIZE);
+
+    println!(
+        "Created {} batches (grouped by sequence+group to avoid server bugs)",
+        batches.len()
+    );
+
+    for (batch_num, batch) in batches.iter().enumerate() {
+        let info = if let Some(first) = batch.first() {
+            let seq_str = first.sequence_name.as_deref().unwrap_or("no sequence");
+            let grp_str = first.group.as_deref().unwrap_or("no group");
+            format!(" [seq: {}, group: {}]", seq_str, grp_str)
+        } else {
+            String::new()
+        };
+
+        println!(
+            "Uploading batch {}/{} ({} samples){}...",
+            batch_num + 1,
+            batches.len(),
+            batch.len(),
+            info
+        );
 
         let results = client
             .populate_samples(
                 dataset_id_parsed,
                 annotation_set_id_parsed,
-                batch.to_vec(),
+                batch.clone(),
                 Some(tx.clone()),
             )
             .await?;
@@ -1888,6 +2211,76 @@ mod tests {
             Ok(())
         }
 
+        fn create_test_arrow_file_with_frame(
+            path: &PathBuf,
+            samples: Vec<(&str, &str)>, // (name, frame)
+            groups: Option<Vec<Option<&str>>>,
+            labels: Option<Vec<Option<&str>>>,
+            box2d_data: Option<Vec<Option<(f64, f64, f64, f64)>>>,
+            mask_data: Option<Vec<Option<Vec<(f32, f32)>>>>,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let (names, frames): (Vec<_>, Vec<_>) = samples.into_iter().unzip();
+            let mut columns = vec![
+                Series::new("name".into(), names).into_column(),
+                Series::new("frame".into(), frames).into_column(),
+            ];
+
+            // Add optional group column
+            if let Some(group_values) = groups {
+                columns.push(Series::new("group".into(), group_values).into_column());
+            }
+
+            // Add optional label column
+            if let Some(label_values) = labels {
+                columns.push(Series::new("label".into(), label_values).into_column());
+            }
+
+            // Add optional box2d column (list of [cx, cy, w, h])
+            if let Some(boxes) = box2d_data {
+                let list = ListChunked::from_iter(boxes.into_iter().map(|box_opt| {
+                    box_opt.map(|(cx, cy, w, h)| {
+                        Series::new(
+                            PlSmallStr::from_static(""),
+                            vec![cx as f32, cy as f32, w as f32, h as f32],
+                        )
+                    })
+                }));
+
+                let mut series = list.into_series();
+                series.rename(PlSmallStr::from_static("box2d"));
+                columns.push(series.into_column());
+            }
+
+            // Add optional mask column (list of polygon coordinates)
+            if let Some(masks) = mask_data {
+                let list = ListChunked::from_iter(masks.into_iter().map(|mask_opt| {
+                    mask_opt.map(|polygon| {
+                        let mut coords = Vec::with_capacity(polygon.len() * 2);
+                        for (x, y) in polygon {
+                            coords.push(x);
+                            coords.push(y);
+                        }
+                        Series::new(PlSmallStr::from_static(""), coords)
+                    })
+                }));
+
+                let mut series = list.into_series();
+                series.rename(PlSmallStr::from_static("mask"));
+                columns.push(series.into_column());
+            }
+
+            let mut df = DataFrame::new(columns)?;
+
+            let mut file = std::fs::File::create(path)?;
+            IpcWriter::new(&mut file).finish(&mut df)?;
+            Ok(())
+        }
+
         fn create_test_images_dir(
             dir: &PathBuf,
             image_names: Vec<&str>,
@@ -1937,13 +2330,17 @@ mod tests {
             // Verify groups are present
             let train_sample = samples
                 .iter()
-                .find(|s| s.group == Some("train".to_string()));
+                .find(|s| s.group() == Some(&"train".to_string()));
             assert!(train_sample.is_some());
 
-            let val_sample = samples.iter().find(|s| s.group == Some("val".to_string()));
+            let val_sample = samples
+                .iter()
+                .find(|s| s.group() == Some(&"val".to_string()));
             assert!(val_sample.is_some());
 
-            let test_sample = samples.iter().find(|s| s.group == Some("test".to_string()));
+            let test_sample = samples
+                .iter()
+                .find(|s| s.group() == Some(&"test".to_string()));
             assert!(test_sample.is_some());
 
             // Verify annotations were parsed
@@ -2050,7 +2447,7 @@ mod tests {
 
             // Verify all groups are None
             for sample in &samples {
-                assert!(sample.group.is_none());
+                assert!(sample.group().is_none());
             }
 
             // Cleanup
@@ -2163,12 +2560,9 @@ mod tests {
             std::fs::create_dir_all(&test_dir).unwrap();
             std::fs::File::create(&zip_file).unwrap();
 
-            let result = find_image_path_for_sample(&zip_file, "test.jpg");
-            assert!(result.is_err());
+            let err = build_image_index(zip_file.as_path()).unwrap_err();
             assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
+                err.to_string()
                     .contains("ZIP file support not yet implemented")
             );
 
@@ -2186,11 +2580,44 @@ mod tests {
             std::fs::File::create(&image_path).unwrap();
 
             // Should find the image when searching for "image1"
-            let result = find_image_path_for_sample(&test_dir, "image1");
+            let image_index = build_image_index(test_dir.as_path()).unwrap();
+            let result = find_image_path_for_sample(&image_index, "image1");
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), image_path);
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_from_arrow_with_sequences() {
+            let test_dir = std::env::temp_dir().join("arrow_test_sequences");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+            let sequence_dir = images_dir.join("sequence_a");
+
+            // Create Arrow file with frame column to indicate sequence membership
+            create_test_arrow_file_with_frame(
+                &arrow_file,
+                vec![("sequence_a", "1")],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&sequence_dir, vec!["sequence_a_1.jpg"]).unwrap();
+
+            let annotations = Some(arrow_file.clone());
+            let samples = parse_annotations_from_arrow(&annotations, &images_dir, false)
+                .expect("Arrow parsing should succeed");
+
+            assert_eq!(samples.len(), 1);
+            let sample = &samples[0];
+            assert_eq!(sample.sequence_name(), Some(&"sequence_a".to_string()));
+            assert_eq!(sample.frame_number(), Some(1));
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
 

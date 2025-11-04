@@ -2479,11 +2479,23 @@ impl Client {
     #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None))]
     pub fn annotations_dataframe<'py>(
         &self,
+        py: Python<'py>,
         annotation_set_id: Bound<'py, PyAny>,
         groups: Vec<String>,
         annotation_types: Vec<AnnotationType>,
         progress: Option<Py<PyAny>>,
     ) -> Result<PyDataFrame, Error> {
+        // Emit deprecation warning
+        let warnings = py.import("warnings")?;
+        warnings.call_method1(
+            "warn",
+            (
+                "Client.annotations_dataframe is deprecated and will be removed in a future version. \
+                 Use Client.samples_dataframe instead for complete 2025.10 schema support.",
+                py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+            ),
+        )?;
+
         let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
         let annotation_types = annotation_types
             .into_iter()
@@ -2521,6 +2533,86 @@ impl Client {
             None => {
                 self.annotations_dataframe_sync(annotation_set_id, &groups, &annotation_types, None)
             }
+        }?;
+
+        Ok(df)
+    }
+
+    /// Get samples as a DataFrame with complete 2025.10 schema.
+    ///
+    /// Args:
+    ///     dataset_id: Dataset identifier
+    ///     annotation_set_id: Optional annotation set filter
+    ///     groups: List of dataset groups (train, val, test)
+    ///     annotation_types: List of annotation types (bbox, box3d, mask)
+    ///     progress: Optional progress callback
+    ///
+    /// Returns:
+    ///     Polars DataFrame with 13 columns (2025.10 schema)
+    ///
+    /// Example:
+    ///     >>> df = client.samples_dataframe(
+    ///     ...     dataset_id,
+    ///     ...     annotation_set_id,
+    ///     ...     ["train"],
+    ///     ...     [],
+    ///     ...     None
+    ///     ... )
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, groups = vec![], annotation_types = vec![], progress = None))]
+    pub fn samples_dataframe<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        groups: Vec<String>,
+        annotation_types: Vec<AnnotationType>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<PyDataFrame, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id = match annotation_set_id {
+            Some(id) => Some(id.try_into()?),
+            None => None,
+        };
+        let annotation_types = annotation_types
+            .into_iter()
+            .map(|x| match x {
+                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
+                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
+            })
+            .collect::<Vec<_>>();
+
+        let df = match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.samples_dataframe_sync(
+                        dataset_id,
+                        annotation_set_id,
+                        &groups,
+                        &annotation_types,
+                        Some(tx),
+                    )
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::with_gil(|py| {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                    });
+                }
+
+                task.join().unwrap()
+            }
+            None => self.samples_dataframe_sync(
+                dataset_id,
+                annotation_set_id,
+                &groups,
+                &annotation_types,
+                None,
+            ),
         }?;
 
         Ok(df)
@@ -3050,6 +3142,28 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn samples_dataframe_sync<'py>(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        groups: &[String],
+        annotation_types: &[edgefirst_client::AnnotationType],
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<PyDataFrame, edgefirst_client::Error> {
+        let df = self
+            .0
+            .samples_dataframe(
+                dataset_id.0,
+                annotation_set_id.map(|x| x.0),
+                groups,
+                annotation_types,
+                progress,
+            )
+            .await?;
+        Ok(PyDataFrame(df))
+    }
+
+    #[tokio_wrap::sync]
     fn samples_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -3232,8 +3346,14 @@ impl Annotation {
         self.0.set_label(label);
     }
 
-    /// Sets the object ID for this annotation.
+    /// Sets the object identifier for this annotation.
     pub fn set_object_id(&mut self, object_id: Option<String>) {
+        self.0.set_object_id(object_id);
+    }
+
+    /// Legacy alias for :meth:`set_object_id`.
+    #[pyo3(name = "set_object_reference")]
+    pub fn set_object_reference_alias(&mut self, object_id: Option<String>) {
         self.0.set_object_id(object_id);
     }
 
@@ -3275,6 +3395,13 @@ impl Annotation {
     #[getter]
     pub fn object_id(&self) -> Option<String> {
         self.0.object_id().cloned()
+    }
+
+    /// Legacy accessor for ``object_id``.
+    #[getter]
+    #[pyo3(name = "object_reference")]
+    pub fn object_reference_alias(&self) -> Option<String> {
+        self.object_id()
     }
 
     #[getter]
@@ -3327,6 +3454,16 @@ impl Sample {
     /// Sets the sequence name for this sample.
     pub fn set_sequence_name(&mut self, sequence_name: Option<String>) {
         self.0.sequence_name = sequence_name;
+    }
+
+    /// Sets the sequence UUID for this sample.
+    pub fn set_sequence_uuid(&mut self, sequence_uuid: Option<String>) {
+        self.0.sequence_uuid = sequence_uuid;
+    }
+
+    /// Sets the sequence description for this sample.
+    pub fn set_sequence_description(&mut self, sequence_description: Option<String>) {
+        self.0.sequence_description = sequence_description;
     }
 
     /// Sets the frame number for this sample.
