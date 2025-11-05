@@ -21,12 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Remove Junk from Host
-        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        uses: AdityaGarg8/remove-unwanted-software@v5
         with:
-          root-reserve-mb: 512          
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
           
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
@@ -180,13 +183,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Remove Junk from Host
-        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        uses: AdityaGarg8/remove-unwanted-software@v5
         with:
-          root-reserve-mb: 512          
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
-          
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
+
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install Rust toolchain
@@ -216,12 +222,15 @@ jobs:
     needs: [lint-and-test]    
     steps:
       - name: Remove Junk from Host
-        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        uses: AdityaGarg8/remove-unwanted-software@v5
         with:
-          root-reserve-mb: 512          
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
