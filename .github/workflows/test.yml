@@ -60,6 +60,7 @@ jobs:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d
 
       - name: Set up coverage environment
         run: |
@@ -80,6 +81,7 @@ jobs:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d
 
       - name: Verify nextest output
         if: always()
@@ -100,6 +102,11 @@ jobs:
 
       - name: Run Python tests
         run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+        env:
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d
 
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@3a74b2957438d0b6e2e61d67b05318aa25c9e6c6 # v2.20.0

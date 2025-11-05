@@ -699,10 +699,16 @@ impl GpsData {
     /// ```
     /// use edgefirst_client::GpsData;
     ///
-    /// let gps = GpsData { lat: 37.7749, lon: -122.4194 };
+    /// let gps = GpsData {
+    ///     lat: 37.7749,
+    ///     lon: -122.4194,
+    /// };
     /// assert!(gps.validate().is_ok());
     ///
-    /// let bad_gps = GpsData { lat: 100.0, lon: 0.0 };
+    /// let bad_gps = GpsData {
+    ///     lat: 100.0,
+    ///     lon: 0.0,
+    /// };
     /// assert!(bad_gps.validate().is_err());
     /// ```
     pub fn validate(&self) -> Result<(), String> {
@@ -737,10 +743,18 @@ impl ImuData {
     /// ```
     /// use edgefirst_client::ImuData;
     ///
-    /// let imu = ImuData { roll: 10.0, pitch: 5.0, yaw: 90.0 };
+    /// let imu = ImuData {
+    ///     roll: 10.0,
+    ///     pitch: 5.0,
+    ///     yaw: 90.0,
+    /// };
     /// assert!(imu.validate().is_ok());
     ///
-    /// let bad_imu = ImuData { roll: 200.0, pitch: 0.0, yaw: 0.0 };
+    /// let bad_imu = ImuData {
+    ///     roll: 200.0,
+    ///     pitch: 0.0,
+    ///     yaw: 0.0,
+    /// };
     /// assert!(bad_imu.validate().is_err());
     /// ```
     pub fn validate(&self) -> Result<(), String> {
