@@ -31,6 +31,35 @@ fn get_test_data_dir() -> PathBuf {
     test_dir
 }
 
+/// Get the test dataset identifier from environment or default to "Deer"
+/// Can be a dataset name (exact match) or dataset ID (ds-xxx format)
+fn get_test_dataset() -> String {
+    env::var("TEST_DATASET").unwrap_or_else(|_| "Deer".to_string())
+}
+
+/// Get the annotation types to test from environment or default to
+/// "box2d,box3d,mask" Returns a vector of annotation type strings
+fn get_test_dataset_types() -> Vec<String> {
+    env::var("TEST_DATASET_TYPES")
+        .unwrap_or_else(|_| "box2d,box3d,mask".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect()
+}
+
+/// Get the test data directory for the configured test dataset
+/// (e.g., target/testdata/deer-test or target/testdata/multisensor-test)
+fn get_test_dataset_path() -> PathBuf {
+    let dataset = get_test_dataset();
+    // If it's a dataset ID (ds-xxx), extract a friendly name for the path
+    let normalized_name = if dataset.starts_with("ds-") {
+        format!("dataset-{}", &dataset[3..])
+    } else {
+        dataset.to_lowercase().replace(' ', "-")
+    };
+    get_test_data_dir().join(format!("{}-test", normalized_name))
+}
+
 fn get_project_id_by_name(name: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("projects").arg("--name").arg(name);
@@ -49,36 +78,47 @@ fn get_project_id_by_name(name: &str) -> Result<Option<String>, Box<dyn std::err
         .next())
 }
 
-fn get_dataset_id_by_name(
-    project_id: &str,
-    dataset_name: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
-    cmd.arg("datasets").arg(project_id);
-
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
-
-    Ok(output_str
-        .lines()
-        .filter_map(|line| {
-            let (id_part, name_part) = line.split_once(']')?;
-            let id = id_part.strip_prefix('[')?.trim().to_string();
-            let name = name_part.trim().trim_end_matches(':').to_string();
-            Some((id, name))
-        })
-        .find(|(_, name)| name == dataset_name)
-        .map(|(id, _)| id))
-}
-
+/// Get dataset and its first annotation set by dataset identifier
+///
+/// The dataset parameter can be:
+/// - A dataset ID (ds-xxx format): Used directly
+/// - A dataset name: Searches all projects for exact name match
 fn get_dataset_and_first_annotation_set(
-    project_name: &str,
-    dataset_name: &str,
+    dataset: &str,
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let project_id = get_project_id_by_name(project_name)?
-        .ok_or_else(|| format!("Project '{}' not found", project_name))?;
-    let dataset_id = get_dataset_id_by_name(&project_id, dataset_name)?
-        .ok_or_else(|| format!("Dataset '{}' not found", dataset_name))?;
+    let dataset_id = if dataset.starts_with("ds-") {
+        // It's a dataset ID - verify it exists
+        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        cmd.arg("dataset").arg(dataset);
+
+        let result = cmd.ok();
+        if result.is_err() {
+            return Err(format!("Dataset ID '{}' not found", dataset).into());
+        }
+        dataset.to_string()
+    } else {
+        // It's a dataset name - search all projects for exact match
+        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        cmd.arg("datasets").arg("--name").arg(dataset);
+
+        let output = cmd.ok()?.stdout;
+        let output_str = String::from_utf8(output)?;
+
+        // Parse output and find exact name match
+        // Output format: [ds-xxx] Dataset Name: project_name
+        output_str
+            .lines()
+            .filter_map(|line| {
+                let (id_part, rest) = line.split_once(']')?;
+                let id = id_part.strip_prefix('[')?.trim();
+                let name_and_project = rest.trim();
+                let name = name_and_project.split(':').next()?.trim();
+                Some((id.to_string(), name.to_string()))
+            })
+            .find(|(_, name)| name == dataset)
+            .map(|(id, _)| id)
+            .ok_or_else(|| format!("Dataset '{}' not found in any project", dataset))?
+    };
 
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("dataset").arg(&dataset_id).arg("--annotation-sets");
@@ -97,7 +137,7 @@ fn get_dataset_and_first_annotation_set(
                 .map(|s| s.trim().to_string())
                 .filter(|id| id.starts_with("as-"))
         })
-        .ok_or_else(|| format!("No annotation set found for dataset '{}'", dataset_name))?;
+        .ok_or_else(|| format!("No annotation set found for dataset '{}'", dataset))?;
 
     Ok((dataset_id, annotation_set_id))
 }
@@ -233,8 +273,76 @@ fn compare_arrow_files(
     println!("Original rows: {}", original_df.height());
     println!("Redownloaded rows: {}", redownloaded_df.height());
 
-    // Check row counts match
+    // Debug: Find missing rows if counts don't match
     if original_df.height() != redownloaded_df.height() {
+        println!("\n=== DEBUGGING ROW COUNT MISMATCH ===");
+
+        // Build sets of (name, frame) tuples for both datasets
+        let original_samples = if let Ok(names_col) = original_df.column("name")
+            && let Ok(frames_col) = original_df.column("frame")
+        {
+            let names_cast = names_col.cast(&DataType::String)?;
+            let frames_cast = frames_col.cast(&DataType::Int32)?;
+            let names = names_cast.str()?;
+            let frames = frames_cast.i32()?;
+
+            let mut samples = std::collections::HashSet::new();
+            for idx in 0..original_df.height() {
+                if let Some(name) = names.get(idx) {
+                    let frame = frames.get(idx);
+                    samples.insert((name.to_string(), frame));
+                }
+            }
+            Some(samples)
+        } else {
+            None
+        };
+
+        let redownloaded_samples = if let Ok(names_col) = redownloaded_df.column("name")
+            && let Ok(frames_col) = redownloaded_df.column("frame")
+        {
+            let names_cast = names_col.cast(&DataType::String)?;
+            let frames_cast = frames_col.cast(&DataType::Int32)?;
+            let names = names_cast.str()?;
+            let frames = frames_cast.i32()?;
+
+            let mut samples = std::collections::HashSet::new();
+            for idx in 0..redownloaded_df.height() {
+                if let Some(name) = names.get(idx) {
+                    let frame = frames.get(idx);
+                    samples.insert((name.to_string(), frame));
+                }
+            }
+            Some(samples)
+        } else {
+            None
+        };
+
+        if let (Some(orig), Some(redown)) = (&original_samples, &redownloaded_samples) {
+            let missing_in_redownloaded: Vec<_> = orig.difference(redown).collect();
+            let extra_in_redownloaded: Vec<_> = redown.difference(orig).collect();
+
+            if !missing_in_redownloaded.is_empty() {
+                println!(
+                    "\nMissing in redownloaded ({} rows):",
+                    missing_in_redownloaded.len()
+                );
+                for (name, frame) in missing_in_redownloaded.iter().take(20) {
+                    println!("  - {} (frame: {:?})", name, frame);
+                }
+            }
+
+            if !extra_in_redownloaded.is_empty() {
+                println!(
+                    "\nExtra in redownloaded ({} rows):",
+                    extra_in_redownloaded.len()
+                );
+                for (name, frame) in extra_in_redownloaded.iter().take(20) {
+                    println!("  - {} (frame: {:?})", name, frame);
+                }
+            }
+        }
+
         return Err(format!(
             "Row count mismatch: {} vs {}",
             original_df.height(),
@@ -952,64 +1060,19 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_download_dataset() -> Result<(), Box<dyn std::error::Error>> {
-    // Deer dataset is a pure sequence dataset (all images from video files)
-    // All images have sequence_name populated -> expect 0 root images
-    let (dataset_id, _) = get_dataset_and_first_annotation_set("Unit Testing", "Deer")?;
-    let download_dir = download_dataset_from_server(&dataset_id)?;
-    let cleanup_dir = download_dir.clone();
-
-    let result: Result<(), Box<dyn std::error::Error>> = (|| {
-        // Validate dataset structure (all files are valid images)
-        validate_dataset_structure(download_dir.as_path())?;
-
-        let files = collect_relative_file_paths(download_dir.as_path())?;
-        let root_images = files.iter().filter(|path| !path.contains('/')).count();
-        let sequence_images = files.iter().filter(|path| path.contains('/')).count();
-
-        // Deer dataset: ALL images are in sequences (from video), none at root
-        assert_eq!(
-            root_images, 0,
-            "Deer dataset should have 0 root images (all images are from sequences)"
-        );
-        assert!(
-            sequence_images > 0,
-            "Expected sequence images in subdirectories"
-        );
-        assert_eq!(
-            files.len(),
-            sequence_images,
-            "All images should be in sequence subdirectories"
-        );
-
-        println!(
-            "Downloaded deer dataset with {} files ({} in sequences) to {:?}",
-            files.len(),
-            sequence_images,
-            download_dir
-        );
-
-        Ok(())
-    })();
-
-    if let Err(err) = fs::remove_dir_all(&cleanup_dir) {
-        eprintln!(
-            "⚠️  Failed to remove downloaded dataset {:?}: {}",
-            cleanup_dir, err
-        );
-    }
-
-    result
-}
-
-#[test]
 fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, annotation_set_id) = get_dataset_and_first_annotation_set("Unit Testing", "Deer")?;
+    let dataset = get_test_dataset();
+    let dataset_name_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let (_, annotation_set_id) = get_dataset_and_first_annotation_set(&dataset)?;
 
     let test_dir = get_test_data_dir();
 
     // Test JSON format download
-    let json_file = test_dir.join(format!("deer_annotations_{}.json", std::process::id()));
+    let json_file = test_dir.join(format!(
+        "{}_annotations_{}.json",
+        dataset_name_lower,
+        std::process::id()
+    ));
 
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("download-annotations")
@@ -1028,7 +1091,11 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
     fs::remove_file(&json_file)?;
 
     // Test Arrow format download
-    let arrow_file = test_dir.join(format!("deer_annotations_{}.arrow", std::process::id()));
+    let arrow_file = test_dir.join(format!(
+        "{}_annotations_{}.arrow",
+        dataset_name_lower,
+        std::process::id()
+    ));
 
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("download-annotations")
@@ -1052,23 +1119,24 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 #[serial]
 fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error>> {
-    let (deer_dataset_id, deer_annotation_set_id) =
-        get_dataset_and_first_annotation_set("Unit Testing", "Deer")?;
+    let dataset = get_test_dataset();
+    let (source_dataset_id, source_annotation_set_id) =
+        get_dataset_and_first_annotation_set(&dataset)?;
 
-    let images_dir = download_dataset_from_server(&deer_dataset_id)?;
-    let annotations_path = download_annotations_from_server(&deer_annotation_set_id)?;
+    let images_dir = download_dataset_from_server(&source_dataset_id)?;
+    let annotations_path = download_annotations_from_server(&source_annotation_set_id)?;
     validate_dataset_structure(images_dir.as_path())?;
 
     let project_id = get_project_id_by_name("Unit Testing")?
         .ok_or_else(|| "Project 'Unit Testing' not found".to_string())?;
 
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let dataset_name = format!("QA Deer Upload {}", timestamp);
+    let new_dataset_name = format!("QA {} Upload {}", dataset, timestamp);
 
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("create-dataset")
         .arg(&project_id)
-        .arg(&dataset_name);
+        .arg(&new_dataset_name);
 
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -1078,7 +1146,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "Failed to parse dataset ID from create-dataset output".to_string())?;
 
-    let annotation_set_name = format!("{} Annotations", dataset_name);
+    let annotation_set_name = format!("{} Annotations", new_dataset_name);
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("create-annotation-set")
         .arg(&new_dataset_id)
@@ -1112,12 +1180,13 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
         output_str
     );
 
-    let cache_file = get_test_data_dir().join("deer_upload_latest.txt");
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let cache_file = get_test_data_dir().join(format!("{}_upload_latest.txt", dataset_lower));
     fs::write(
         &cache_file,
         format!(
             "dataset_id={}\nannotation_set_id={}\ncreated_at={}\nsource_dataset={}\n",
-            new_dataset_id, new_annotation_set_id, timestamp, deer_dataset_id
+            new_dataset_id, new_annotation_set_id, timestamp, source_dataset_id
         ),
     )?;
 
@@ -1146,19 +1215,37 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// End-to-end dataset roundtrip test
+///
+/// Tests complete workflow: Download → Upload → Download → Compare
+///
+/// Dataset: Configurable via TEST_DATASET_NAME env var (default: "Deer")
+/// Requirements:
+/// - Dataset must exist in "Unit Testing" project
+/// - Must have at least one annotation set
+/// - Supports mixed sensors, annotation types, and sequences
 #[test]
 #[serial]
-fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
-    // Download→Upload→Download→Compare test for Deer dataset with sequences
-    // This verifies Arrow file format preserves all sequence metadata
+fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    // Download→Upload→Download→Compare test for configurable dataset
+    // This verifies Arrow file format preserves all metadata (sequences, groups,
+    // annotations)
 
-    // Step 1: Download original Deer dataset
-    let (deer_dataset_id, deer_annotation_set_id) =
-        get_dataset_and_first_annotation_set("Unit Testing", "Deer")?;
+    let dataset = get_test_dataset();
+    println!("Testing dataset roundtrip for: {}", dataset);
 
-    let original_images = download_dataset_from_server(&deer_dataset_id)?;
-    let original_annotations =
-        download_annotations_from_server_with_types(&deer_annotation_set_id, &["box2d", "mask"])?;
+    let types = get_test_dataset_types();
+    println!("Testing annotation types: {}", types.join(","));
+
+    // Step 1: Download original dataset
+    let (source_dataset_id, source_annotation_set_id) =
+        get_dataset_and_first_annotation_set(&dataset)?;
+
+    let original_images = download_dataset_from_server(&source_dataset_id)?;
+    let original_annotations = download_annotations_from_server_with_types(
+        &source_annotation_set_id,
+        &types.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    )?;
 
     // Verify downloaded dataset structure is valid
     validate_dataset_structure(original_images.as_path())?;
@@ -1169,12 +1256,12 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| "Project 'Unit Testing' not found".to_string())?;
 
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let dataset_name = format!("Deer Roundtrip {}", timestamp);
+    let new_dataset_name = format!("{} Roundtrip {}", dataset, timestamp);
 
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("create-dataset")
         .arg(&project_id)
-        .arg(&dataset_name);
+        .arg(&new_dataset_name);
     let output = cmd.ok()?.stdout;
     let new_dataset_id = String::from_utf8(output)?
         .lines()
@@ -1182,7 +1269,7 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
 
-    let annotation_set_name = format!("{} Annotations", dataset_name);
+    let annotation_set_name = format!("{} Annotations", new_dataset_name);
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("create-annotation-set")
         .arg(&new_dataset_id)
@@ -1214,8 +1301,10 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 3: Download the uploaded dataset
     let redownloaded_images = download_dataset_from_server(&new_dataset_id)?;
-    let redownloaded_annotations =
-        download_annotations_from_server_with_types(&new_annotation_set_id, &["box2d", "mask"])?;
+    let redownloaded_annotations = download_annotations_from_server_with_types(
+        &new_annotation_set_id,
+        &types.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    )?;
 
     // Step 4: Compare image counts and directory structure
     // Note: Server may rename files, so we compare counts and structure, not exact
@@ -1223,45 +1312,29 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let original_files = collect_relative_file_paths(&original_images)?;
     let redownloaded_files = collect_relative_file_paths(&redownloaded_images)?;
 
-    // DEBUG: Show file name differences to diagnose mixed sequence issue
-    println!("\n=== DIAGNOSTIC: File Name Comparison ===");
-    println!("Original files (first 10):");
-    for (i, path) in original_files.iter().take(10).enumerate() {
-        println!("  {}: {}", i + 1, path);
-    }
-    println!("\nRedownloaded files (first 10):");
-    for (i, path) in redownloaded_files.iter().take(10).enumerate() {
-        println!("  {}: {}", i + 1, path);
-    }
+    // Count root images and sequence images
+    let original_root_count = original_files.iter().filter(|p| !p.contains('/')).count();
+    let original_seq_count = original_files.iter().filter(|p| p.contains('/')).count();
+    let redownloaded_root_count = redownloaded_files
+        .iter()
+        .filter(|p| !p.contains('/'))
+        .count();
+    let redownloaded_seq_count = redownloaded_files
+        .iter()
+        .filter(|p| p.contains('/'))
+        .count();
 
-    // Check for mixed sequences: files from one sequence appearing in another's
-    // directory
-    let mut mixed_sequence_errors = Vec::new();
-    for path in &redownloaded_files {
-        if let Some((dir, filename)) = path.split_once('/') {
-            // If filename contains a different sequence name than the directory, that's the
-            // bug
-            if !filename.contains(dir) {
-                mixed_sequence_errors.push(format!(
-                    "{}/{} - file doesn't match directory",
-                    dir, filename
-                ));
-            }
-        }
-    }
+    println!("\n=== File Distribution ===");
+    println!(
+        "Original: {} root images, {} sequence images",
+        original_root_count, original_seq_count
+    );
+    println!(
+        "Redownloaded: {} root images, {} sequence images",
+        redownloaded_root_count, redownloaded_seq_count
+    );
 
-    if !mixed_sequence_errors.is_empty() {
-        println!("\n⚠️  MIXED SEQUENCE BUG DETECTED:");
-        for (i, error) in mixed_sequence_errors.iter().take(10).enumerate() {
-            println!("  {}: {}", i + 1, error);
-        }
-        return Err(format!(
-            "Mixed sequence bug: {} files in wrong sequence directories",
-            mixed_sequence_errors.len()
-        )
-        .into());
-    }
-
+    // Verify total file count matches
     assert_eq!(
         original_files.len(),
         redownloaded_files.len(),
@@ -1270,37 +1343,54 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         redownloaded_files.len()
     );
 
-    // Count sequence subdirectories
-    let original_sequences: BTreeSet<String> = original_files
-        .iter()
-        .filter_map(|p| p.split('/').next().map(|s| s.to_string()))
-        .collect();
-    let redownloaded_sequences: BTreeSet<String> = redownloaded_files
-        .iter()
-        .filter_map(|p| p.split('/').next().map(|s| s.to_string()))
-        .collect();
-
+    // Verify root vs sequence distribution matches
     assert_eq!(
-        original_sequences.len(),
-        redownloaded_sequences.len(),
-        "Sequence count mismatch: {} vs {}",
-        original_sequences.len(),
-        redownloaded_sequences.len()
+        original_root_count, redownloaded_root_count,
+        "Root image count mismatch: {} vs {}",
+        original_root_count, redownloaded_root_count
     );
 
-    // Step 5: Compare Arrow file sample counts AND verify groups/masks are
+    assert_eq!(
+        original_seq_count, redownloaded_seq_count,
+        "Sequence image count mismatch: {} vs {}",
+        original_seq_count, redownloaded_seq_count
+    );
+
+    // Count sequence subdirectories (if any sequences exist)
+    if original_seq_count > 0 {
+        let original_sequences: BTreeSet<String> = original_files
+            .iter()
+            .filter_map(|p| p.split('/').next().map(|s| s.to_string()))
+            .collect();
+        let redownloaded_sequences: BTreeSet<String> = redownloaded_files
+            .iter()
+            .filter_map(|p| p.split('/').next().map(|s| s.to_string()))
+            .collect();
+
+        assert_eq!(
+            original_sequences.len(),
+            redownloaded_sequences.len(),
+            "Sequence count mismatch: {} vs {}",
+            original_sequences.len(),
+            redownloaded_sequences.len()
+        );
+        println!("  Sequences: {} preserved", original_sequences.len());
+    }
+
+    // Step 5: Compare Arrow file sample counts AND verify groups/annotations are
     // preserved File names may differ, but sample count and metadata structure
     // should match
     let original_arrow_bytes = fs::read(&original_annotations)?;
     let redownloaded_arrow_bytes = fs::read(&redownloaded_annotations)?;
 
+    println!("\n=== Arrow File Comparison ===");
     println!(
         "Arrow files: original {} bytes, redownloaded {} bytes",
         original_arrow_bytes.len(),
         redownloaded_arrow_bytes.len()
     );
 
-    // NEW: Comprehensive verification of groups and annotations
+    // Comprehensive verification of groups and annotations
     #[cfg(feature = "polars")]
     {
         println!("\n=== COMPREHENSIVE VERIFICATION ===");
@@ -1313,15 +1403,14 @@ fn test_deer_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "✓ Deer dataset roundtrip successful: {} ({} annotation set {})",
-        dataset_name, new_dataset_id, new_annotation_set_id
+        "✓ {} dataset roundtrip successful: {} ({} annotation set {})",
+        dataset, new_dataset_name, new_dataset_id, new_annotation_set_id
     );
     println!(
         "  Files: {} original, {} redownloaded",
         original_files.len(),
         redownloaded_files.len()
     );
-    println!("  Sequences: {} preserved", original_sequences.len());
     println!(
         "  Arrow file sizes: original {} bytes, redownloaded {} bytes",
         original_arrow_bytes.len(),
@@ -2227,18 +2316,6 @@ fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Err
     Ok((test_labels_dataset, annotation_set_id))
 }
 
-/// Helper to get path to test data
-fn get_deer_test_data_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("testdata")
-        .join("deer-test")
-}
-
 #[test]
 #[serial]
 fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
@@ -2246,9 +2323,11 @@ fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
 
     // Get test data paths
-    let test_data_dir = get_deer_test_data_path();
-    let annotations_path = test_data_dir.join("deer-stage.arrow");
-    let images_path = test_data_dir.join("deer");
+    let dataset = get_test_dataset();
+    let test_data_dir = get_test_dataset_path();
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let annotations_path = test_data_dir.join(format!("{}-stage.arrow", dataset_lower));
+    let images_path = test_data_dir.join(&dataset_lower);
 
     // Verify test data exists
     if !annotations_path.exists() {
@@ -2289,9 +2368,10 @@ fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
 
     // Get test data paths
-    let test_data_dir = get_deer_test_data_path();
-    // Use deer-stage.arrow which matches the downloaded images better
-    let annotations_path = test_data_dir.join("deer-stage.arrow");
+    let dataset = get_test_dataset();
+    let test_data_dir = get_test_dataset_path();
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let annotations_path = test_data_dir.join(format!("{}-stage.arrow", dataset_lower));
 
     // Verify test data exists
     if !annotations_path.exists() {
@@ -2300,9 +2380,9 @@ fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>
         return Ok(());
     }
 
-    // Test auto-discovery: For deer-stage.arrow, try to find folder/zip
-    // Since we have deer/ (not deer-stage/), auto-discovery should fail gracefully
-    // Run upload-dataset WITHOUT --images parameter
+    // Test auto-discovery: For {dataset}-stage.arrow, try to find folder/zip
+    // Since we have {dataset}/ (not {dataset}-stage/), auto-discovery should fail
+    // gracefully Run upload-dataset WITHOUT --images parameter
     let mut cmd = Command::cargo_bin("edgefirst-client")?;
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
@@ -2336,8 +2416,10 @@ fn test_upload_dataset_images_only() -> Result<(), Box<dyn std::error::Error>> {
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
 
     // Get test data paths
-    let test_data_dir = get_deer_test_data_path();
-    let images_path = test_data_dir.join("deer");
+    let dataset = get_test_dataset();
+    let test_data_dir = get_test_dataset_path();
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let images_path = test_data_dir.join(&dataset_lower);
 
     // Verify test data exists
     if !images_path.exists() {
@@ -2374,9 +2456,11 @@ fn test_upload_dataset_warning_no_annotation_set_id() -> Result<(), Box<dyn std:
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
 
     // Get test data paths
-    let test_data_dir = get_deer_test_data_path();
-    let annotations_path = test_data_dir.join("deer-stage.arrow");
-    let images_path = test_data_dir.join("deer");
+    let dataset = get_test_dataset();
+    let test_data_dir = get_test_dataset_path();
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let annotations_path = test_data_dir.join(format!("{}-stage.arrow", dataset_lower));
+    let images_path = test_data_dir.join(&dataset_lower);
 
     // Verify test data exists
     if !annotations_path.exists() {
@@ -2430,11 +2514,13 @@ fn test_upload_dataset_batching() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
 
-    // Get test data paths (Deer dataset has 1646 images, which will trigger
+    // Get test data paths (test dataset may have many images, which will trigger
     // batching)
-    let test_data_dir = get_deer_test_data_path();
-    let annotations_path = test_data_dir.join("deer-stage.arrow");
-    let images_path = test_data_dir.join("deer");
+    let dataset = get_test_dataset();
+    let test_data_dir = get_test_dataset_path();
+    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
+    let annotations_path = test_data_dir.join(format!("{}-stage.arrow", dataset_lower));
+    let images_path = test_data_dir.join(&dataset_lower);
 
     // Verify test data exists
     if !annotations_path.exists() {

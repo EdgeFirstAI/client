@@ -30,6 +30,7 @@ from edgefirst_client import (
 )
 from PIL import Image, ImageDraw
 from test import get_client, get_test_data_dir
+from test.fixtures import get_test_dataset, get_test_dataset_types
 
 
 class DatasetTest(TestCase):
@@ -453,32 +454,74 @@ class DatasetTest(TestCase):
 
         return cloned
 
-    def test_dataset_download_upload_roundtrip(self):  # noqa: C901
-        """Verify Deer dataset download→upload→download integrity."""
+    def _filter_annotation_by_types(self, annotation, types):
+        """Check if annotation has any of the specified types."""
+        if "box2d" in types and annotation.box2d is not None:
+            return True
+        if "box3d" in types and annotation.box3d is not None:
+            return True
+        if "mask" in types and annotation.mask is not None:
+            return True
+        return False
+
+    def test_dataset_roundtrip(self):  # noqa: C901
+        """Verify dataset download→upload→download integrity.
+
+        Dataset: Configurable via TEST_DATASET env var (default: "Deer")
+        Requirements:
+        - Dataset can be in any project (exact name match) or ds-xxx ID
+        - Must have at least one annotation set
+        - Supports mixed sensors, annotation types, and sequences
+        """
         client = get_client()
+        dataset = get_test_dataset()
 
-        projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0)
-        assert len(projects) > 0
-        project = projects[0]
+        print(f"\nTesting dataset roundtrip for: {dataset}")
 
-        datasets = client.datasets(project.id, "Deer")
-        self.assertGreater(len(datasets), 0)
-        assert len(datasets) > 0
-        source_dataset = next(
-            (dataset for dataset in datasets if dataset.name == "Deer"),
-            None,
-        )
-        self.assertIsNotNone(
-            source_dataset,
-            "Expected Deer dataset to be available for roundtrip test",
-        )
-        assert source_dataset is not None
+        types = get_test_dataset_types()
+        print(f"Testing annotation types: {', '.join(types)}")
+
+        # If it's a dataset ID, get it directly
+        if dataset.startswith("ds-"):
+            source_dataset = client.dataset(dataset)
+        else:
+            # Search for dataset by name across all projects
+            projects = client.projects("")
+            source_dataset = None
+            for project in projects:
+                datasets = client.datasets(project.id, dataset)
+                matching = [d for d in datasets if d.name == dataset]
+                if matching:
+                    source_dataset = matching[0]
+                    break
+            
+            self.assertIsNotNone(
+                source_dataset,
+                f"Dataset '{dataset}' not found in any project",
+            )
+            assert source_dataset is not None
 
         annotation_sets = client.annotation_sets(source_dataset.id)
         self.assertGreater(len(annotation_sets), 0)
         assert len(annotation_sets) > 0
         source_annotation_set = annotation_sets[0]
+
+        # Query available groups dynamically
+        all_samples = client.samples(
+            source_dataset.id,
+            source_annotation_set.id,
+            groups=[],
+        )
+        available_groups = sorted(
+            list(set(s.group for s in all_samples if s.group))
+        )
+        # Use first 2 groups if available, otherwise use all groups
+        selected_groups = (
+            available_groups[:2] if len(available_groups) >= 2
+            else available_groups
+        )
+        print(f"Available groups: {available_groups}")
+        print(f"Selected groups for testing: {selected_groups}")
 
         timestamp = int(time.time())
         test_dir = get_test_data_dir()
@@ -492,11 +535,10 @@ class DatasetTest(TestCase):
         def capture_download(current, total):
             download_progress.append((current, total))
 
-        # Download dataset with train and val groups
-        # (Deer dataset standard groups)
+        # Download dataset with selected groups
         client.download_dataset(
             source_dataset.id,
-            ["train", "val"],
+            selected_groups,
             [FileType.Image],
             str(export_dir),
             progress=capture_download,
@@ -514,14 +556,19 @@ class DatasetTest(TestCase):
         source_samples = client.samples(
             source_dataset.id,
             source_annotation_set.id,
-            groups=["train", "val"],
+            groups=selected_groups,
         )
         self.assertGreater(len(source_samples), 0)
 
         source_annotations = client.annotations(
             source_annotation_set.id,
-            groups=["train", "val"],
+            groups=selected_groups,
         )
+        # Filter annotations by configured types
+        source_annotations = [
+            ann for ann in source_annotations
+            if self._filter_annotation_by_types(ann, types)
+        ]
 
         max_samples = min(8, len(source_samples))
         selected_samples = source_samples[:max_samples]
@@ -594,7 +641,13 @@ class DatasetTest(TestCase):
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
-        new_dataset_name = f"Deer Roundtrip {random_suffix}"
+        new_dataset_name = f"{dataset} Roundtrip {random_suffix}"
+
+        # Get project ID for creating new dataset (use Unit Testing as default)
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        assert len(projects) > 0
+        project = projects[0]
 
         new_dataset_id = client.create_dataset(
             str(project.id),
@@ -679,6 +732,11 @@ class DatasetTest(TestCase):
                 new_annotation_set_id,
                 groups=[],
             )
+            # Filter by configured types (same as source)
+            new_annotations = [
+                ann for ann in new_annotations
+                if self._filter_annotation_by_types(ann, types)
+            ]
             new_annotation_map = self._build_annotation_map([
                 ann for ann in new_annotations
                 if self._annotation_image_key(ann) in selected_image_keys

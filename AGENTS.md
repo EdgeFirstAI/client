@@ -39,6 +39,18 @@ fi
 - `STUDIO_USERNAME=<username>`
 - `STUDIO_PASSWORD=<password>`
 
+**Optional environment variables**:
+- `TEST_DATASET=<dataset_identifier>` (default: `Deer`) - Configures which dataset integration tests use. The dataset identifier can be:
+  - A dataset name (exact match): Searches all projects for a dataset with this exact name
+  - A dataset ID (`ds-xxx` format): Uses the specified dataset directly
+  - The dataset must have at least one annotation set
+  - Should support testing of mixed characteristics (sequences + root images, multiple sensors, multiple annotation types)
+  - Must be suitable for upload/download roundtrip testing
+- `TEST_DATASET_TYPES=<comma_separated_types>` (default: `box2d,box3d,mask`) - Filters which annotation types are tested in roundtrip tests:
+  - Comma-separated list of annotation types (e.g., `box2d`, `box2d,mask`, `box3d`)
+  - Useful for isolating specific annotation types during debugging
+  - Example: `TEST_DATASET_TYPES=box2d` tests only bounding box annotations
+
 **Python virtualenv**: Ensure virtualenv (venv/.venv) is activated before running maturin or Python tests.
 
 ## Build & Test Commands

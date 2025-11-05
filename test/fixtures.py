@@ -8,12 +8,35 @@ This module provides reusable test utilities to reduce boilerplate and
 improve test maintainability.
 """
 
+import os
 import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 from edgefirst_client import Annotation, Box2d, Sample, SampleFile
+
+
+def get_test_dataset() -> str:
+    """Get the test dataset identifier from environment or default to 'Deer'.
+    
+    Can be a dataset name (exact match) or dataset ID (ds-xxx format).
+
+    Returns:
+        Dataset identifier from TEST_DATASET env var, or "Deer" if not set.
+    """
+    return os.getenv("TEST_DATASET", "Deer")
+
+
+def get_test_dataset_types() -> list[str]:
+    """Get annotation types to test from environment or default.
+
+    Returns:
+        List of annotation types from TEST_DATASET_TYPES env var
+        (comma-separated), or ["box2d", "box3d", "mask"] if not set.
+    """
+    types_str = os.getenv("TEST_DATASET_TYPES", "box2d,box3d,mask")
+    return [t.strip() for t in types_str.split(",")]
 
 
 def create_test_image_with_circle(
