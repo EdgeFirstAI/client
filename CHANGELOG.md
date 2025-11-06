@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2025-11-06
+
 ### Fixed
 - Annotation object tracking IDs now correctly preserved through upload/download cycle
   - Fixed `Annotation.object_id` field serialization: now sends `object_reference` (server consumes and responds with this field name)
