@@ -1411,6 +1411,7 @@ impl Client {
 
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
         for attempt in 1..MAX_RETRIES {
+            trace!("Download attempt {}/{} for URL: {}", attempt, MAX_RETRIES, url);
             let resp = match self.http.get(url).send().await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -1418,21 +1419,34 @@ impl Client {
                         "Socket Error [retry {}/{}]: {:?}",
                         attempt, MAX_RETRIES, err
                     );
+                    trace!(
+                        "Socket error details - Kind: {:?}, URL: {}, Is timeout: {}, Is connect: {}",
+                        err.status(),
+                        url,
+                        err.is_timeout(),
+                        err.is_connect()
+                    );
                     tokio::time::sleep(Duration::from_secs(1) * attempt).await;
                     continue;
                 }
             };
 
+            trace!("Download response status: {} for URL: {}", resp.status(), url);
             match resp.bytes().await {
-                Ok(body) => return Ok(body.to_vec()),
+                Ok(body) => {
+                    trace!("Successfully downloaded {} bytes from {}", body.len(), url);
+                    return Ok(body.to_vec());
+                }
                 Err(err) => {
                     warn!("HTTP Error [retry {}/{}]: {:?}", attempt, MAX_RETRIES, err);
+                    trace!("HTTP error details - Is timeout: {}, Is connect: {}", err.is_timeout(), err.is_connect());
                     tokio::time::sleep(Duration::from_secs(1) * attempt).await;
                     continue;
                 }
             };
         }
 
+        error!("Max retries ({}) exceeded for download of URL: {}", MAX_RETRIES, url);
         Err(Error::MaxRetriesExceeded(MAX_RETRIES))
     }
 
@@ -2363,6 +2377,13 @@ impl Client {
         Params: Serialize,
         RpcResult: DeserializeOwned,
     {
+        trace!(
+            "RPC attempt {}/{} for method: {}",
+            attempt + 1,
+            MAX_RETRIES,
+            request.method
+        );
+
         let res = match self
             .http
             .post(format!("{}/api", self.url))
@@ -2376,15 +2397,41 @@ impl Client {
             Ok(res) => res,
             Err(err) => {
                 warn!("Socket Error: {:?}", err);
+                trace!(
+                    "Socket error details for method '{}' - Status: {:?}, Is timeout: {}, Is connect: {}, Is request: {}, URL: {}/api",
+                    request.method,
+                    err.status(),
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.is_request(),
+                    self.url
+                );
                 return Err(Error::MaxRetriesExceeded(attempt));
             }
         };
 
+        trace!(
+            "RPC response for method '{}': status={}, content-length={:?}",
+            request.method,
+            res.status(),
+            res.content_length()
+        );
+
         if res.status().is_success() {
             self.process_rpc_response(res).await
         } else {
+            let status = res.status();
             let err = res.error_for_status_ref().unwrap_err();
-            warn!("HTTP Error {}: {}", err, res.text().await?);
+            let body = res.text().await?;
+            
+            warn!("HTTP Error {}: {}", err, body);
+            trace!(
+                "HTTP error details for method '{}' - Status: {}, Body length: {}, Response body: {}",
+                request.method,
+                status,
+                body.len(),
+                if body.len() < 1000 { &body } else { &format!("{}...(truncated)", &body[..1000]) }
+            );
             warn!(
                 "Retrying RPC request (attempt {}/{})...",
                 attempt + 1,

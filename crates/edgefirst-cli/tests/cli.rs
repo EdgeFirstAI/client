@@ -1060,6 +1060,7 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = get_test_dataset();
     let dataset_name_lower = dataset.to_lowercase().replace("ds-", "dataset-");
@@ -1942,6 +1943,7 @@ fn extract_artifact_name(output: &str) -> Option<String> {
 }
 
 #[test]
+#[serial]
 fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
 
@@ -2011,6 +2013,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs::File, io::Write};
 

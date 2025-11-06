@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Internal: CLI tests now run serially to prevent concurrent Studio server access issues
+  - Added `#[serial]` attribute to `test_download_annotations`, `test_download_artifact`, and `test_upload_artifact`
+  - Prevents race conditions and server overload during integration testing
+- Internal: GitHub Actions workflow fixes for improved CI/CD reliability
+
 ## [2.4.0] - 2025-11-06
 
 ### Fixed
