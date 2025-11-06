@@ -181,7 +181,7 @@ jobs:
 
       # Use same cache configuration as build.yml to benefit from shared cache
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1 # v2.8.1
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ matrix.target }}-build
           shared-key: "build"
@@ -291,7 +291,7 @@ jobs:
 
       # Use same cache configuration as build.yml to benefit from shared cache
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1 # v2.8.1
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           key: ${{ matrix.target }}-build
           shared-key: "build"
@@ -448,7 +448,7 @@ jobs:
         run: ls -lh wheels/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@106e0b0b7c337fa67ed433972f777c6357f78598 # v1.13.0
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           packages-dir: wheels/
           skip-existing: true
