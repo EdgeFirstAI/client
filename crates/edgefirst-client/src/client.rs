@@ -385,7 +385,7 @@ impl Client {
             .decode(token_parts[1])
             .map_err(|_| Error::InvalidToken)?;
         let payload: HashMap<String, serde_json::Value> = serde_json::from_slice(&decoded)?;
-        let server = match payload.get("database") {
+        let server = match payload.get("server") {
             Some(value) => value.as_str().ok_or(Error::InvalidToken)?.to_string(),
             None => return Err(Error::InvalidToken),
         };
