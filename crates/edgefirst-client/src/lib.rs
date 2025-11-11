@@ -57,6 +57,7 @@ mod api;
 mod client;
 mod dataset;
 mod error;
+mod retry;
 
 pub use crate::{
     api::{
@@ -72,6 +73,7 @@ pub use crate::{
         ImuData, Label, Location, Mask, Sample, SampleFile,
     },
     error::Error,
+    retry::{RetryScope, classify_url},
 };
 
 #[cfg(feature = "polars")]
@@ -670,5 +672,326 @@ mod tests {
         println!("task progress: {:?}", task.stages());
 
         Ok(())
+    }
+
+    // ============================================================================
+    // Retry URL Classification Tests
+    // ============================================================================
+
+    mod retry_url_classification {
+        use super::*;
+
+        #[test]
+        fn test_studio_api_base_url() {
+            // Base production URL
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_with_trailing_slash() {
+            // Trailing slash should be handled correctly
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_with_path() {
+            // API endpoints with additional path segments
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/datasets"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/auth.login"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/trainer/session"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_with_query_params() {
+            // Query parameters should not affect classification
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api?foo=bar"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/datasets?page=1&limit=10"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_subdomains() {
+            // Server-specific instances (test, stage, saas, ocean, etc.)
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://stage.edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://saas.edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://ocean.edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_with_standard_port() {
+            // Standard HTTPS port (443) should be handled
+            assert_eq!(
+                classify_url("https://edgefirst.studio:443/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio:443/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_with_custom_port() {
+            // Custom ports should be handled correctly
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio:8080/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio:8443/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_studio_api_http_protocol() {
+            // HTTP (not HTTPS) should still be recognized
+            assert_eq!(
+                classify_url("http://edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("http://test.edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_file_io_s3_urls() {
+            // S3 URLs for file operations
+            assert_eq!(
+                classify_url("https://s3.amazonaws.com/bucket/file.bin"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://s3.us-west-2.amazonaws.com/mybucket/data.zip"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_file_io_cloudfront_urls() {
+            // CloudFront URLs for file distribution
+            assert_eq!(
+                classify_url("https://d123abc.cloudfront.net/file.bin"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://d456def.cloudfront.net/path/to/file.tar.gz"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_file_io_non_api_studio_paths() {
+            // Non-API paths on edgefirst.studio domain
+            assert_eq!(
+                classify_url("https://edgefirst.studio/docs"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/download_model"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio/download_model"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://stage.edgefirst.studio/download_checkpoint"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_file_io_generic_urls() {
+            // Generic download URLs
+            assert_eq!(
+                classify_url("https://example.com/download"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://cdn.example.com/files/data.json"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_security_malicious_url_substring() {
+            // Security: URL with edgefirst.studio in path should NOT match
+            assert_eq!(
+                classify_url("https://evil.com/test.edgefirst.studio/api"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://attacker.com/edgefirst.studio/api/fake"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_edge_case_similar_domains() {
+            // Similar but different domains should be FileIO
+            assert_eq!(
+                classify_url("https://edgefirst.studio.com/api"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://notedgefirst.studio/api"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://edgefirststudio.com/api"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_edge_case_invalid_urls() {
+            // Invalid URLs should default to FileIO
+            assert_eq!(classify_url("not a url"), RetryScope::FileIO);
+            assert_eq!(classify_url(""), RetryScope::FileIO);
+            assert_eq!(
+                classify_url("ftp://edgefirst.studio/api"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_edge_case_url_normalization() {
+            // URL normalization edge cases
+            assert_eq!(
+                classify_url("https://EDGEFIRST.STUDIO/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://test.EDGEFIRST.studio/api"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_comprehensive_subdomain_coverage() {
+            // Ensure all known server instances are recognized
+            let subdomains = vec![
+                "test", "stage", "saas", "ocean", "prod", "dev", "qa", "demo",
+            ];
+
+            for subdomain in subdomains {
+                let url = format!("https://{}.edgefirst.studio/api", subdomain);
+                assert_eq!(
+                    classify_url(&url),
+                    RetryScope::StudioApi,
+                    "Failed for subdomain: {}",
+                    subdomain
+                );
+            }
+        }
+
+        #[test]
+        fn test_api_path_variations() {
+            // Various API path patterns
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/v1"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api/v2/datasets"),
+                RetryScope::StudioApi
+            );
+
+            // Non-/api paths should be FileIO
+            assert_eq!(
+                classify_url("https://edgefirst.studio/apis"),
+                RetryScope::FileIO
+            );
+            assert_eq!(
+                classify_url("https://edgefirst.studio/v1/api"),
+                RetryScope::FileIO
+            );
+        }
+
+        #[test]
+        fn test_port_range_coverage() {
+            // Test various port numbers
+            let ports = vec![80, 443, 8080, 8443, 3000, 5000, 9000];
+
+            for port in ports {
+                let url = format!("https://test.edgefirst.studio:{}/api", port);
+                assert_eq!(
+                    classify_url(&url),
+                    RetryScope::StudioApi,
+                    "Failed for port: {}",
+                    port
+                );
+            }
+        }
+
+        #[test]
+        fn test_complex_query_strings() {
+            // Complex query parameters with special characters
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api?token=abc123&redirect=/dashboard"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio/api?q=search%20term&page=1"),
+                RetryScope::StudioApi
+            );
+        }
+
+        #[test]
+        fn test_url_with_fragment() {
+            // URLs with fragments (#) - fragments are not sent to server
+            assert_eq!(
+                classify_url("https://edgefirst.studio/api#section"),
+                RetryScope::StudioApi
+            );
+            assert_eq!(
+                classify_url("https://test.edgefirst.studio/api/datasets#results"),
+                RetryScope::StudioApi
+            );
+        }
     }
 }

@@ -50,6 +50,19 @@ fi
   - Comma-separated list of annotation types (e.g., `box2d`, `box2d,mask`, `box3d`)
   - Useful for isolating specific annotation types during debugging
   - Example: `TEST_DATASET_TYPES=box2d` tests only bounding box annotations
+- `EDGEFIRST_TIMEOUT=<seconds>` (default: `30`) - HTTP request timeout in seconds:
+  - Controls how long to wait for server responses before timing out
+  - Lower values fail faster (good for testing), higher values accommodate slow networks
+  - Example: `EDGEFIRST_TIMEOUT=10` for fast-fail testing
+- `EDGEFIRST_MAX_RETRIES=<count>` (default: `3`) - Maximum retries per request:
+  - How many times to retry failed requests (timeouts, server errors, etc.)
+  - Applies to both Studio API calls and File I/O operations (S3 uploads/downloads)
+  - **URL-based classification**: Retry logic differs by request type:
+    * **Studio API** (`*.edgefirst.studio/api`): Never retries auth failures (401/403), retries server errors
+    * **File I/O** (S3, CloudFront): Retries all transient errors including conflicts (409), locks (423)
+  - **For bulk operations**: Set `EDGEFIRST_MAX_RETRIES=10` for better resilience with concurrent S3 uploads
+  - Worst-case timeout: `EDGEFIRST_TIMEOUT × EDGEFIRST_MAX_RETRIES` seconds
+  - Example: `EDGEFIRST_MAX_RETRIES=1` for minimal retries
 
 **Python virtualenv**: Ensure virtualenv (venv/.venv) is activated before running maturin or Python tests.
 

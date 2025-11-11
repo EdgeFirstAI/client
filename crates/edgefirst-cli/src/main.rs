@@ -45,6 +45,11 @@ enum Command {
     Login,
     /// Logout by removing the token from the application configuration file.
     Logout,
+    /// Sleep for the specified number of seconds (for testing purposes).
+    Sleep {
+        /// Number of seconds to sleep
+        seconds: u64,
+    },
     /// Returns the EdgeFirst Studio authentication token for the provided
     /// username and password.  This would typically be stored into the
     /// STUDIO_TOKEN environment variable for subsequent commands to avoid
@@ -373,6 +378,13 @@ async fn handle_login(
 async fn handle_logout(client: &Client) -> Result<(), Error> {
     client.logout().await?;
     println!("Successfully logged out of EdgeFirst Studio");
+    Ok(())
+}
+
+async fn handle_sleep(seconds: u64) -> Result<(), Error> {
+    println!("Sleeping for {} seconds...", seconds);
+    tokio::time::sleep(tokio::time::Duration::from_secs(seconds)).await;
+    println!("Sleep complete");
     Ok(())
 }
 
@@ -1895,6 +1907,7 @@ async fn main() -> Result<(), Error> {
             return handle_login(client, args.username, args.password).await;
         }
         Command::Logout => return handle_logout(&client).await,
+        Command::Sleep { seconds } => return handle_sleep(*seconds).await,
         _ => {}
     }
 
@@ -1903,7 +1916,9 @@ async fn main() -> Result<(), Error> {
 
     // Handle all other commands
     match args.cmd {
-        Command::Version | Command::Login | Command::Logout => unreachable!(),
+        Command::Version | Command::Login | Command::Logout | Command::Sleep { .. } => {
+            unreachable!()
+        }
         Command::Token => handle_token(&client).await,
         Command::Organization => handle_organization(&client).await,
         Command::Projects { name } => handle_projects(&client, name).await,

@@ -11,6 +11,7 @@ use crate::{
         ValidationSession, ValidationSessionID,
     },
     dataset::{AnnotationSet, AnnotationType, Dataset, FileType, Label, NewLabel, NewLabelObject},
+    retry::{create_retry_policy, log_retry_configuration},
 };
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -44,7 +45,6 @@ use walkdir::WalkDir;
 use polars::prelude::*;
 
 static MAX_TASKS: usize = 32;
-static MAX_RETRIES: u32 = 10;
 static PART_SIZE: usize = 100 * 1024 * 1024;
 
 fn sanitize_path_component(name: &str) -> String {
@@ -300,10 +300,33 @@ impl Client {
     /// using any methods that require authentication.  Use the `with_token`
     /// method to create a client with a token.
     pub fn new() -> Result<Self, Error> {
+        log_retry_configuration();
+
+        // Get timeout from environment or use default
+        let timeout_secs = std::env::var("EDGEFIRST_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30); // Default 30s timeout for API calls
+
+        // Create single HTTP client with URL-based retry policy
+        //
+        // The retry policy classifies requests into two categories:
+        // - StudioApi (*.edgefirst.studio/api): Fast-fail on auth errors, retry server
+        //   errors
+        // - FileIO (S3, CloudFront, etc.): Retry all transient errors for robustness
+        //
+        // This allows the same client to handle both API calls and file operations
+        // with appropriate retry behavior for each. See retry.rs for details.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(timeout_secs))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(10)
+            .retry(create_retry_policy())
+            .build()?;
+
         Ok(Client {
-            http: reqwest::Client::builder()
-                .read_timeout(Duration::from_secs(60))
-                .build()?,
+            http,
             url: "https://edgefirst.studio".to_string(),
             token: Arc::new(tokio::sync::RwLock::new("".to_string())),
             token_path: None,
@@ -1410,58 +1433,15 @@ impl Client {
     }
 
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
-        for attempt in 1..MAX_RETRIES {
-            trace!(
-                "Download attempt {}/{} for URL: {}",
-                attempt, MAX_RETRIES, url
-            );
-            let resp = match self.http.get(url).send().await {
-                Ok(resp) => resp,
-                Err(err) => {
-                    warn!(
-                        "Socket Error [retry {}/{}]: {:?}",
-                        attempt, MAX_RETRIES, err
-                    );
-                    trace!(
-                        "Socket error details - Kind: {:?}, URL: {}, Is timeout: {}, Is connect: {}",
-                        err.status(),
-                        url,
-                        err.is_timeout(),
-                        err.is_connect()
-                    );
-                    tokio::time::sleep(Duration::from_secs(1) * attempt).await;
-                    continue;
-                }
-            };
+        // Uses default 120s timeout from client
+        let resp = self.http.get(url).send().await?;
 
-            trace!(
-                "Download response status: {} for URL: {}",
-                resp.status(),
-                url
-            );
-            match resp.bytes().await {
-                Ok(body) => {
-                    trace!("Successfully downloaded {} bytes from {}", body.len(), url);
-                    return Ok(body.to_vec());
-                }
-                Err(err) => {
-                    warn!("HTTP Error [retry {}/{}]: {:?}", attempt, MAX_RETRIES, err);
-                    trace!(
-                        "HTTP error details - Is timeout: {}, Is connect: {}",
-                        err.is_timeout(),
-                        err.is_connect()
-                    );
-                    tokio::time::sleep(Duration::from_secs(1) * attempt).await;
-                    continue;
-                }
-            };
+        if !resp.status().is_success() {
+            return Err(Error::HttpError(resp.error_for_status().unwrap_err()));
         }
 
-        error!(
-            "Max retries ({}) exceeded for download of URL: {}",
-            MAX_RETRIES, url
-        );
-        Err(Error::MaxRetriesExceeded(MAX_RETRIES))
+        let bytes = resp.bytes().await?;
+        Ok(bytes.to_vec())
     }
 
     /// Get the AnnotationGroup for the specified annotation set with the
@@ -2371,93 +2351,21 @@ impl Client {
             );
         }
 
-        for attempt in 0..MAX_RETRIES {
-            match self.try_rpc_request(&request, attempt).await {
-                Ok(result) => return Ok(result),
-                Err(Error::MaxRetriesExceeded(_)) => continue,
-                Err(err) => return Err(err),
-            }
-        }
+        let url = format!("{}/api", self.url);
 
-        Err(Error::MaxRetriesExceeded(MAX_RETRIES))
-    }
-
-    async fn try_rpc_request<Params, RpcResult>(
-        &self,
-        request: &RpcRequest<Params>,
-        attempt: u32,
-    ) -> Result<RpcResult, Error>
-    where
-        Params: Serialize,
-        RpcResult: DeserializeOwned,
-    {
-        trace!(
-            "RPC attempt {}/{} for method: {}",
-            attempt + 1,
-            MAX_RETRIES,
-            request.method
-        );
-
-        let res = match self
+        // Use client-level timeout (allows retry mechanism to work properly)
+        // Per-request timeout overrides can prevent retries from functioning
+        let res = self
             .http
-            .post(format!("{}/api", self.url))
+            .post(&url)
             .header("Accept", "application/json")
             .header("User-Agent", "EdgeFirst Client")
             .header("Authorization", format!("Bearer {}", self.token().await))
             .json(&request)
             .send()
-            .await
-        {
-            Ok(res) => res,
-            Err(err) => {
-                warn!("Socket Error: {:?}", err);
-                trace!(
-                    "Socket error details for method '{}' - Status: {:?}, Is timeout: {}, Is connect: {}, Is request: {}, URL: {}/api",
-                    request.method,
-                    err.status(),
-                    err.is_timeout(),
-                    err.is_connect(),
-                    err.is_request(),
-                    self.url
-                );
-                return Err(Error::MaxRetriesExceeded(attempt));
-            }
-        };
+            .await?;
 
-        trace!(
-            "RPC response for method '{}': status={}, content-length={:?}",
-            request.method,
-            res.status(),
-            res.content_length()
-        );
-
-        if res.status().is_success() {
-            self.process_rpc_response(res).await
-        } else {
-            let status = res.status();
-            let err = res.error_for_status_ref().unwrap_err();
-            let body = res.text().await?;
-
-            warn!("HTTP Error {}: {}", err, body);
-            trace!(
-                "HTTP error details for method '{}' - Status: {}, Body length: {}, Response body: {}",
-                request.method,
-                status,
-                body.len(),
-                if body.len() < 1000 {
-                    &body
-                } else {
-                    &format!("{}...(truncated)", &body[..1000])
-                }
-            );
-            warn!(
-                "Retrying RPC request (attempt {}/{})...",
-                attempt + 1,
-                MAX_RETRIES
-            );
-            tokio::time::sleep(Duration::from_secs(1) * attempt).await;
-            Err(Error::MaxRetriesExceeded(attempt))
-        }
+        self.process_rpc_response(res).await
     }
 
     async fn process_rpc_response<RpcResult>(
@@ -2594,7 +2502,7 @@ where
 /// This function handles:
 /// - Splitting files into parts based on PART_SIZE (100MB)
 /// - Parallel upload with concurrency limiting (MAX_TASKS = 32)
-/// - Retry logic (up to MAX_RETRIES = 10 per part)
+/// - Retry logic (handled by reqwest client)
 /// - Progress tracking across all parts
 ///
 /// # Arguments
@@ -2648,46 +2556,30 @@ async fn upload_multipart(
             tokio::spawn(async move {
                 // Acquire semaphore permit to limit concurrent uploads
                 let _permit = sem.acquire().await?;
-                let mut etag = None;
 
-                // Retry upload for this part up to MAX_RETRIES times
-                for attempt in 0..MAX_RETRIES {
-                    match upload_part(http.clone(), url.clone(), path.clone(), part, n_parts).await
-                    {
-                        Ok(v) => {
-                            etag = Some(v);
-                            break;
-                        }
-                        Err(err) => {
-                            warn!("Upload Part Error: {:?}", err);
-                            tokio::time::sleep(Duration::from_secs(1) * attempt).await;
-                        }
-                    }
+                // Upload part (retry is handled by reqwest client)
+                let etag =
+                    upload_part(http.clone(), url.clone(), path.clone(), part, n_parts).await?;
+
+                // Store ETag for this part (needed to complete multipart upload)
+                let mut etags = etags.lock().await;
+                etags[part] = EtagPart {
+                    etag,
+                    part_number: part + 1,
+                };
+
+                // Update progress counter
+                let current = current.fetch_add(PART_SIZE, Ordering::SeqCst);
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current: current + PART_SIZE,
+                            total,
+                        })
+                        .await;
                 }
 
-                if let Some(etag) = etag {
-                    // Store ETag for this part (needed to complete multipart upload)
-                    let mut etags = etags.lock().await;
-                    etags[part] = EtagPart {
-                        etag,
-                        part_number: part + 1,
-                    };
-
-                    // Update progress counter
-                    let current = current.fetch_add(PART_SIZE, Ordering::SeqCst);
-                    if let Some(progress) = &progress {
-                        let _ = progress
-                            .send(Progress {
-                                current: current + PART_SIZE,
-                                total,
-                            })
-                            .await;
-                    }
-
-                    Ok(())
-                } else {
-                    Err(Error::MaxRetriesExceeded(MAX_RETRIES))
-                }
+                Ok::<(), Error>(())
             })
         })
         .collect::<Vec<_>>();
@@ -2767,46 +2659,26 @@ async fn upload_file_to_presigned_url(
     let file_data = fs::read(&path).await?;
     let file_size = file_data.len();
 
-    // Upload with retry logic
-    for attempt in 1..=MAX_RETRIES {
-        match http
-            .put(url)
-            .header(CONTENT_LENGTH, file_size)
-            .body(file_data.clone())
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    debug!(
-                        "Successfully uploaded file: {:?} ({} bytes)",
-                        path, file_size
-                    );
-                    return Ok(());
-                } else {
-                    let status = resp.status();
-                    let error_text = resp.text().await.unwrap_or_default();
-                    warn!(
-                        "Upload failed [attempt {}/{}]: HTTP {} - {}",
-                        attempt, MAX_RETRIES, status, error_text
-                    );
-                }
-            }
-            Err(err) => {
-                warn!(
-                    "Upload error [attempt {}/{}]: {:?}",
-                    attempt, MAX_RETRIES, err
-                );
-            }
-        }
+    // Upload (retry is handled by reqwest client)
+    let resp = http
+        .put(url)
+        .header(CONTENT_LENGTH, file_size)
+        .body(file_data)
+        .send()
+        .await?;
 
-        if attempt < MAX_RETRIES {
-            tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
-        }
+    if resp.status().is_success() {
+        debug!(
+            "Successfully uploaded file: {:?} ({} bytes)",
+            path, file_size
+        );
+        Ok(())
+    } else {
+        let status = resp.status();
+        let error_text = resp.text().await.unwrap_or_default();
+        Err(Error::InvalidParameters(format!(
+            "Upload failed: HTTP {} - {}",
+            status, error_text
+        )))
     }
-
-    Err(Error::InvalidParameters(format!(
-        "Failed to upload file {:?} after {} attempts",
-        path, MAX_RETRIES
-    )))
 }

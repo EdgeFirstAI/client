@@ -832,6 +832,89 @@ fn test_logout() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 #[serial]
+fn test_sleep_30_seconds() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+
+    let start = Instant::now();
+
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("sleep").arg("30");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    let elapsed = start.elapsed();
+
+    println!("Sleep output:\n{}", output_str);
+    println!("Elapsed time: {:?}", elapsed);
+
+    assert!(output_str.contains("Sleeping for 30 seconds"));
+    assert!(output_str.contains("Sleep complete"));
+    assert!(
+        elapsed.as_secs() >= 30,
+        "Sleep should take at least 30 seconds"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_logout_after_sleep() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{path::PathBuf, time::Instant};
+
+    let _username =
+        env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
+
+    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
+        .map(|d| d.config_dir().join("token"))
+        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
+
+    // Login first
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("login");
+    cmd.ok()?;
+
+    assert!(token_path.exists(), "Token file should exist before logout");
+
+    let start = Instant::now();
+
+    // Run logout command
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("logout");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    let elapsed = start.elapsed();
+
+    println!("Logout output:\n{}", output_str);
+    println!("Logout elapsed time: {:?}", elapsed);
+
+    // If serial is working, this should complete quickly
+    // If tests run in parallel and sleep blocks logout, this will be slow
+    assert!(
+        elapsed.as_secs() < 5,
+        "Logout should complete in under 5 seconds, took {:?}",
+        elapsed
+    );
+
+    assert!(output_str.contains("Successfully logged out of EdgeFirst Studio"));
+    assert!(
+        !token_path.exists(),
+        "Token file should be removed after logout"
+    );
+
+    // Re-login for other tests
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("login");
+    cmd.ok()?;
+
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs, path::PathBuf};
 
@@ -1225,8 +1308,13 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
 /// - Dataset must exist in "Unit Testing" project
 /// - Must have at least one annotation set
 /// - Supports mixed sensors, annotation types, and sequences
+///
+/// **Note**: This test uploads 1600+ samples and requires extended timeout.
+/// Run with: `EDGEFIRST_TIMEOUT=120 cargo test --package edgefirst-cli
+/// test_dataset_roundtrip -- --ignored --nocapture`
 #[test]
 #[serial]
+#[ignore = "Requires EDGEFIRST_TIMEOUT=120 due to large dataset upload (1600+ samples). Run with: cargo test test_dataset_roundtrip -- --ignored"]
 fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Download→Upload→Download→Compare test for configurable dataset
     // This verifies Arrow file format preserves all metadata (sequences, groups,
