@@ -2,11 +2,8 @@
 
 # CI profile - used in GitHub Actions and other CI environments
 [profile.ci]
+# Number of retries for failing tests
+retries = 0
 # Generate JUnit XML report for test results
-[profile.ci.junit]
-path = "junit.xml"
-report-name = "nextest-run"
-# Store output for failing tests to help with debugging
-store-failure-output = true
-# Don't store output for successful tests to keep the report size manageable
-store-success-output = false
+# The JUnit report includes all test results (pass/fail/skip) regardless of output settings
+junit = { path = "junit.xml", store-success-output = true, store-failure-output = true }

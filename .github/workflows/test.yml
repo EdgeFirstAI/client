@@ -74,6 +74,7 @@ jobs:
           TEST_DATASET_TYPES: box2d
 
       - name: Set up coverage environment
+        if: success() || failure()
         run: |
           source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
           echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
@@ -84,9 +85,11 @@ jobs:
           echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
 
       - name: Build with coverage
+        if: success() || failure()
         run: cargo build --locked
 
       - name: Run Rust unit tests
+        if: success() || failure()
         run: cargo nextest run --locked --no-fail-fast --profile ci
         env:
           STUDIO_SERVER: test
@@ -98,20 +101,26 @@ jobs:
         if: always()
         run: |
           echo "Checking for nextest output files..."
-          find target/nextest -name "*.xml" || echo "No XML files found in target/nextest"
+          find target/nextest -name "*.xml" -o -name "junit.xml" || echo "No XML files found in target/nextest"
           ls -la target/nextest/ci/ || echo "target/nextest/ci directory not found"
+          echo "Contents of target/nextest/ci/:"
+          find target/nextest/ci/ -type f || true
 
       - name: Install Python dependencies
+        if: success() || failure()
         run: |
           pip install -r requirements.txt
 
       - name: Build Python package
+        if: success() || failure()
         run: maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
 
       - name: Install Python package
+        if: success() || failure()
         run: pip install target/wheels/edgefirst_client-*.whl
 
       - name: Run Python tests
+        if: success() || failure()
         run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
         env:
           STUDIO_SERVER: test
@@ -119,12 +128,22 @@ jobs:
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d
 
+      - name: Verify Python test output
+        if: always()
+        run: |
+          echo "Checking for Python test output files..."
+          ls -la target/python/ || echo "target/python directory not found"
+          echo "Python test XML files:"
+          find target/python -name "TEST-*.xml" || echo "No TEST-*.xml files found"
+          echo "Python coverage file:"
+          ls -lh coverage.xml || echo "coverage.xml not found"
+
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@34d7c956a59aed1bfebf31df77b8de55db9bbaaf # v2.21.0
         if: success() || failure()
         with:
           files: |
-            target/nextest/ci/*.xml
+            target/nextest/ci/junit.xml
             target/python/TEST-*.xml
           check_name: Test Results (Rust + Python)
           comment_title: EdgeFirst Client Test Results
@@ -137,9 +156,11 @@ jobs:
           check_run_annotations: all tests, skipped tests
 
       - name: Generate coverage report
+        if: success() || failure()
         run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload Rust coverage to Codecov
+        if: success() || failure()
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
         with:
           files: lcov.info
@@ -147,6 +168,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload Python coverage to Codecov
+        if: success() || failure()
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
         with:
           files: coverage.xml
@@ -154,6 +176,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage to GitHub
+        if: success() || failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: coverage-reports

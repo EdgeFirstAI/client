@@ -77,7 +77,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use edgefirst_client::retry::{RetryScope, classify_url};
+//! use edgefirst_client::{RetryScope, classify_url};
 //!
 //! // Studio API calls
 //! assert_eq!(
@@ -157,7 +157,7 @@ pub enum RetryScope {
 /// # Examples
 ///
 /// ```rust
-/// use edgefirst_client::retry::{RetryScope, classify_url};
+/// use edgefirst_client::{RetryScope, classify_url};
 ///
 /// // Studio API URLs
 /// assert_eq!(

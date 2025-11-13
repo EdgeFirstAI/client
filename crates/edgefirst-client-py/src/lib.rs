@@ -219,7 +219,7 @@ impl Parameter {
 
     /// Get the array as a Python list with native Python types (returns None if
     /// not an Array)
-    fn as_array(&self, py: Python<'_>) -> Option<PyObject> {
+    fn as_array(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         match self {
             Parameter::Array(v) => {
                 let list = pyo3::types::PyList::empty(py);
@@ -246,7 +246,7 @@ impl Parameter {
 
     /// Get the object as a Python dict with native Python types (returns None
     /// if not an Object)
-    fn as_object(&self, py: Python<'_>) -> Option<PyObject> {
+    fn as_object(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         match self {
             Parameter::Object(v) => {
                 let dict = pyo3::types::PyDict::new(py);
@@ -1503,45 +1503,44 @@ impl Project {
     #[pyo3(signature = (client, name = None))]
     pub fn datasets<'py>(
         &self,
+        py: Python<'py>,
         client: &Client,
         name: Option<&str>,
     ) -> Result<Vec<Dataset>, Error> {
-        Python::with_gil(|py| {
-            let project_id = Bound::new(py, self.id())?.into_any();
-            let dataset = client.datasets(project_id, name)?;
-            Ok(dataset)
-        })
+        let project_id = Bound::new(py, self.id())?.into_any();
+        let dataset = client.datasets(project_id, name)?;
+        Ok(dataset)
     }
 
     #[pyo3(signature = (client, name = None))]
     pub fn experiments(
         &self,
+        py: Python<'_>,
         client: &Client,
         name: Option<&str>,
     ) -> Result<Vec<Experiment>, Error> {
-        Python::with_gil(|py| {
-            let project_id = Bound::new(py, self.id())?.into_any();
-            client.experiments(project_id, name)
-        })
+        let project_id = Bound::new(py, self.id())?.into_any();
+        client.experiments(project_id, name)
     }
 
     #[pyo3(signature = (client, name = None))]
     pub fn training_sessions(
         &self,
+        py: Python<'_>,
         client: &Client,
         name: Option<&str>,
     ) -> Result<Vec<TrainingSession>, Error> {
-        Python::with_gil(|py| {
-            let project_id = Bound::new(py, self.id())?.into_any();
-            client.training_sessions(project_id, name)
-        })
+        let project_id = Bound::new(py, self.id())?.into_any();
+        client.training_sessions(project_id, name)
     }
 
-    pub fn validation_sessions(&self, client: &Client) -> Result<Vec<ValidationSession>, Error> {
-        Python::with_gil(|py| {
-            let project_id = Bound::new(py, self.id())?.into_any();
-            client.validation_sessions(project_id)
-        })
+    pub fn validation_sessions(
+        &self,
+        py: Python<'_>,
+        client: &Client,
+    ) -> Result<Vec<ValidationSession>, Error> {
+        let project_id = Bound::new(py, self.id())?.into_any();
+        client.validation_sessions(project_id)
     }
 }
 
@@ -1587,22 +1586,18 @@ impl Dataset {
         Ok(self.0.created().into_pyobject(py)?.into())
     }
 
-    pub fn labels(&self, client: &Client) -> Result<Vec<Label>, Error> {
-        Python::with_gil(|py| {
-            let dataset_id = Bound::new(py, self.id())?.into_any();
-            client.labels(dataset_id)
-        })
+    pub fn labels(&self, py: Python<'_>, client: &Client) -> Result<Vec<Label>, Error> {
+        let dataset_id = Bound::new(py, self.id())?.into_any();
+        client.labels(dataset_id)
     }
 
-    pub fn add_label(&self, client: &Client, name: &str) -> Result<(), Error> {
-        Python::with_gil(|py| {
-            let dataset_id = Bound::new(py, self.id())?.into_any();
-            client.add_label(dataset_id, name)
-        })
+    pub fn add_label(&self, py: Python<'_>, client: &Client, name: &str) -> Result<(), Error> {
+        let dataset_id = Bound::new(py, self.id())?.into_any();
+        client.add_label(dataset_id, name)
     }
 
-    pub fn remove_label(&self, client: &Client, name: &str) -> Result<(), Error> {
-        let labels = self.labels(client)?;
+    pub fn remove_label(&self, py: Python<'_>, client: &Client, name: &str) -> Result<(), Error> {
+        let labels = self.labels(py, client)?;
         let label = labels
             .iter()
             .find(|l| l.name() == name)
@@ -1838,11 +1833,9 @@ impl TrainingSession {
         Ok(self.0.set_metrics(&client.0, map).await?)
     }
 
-    pub fn artifacts(&self, client: &Client) -> Result<Vec<Artifact>, Error> {
-        Python::with_gil(|py| {
-            let session_id = Bound::new(py, self.id())?.into_any();
-            client.artifacts(session_id)
-        })
+    pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
+        let session_id = Bound::new(py, self.id())?.into_any();
+        client.artifacts(session_id)
     }
 
     #[tokio_wrap::sync]
@@ -1979,11 +1972,9 @@ impl ValidationSession {
         Ok(self.0.set_metrics(&client.0, map).await?)
     }
 
-    pub fn artifacts(&self, client: &Client) -> Result<Vec<Artifact>, Error> {
-        Python::with_gil(|py| {
-            let session_id = Bound::new(py, self.id())?.into_any();
-            client.artifacts(session_id)
-        })
+    pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
+        let session_id = Bound::new(py, self.id())?.into_any();
+        client.artifacts(session_id)
     }
 
     #[tokio_wrap::sync]
@@ -2461,7 +2452,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2521,7 +2512,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2597,7 +2588,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2720,7 +2711,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2786,6 +2777,7 @@ impl Client {
     #[pyo3(signature = (dataset_id, annotation_set_id, samples, progress = None))]
     pub fn populate_samples<'py>(
         &self,
+        py: Python<'py>,
         dataset_id: Bound<'py, PyAny>,
         annotation_set_id: Bound<'py, PyAny>,
         samples: Vec<Py<Sample>>,
@@ -2796,7 +2788,7 @@ impl Client {
 
         // Convert Python Sample objects to Rust Sample objects
         let samples: Vec<edgefirst_client::Sample> =
-            Python::with_gil(|py| samples.iter().map(|s| s.borrow(py).0.clone()).collect());
+            samples.iter().map(|s| s.borrow(py).0.clone()).collect();
 
         let results = match progress {
             Some(progress) => {
@@ -2808,7 +2800,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2858,7 +2850,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -2989,7 +2981,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
@@ -3030,7 +3022,7 @@ impl Client {
                 });
 
                 while let Some(status) = rx.blocking_recv() {
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         progress
                             .call1(py, (status.current, status.total))
                             .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
