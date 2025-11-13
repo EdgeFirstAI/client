@@ -7,23 +7,29 @@
 [![PyPI](https://img.shields.io/pypi/v/edgefirst-client.svg)](https://pypi.org/project/edgefirst-client/)
 [![Documentation](https://docs.rs/edgefirst-client/badge.svg)](https://docs.rs/edgefirst-client)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![EdgeFirst Studio](https://img.shields.io/badge/EdgeFirst-Studio-green)](https://edgefirst.studio)
 
-**EdgeFirst Studio Client** is a command-line application and library (Rust + Python) for programmatic access to [EdgeFirst Studio](https://edgefirst.studio), the MLOps platform for 3D visual and 4D spatial perception AI. Automate dataset management, annotation workflows, model training, validation, and deployment for off-road vehicles, robotics, construction equipment, and industrial applications.
+**EdgeFirst Studio Client** is the official command-line application and library (Rust + Python) for [EdgeFirst Studio](https://edgefirst.studio) - the MLOps platform for 3D visual and 4D spatial perception AI. Automate dataset management, annotation workflows, model training, validation, and deployment for off-road vehicles, robotics, construction equipment, and industrial applications.
 
 ## Overview
 
-EdgeFirst Client enables developers to integrate EdgeFirst Studio's capabilities into their CI/CD pipelines, custom training workflows, and automated data processing systems. The client is used internally by EdgeFirst Studio's training and validation services, providing a battle-tested foundation for production workloads.
+EdgeFirst Client provides seamless programmatic access to EdgeFirst Studio's comprehensive MLOps capabilities. Whether you're integrating Studio into your CI/CD pipeline, building custom training workflows, or automating data processing systems, EdgeFirst Client delivers the production-grade reliability you need.
 
-**Key capabilities:**
-- 📦 **MCAP Publishing**: Upload sensor recordings for automated ground-truth generation (AGTG)
+**Trusted by EdgeFirst Studio**: This client library powers EdgeFirst Studio's internal training and validation services, providing a battle-tested foundation for production workloads.
+
+### Key Capabilities
+
+- 📦 **MCAP Publishing**: Upload sensor recordings for [automated ground-truth generation (AGTG)](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
 - 🏷️ **Dataset Management**: Download datasets and annotations in multiple formats
 - 🎯 **Training & Validation**: Monitor sessions, publish metrics, manage model artifacts
 - 🚀 **Model Artifacts**: Upload and download trained models (ONNX, TensorFlow Lite, H5, etc.)
 - 📊 **Multiple Formats**: Darknet/YOLO, EdgeFirst Dataset Format (Arrow), user-defined formats
+- 🔌 **Seamless Integration**: Direct REST API access to all EdgeFirst Studio features
 
 ## Features
 
 ### Dataset Management
+
 - **Create snapshots** from MCAP files, directories, or EdgeFirst Dataset format (Zip/Arrow)
 - **Upload MCAP recordings** for [AGTG (Automated Ground-Truth Generation)](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/) workflow
 - **Restore snapshots** with automatic annotation (`--autolabel`) and depth map generation (`--autodepth`)
@@ -32,6 +38,7 @@ EdgeFirst Client enables developers to integrate EdgeFirst Studio's capabilities
 - **Dataset groups and filtering** for flexible data organization
 
 ### Training Workflows
+
 - **List and manage experiments** (training session groups)
 - **Monitor training sessions** with real-time status tracking
 - **Publish training metrics** to EdgeFirst Studio during model training
@@ -40,6 +47,7 @@ EdgeFirst Client enables developers to integrate EdgeFirst Studio's capabilities
 - **Access model and dataset parameters** for reproducibility
 
 ### Validation Workflows
+
 - **List and manage validation sessions** across projects
 - **Publish validation metrics** to EdgeFirst Studio
 - **Upload validation files and results** for analysis
@@ -47,17 +55,28 @@ EdgeFirst Client enables developers to integrate EdgeFirst Studio's capabilities
 - **Track validation task progress** with status monitoring
 
 ### Model Artifact Management
+
 - **Publish (upload) model artifacts** from training sessions
 - **Download trained models** in various formats (ONNX, TensorFlow Lite, H5, PyTorch, etc.)
 - **Used internally by EdgeFirst Studio** trainers and validators
 - **Artifact versioning** and experiment tracking
 
 ### Multiple Dataset Formats
+
 - **Darknet/YOLO**: Industry-standard annotation formats for object detection
 - **EdgeFirst Dataset Format**: Arrow-based format for efficient data handling and 3D perception
 - **User-defined formats**: API flexibility for custom dataset structures
 
+### EdgeFirst Studio Integration
+
+- **One-click deployment** from EdgeFirst Studio UI
+- **Automatic optimization** for edge devices
+- **Performance monitoring** and analytics
+- **A/B testing** and gradual rollouts
+- **Direct API access** to all Studio features
+
 ### Additional Features
+
 - **Task management**: List and monitor background processing tasks
 - **Project operations**: Browse and search projects and datasets
 - **Annotation sets**: Support for multiple annotation versions per dataset
@@ -67,16 +86,19 @@ EdgeFirst Client enables developers to integrate EdgeFirst Studio's capabilities
 ## Installation
 
 ### Via Cargo (Rust)
+
 ```bash
 cargo install edgefirst-cli
 ```
 
 ### Via Pip (Python)
+
 ```bash
 pip install edgefirst-client
 ```
 
 ### From Source
+
 ```bash
 git clone https://github.com/EdgeFirstAI/edgefirst-client
 cd edgefirst-client
@@ -84,6 +106,7 @@ cargo build --release
 ```
 
 ### System Requirements
+
 - **MSRV (Minimum Supported Rust Version)**: Rust 1.90+ (Rust 2024 Edition)
 - **Python**: 3.8+ (for Python bindings)
 - **Network**: Access to EdgeFirst Studio (*.edgefirst.studio)
@@ -106,23 +129,6 @@ edgefirst-client organization
 
 ### Common CLI Workflows
 
-#### Upload MCAP and Create Dataset with AGTG
-
-```bash
-# Create snapshot from MCAP recording
-edgefirst-client create-snapshot recording.mcap
-
-# List available snapshots
-edgefirst-client snapshots
-
-# Restore snapshot with automatic annotation (COCO labels)
-edgefirst-client restore-snapshot <PROJECT_ID> <SNAPSHOT_ID> \
-  --dataset-name "Autonomous Vehicle Dataset" \
-  --dataset-description "Highway driving scenarios" \
-  --autolabel "person car truck bicycle motorcycle" \
-  --autodepth
-```
-
 #### Download Datasets and Annotations
 
 ```bash
@@ -139,31 +145,13 @@ edgefirst-client download-annotations <ANNOTATION_SET_ID> \
   --output annotations.arrow
 
 # Upload samples to dataset
-# Full mode: annotations + images
 edgefirst-client upload-dataset <DATASET_ID> \
   --annotations annotations.arrow \
   --annotation-set-id <ANNOTATION_SET_ID> \
   --images ./images/
-
-# Images-only mode: upload images without annotations
-edgefirst-client upload-dataset <DATASET_ID> --images ./images/
-
-# Auto-discovery: finds images in folder named after Arrow file
-edgefirst-client upload-dataset <DATASET_ID> \
-  --annotations data.arrow \
-  --annotation-set-id <ANNOTATION_SET_ID>
-  # Automatically looks for: data/, dataset/, data.zip, dataset.zip
 ```
 
-**Upload Dataset Format**: The Arrow file must follow the [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/) with columns: `name`, `frame`, `object_id`, `label`, `label_index`, `group`, `mask`, `box2d`, `box3d`. Key features:
-- **Flexible parameters**: All parameters except `DATASET_ID` are optional (must provide at least one of `--annotations` or `--images`)
-- **Auto-discovery**: If `--images` not specified, searches for folder/ZIP named after Arrow file or "dataset"
-- **Images-only mode**: Upload images without annotations by omitting `--annotations` and `--annotation-set-id`
-- **Warning system**: Warns if annotations provided without annotation_set_id (annotations will be skipped)
-- **Samples without annotations**: Include row with `name`/`group` but null geometries
-- **Multiple annotations per sample**: Multiple rows with same `name`
-- **Multiple geometries per annotation**: `box2d`, `box3d`, and `mask` in same row belong to same annotation
-- **Auto-generated object_id**: If multiple geometries appear in same row without `object_id`, a UUID is generated automatically
+For complete upload format specifications, see [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/).
 
 #### Monitor Training and Download Models
 
@@ -181,47 +169,39 @@ edgefirst-client training-session <SESSION_ID> --artifacts
 edgefirst-client download-artifact <SESSION_ID> modelpack.onnx --output ./models/
 ```
 
-#### Work with Validation Sessions
-
-```bash
-# List validation sessions
-edgefirst-client validation-sessions <PROJECT_ID>
-
-# Get validation session details
-edgefirst-client validation-session <SESSION_ID>
-```
-
 ### Rust Library
 
 ```rust
-use edgefirst_client::{Client, ProjectID};
+use edgefirst_client::{Client, TrainingSessionID};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create client and authenticate
-    let mut client = Client::new()?;
+    let client = Client::new()?;
     let client = client.with_login("email@example.com", "password").await?;
-    
+
     // List projects
     let projects = client.projects(None).await?;
     for project in projects {
         println!("Project: {} ({})", project.name(), project.id());
-        
+
         // List datasets for this project
         let datasets = client.datasets(project.id(), None).await?;
         for dataset in datasets {
             println!("  Dataset: {}", dataset.name());
         }
     }
-    
+
     // Publish training metrics (used by trainers/validators)
+    // Note: Replace with your actual training session ID
+    let session_id = TrainingSessionID::from(12345);
     use std::collections::HashMap;
     let session = client.training_session(session_id).await?;
     let mut metrics = HashMap::new();
     metrics.insert("loss".to_string(), 0.123.into());
     metrics.insert("accuracy".to_string(), 0.956.into());
     session.set_metrics(&client, metrics).await?;
-    
+
     Ok(())
 }
 ```
@@ -239,13 +219,14 @@ client = client.with_login("email@example.com", "password")
 projects = client.projects()
 for project in projects:
     print(f"Project: {project.name} ({project.id})")
-    
+
     datasets = client.datasets(project.id)
     for dataset in datasets:
         print(f"  Dataset: {dataset.name}")
 
 # Publish validation metrics (used by validators)
-session = client.validation_session(session_id)
+# Note: Replace with your actual validation session ID
+session = client.validation_session("vs-12345")
 metrics = {
     "mAP": 0.87,
     "precision": 0.92,
@@ -268,48 +249,63 @@ EdgeFirst Client is a REST API client built with:
 - **EdgeFirst Studio Docs**: [doc.edgefirst.ai](https://doc.edgefirst.ai)
 - **Rust API Documentation**: [docs.rs/edgefirst-client](https://docs.rs/edgefirst-client)
 - **Python API Documentation**: Available on [PyPI](https://pypi.org/project/edgefirst-client/)
-- **CLI Man Page**: See [CLI.md](CLI.md) - convert with `pandoc CLI.md --standalone --to man --output edgefirst-client.1`
+- **CLI Man Page**: See [CLI.md](CLI.md)
 - **Dataset Format Specification**: [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/)
 - **AGTG Workflow Tutorial**: [Automated Ground-Truth Generation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
 
-### Building and Installing the Man Page
-
-The CLI documentation is available as a man page that can be installed on Linux and macOS systems:
-
-```bash
-# Build the man page (requires pandoc)
-pandoc CLI.md --standalone --to man --output edgefirst-client.1
-
-# View locally
-man ./edgefirst-client.1
-
-# Install system-wide (Linux)
-sudo cp edgefirst-client.1 /usr/local/man/man1/
-sudo mandb
-
-# Install system-wide (macOS)
-sudo cp edgefirst-client.1 /usr/local/share/man/man1/
-sudo /usr/libexec/makewhatis /usr/local/share/man
-
-# Then use anywhere
-man edgefirst-client
-```
-
-**Note**: The man page is automatically built and included as an artifact in [GitHub Releases](https://github.com/EdgeFirstAI/client/releases).
-
 ## Support
 
-- **Documentation**: [doc.edgefirst.ai](https://doc.edgefirst.ai)
-- **Community Support**: [GitHub Discussions](https://github.com/orgs/EdgeFirstAI/discussions)
-- **Bug Reports**: [GitHub Issues](https://github.com/EdgeFirstAI/edgefirst-client/issues)
-- **Commercial Support**: [support@au-zone.com](mailto:support@au-zone.com)
-- **Security Issues**: See [SECURITY.md](SECURITY.md)
+### Community Resources
 
-For detailed support options and response expectations, see [SUPPORT.md](SUPPORT.md).
+- 📚 **[Documentation](https://doc.edgefirst.ai)** - Comprehensive guides and tutorials
+- 💬 **[GitHub Discussions](https://github.com/orgs/EdgeFirstAI/discussions)** - Ask questions and share ideas
+- 🐛 **[Issue Tracker](https://github.com/EdgeFirstAI/edgefirst-client/issues)** - Report bugs and request features
+
+### EdgeFirst Ecosystem
+
+This client is the official API gateway for **[EdgeFirst Studio](https://edgefirst.studio)** - the complete MLOps platform for 3D visual and 4D spatial perception AI:
+
+**🚀 EdgeFirst Studio Features:**
+- **Dataset Management**: Organize, annotate, and version your perception datasets
+- **Automated Ground-Truth Generation (AGTG)**: Upload MCAP recordings and get automatic annotations
+- **Model Training**: Train custom perception models with your datasets
+- **Validation & Testing**: Comprehensive model validation and performance analysis
+- **Deployment**: Deploy models to edge devices with optimized inference
+- **Monitoring**: Real-time performance monitoring and analytics
+- **Collaboration**: Team workspaces and project management
+
+**💰 Free Tier Available:**
+- 100,000 images
+- 10 hours of training per month
+- Full access to all features
+- No credit card required
+
+**[Try EdgeFirst Studio Free →](https://edgefirst.studio)**
+
+### Hardware Platforms
+
+EdgeFirst Client works seamlessly with **[EdgeFirst Modules](https://www.edgefirst.ai/edgefirstmodules)**:
+- Operates reliably in harsh conditions with an IP67-rated enclosure and -40°C to +65°C range
+- On-device integrated dataset collection, playback, and publishing
+- Deploy models onto EdgeFirst Modules with full AI Acceleration up-to 40-TOPS
+- Reference designs and custom hardware development services
+
+### Professional Services
+
+Au-Zone Technologies offers comprehensive support for production deployments:
+
+- **Training & Workshops** - Accelerate your team's expertise with EdgeFirst Studio
+- **Custom Development** - Extend capabilities for your specific use cases
+- **Integration Services** - Seamlessly connect with your existing systems and workflows
+- **Enterprise Support** - SLAs, priority fixes, and dedicated support channels
+
+📧 **Contact**: [support@au-zone.com](mailto:support@au-zone.com)
+🌐 **Learn more**: [au-zone.com](https://au-zone.com)
 
 ## Contributing
 
 Contributions are welcome! Please:
+
 1. Read the [Contributing Guidelines](CONTRIBUTING.md)
 2. Check [existing issues](https://github.com/EdgeFirstAI/edgefirst-client/issues) or create a new one
 3. Fork the repository and create a feature branch
@@ -327,7 +323,13 @@ python3 sonar.py --branch main --output sonar-issues.json --verbose
 
 See [CONTRIBUTING.md](CONTRIBUTING.md#sonarcloud-code-quality-analysis) for details.
 
-See [SECURITY.md](SECURITY.md) for security vulnerability reporting procedures.
+## Security
+
+For security vulnerabilities, please use our responsible disclosure process:
+- **GitHub Security Advisories**: [Report a vulnerability](https://github.com/EdgeFirstAI/client/security/advisories)
+- **Email**: support@au-zone.com with subject "[SECURITY] EdgeFirst Client"
+
+See [SECURITY.md](SECURITY.md) for complete security policy and best practices.
 
 ## License
 
@@ -335,8 +337,10 @@ Licensed under the Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 **Copyright 2025 Au-Zone Technologies**
 
-See [NOTICE](NOTICE) for third-party software attributions included in binary releases.
+See [NOTICE](NOTICE.md) for third-party software attributions included in binary releases.
 
 ---
 
-**Try EdgeFirst Studio**: [edgefirst.studio](https://edgefirst.studio) - Free tier available with 10,000 images and 1 hour of training per month.
+**🚀 Ready to streamline your perception AI workflows?**
+
+[Try EdgeFirst Studio Free](https://edgefirst.studio) - No credit card required • 100,000 images • 10 hours training/month
