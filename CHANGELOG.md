@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2025-11-17
+
 ### Added
 - **URL-based retry classification** for intelligent error handling
   - Classifies requests into two categories: StudioApi vs FileIO
