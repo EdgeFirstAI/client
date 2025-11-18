@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Python bindings: Pythonic dict/list-like API for `Parameter` class**
+  - `.get(key, default=None)`: Dict-like method for Object parameters (recommended API)
+  - `.keys()`, `.values()`, `.items()`: Dict-like iteration methods for Object parameters
+  - `.as_array()`: Convert Array parameters to native Python lists (enables indexing `arr[0]`)
+  - `.as_object()`: Convert Object parameters to native Python dicts (enables indexing `obj["key"]`)
+
+### Changed
+- **Python bindings: `__str__()` for String parameters now returns plain string values**
+  - `str(Parameter.string("hello"))` now returns `"hello"` instead of `"String(hello)"`
+  - `__repr__()` still returns descriptive format `"String(hello)"` for debugging
+  - Eliminates need for manual string parsing: `modelname.removeprefix("String(").removesuffix(")")`
+
+### Notes
+- **Python bindings: Parameter API limitations due to PyO3**
+  - Bracket indexing (`param["key"]` or `param[0]`) is not supported directly on Parameter objects
+  - `len()` and `in` operators not supported directly on Parameter objects
+  - **Workarounds**: Use `.get(key)` for Objects, `.as_array()` for Arrays, `len(param.keys())` for length
+  - This is a PyO3 framework limitation with enum variants wrapping collections
+  - The `.get()` API is Pythonic and widely used (e.g., `os.environ.get('KEY')`)
+
 ## [2.4.2] - 2025-11-17
 
 ### Added

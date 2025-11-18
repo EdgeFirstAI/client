@@ -309,12 +309,115 @@ impl Parameter {
 
     /// Convert to Python str
     fn __str__(&self) -> String {
-        self.to_string()
+        match self {
+            Parameter::String(v) => v.clone(),
+            _ => self.to_string(),
+        }
     }
 
     /// Python repr
     fn __repr__(&self) -> String {
         self.to_string()
+    }
+
+    /// Get item by key with optional default (Object only)
+    #[pyo3(signature = (key, default=None))]
+    fn get(&self, py: Python<'_>, key: String, default: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+        match self {
+            Parameter::Object(v) => {
+                if let Some(value) = v.get(&key) {
+                    match value {
+                        Parameter::Integer(i) => Ok((*i).into_pyobject(py)?.into_any().unbind()),
+                        Parameter::Real(r) => Ok((*r).into_pyobject(py)?.into_any().unbind()),
+                        Parameter::Boolean(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
+                        Parameter::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
+                        Parameter::Array(_) => Ok(value.as_array(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
+                        })?),
+                        Parameter::Object(_) => Ok(value.as_object(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
+                        })?),
+                    }
+                } else if let Some(default_value) = default {
+                    Ok(default_value)
+                } else {
+                    Ok(py.None())
+                }
+            }
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "get() is only available for Object parameters",
+            )),
+        }
+    }
+
+    /// Get dictionary keys (Object only)
+    fn keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Parameter::Object(v) => {
+                let keys: Vec<String> = v.keys().cloned().collect();
+                Ok(keys.into_pyobject(py)?.into_any().unbind())
+            }
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "keys() is only available for Object parameters",
+            )),
+        }
+    }
+
+    /// Get dictionary values (Object only)
+    fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Parameter::Object(v) => {
+                let list = pyo3::types::PyList::empty(py);
+                for value in v.values() {
+                    let py_value = match value {
+                        Parameter::Integer(i) => (*i).into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Real(r) => (*r).into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Boolean(b) => (*b).into_pyobject(py)?.to_owned().into_any().unbind(),
+                        Parameter::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Array(_) => value.as_array(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
+                        })?,
+                        Parameter::Object(_) => value.as_object(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
+                        })?,
+                    };
+                    list.append(py_value)?;
+                }
+                Ok(list.unbind().into_any())
+            }
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "values() is only available for Object parameters",
+            )),
+        }
+    }
+
+    /// Get dictionary items as (key, value) tuples (Object only)
+    fn items(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Parameter::Object(v) => {
+                let list = pyo3::types::PyList::empty(py);
+                for (k, value) in v.iter() {
+                    let py_value = match value {
+                        Parameter::Integer(i) => (*i).into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Real(r) => (*r).into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Boolean(b) => (*b).into_pyobject(py)?.to_owned().into_any().unbind(),
+                        Parameter::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
+                        Parameter::Array(_) => value.as_array(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
+                        })?,
+                        Parameter::Object(_) => value.as_object(py).ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
+                        })?,
+                    };
+                    let tuple = pyo3::types::PyTuple::new(py, &[k.as_str().into_pyobject(py)?.into_any().unbind(), py_value])?;
+                    list.append(tuple)?;
+                }
+                Ok(list.unbind().into_any())
+            }
+            _ => Err(pyo3::exceptions::PyTypeError::new_err(
+                "items() is only available for Object parameters",
+            )),
+        }
     }
 
     /// Equality comparison with type coercion
@@ -363,7 +466,20 @@ impl Parameter {
             _ => Ok(false),
         }
     }
+
 }
+
+// Note: __getitem__, __len__, and __contains__ magic methods cannot be
+// implemented for this enum due to PyO3 limitations. Enum tuple variants
+// wrapping Vec<T> and HashMap<K,V> automatically get PyO3's default sequence/
+// mapping protocol implementations that cannot be overridden.
+//
+// Instead, use the explicit methods:
+// - For Object: .get(key, default=None), .keys(), .values(), .items()
+// - For Array: .as_array() to convert to native Python list
+//
+// This is actually a common Python pattern - many APIs use .get() as the
+// primary access method (e.g., os.environ.get('KEY')).
 
 impl From<edgefirst_client::Parameter> for Parameter {
     fn from(param: edgefirst_client::Parameter) -> Self {
