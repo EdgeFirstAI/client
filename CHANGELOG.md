@@ -11,8 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Python bindings: Pythonic dict/list-like API for `Parameter` class**
   - `.get(key, default=None)`: Dict-like method for Object parameters (recommended API)
   - `.keys()`, `.values()`, `.items()`: Dict-like iteration methods for Object parameters
-  - `.as_array()`: Convert Array parameters to native Python lists (enables indexing `arr[0]`)
-  - `.as_object()`: Convert Object parameters to native Python dicts (enables indexing `obj["key"]`)
 
 ### Changed
 - **Python bindings: `__str__()` for String parameters now returns plain string values**
@@ -27,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Workarounds**: Use `.get(key)` for Objects, `.as_array()` for Arrays, `len(param.keys())` for length
   - This is a PyO3 framework limitation with enum variants wrapping collections
   - The `.get()` API is Pythonic and widely used (e.g., `os.environ.get('KEY')`)
+- **Python bindings: Pre-existing conversion methods work with new API**
+  - `.as_array()`: Convert Array parameters to native Python lists (enables indexing `arr[0]`)
+  - `.as_object()`: Convert Object parameters to native Python dicts (enables indexing `obj["key"]`)
+  - These methods existed before this release and complement the new `.get()` API
 
 ## [2.4.2] - 2025-11-17
 

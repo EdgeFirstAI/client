@@ -217,6 +217,22 @@ impl Parameter {
         }
     }
 
+    /// Helper to convert a Parameter to a Python object recursively
+    fn to_pyobject(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            Parameter::Integer(i) => Ok((*i).into_pyobject(py)?.into_any().unbind()),
+            Parameter::Real(r) => Ok((*r).into_pyobject(py)?.into_any().unbind()),
+            Parameter::Boolean(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
+            Parameter::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
+            Parameter::Array(_) => self.as_array(py).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("Failed to convert array")
+            }),
+            Parameter::Object(_) => self.as_object(py).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("Failed to convert object")
+            }),
+        }
+    }
+
     /// Get the array as a Python list with native Python types (returns None if
     /// not an Array)
     fn as_array(&self, py: Python<'_>) -> Option<Py<PyAny>> {
@@ -326,18 +342,7 @@ impl Parameter {
         match self {
             Parameter::Object(v) => {
                 if let Some(value) = v.get(&key) {
-                    match value {
-                        Parameter::Integer(i) => Ok((*i).into_pyobject(py)?.into_any().unbind()),
-                        Parameter::Real(r) => Ok((*r).into_pyobject(py)?.into_any().unbind()),
-                        Parameter::Boolean(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
-                        Parameter::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
-                        Parameter::Array(_) => Ok(value.as_array(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
-                        })?),
-                        Parameter::Object(_) => Ok(value.as_object(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
-                        })?),
-                    }
+                    value.to_pyobject(py)
                 } else if let Some(default_value) = default {
                     Ok(default_value)
                 } else {
@@ -369,19 +374,7 @@ impl Parameter {
             Parameter::Object(v) => {
                 let list = pyo3::types::PyList::empty(py);
                 for value in v.values() {
-                    let py_value = match value {
-                        Parameter::Integer(i) => (*i).into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Real(r) => (*r).into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Boolean(b) => (*b).into_pyobject(py)?.to_owned().into_any().unbind(),
-                        Parameter::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Array(_) => value.as_array(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
-                        })?,
-                        Parameter::Object(_) => value.as_object(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
-                        })?,
-                    };
-                    list.append(py_value)?;
+                    list.append(value.to_pyobject(py)?)?;
                 }
                 Ok(list.unbind().into_any())
             }
@@ -397,19 +390,7 @@ impl Parameter {
             Parameter::Object(v) => {
                 let list = pyo3::types::PyList::empty(py);
                 for (k, value) in v.iter() {
-                    let py_value = match value {
-                        Parameter::Integer(i) => (*i).into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Real(r) => (*r).into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Boolean(b) => (*b).into_pyobject(py)?.to_owned().into_any().unbind(),
-                        Parameter::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
-                        Parameter::Array(_) => value.as_array(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert array")
-                        })?,
-                        Parameter::Object(_) => value.as_object(py).ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err("Failed to convert object")
-                        })?,
-                    };
-                    let tuple = pyo3::types::PyTuple::new(py, &[k.as_str().into_pyobject(py)?.into_any().unbind(), py_value])?;
+                    let tuple = pyo3::types::PyTuple::new(py, &[k.as_str().into_pyobject(py)?.into_any().unbind(), value.to_pyobject(py)?])?;
                     list.append(tuple)?;
                 }
                 Ok(list.unbind().into_any())

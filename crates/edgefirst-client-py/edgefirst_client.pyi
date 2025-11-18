@@ -190,7 +190,7 @@ class Parameter:
         """
         ...
 
-    def as_array(self) -> List[Any]:
+    def as_array(self) -> Optional[List[Any]]:
         """
         Extract as Python list if this is an Array parameter.
 
@@ -208,7 +208,7 @@ class Parameter:
         """
         ...
 
-    def as_object(self) -> Dict[str, Any]:
+    def as_object(self) -> Optional[Dict[str, Any]]:
         """
         Extract as Python dict if this is an Object parameter.
 
@@ -267,29 +267,6 @@ class Parameter:
 
         For numeric types (Integer, Real), compares with tolerance
         (epsilon=1e-9).
-        """
-        ...
-
-    def __getitem__(self, key: Union[int, str]) -> Any:
-        """
-        Get item by index (Array) or key (Object).
-
-        For Array parameters, key should be an integer index.
-        For Object parameters, key should be a string.
-
-        Returns the value converted to native Python types.
-
-        Raises:
-            IndexError: If array index is out of bounds
-            KeyError: If object key doesn't exist
-            TypeError: If parameter is not Array or Object
-
-        Examples:
-            >>> arr = Parameter.array([1, 2, 3])
-            >>> arr[0]  # Returns: 1
-            >>>
-            >>> obj = Parameter.object({"key": Parameter.string("value")})
-            >>> obj["key"]  # Returns: "value"
         """
         ...
 
@@ -371,24 +348,6 @@ class Parameter:
             ...     "b": Parameter.integer(2)
             ... })
             >>> obj.items()  # Returns: [("a", 1), ("b", 2)]
-        """
-        ...
-
-    def __len__(self) -> int:
-        """
-        Get length of Array or Object.
-
-        Raises:
-            TypeError: If parameter is not Array or Object
-
-        Examples:
-            >>> len(Parameter.array([1, 2, 3]))  # Returns: 3
-            >>> len(Parameter.object({"a": 1, "b": 2}))  # Returns: 2
-
-        Note:
-            Due to PyO3 limitations with enum variants, len() directly on
-            Parameter objects is not currently supported. Use len(param.keys())
-            for Object parameters or len(param.as_array()) for Array parameters.
         """
         ...
 
