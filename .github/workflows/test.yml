@@ -166,6 +166,7 @@ jobs:
           files: lcov.info
           flags: rust
           token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Upload Python coverage to Codecov
         if: success() || failure()
@@ -174,6 +175,7 @@ jobs:
           files: coverage.xml
           flags: python
           token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Upload coverage to GitHub
         if: success() || failure()
