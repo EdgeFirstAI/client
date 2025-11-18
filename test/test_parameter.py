@@ -55,7 +55,8 @@ class TestParameter(unittest.TestCase):
         self.assertTrue(p.is_string())
         self.assertEqual(p.type_name(), "String")
         self.assertTrue(bool(p))
-        self.assertEqual(str(p), "String(hello world)")
+        self.assertEqual(str(p), "hello world")
+        self.assertEqual(repr(p), "String(hello world)")
 
         p_empty = ec.Parameter.string("")
         self.assertFalse(bool(p_empty))
@@ -207,7 +208,10 @@ class TestParameter(unittest.TestCase):
         self.assertEqual(str(p_bool), "Boolean(true)")
 
         p_str = ec.Parameter.string("hello")
-        self.assertEqual(str(p_str), "String(hello)")
+        # String __str__ returns plain value
+        self.assertEqual(str(p_str), "hello")
+        # String __repr__ is descriptive
+        self.assertEqual(repr(p_str), "String(hello)")
 
     def test_bool_truthiness(self):
         """Test __bool__ method for all types."""
@@ -569,6 +573,228 @@ class TestParameter(unittest.TestCase):
         bool_param = ec.Parameter.boolean(True)
         self.assertIsNone(bool_param.as_integer())
         self.assertIsNone(bool_param.as_string())
+
+    # =========================================================================
+    # Pythonic Dict/List-like API Tests
+    # =========================================================================
+
+    def test_object_getitem(self):
+        """Test Object parameter supports dict-like .get() access.
+        
+        Note: Bracket indexing (param['key']) is not supported due to PyO3
+        limitations with enum variants. Use .get('key') instead.
+        """
+        param = ec.Parameter.object({
+            "count": ec.Parameter.integer(42),
+            "ratio": ec.Parameter.real(3.14),
+            "enabled": ec.Parameter.boolean(True),
+            "name": ec.Parameter.string("test"),
+        })
+
+        # Test successful key access with .get()
+        self.assertEqual(param.get("count"), 42)
+        self.assertAlmostEqual(param.get("ratio"), 3.14, places=10)
+        self.assertTrue(param.get("enabled"))
+        self.assertEqual(param.get("name"), "test")
+
+        # Test None return for missing key
+        self.assertIsNone(param.get("missing_key"))
+
+    def test_object_get_method(self):
+        """Test Object parameter supports .get() method like dict."""
+        param = ec.Parameter.object({
+            "model": ec.Parameter.string("yolov5"),
+            "detection": ec.Parameter.boolean(True),
+        })
+
+        # Test successful key access
+        self.assertEqual(param.get("model"), "yolov5")
+        self.assertTrue(param.get("detection"))
+
+        # Test default value for missing key
+        self.assertIsNone(param.get("missing"))
+        self.assertEqual(param.get("missing", "default"), "default")
+        self.assertEqual(param.get("missing", 99), 99)
+
+    def test_object_get_nested(self):
+        """Test .get() works with nested structures."""
+        param = ec.Parameter.object({
+            "model": ec.Parameter.object({
+                "detection": ec.Parameter.boolean(True),
+                "config": ec.Parameter.object({
+                    "threshold": ec.Parameter.real(0.5),
+                }),
+            }),
+        })
+
+        # Get nested object
+        model = param.get("model")
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertIsInstance(model, dict)
+        self.assertTrue(model["detection"])
+
+        # Chain .get() calls - this should work now!
+        # This was the user's original failing code:
+        # self.detection = trainer.model_params.get('model').get('detection')
+        model_dict = param.get("model")
+        assert model_dict is not None
+        # model_dict is now a Python dict, not a Parameter
+        detection = model_dict.get("detection")
+        self.assertTrue(detection)
+
+    def test_array_iteration(self):
+        """Test Array parameter can be converted to native Python list.
+        
+        Note: Direct indexing (param[0]) is not supported due to PyO3
+        limitations. Use .as_array() to get a native Python list.
+        """
+        param = ec.Parameter.array([
+            ec.Parameter.integer(10),
+            ec.Parameter.real(20.5),
+            ec.Parameter.string("thirty"),
+        ])
+
+        # Convert to Python list for indexing
+        arr = param.as_array()
+        self.assertEqual(arr[0], 10)
+        self.assertAlmostEqual(arr[1], 20.5, places=10)
+        self.assertEqual(arr[2], "thirty")
+
+        # Test bounds on converted list
+        self.assertEqual(len(arr), 3)
+        with self.assertRaises(IndexError):
+            _ = arr[3]
+
+    def test_string_str_vs_repr(self):
+        """Test __str__ returns plain string, __repr__ is descriptive."""
+        param = ec.Parameter.string("hello")
+
+        # __str__ should return plain string value
+        self.assertEqual(str(param), "hello")
+
+        # __repr__ should return descriptive format
+        self.assertEqual(repr(param), "String(hello)")
+
+        # This addresses the user's issue of having to parse "String(...)"
+        modelname = str(param)
+        self.assertEqual(modelname, "hello")
+        # No need for: modelname.removeprefix("String(").removesuffix(")")
+
+    def test_object_keys_values_items(self):
+        """Test Object dict-like .keys(), .values(), .items()."""
+        param = ec.Parameter.object({
+            "a": ec.Parameter.integer(1),
+            "b": ec.Parameter.integer(2),
+            "c": ec.Parameter.integer(3),
+        })
+
+        # Test keys()
+        keys = param.keys()
+        self.assertIsInstance(keys, list)
+        self.assertEqual(set(keys), {"a", "b", "c"})
+
+        # Test values()
+        values = param.values()
+        self.assertIsInstance(values, list)
+        self.assertEqual(set(values), {1, 2, 3})
+
+        # Test items()
+        items = param.items()
+        self.assertIsInstance(items, list)
+        items_dict = dict(items)
+        self.assertEqual(items_dict, {"a": 1, "b": 2, "c": 3})
+
+    def test_len_for_collections(self):
+        """Test length via .keys() for Object parameters.
+        
+        Note: len() is not supported due to PyO3 limitations.
+        Use len(obj.keys()) or len(obj.as_object()) instead.
+        """
+        # Object length via keys()
+        obj = ec.Parameter.object({
+            "a": ec.Parameter.integer(1),
+            "b": ec.Parameter.integer(2),
+        })
+        self.assertEqual(len(obj.keys()), 2)
+        self.assertEqual(len(obj.as_object()), 2)
+
+        # Array length via as_array()
+        arr = ec.Parameter.array([1, 2, 3, 4, 5])
+        self.assertEqual(len(arr.as_array()), 5)
+
+        # Empty collections
+        self.assertEqual(len(ec.Parameter.array([]).as_array()), 0)
+        self.assertEqual(len(ec.Parameter.object({}).keys()), 0)
+
+    def test_contains_for_collections(self):
+        """Test membership checking via .keys() for Object parameters.
+        
+        Note: 'in' operator is not supported due to PyO3 limitations.
+        Use 'key in obj.keys()' instead.
+        """
+        # Object contains (check keys)
+        obj = ec.Parameter.object({
+            "model": ec.Parameter.string("yolov5"),
+            "detection": ec.Parameter.boolean(True),
+        })
+        keys = obj.keys()
+        self.assertIn("model", keys)
+        self.assertIn("detection", keys)
+        self.assertNotIn("missing", keys)
+
+        # Array contains (check values in converted list)
+        arr = ec.Parameter.array([10, 20, 30])
+        arr_list = arr.as_array()
+        self.assertIn(10, arr_list)
+        self.assertIn(20, arr_list)
+        self.assertIn(30, arr_list)
+        self.assertNotIn(99, arr_list)
+
+    def test_pythonic_workflow_example(self):
+        """Test real-world Pythonic workflow from user feedback.
+        
+        This demonstrates the recommended patterns for working with
+        Parameter objects in a Pythonic way.
+        """
+        # Simulate trainer.model_params structure
+        trainer_params = ec.Parameter.object({
+            "model": ec.Parameter.object({
+                "detection": ec.Parameter.boolean(True),
+                "name": ec.Parameter.string("yolov5"),
+                "threshold": ec.Parameter.real(0.75),
+            }),
+            "epochs": ec.Parameter.integer(100),
+        })
+
+        # Recommended: Chained .get() calls (Pythonic pattern)
+        detection = trainer_params.get("model").get("detection")
+        self.assertTrue(detection)
+
+        # Get nested values
+        model_name = trainer_params.get("model").get("name")
+        self.assertEqual(model_name, "yolov5")
+
+        # Test .get() with default
+        missing = trainer_params.get("missing_key", "default_value")
+        self.assertEqual(missing, "default_value")
+
+        # Test str() without needing to parse
+        # Old way (user had to do this):
+        # modelname = str(validation.params["model"])
+        # if "String" in modelname:
+        #     modelname = modelname.removeprefix("String(").removesuffix(")")
+
+        # New way - just works:
+        name_param = ec.Parameter.string("yolov5")
+        clean_name = str(name_param)
+        self.assertEqual(clean_name, "yolov5")
+        self.assertNotIn("String(", clean_name)
+
+        # Using .keys(), .values(), .items() for iteration
+        model_obj = trainer_params.get("model")
+        self.assertIn("detection", model_obj.keys())
+        self.assertEqual(len(model_obj.keys()), 3)
 
 
 if __name__ == "__main__":

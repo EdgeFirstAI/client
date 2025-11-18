@@ -313,7 +313,7 @@ pub fn create_retry_policy() -> reqwest::retry::Builder {
 pub fn log_retry_configuration() {
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES").unwrap_or_else(|_| "3".to_string());
     let timeout = std::env::var("EDGEFIRST_TIMEOUT").unwrap_or_else(|_| "30".to_string());
-    log::info!(
+    log::debug!(
         "Retry configuration - max_retries={}, timeout={}s",
         max_retries,
         timeout
