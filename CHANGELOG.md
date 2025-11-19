@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2025-11-18
+
 ### Added
 - **Python bindings: Pythonic dict/list-like API for `Parameter` class**
   - `.get(key, default=None)`: Dict-like method for Object parameters (recommended API)
@@ -17,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `str(Parameter.string("hello"))` now returns `"hello"` instead of `"String(hello)"`
   - `__repr__()` still returns descriptive format `"String(hello)"` for debugging
   - Eliminates need for manual string parsing: `modelname.removeprefix("String(").removesuffix(")")`
+- **Reduced log verbosity for retry configuration**
+  - Retry configuration details now logged at `debug` level instead of `info`
+  - Eliminates unnecessary INFO messages during normal operation
 
 ### Notes
 - **Python bindings: Parameter API limitations due to PyO3**
