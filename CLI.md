@@ -262,9 +262,9 @@ Download a dataset to the local filesystem from the EdgeFirst Studio server.
 
 **\--flatten**
 :   Download all files to the output directory without creating sequence subdirectories.
-    When enabled, filenames are automatically prefixed with the sequence name and frame
-    number to avoid conflicts between sequences. Default: creates subdirectories for
-    sequences.
+    When enabled, filenames are automatically prefixed to avoid conflicts between sequences.
+    The prefix format is `{sequence_name}_{frame}_` when the frame number is available,
+    and `{sequence_name}_` when the frame number is not available. Default: creates subdirectories for sequences.
 
 **Example:**
 
