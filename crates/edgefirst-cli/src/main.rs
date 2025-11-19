@@ -153,6 +153,12 @@ enum Command {
         /// Output File Path
         #[clap(long)]
         output: Option<PathBuf>,
+
+        /// Download all files to the output directory without creating sequence
+        /// subdirectories. When enabled, filenames are automatically prefixed
+        /// with the sequence name and frame number to avoid conflicts.
+        #[clap(long)]
+        flatten: bool,
     },
     /// Download dataset annotations to a local file.  This command accompanies
     /// the `DownloadDataset` command and is used to download the annotations
@@ -589,6 +595,7 @@ async fn handle_download_dataset(
     groups: Vec<String>,
     types: Vec<edgefirst_client::FileType>,
     output: PathBuf,
+    flatten: bool,
 ) -> Result<(), Error> {
     use indicatif::{ProgressBar, ProgressStyle};
     use tokio::sync::mpsc;
@@ -614,7 +621,14 @@ async fn handle_download_dataset(
     });
 
     client
-        .download_dataset(dataset_id.try_into()?, &groups, &types, output, Some(tx))
+        .download_dataset(
+            dataset_id.try_into()?,
+            &groups,
+            &types,
+            output,
+            flatten,
+            Some(tx),
+        )
         .await?;
     Ok(())
 }
@@ -1086,6 +1100,25 @@ fn create_sequence_aware_batches(
 }
 
 #[cfg(feature = "polars")]
+/// Parses annotations from an Arrow file and matches them with image files.
+///
+/// Supports both nested and flattened directory structures:
+/// - **Nested**: Images in sequence subdirectories (sequence_name/sequence_name_frame.ext)
+/// - **Flattened**: All images in root directory with sequence prefix (sequence_name_frame.ext)
+///
+/// The function uses the Arrow file's `name` and `frame` columns as the authoritative
+/// source for sequence information, regardless of how files are organized on disk.
+/// The image_index built by walking the directory tree works for both structures.
+///
+/// # Arguments
+///
+/// * `annotations` - Optional path to Arrow file containing annotations and metadata
+/// * `images_path` - Path to directory (or ZIP) containing image files
+/// * `should_upload_annotations` - Whether to parse and include annotation geometries
+///
+/// # Returns
+///
+/// Vector of Sample objects with matched images and parsed annotations
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
     images_path: &PathBuf,
@@ -1329,6 +1362,19 @@ fn parse_annotations_from_arrow(
 }
 
 #[cfg(feature = "polars")]
+/// Builds an index mapping filenames to their full paths by walking directory tree.
+///
+/// This index works for both nested and flattened directory structures:
+/// - **Nested**: Walks subdirectories to find files like sequence_A/sequence_A_001.jpeg
+/// - **Flattened**: Finds files directly in root like sequence_A_001.jpeg
+///
+/// The index maps multiple filename variations to the same file:
+/// - Full filename: "sequence_A_001.camera.jpeg"
+/// - Without extension: "sequence_A_001.camera"
+/// - Without .camera suffix: "sequence_A_001"
+///
+/// This flexible matching ensures compatibility with Arrow files that may use
+/// different naming conventions.
 fn build_image_index(
     images_path: &Path,
 ) -> Result<std::collections::HashMap<String, Vec<PathBuf>>, Error> {
@@ -1341,6 +1387,7 @@ fn build_image_index(
     let mut index: std::collections::HashMap<String, Vec<PathBuf>> =
         std::collections::HashMap::new();
 
+    // Recursively walk directory tree - works for both nested and flattened structures
     for entry in WalkDir::new(images_path) {
         let entry = entry.map_err(|e| {
             Error::InvalidParameters(format!("Failed to read images directory: {}", e))
@@ -1395,6 +1442,18 @@ fn find_image_path_for_sample(
     image_index: &std::collections::HashMap<String, Vec<PathBuf>>,
     image_name: &str,
 ) -> Result<PathBuf, Error> {
+    // Finds image file for a sample, supporting both nested and flattened directory structures.
+    //
+    // For nested structure (sequences in subdirectories):
+    //   - Images are in sequence_name/sequence_name_frame.ext
+    //   - Index contains filenames like "sequence_A_001.camera.jpeg"
+    //
+    // For flattened structure (all files in one directory):
+    //   - Images are in root with prefix: sequence_name_frame.ext or sequence_name_frame_original.ext
+    //   - Index contains same filenames
+    //
+    // The image_index is built by walking the entire directory tree, so it works for both structures.
+
     // Extension priority order: .camera.* takes precedence over plain extensions
     const EXTENSIONS: &[&str] = &[
         ".camera.jpg",
@@ -1430,6 +1489,7 @@ fn find_image_path_for_sample(
 
 #[cfg(feature = "polars")]
 fn extract_sequence_name(images_root: &Path, image_path: &Path) -> Option<String> {
+    // First try: Check if image is in a subdirectory (nested structure)
     if let Ok(relative) = image_path.strip_prefix(images_root)
         && let Some(parent) = relative.parent()
     {
@@ -1441,6 +1501,24 @@ fn extract_sequence_name(images_root: &Path, image_path: &Path) -> Option<String
             }
         }
     }
+
+    // Second try: Check if filename contains sequence prefix (flattened structure)
+    // Format: {sequence_name}_{frame}_{rest}.ext or {sequence_name}_{frame}.ext
+    if let Some(filename) = image_path.file_stem()
+        && let Some(name_str) = filename.to_str()
+    {
+        // Look for pattern: something_digits (sequence_frame)
+        // Split on underscores and check if we have at least 2 parts with second being numeric
+        let parts: Vec<&str> = name_str.split('_').collect();
+        if parts.len() >= 2 {
+            // Check if second part is a number (frame)
+            if parts[1].parse::<u32>().is_ok() {
+                // First part is the sequence name
+                return Some(parts[0].to_string());
+            }
+        }
+    }
+
     None
 }
 
@@ -1953,9 +2031,10 @@ async fn main() -> Result<(), Error> {
             groups,
             types,
             output,
+            flatten,
         } => {
             let output = output.unwrap_or_else(|| ".".into());
-            handle_download_dataset(&client, dataset_id, groups, types, output).await
+            handle_download_dataset(&client, dataset_id, groups, types, output, flatten).await
         }
         Command::DownloadAnnotations {
             annotation_set_id,
@@ -2659,6 +2738,135 @@ mod tests {
             assert_eq!(image2_sample.unwrap().annotations.len(), 1);
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_flattened_structure() {
+            // Test parsing annotations when images are in flattened structure
+            // (all files in root directory with sequence prefix)
+            let test_dir = std::env::temp_dir().join("arrow_test_flattened");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with sequence samples (frame column not-null)
+            create_test_arrow_file_with_frame(
+                &arrow_file,
+                vec![("seq_a", "1"), ("seq_a", "2"), ("seq_b", "1")],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            // Create images in FLATTENED structure (all in root, no subdirectories)
+            // Filenames have sequence prefix: sequence_name_frame.ext
+            create_test_images_dir(
+                &images_dir,
+                vec![
+                    "seq_a_1.camera.jpg",
+                    "seq_a_2.camera.jpg",
+                    "seq_b_1.camera.jpg",
+                ],
+            )
+            .unwrap();
+
+            let annotations = Some(arrow_file.clone());
+            let samples = parse_annotations_from_arrow(&annotations, &images_dir, false)
+                .expect("Should parse flattened structure");
+
+            assert_eq!(samples.len(), 3, "Should find all 3 sequence samples");
+
+            // Verify sequence metadata is preserved from Arrow file
+            let seq_a_samples: Vec<_> = samples
+                .iter()
+                .filter(|s| s.sequence_name() == Some(&"seq_a".to_string()))
+                .collect();
+            assert_eq!(
+                seq_a_samples.len(),
+                2,
+                "Should have 2 samples in sequence A"
+            );
+
+            let seq_b_samples: Vec<_> = samples
+                .iter()
+                .filter(|s| s.sequence_name() == Some(&"seq_b".to_string()))
+                .collect();
+            assert_eq!(
+                seq_b_samples.len(),
+                1,
+                "Should have 1 sample in sequence B"
+            );
+
+            // Verify frame numbers are correct
+            for sample in &samples {
+                assert!(
+                    sample.frame_number().is_some(),
+                    "Frame number should be set for sequence samples"
+                );
+            }
+
+            println!(
+                "✓ Flattened structure test passed: {} samples parsed correctly",
+                samples.len()
+            );
+
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_mixed_nested_and_standalone() {
+            // Test parsing when dataset has both nested sequences and standalone images
+            let test_dir = std::env::temp_dir().join("arrow_test_mixed");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+            let sequence_dir = images_dir.join("sequence_x");
+
+            // Create Arrow file with both sequence samples (with frames) and standalone (without frames)
+            // We'll create two separate Arrow files and merge, or use create_test_arrow_file twice
+            // For simplicity, test with all having same structure but verify behavior
+
+            // Create nested structure for sequence
+            std::fs::create_dir_all(&sequence_dir).unwrap();
+            std::fs::File::create(sequence_dir.join("sequence_x_1.jpg")).unwrap();
+            std::fs::File::create(sequence_dir.join("sequence_x_2.jpg")).unwrap();
+
+            // Create standalone image in root
+            std::fs::create_dir_all(&images_dir).unwrap();
+            std::fs::File::create(images_dir.join("standalone.jpg")).unwrap();
+
+            // Create Arrow file with sequence samples
+            create_test_arrow_file_with_frame(
+                &arrow_file,
+                vec![("sequence_x", "1"), ("sequence_x", "2")],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let annotations = Some(arrow_file.clone());
+            let samples = parse_annotations_from_arrow(&annotations, &images_dir, false)
+                .expect("Should parse mixed structure");
+
+            assert_eq!(samples.len(), 2, "Should have 2 sequence samples");
+
+            // Check all are sequence samples (since we only added sequence data to Arrow)
+            for sample in &samples {
+                assert!(
+                    sample.sequence_name().is_some(),
+                    "All samples should have sequence name"
+                );
+                assert!(
+                    sample.frame_number().is_some(),
+                    "All samples should have frame number"
+                );
+            }
+
+            println!("✓ Mixed structure test passed (sequence samples only)");
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
     }

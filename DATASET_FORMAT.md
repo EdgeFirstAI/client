@@ -213,9 +213,69 @@ Combination of sequences and standalone images:
 
 **Sensor container**: Directory or ZIP file with same base name as Arrow file
 
-**Flattening option**:
-- Default (`flatten=False`): Sequences in subdirectories
-- Flattened (`flatten=True`): All files directly in container (no subdirectories)
+#### Directory Structure Options
+
+EdgeFirst supports two organizational patterns for sensor data:
+
+**1. Nested Structure (Default)**
+
+Sequences are organized in subdirectories:
+```
+dataset_name/
+├── dataset_name.arrow
+└── dataset_name/
+    ├── sequence_A/
+    │   ├── sequence_A_001.camera.jpeg
+    │   └── sequence_A_002.camera.jpeg
+    ├── sequence_B/
+    │   ├── sequence_B_001.camera.jpeg
+    │   └── sequence_B_002.camera.jpeg
+    └── standalone_image.jpg
+```
+
+**2. Flattened Structure**
+
+All files in a single directory with sequence prefixes:
+```
+dataset_name/
+├── dataset_name.arrow
+└── dataset_name/
+    ├── sequence_A_001.camera.jpeg
+    ├── sequence_A_002.camera.jpeg
+    ├── sequence_B_001.camera.jpeg
+    ├── sequence_B_002.camera.jpeg
+    └── standalone_image.jpg
+```
+
+#### File Naming Conventions
+
+**Sequence samples** (when `frame` column is not-null in Arrow file):
+- **Nested**: `{sequence_name}/{sequence_name}_{frame}.{sensor}.{ext}`
+- **Flattened**: `{sequence_name}_{frame}.{sensor}.{ext}` or `{sequence_name}_{frame}_{original_name}.{ext}`
+
+**Standalone samples** (when `frame` column is null):
+- **Nested**: `{image_name}.{ext}`
+- **Flattened**: `{image_name}.{ext}` (unchanged)
+
+#### Client Implementation Guidelines
+
+**For Upload Operations:**
+
+Clients should support both nested and flattened structures:
+
+1. **Build image index** - Walk the entire directory tree recursively
+2. **Match by filename** - Use flexible matching that works for both structures:
+   - Try exact filename match first
+   - Try filename without extension
+   - Try stripping `.camera` suffix for compatibility
+3. **Preserve sequence metadata** - Use Arrow file `name` and `frame` columns as authoritative source
+4. **Detect structure automatically** - No manual configuration needed
+
+**For Download Operations:**
+
+- Use `flatten=false` (default) to preserve sequence subdirectories
+- Use `flatten=true` to download all files to a single directory
+- When `flatten=true`, filenames are automatically prefixed with `{sequence_name}_{frame}_` if not already present
 
 **ZIP format support**: EdgeFirst uses ZIP64 (standardized 2001) for broad compatibility:
 - Random access via file index

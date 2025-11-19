@@ -260,6 +260,12 @@ Download a dataset to the local filesystem from the EdgeFirst Studio server.
 **\--output** *OUTPUT*
 :   Output directory path. If not provided, downloads to the current working directory.
 
+**\--flatten**
+:   Download all files to the output directory without creating sequence subdirectories.
+    When enabled, filenames are automatically prefixed with the sequence name and frame
+    number to avoid conflicts between sequences. Default: creates subdirectories for
+    sequences.
+
 **Example:**
 
 ```bash
@@ -271,9 +277,34 @@ edgefirst-client download-dataset 12345 \
 edgefirst-client download-dataset 12345 \
     --types image,lidar --groups train,validation \
     --output /data/datasets/
+
+# Download with flattened directory structure
+# Files from sequences are prefixed with sequence_name_frame_
+edgefirst-client download-dataset 12345 \
+    --types image --output ./flat-dataset --flatten
 ```
 
-Downloads are organized by sample with progress tracking.
+**Directory Structure:**
+
+By default, downloads are organized by sequence:
+```
+output/
+├── sequence_A/
+│   ├── sequence_A_001.camera.jpeg
+│   └── sequence_A_002.camera.jpeg
+└── sequence_B/
+    ├── sequence_B_001.camera.jpeg
+    └── sequence_B_002.camera.jpeg
+```
+
+With **\--flatten**, all files are placed in the output root with sequence prefixes:
+```
+output/
+├── sequence_A_001.camera.jpeg
+├── sequence_A_002.camera.jpeg
+├── sequence_B_001.camera.jpeg
+└── sequence_B_002.camera.jpeg
+```
 
 ### download-annotations
 

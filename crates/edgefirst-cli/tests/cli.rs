@@ -2817,3 +2817,136 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+#[serial]
+fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
+    // Test the --flatten option to download sequences without subdirectories
+    let dataset = get_test_dataset();
+    let (dataset_id, _) = get_dataset_and_first_annotation_set(&dataset)?;
+
+    let downloads_root = get_test_data_dir().join("downloads");
+    fs::create_dir_all(&downloads_root)?;
+
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+
+    // Download with normal structure (sequences in subdirectories)
+    let normal_dir = downloads_root.join(format!("normal_{}_{}", std::process::id(), timestamp));
+    fs::create_dir_all(&normal_dir)?;
+
+    println!("Downloading dataset with normal structure...");
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("download-dataset")
+        .arg(&dataset_id)
+        .arg("--output")
+        .arg(&normal_dir);
+    cmd.assert().success();
+
+    // Download with flattened structure
+    let flatten_dir = downloads_root.join(format!("flatten_{}_{}", std::process::id(), timestamp));
+    fs::create_dir_all(&flatten_dir)?;
+
+    println!("Downloading dataset with --flatten option...");
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("download-dataset")
+        .arg(&dataset_id)
+        .arg("--output")
+        .arg(&flatten_dir)
+        .arg("--flatten");
+    cmd.assert().success();
+
+    // Verify normal structure has subdirectories for sequences
+    let normal_entries: Vec<_> = fs::read_dir(&normal_dir)?.filter_map(|e| e.ok()).collect();
+
+    println!("Normal download structure:");
+    let has_subdirs = normal_entries.iter().any(|e| e.path().is_dir());
+    for entry in &normal_entries {
+        let path = entry.path();
+        let entry_type = if path.is_dir() { "DIR " } else { "FILE" };
+        println!(
+            "  {} {}",
+            entry_type,
+            path.file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    // Verify flattened structure has no subdirectories (all files in root)
+    let flatten_entries: Vec<_> = fs::read_dir(&flatten_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .collect();
+
+    println!("\nFlattened download structure:");
+    let flatten_has_subdirs = flatten_entries.iter().any(|e| e.path().is_dir());
+    for entry in &flatten_entries {
+        let path = entry.path();
+        let entry_type = if path.is_dir() { "DIR " } else { "FILE" };
+        println!(
+            "  {} {}",
+            entry_type,
+            path.file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    // Assert flatten has no subdirectories
+    assert!(
+        !flatten_has_subdirs,
+        "Flattened download should not have subdirectories"
+    );
+
+    // Count total files in both structures
+    let count_files = |dir: &Path| -> Result<usize, Box<dyn std::error::Error>> {
+        let mut count = 0;
+        for entry in walkdir::WalkDir::new(dir).min_depth(1).max_depth(10) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    };
+
+    let normal_file_count = count_files(&normal_dir)?;
+    let flatten_file_count = count_files(&flatten_dir)?;
+
+    println!("\nFile counts:");
+    println!("  Normal structure: {} files", normal_file_count);
+    println!("  Flattened structure: {} files", flatten_file_count);
+
+    // Both should have the same number of files
+    assert_eq!(
+        normal_file_count, flatten_file_count,
+        "Normal and flattened downloads should have same number of files"
+    );
+
+    // If dataset has sequences, verify normal has subdirectories
+    if has_subdirs {
+        println!("\n✓ Dataset contains sequences - normal download has subdirectories");
+
+        // For flattened structure, verify filenames contain sequence prefixes
+        let flatten_files: Vec<String> = flatten_entries
+            .iter()
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        // At least some files should have underscore-separated sequence prefixes
+        // (format: sequence_name_frame_rest.ext or sequence_name_rest.ext)
+        let has_prefixed_files = flatten_files
+            .iter()
+            .any(|name| name.matches('_').count() >= 1);
+
+        if has_prefixed_files {
+            println!("✓ Flattened files contain sequence prefixes");
+            println!("  Sample filenames:");
+            for filename in flatten_files.iter().take(3) {
+                println!("    - {}", filename);
+            }
+        }
+    } else {
+        println!("\n✓ Dataset contains no sequences - both structures are flat");
+    }
+
+    println!("\n✅ Flatten option test completed successfully");
+    Ok(())
+}

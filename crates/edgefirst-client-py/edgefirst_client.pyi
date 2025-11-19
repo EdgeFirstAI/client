@@ -2901,6 +2901,7 @@ class Client:
         groups: List[str] = [],
         types: List[FileType] = [],
         output: Optional[str] = None,
+        flatten: bool = False,
         progress: Optional[Progress] = None,
     ):
         """
@@ -2911,6 +2912,10 @@ class Client:
             groups (List[str]): Dataset groups to include (train, val, etc).
             types (List[FileType]): File types to download.
             output (str): Output directory to save downloaded files.
+            flatten (bool): Download all files to output root without sequence
+                subdirectories. When True, filenames are automatically prefixed
+                with sequence name and frame number to avoid conflicts.
+                Default: False (preserves sequence directory structure).
             progress (Optional[Progress]): Optional progress reporter.
         """
         ...

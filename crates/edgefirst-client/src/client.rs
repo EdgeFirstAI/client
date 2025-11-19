@@ -717,12 +717,65 @@ impl Client {
         Ok(())
     }
 
+    /// Downloads dataset samples to the local filesystem.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The unique identifier of the dataset
+    /// * `groups` - Dataset groups to include (e.g., "train", "val")
+    /// * `file_types` - File types to download (e.g., Image, LidarPcd)
+    /// * `output` - Local directory to save downloaded files
+    /// * `flatten` - If true, download all files to output root without
+    ///   sequence subdirectories. When flattening, filenames are automatically
+    ///   prefixed with `{sequence_name}_{frame}_` if not already present to
+    ///   avoid conflicts between sequences.
+    /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success or an error if download fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID, FileType};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// // Download with sequence subdirectories (default)
+    /// client
+    ///     .download_dataset(
+    ///         dataset_id,
+    ///         &[],
+    ///         &[FileType::Image],
+    ///         "./data".into(),
+    ///         false,
+    ///         None,
+    ///     )
+    ///     .await?;
+    ///
+    /// // Download flattened (all files in one directory)
+    /// client
+    ///     .download_dataset(
+    ///         dataset_id,
+    ///         &[],
+    ///         &[FileType::Image],
+    ///         "./data".into(),
+    ///         true,
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn download_dataset(
         &self,
         dataset_id: DatasetID,
         groups: &[String],
         file_types: &[FileType],
         output: PathBuf,
+        flatten: bool,
         progress: Option<Sender<Progress>>,
     ) -> Result<(), Error> {
         let samples = self
@@ -753,17 +806,24 @@ impl Client {
                             other => (other.to_string(), false),
                         };
 
-                        // Determine target directory based on sequence membership
-                        // - If sequence_name exists: dataset/sequence_name/
-                        // - If no sequence_name: dataset/ (root level)
+                        // Determine target directory based on sequence membership and flatten
+                        // option
+                        // - flatten=false + sequence_name: dataset/sequence_name/
+                        // - flatten=false + no sequence: dataset/ (root level)
+                        // - flatten=true: dataset/ (all files in output root)
                         // NOTE: group (train/val/test) is NOT used for directory structure
                         let sequence_dir = sample
                             .sequence_name()
                             .map(|name| sanitize_path_component(name));
 
-                        let target_dir = sequence_dir
-                            .map(|seq| output.join(seq))
-                            .unwrap_or_else(|| output.clone());
+                        let target_dir = if flatten {
+                            output.clone()
+                        } else {
+                            sequence_dir
+                                .as_ref()
+                                .map(|seq| output.join(seq))
+                                .unwrap_or_else(|| output.clone())
+                        };
                         fs::create_dir_all(&target_dir).await?;
 
                         let sanitized_sample_name = sample
@@ -773,12 +833,30 @@ impl Client {
 
                         let image_name = sample.image_name().map(sanitize_path_component);
 
+                        // Construct filename with smart prefixing for flatten mode
+                        // When flatten=true and sample belongs to a sequence:
+                        //   - Check if filename already starts with "{sequence_name}_"
+                        //   - If not, prepend "{sequence_name}_{frame}_" to avoid conflicts
+                        //   - If yes, use filename as-is (already uniquely named)
                         let file_name = if is_image {
-                            image_name.unwrap_or_else(|| {
+                            if let Some(img_name) = image_name {
+                                Self::build_filename(
+                                    &img_name,
+                                    flatten,
+                                    sequence_dir.as_ref(),
+                                    sample.frame_number(),
+                                )
+                            } else {
                                 format!("{}.{}", sanitized_sample_name, file_ext)
-                            })
+                            }
                         } else {
-                            format!("{}.{}", sanitized_sample_name, file_ext)
+                            let base_name = format!("{}.{}", sanitized_sample_name, file_ext);
+                            Self::build_filename(
+                                &base_name,
+                                flatten,
+                                sequence_dir.as_ref(),
+                                sample.frame_number(),
+                            )
                         };
 
                         let file_path = target_dir.join(&file_name);
@@ -800,6 +878,46 @@ impl Client {
             }
         })
         .await
+    }
+
+    /// Builds a filename with smart prefixing for flatten mode.
+    ///
+    /// When flattening sequences into a single directory, this function ensures
+    /// unique filenames by checking if the sequence prefix already exists and
+    /// adding it if necessary.
+    ///
+    /// # Logic
+    ///
+    /// - If `flatten=false`: returns `base_name` unchanged
+    /// - If `flatten=true` and no sequence: returns `base_name` unchanged
+    /// - If `flatten=true` and in sequence:
+    ///   - Already prefixed with `{sequence_name}_`: returns `base_name`
+    ///     unchanged
+    ///   - Not prefixed: returns `{sequence_name}_{frame}_{base_name}` or
+    ///     `{sequence_name}_{base_name}`
+    fn build_filename(
+        base_name: &str,
+        flatten: bool,
+        sequence_name: Option<&String>,
+        frame_number: Option<u32>,
+    ) -> String {
+        if !flatten || sequence_name.is_none() {
+            return base_name.to_string();
+        }
+
+        let seq_name = sequence_name.unwrap();
+        let prefix = format!("{}_", seq_name);
+
+        // Check if already prefixed with sequence name
+        if base_name.starts_with(&prefix) {
+            base_name.to_string()
+        } else {
+            // Add sequence (and optionally frame) prefix
+            match frame_number {
+                Some(frame) => format!("{}{}_{}", prefix, frame, base_name),
+                None => format!("{}{}", prefix, base_name),
+            }
+        }
     }
 
     /// List available annotation sets for the specified dataset.
@@ -2680,5 +2798,121 @@ async fn upload_file_to_presigned_url(
             "Upload failed: HTTP {} - {}",
             status, error_text
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_filename_no_flatten() {
+        // When flatten=false, should return base_name unchanged
+        let result = Client::build_filename("image.jpg", false, Some(&"seq".to_string()), Some(42));
+        assert_eq!(result, "image.jpg");
+
+        let result = Client::build_filename("test.png", false, None, None);
+        assert_eq!(result, "test.png");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_no_sequence() {
+        // When flatten=true but no sequence, should return base_name unchanged
+        let result = Client::build_filename("standalone.jpg", true, None, None);
+        assert_eq!(result, "standalone.jpg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_with_sequence_not_prefixed() {
+        // When flatten=true, in sequence, filename not prefixed → add prefix
+        let result = Client::build_filename(
+            "image.camera.jpeg",
+            true,
+            Some(&"deer_sequence".to_string()),
+            Some(42),
+        );
+        assert_eq!(result, "deer_sequence_42_image.camera.jpeg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_with_sequence_no_frame() {
+        // When flatten=true, in sequence, no frame number → prefix with sequence only
+        let result =
+            Client::build_filename("image.jpg", true, Some(&"sequence_A".to_string()), None);
+        assert_eq!(result, "sequence_A_image.jpg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_already_prefixed() {
+        // When flatten=true, filename already starts with sequence_ → return unchanged
+        let result = Client::build_filename(
+            "deer_sequence_042.camera.jpeg",
+            true,
+            Some(&"deer_sequence".to_string()),
+            Some(42),
+        );
+        assert_eq!(result, "deer_sequence_042.camera.jpeg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_already_prefixed_different_frame() {
+        // Edge case: filename has sequence prefix but we're adding different frame
+        // Should still respect existing prefix
+        let result = Client::build_filename(
+            "sequence_A_001.jpg",
+            true,
+            Some(&"sequence_A".to_string()),
+            Some(2),
+        );
+        assert_eq!(result, "sequence_A_001.jpg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_partial_match() {
+        // Edge case: filename contains sequence name but not as prefix
+        let result = Client::build_filename(
+            "test_sequence_A_image.jpg",
+            true,
+            Some(&"sequence_A".to_string()),
+            Some(5),
+        );
+        // Should add prefix because it doesn't START with "sequence_A_"
+        assert_eq!(result, "sequence_A_5_test_sequence_A_image.jpg");
+    }
+
+    #[test]
+    fn test_build_filename_flatten_preserves_extension() {
+        // Verify that file extensions are preserved correctly
+        let extensions = vec![
+            "jpeg",
+            "jpg",
+            "png",
+            "camera.jpeg",
+            "lidar.pcd",
+            "depth.png",
+        ];
+
+        for ext in extensions {
+            let filename = format!("image.{}", ext);
+            let result = Client::build_filename(&filename, true, Some(&"seq".to_string()), Some(1));
+            assert!(
+                result.ends_with(&format!(".{}", ext)),
+                "Extension .{} not preserved in {}",
+                ext,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_filename_flatten_sanitization_compatibility() {
+        // Test with sanitized path components (no special chars)
+        let result = Client::build_filename(
+            "sample_001.jpg",
+            true,
+            Some(&"seq_name_with_underscores".to_string()),
+            Some(10),
+        );
+        assert_eq!(result, "seq_name_with_underscores_10_sample_001.jpg");
     }
 }

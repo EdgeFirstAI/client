@@ -224,12 +224,12 @@ impl Parameter {
             Parameter::Real(r) => Ok((*r).into_pyobject(py)?.into_any().unbind()),
             Parameter::Boolean(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
             Parameter::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
-            Parameter::Array(_) => self.as_array(py).ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("Failed to convert array")
-            }),
-            Parameter::Object(_) => self.as_object(py).ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("Failed to convert object")
-            }),
+            Parameter::Array(_) => self
+                .as_array(py)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Failed to convert array")),
+            Parameter::Object(_) => self
+                .as_object(py)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Failed to convert object")),
         }
     }
 
@@ -390,7 +390,13 @@ impl Parameter {
             Parameter::Object(v) => {
                 let list = pyo3::types::PyList::empty(py);
                 for (k, value) in v.iter() {
-                    let tuple = pyo3::types::PyTuple::new(py, &[k.as_str().into_pyobject(py)?.into_any().unbind(), value.to_pyobject(py)?])?;
+                    let tuple = pyo3::types::PyTuple::new(
+                        py,
+                        &[
+                            k.as_str().into_pyobject(py)?.into_any().unbind(),
+                            value.to_pyobject(py)?,
+                        ],
+                    )?;
                     list.append(tuple)?;
                 }
                 Ok(list.unbind().into_any())
@@ -447,7 +453,6 @@ impl Parameter {
             _ => Ok(false),
         }
     }
-
 }
 
 // Note: __getitem__, __len__, and __contains__ magic methods cannot be
@@ -2915,13 +2920,14 @@ impl Client {
             .collect::<Vec<_>>())
     }
 
-    #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), progress = None))]
+    #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), flatten = false, progress = None))]
     pub fn download_dataset<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
         groups: Vec<String>,
         types: Vec<FileType>,
         output: PathBuf,
+        flatten: bool,
         progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
@@ -2943,7 +2949,14 @@ impl Client {
 
                 let client = Client(self.0.clone());
                 let task = std::thread::spawn(move || {
-                    client.download_dataset_sync(dataset_id, &groups, &types, output, Some(tx))
+                    client.download_dataset_sync(
+                        dataset_id,
+                        &groups,
+                        &types,
+                        output,
+                        flatten,
+                        Some(tx),
+                    )
                 });
 
                 while let Some(status) = rx.blocking_recv() {
@@ -2956,7 +2969,9 @@ impl Client {
 
                 Ok(task.join().unwrap()?)
             }
-            None => Ok(self.download_dataset_sync(dataset_id, &groups, &types, output, None)?),
+            None => {
+                Ok(self.download_dataset_sync(dataset_id, &groups, &types, output, flatten, None)?)
+            }
         }
     }
 
@@ -3294,10 +3309,11 @@ impl Client {
         groups: &[String],
         types: &[edgefirst_client::FileType],
         output: PathBuf,
+        flatten: bool,
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
     ) -> Result<(), edgefirst_client::Error> {
         self.0
-            .download_dataset(dataset_id.0, groups, types, output, progress)
+            .download_dataset(dataset_id.0, groups, types, output, flatten, progress)
             .await
     }
 
