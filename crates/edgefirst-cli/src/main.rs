@@ -1518,19 +1518,29 @@ fn extract_sequence_name(images_root: &Path, image_path: &Path) -> Option<String
     }
 
     // Second try: Check if filename contains sequence prefix (flattened structure)
-    // Format: {sequence_name}_{frame}_{rest}.ext or {sequence_name}_{frame}.ext
+    // Format: {sequence_name}_{frame}.ext
+    // This is a best-effort heuristic with known limitations:
+    // - Requires at least 3 parts when split by underscore to reduce false positives
+    // - Standalone images like "image_42.jpg" won't be detected as sequences (only 2 parts)
+    // - Sequence names must contain at least one underscore (e.g., "seq_a_001.jpg" → sequence="seq_a")
+    // - Simple sequences like "deer_042.jpg" won't be detected (only 2 parts)
     if let Some(filename) = image_path.file_stem()
         && let Some(name_str) = filename.to_str()
     {
-        // Look for pattern: something_digits (sequence_frame)
-        // Split on underscores and check if we have at least 2 parts with second being
-        // numeric
-        let parts: Vec<&str> = name_str.split('_').collect();
-        if parts.len() >= 2 {
-            // Check if second part is a number (frame)
-            if parts[1].parse::<u32>().is_ok() {
-                // First part is the sequence name
-                return Some(parts[0].to_string());
+        // Strip .camera suffix if present (special extension marker used by Studio)
+        let base_name = name_str.strip_suffix(".camera").unwrap_or(name_str);
+        
+        // Split on underscores to find pattern: {sequence}_{frame}
+        let parts: Vec<&str> = base_name.split('_').collect();
+        
+        // Require at least 3 parts to reduce false positives
+        // (e.g., "image_42.jpg" has 2 parts and won't match,
+        //  but "sequence_name_042.jpg" has 3 parts and will)
+        if parts.len() >= 3 {
+            // Check if the last part is numeric (the frame number)
+            if parts.last().unwrap().parse::<u32>().is_ok() {
+                // Join all parts except the last to get sequence name
+                return Some(parts[..parts.len() - 1].join("_"));
             }
         }
     }
