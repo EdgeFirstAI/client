@@ -513,13 +513,60 @@ autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirs
 - **MINOR** (X.Y+1.0): Breaking API changes
 - **MAJOR** (X+1.0.0): Major architectural changes (maintainer decision only)
 
+### Release Process
+
+**IMPORTANT**: Use `cargo-release` for all releases. Do NOT manually update version numbers.
+
+**Pre-release checklist:**
+1. ✅ All changes committed and tests passing
+2. ✅ CHANGELOG.md updated under `[Unreleased]` section (user-facing changes only)
+3. ✅ All documentation current (README.md, API docs, .pyi stubs)
+
+**Release steps (maintainers only):**
+
+```bash
+# 1. Ensure working directory is clean
+git status  # Should show no uncommitted changes except CHANGELOG.md
+
+# 2. Run cargo-release (automatically handles version bump, CLI.md updates, tagging)
+cargo release patch --execute --no-confirm  # or: minor, major
+
+# 3. Verify the release commit and tag were created
+git log --oneline -2
+git describe  # Should show new version like 2.4.3
+
+# 4. If CHANGELOG.md needs updates after cargo-release:
+#    - Edit CHANGELOG.md (move [Unreleased] to [X.Y.Z] - YYYY-MM-DD)
+#    - Commit changes
+#    - Re-create tag with: cargo release tag --execute
+
+# 5. Push to trigger CI/CD (builds binaries, publishes to crates.io/PyPI)
+git push && git push --tags
+```
+
+**What cargo-release does automatically:**
+- Bumps version in `Cargo.toml` (workspace version)
+- Updates `CLI.md` version and date (via `release.toml` configuration)
+- Creates release commit: "Release X.Y.Z Preparations"
+- Creates git tag: `X.Y.Z`
+
+**What you must do manually:**
+- Update CHANGELOG.md from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
+- Ensure all user-facing changes documented
+
+**GitHub Actions (automatic on tag push):**
+- Builds binaries for all platforms
+- Publishes to crates.io and PyPI
+- Creates GitHub Release with artifacts
+- Generates man page
+
 ### Pre-Commit Requirements
 
 **MUST complete before committing** (in order):
 
 1. **Update documentation** if changes affect:
    - `README.md`: User-facing features, installation, usage
-   - `CLI.md`: CLI commands, options (update version/date on release)
+   - `CLI.md`: CLI commands, options (NOTE: version/date auto-updated by cargo-release)
    - `CONTRIBUTING.md`: Development workflows
    - API doc comments: Rust documentation with examples
    - `.pyi` stubs: Python type hints
