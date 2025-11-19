@@ -1103,42 +1103,47 @@ fn create_sequence_aware_batches(
 /// Parses annotations from an Arrow file and matches them with image files.
 ///
 /// Supports both nested and flattened directory structures:
-/// - **Nested**: Images in sequence subdirectories (sequence_name/sequence_name_frame.ext)
-/// - **Flattened**: All images in root directory with sequence prefix (sequence_name_frame.ext)
+/// - **Nested**: Images in sequence subdirectories
+///   (sequence_name/sequence_name_frame.ext)
+/// - **Flattened**: All images in root directory with sequence prefix
+///   (sequence_name_frame.ext)
 ///
-/// The function uses the Arrow file's `name` and `frame` columns as the authoritative
-/// source for sequence information, regardless of how files are organized on disk.
-/// The image_index built by walking the directory tree works for both structures.
+/// The function uses the Arrow file's `name` and `frame` columns as the
+/// authoritative source for sequence information, regardless of how files are
+/// organized on disk. The image_index built by walking the directory tree works
+/// for both structures.
 ///
 /// # Arguments
 ///
-/// * `annotations` - Optional path to Arrow file containing annotations and metadata
+/// * `annotations` - Optional path to Arrow file containing annotations and
+///   metadata
 /// * `images_path` - Path to directory (or ZIP) containing image files
-/// * `should_upload_annotations` - Whether to parse and include annotation geometries
+/// * `should_upload_annotations` - Whether to parse and include annotation
+///   geometries
 ///
 /// # Returns
 ///
 /// Vector of Sample objects with matched images and parsed annotations
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
-    images_path: &PathBuf,
+    images_path: &Path,
     should_upload_annotations: bool,
 ) -> Result<Vec<edgefirst_client::Sample>, Error> {
     use polars::prelude::*;
     use std::{collections::HashMap, fs::File};
 
-    // Map: sample_name -> (group, sequence_name, frame_number, annotations)
+    // Helper struct to store sample metadata during parsing
+    struct SampleMetadata {
+        group: Option<String>,
+        sequence_name: Option<String>,
+        frame_number: Option<u32>,
+        annotations: Vec<edgefirst_client::Annotation>,
+    }
+
+    // Map: sample_name -> metadata
     // sequence_name is Some(name) when frame is not-null, indicating this sample is
     // part of a sequence
-    let mut samples_map: HashMap<
-        String,
-        (
-            Option<String>,
-            Option<String>,
-            Option<u32>,
-            Vec<edgefirst_client::Annotation>,
-        ),
-    > = HashMap::new();
+    let mut samples_map: HashMap<String, SampleMetadata> = HashMap::new();
 
     if let Some(arrow_path) = annotations {
         let mut file = File::open(arrow_path)?;
@@ -1218,12 +1223,14 @@ fn parse_annotations_from_arrow(
                 .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
 
             // Get or create entry for this sample
-            let entry = samples_map.entry(sample_name.clone()).or_insert((
-                sample_group,
-                sequence_name.clone(),
-                frame_number,
-                Vec::new(),
-            ));
+            let entry = samples_map
+                .entry(sample_name.clone())
+                .or_insert(SampleMetadata {
+                    group: sample_group,
+                    sequence_name: sequence_name.clone(),
+                    frame_number,
+                    annotations: Vec::new(),
+                });
 
             if should_upload_annotations {
                 let mut has_annotation = false;
@@ -1298,7 +1305,7 @@ fn parse_annotations_from_arrow(
 
                 // Only add annotation if it has at least one geometry or label
                 if has_annotation {
-                    entry.3.push(annotation);
+                    entry.annotations.push(annotation);
                 }
             }
         }
@@ -1308,13 +1315,15 @@ fn parse_annotations_from_arrow(
         return Ok(Vec::new());
     }
 
-    let image_index = build_image_index(images_path.as_path())?;
+    let image_index = build_image_index(images_path)?;
 
     // Convert HashMap to Vec<Sample> by resolving image paths
     let mut samples = Vec::new();
-    for (sample_name, (sample_group, arrow_sequence_name, arrow_frame_number, mut annotations)) in
-        samples_map
-    {
+    for (sample_name, metadata) in samples_map {
+        let sample_group = metadata.group;
+        let arrow_sequence_name = metadata.sequence_name;
+        let arrow_frame_number = metadata.frame_number;
+        let mut annotations = metadata.annotations;
         let image_path = find_image_path_for_sample(&image_index, &sample_name)?;
 
         // Get the actual image filename with extension from the resolved path
@@ -1362,10 +1371,12 @@ fn parse_annotations_from_arrow(
 }
 
 #[cfg(feature = "polars")]
-/// Builds an index mapping filenames to their full paths by walking directory tree.
+/// Builds an index mapping filenames to their full paths by walking directory
+/// tree.
 ///
 /// This index works for both nested and flattened directory structures:
-/// - **Nested**: Walks subdirectories to find files like sequence_A/sequence_A_001.jpeg
+/// - **Nested**: Walks subdirectories to find files like
+///   sequence_A/sequence_A_001.jpeg
 /// - **Flattened**: Finds files directly in root like sequence_A_001.jpeg
 ///
 /// The index maps multiple filename variations to the same file:
@@ -1387,7 +1398,8 @@ fn build_image_index(
     let mut index: std::collections::HashMap<String, Vec<PathBuf>> =
         std::collections::HashMap::new();
 
-    // Recursively walk directory tree - works for both nested and flattened structures
+    // Recursively walk directory tree - works for both nested and flattened
+    // structures
     for entry in WalkDir::new(images_path) {
         let entry = entry.map_err(|e| {
             Error::InvalidParameters(format!("Failed to read images directory: {}", e))
@@ -1442,17 +1454,20 @@ fn find_image_path_for_sample(
     image_index: &std::collections::HashMap<String, Vec<PathBuf>>,
     image_name: &str,
 ) -> Result<PathBuf, Error> {
-    // Finds image file for a sample, supporting both nested and flattened directory structures.
+    // Finds image file for a sample, supporting both nested and flattened directory
+    // structures.
     //
     // For nested structure (sequences in subdirectories):
     //   - Images are in sequence_name/sequence_name_frame.ext
     //   - Index contains filenames like "sequence_A_001.camera.jpeg"
     //
     // For flattened structure (all files in one directory):
-    //   - Images are in root with prefix: sequence_name_frame.ext or sequence_name_frame_original.ext
+    //   - Images are in root with prefix: sequence_name_frame.ext or
+    //     sequence_name_frame_original.ext
     //   - Index contains same filenames
     //
-    // The image_index is built by walking the entire directory tree, so it works for both structures.
+    // The image_index is built by walking the entire directory tree, so it works
+    // for both structures.
 
     // Extension priority order: .camera.* takes precedence over plain extensions
     const EXTENSIONS: &[&str] = &[
@@ -1508,7 +1523,8 @@ fn extract_sequence_name(images_root: &Path, image_path: &Path) -> Option<String
         && let Some(name_str) = filename.to_str()
     {
         // Look for pattern: something_digits (sequence_frame)
-        // Split on underscores and check if we have at least 2 parts with second being numeric
+        // Split on underscores and check if we have at least 2 parts with second being
+        // numeric
         let parts: Vec<&str> = name_str.split('_').collect();
         if parts.len() >= 2 {
             // Check if second part is a number (frame)
@@ -2793,11 +2809,7 @@ mod tests {
                 .iter()
                 .filter(|s| s.sequence_name() == Some(&"seq_b".to_string()))
                 .collect();
-            assert_eq!(
-                seq_b_samples.len(),
-                1,
-                "Should have 1 sample in sequence B"
-            );
+            assert_eq!(seq_b_samples.len(), 1, "Should have 1 sample in sequence B");
 
             // Verify frame numbers are correct
             for sample in &samples {
@@ -2823,9 +2835,10 @@ mod tests {
             let images_dir = test_dir.join("images");
             let sequence_dir = images_dir.join("sequence_x");
 
-            // Create Arrow file with both sequence samples (with frames) and standalone (without frames)
-            // We'll create two separate Arrow files and merge, or use create_test_arrow_file twice
-            // For simplicity, test with all having same structure but verify behavior
+            // Create Arrow file with both sequence samples (with frames) and standalone
+            // (without frames) We'll create two separate Arrow files and merge,
+            // or use create_test_arrow_file twice For simplicity, test with all
+            // having same structure but verify behavior
 
             // Create nested structure for sequence
             std::fs::create_dir_all(&sequence_dir).unwrap();

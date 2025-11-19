@@ -291,7 +291,9 @@ class CopilotFormatter:
             "ruleName": rule.get("name", rule_key),
             "message": hotspot.get("message", ""),
             "status": hotspot.get("status", "TO_REVIEW"),
-            "vulnerabilityProbability": hotspot.get("vulnerabilityProbability", ""),
+            "vulnerabilityProbability": hotspot.get(
+                "vulnerabilityProbability", ""
+            ),
             "securityCategory": hotspot.get("securityCategory", ""),
             "creationDate": hotspot.get("creationDate", ""),
             "updateDate": hotspot.get("updateDate", ""),
@@ -412,12 +414,16 @@ Examples:
     parser.add_argument(
         "--severity",
         help=(
-            "Filter by severity (comma-separated): BLOCKER,CRITICAL,MAJOR,MINOR,INFO"
+            "Filter by severity (comma-separated): "
+            "BLOCKER,CRITICAL,MAJOR,MINOR,INFO"
         ),
     )
     parser.add_argument(
         "--type",
-        help=("Filter by type (comma-separated): BUG,VULNERABILITY,CODE_SMELL"),
+        help=(
+            "Filter by type (comma-separated): "
+            "BUG,VULNERABILITY,CODE_SMELL"
+        ),
     )
     parser.add_argument(
         "--hotspot-status",
@@ -477,9 +483,8 @@ def check_analysis_freshness(
 
     if verbose:
         print(
-            f"Last analysis: {
-                analysis_date.isoformat()} ({
-                age_hours:.1f} hours ago)",
+            f"Last analysis: {analysis_date.isoformat()} "
+            f"({age_hours:.1f} hours ago)",
             file=sys.stderr,
         )
 
@@ -569,7 +574,9 @@ def fetch_rule_definitions(
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch rule definitions for all issues and hotspots."""
     issue_rule_keys: List[str] = [
-        str(issue.get("rule")) for issue in issues if issue.get("rule") is not None
+        str(issue.get("rule"))
+        for issue in issues
+        if issue.get("rule") is not None
     ]
     hotspot_rule_keys: List[str] = [
         str(hotspot.get("ruleKey"))
