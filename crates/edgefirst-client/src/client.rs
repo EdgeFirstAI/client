@@ -726,9 +726,9 @@ impl Client {
     /// * `file_types` - File types to download (e.g., Image, LidarPcd)
     /// * `output` - Local directory to save downloaded files
     /// * `flatten` - If true, download all files to output root without
-    ///   sequence subdirectories. When flattening, filenames are automatically
-    ///   prefixed with `{sequence_name}_{frame}_` if not already present to
-    ///   avoid conflicts between sequences.
+    ///   sequence subdirectories. When flattening, filenames are prefixed with
+    ///   `{sequence_name}_{frame}_` (or `{sequence_name}_` if frame is unavailable)
+    ///   unless the filename already starts with `{sequence_name}_`, to avoid conflicts between sequences.
     /// * `progress` - Optional channel for progress updates
     ///
     /// # Returns
