@@ -962,6 +962,78 @@ fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+#[serial]
+fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs, path::PathBuf};
+
+    let _username =
+        env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
+
+    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
+        .map(|d| d.config_dir().join("token"))
+        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
+
+    // Login first to create a valid token
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("login");
+    cmd.ok()?;
+
+    assert!(token_path.exists(), "Token file should exist after login");
+
+    // Corrupt the token file with invalid data
+    fs::write(&token_path, "this.is.corrupted")?;
+    println!("✓ Corrupted token file created");
+
+    // Try to run a command that requires authentication WITHOUT credentials
+    // This should gracefully handle the corrupted token
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("organization");
+    // Clear environment variables so the command can't auto-login
+    cmd.env_remove("STUDIO_USERNAME");
+    cmd.env_remove("STUDIO_PASSWORD");
+    cmd.env_remove("STUDIO_TOKEN");
+
+    let output = cmd.output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    println!("Command stderr:\n{}", stderr);
+    println!("Command stdout:\n{}", stdout);
+
+    // Should fail with authentication error, not a crash
+    assert!(
+        !output.status.success(),
+        "Command should fail with corrupted token and no credentials"
+    );
+    assert!(
+        stderr.contains("Authentication failed")
+            || stderr.contains("Please login again")
+            || stderr.contains("Empty token"),
+        "Should provide helpful error message about re-authenticating"
+    );
+
+    // Corrupted token should be removed
+    // (either by with_token_path or by the logout in error handling)
+    println!("Token file exists after error: {}", token_path.exists());
+
+    // Should be able to login again
+    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    cmd.arg("login");
+    cmd.ok()?;
+
+    assert!(
+        token_path.exists(),
+        "Should be able to login after corruption"
+    );
+    let new_token = fs::read_to_string(&token_path)?;
+    assert_ne!(new_token, "this.is.corrupted", "New token should be valid");
+
+    println!("✓ Successfully logged in again after corruption");
+
+    Ok(())
+}
+
 // ===== Project Tests =====
 
 #[test]
