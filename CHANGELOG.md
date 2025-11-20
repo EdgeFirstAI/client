@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Smart filename prefixing: automatically adds `{sequence_name}_{frame}_` prefix to avoid conflicts
   - Only prefixes files when necessary (checks if sequence prefix already exists)
   - Python API: `client.download_dataset(..., flatten=False)` parameter (non-breaking, defaults to False)
-  - Rust API: Added `flatten: bool` parameter to `Client::download_dataset()` (breaking change for Rust clients)
   - Helper function `Client::build_filename()` for intelligent prefix handling
   - Comprehensive documentation in CLI.md with directory structure examples
+
+### Breaking Changes
+- **BREAKING**: Rust API: Added `flatten: bool` parameter to `Client::download_dataset()`. This changes the function signature and will break existing Rust client code that does not specify the new parameter.
 - **Upload dataset with automatic flattened structure detection**
   - `upload-dataset` now automatically detects both nested and flattened directory structures
   - Enhanced `parse_annotations_from_arrow()` to work with both organizational patterns

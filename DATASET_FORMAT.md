@@ -251,7 +251,7 @@ dataset_name/
 
 **Sequence samples** (when `frame` column is not-null in Arrow file):
 - **Nested**: `{sequence_name}/{sequence_name}_{frame}.{sensor}.{ext}`
-- **Flattened**: `{sequence_name}_{frame}.{sensor}.{ext}` or `{sequence_name}_{frame}_{original_name}.{ext}`
+- **Flattened**: `{sequence_name}_{frame}_{original_name}` (where `original_name` includes the extension)
 
 **Standalone samples** (when `frame` column is null):
 - **Nested**: `{image_name}.{ext}`
