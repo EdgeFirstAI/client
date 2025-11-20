@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Download dataset with flattened directory structure (`--flatten` option)**
+  - New `--flatten` flag for `download-dataset` CLI command to download all files into a single directory
+  - Smart filename prefixing: automatically adds `{sequence_name}_{frame}_` prefix to avoid conflicts
+  - Only prefixes files when necessary (checks if sequence prefix already exists)
+  - Python API: `client.download_dataset(..., flatten=False)` parameter (non-breaking, defaults to False)
+  - Rust API: Added `flatten: bool` parameter to `Client::download_dataset()` (breaking change for Rust clients)
+  - Helper function `Client::build_filename()` for intelligent prefix handling
+  - Comprehensive documentation in CLI.md with directory structure examples
+- **Upload dataset with automatic flattened structure detection**
+  - `upload-dataset` now automatically detects both nested and flattened directory structures
+  - Enhanced `parse_annotations_from_arrow()` to work with both organizational patterns
+  - Enhanced `extract_sequence_name()` to parse sequence info from filename prefixes (flattened) or subdirectories (nested)
+  - Recursive directory walking in `build_image_index()` handles both structures transparently
+  - Arrow file metadata (`name` and `frame` columns) is authoritative source for sequence information
+  - No manual configuration needed - works automatically for both upload and download
+- **DATASET_FORMAT.md enhancements**
+  - Documented nested vs. flattened directory structure patterns
+  - Added client implementation guidelines for upload/download operations
+  - Included file naming conventions for both organizational patterns
+  - Added examples showing directory structure transformations
+
+### Fixed
+- **Graceful handling of corrupted or expired authentication tokens**
+  - `with_token_path()` now catches token validation errors and automatically removes corrupted token files
+  - CLI displays helpful error message when token renewal fails, directing users to login again
+  - Invalid tokens are cleaned up automatically, preventing "stuck" authentication states
+  - Users can now successfully run `login` or `logout` commands even with corrupted token files
+
 ## [2.4.3] - 2025-11-18
 
 ### Added

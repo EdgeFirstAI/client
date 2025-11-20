@@ -1204,3 +1204,132 @@ class TestLabels(TestCase):
                 "samples_count should match len(samples)")
             print("✓ Verified count matches actual samples")
 
+    def test_download_dataset_flatten(self):
+        """Test download_dataset with flatten option for sequences."""
+        client = get_client()
+        dataset = get_test_dataset()
+
+        print(f"\nTesting flatten option for dataset: {dataset}")
+
+        # Get dataset ID
+        if dataset.startswith("ds-"):
+            dataset_obj = client.dataset(dataset)
+        else:
+            projects = client.projects("")
+            dataset_obj = None
+            for project in projects:
+                datasets = client.datasets(project.id, dataset)
+                if datasets:
+                    dataset_obj = datasets[0]
+                    break
+
+        self.assertIsNotNone(dataset_obj, f"Dataset '{dataset}' not found")
+        assert dataset_obj is not None
+
+        timestamp = int(time.time())
+        test_dir = get_test_data_dir()
+        normal_dir = test_dir / f"download_normal_{timestamp}"
+        flatten_dir = test_dir / f"download_flatten_{timestamp}"
+        normal_dir.mkdir(parents=True, exist_ok=True)
+        flatten_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Download with normal structure (sequences in subdirectories)
+            print("\n1. Downloading with normal structure...")
+            client.download_dataset(
+                dataset_obj.id,
+                [],
+                [FileType.Image],
+                str(normal_dir),
+                flatten=False,
+            )
+
+            # Download with flattened structure
+            print("2. Downloading with flattened structure...")
+            client.download_dataset(
+                dataset_obj.id,
+                [],
+                [FileType.Image],
+                str(flatten_dir),
+                flatten=True,
+            )
+
+            # Analyze normal structure
+            normal_entries = list(normal_dir.iterdir())
+            normal_has_subdirs = any(e.is_dir() for e in normal_entries)
+            
+            print(f"\nNormal structure: {len(normal_entries)} entries")
+            if normal_has_subdirs:
+                subdirs = [e.name for e in normal_entries if e.is_dir()]
+                print(f"  Subdirectories: {subdirs[:3]}")
+
+            # Analyze flattened structure
+            flatten_entries = list(flatten_dir.iterdir())
+            flatten_has_subdirs = any(e.is_dir() for e in flatten_entries)
+            
+            print(f"Flattened structure: {len(flatten_entries)} entries")
+            
+            # Count files recursively
+            def count_files(directory):
+                return sum(1 for f in directory.rglob("*") if f.is_file())
+
+            normal_file_count = count_files(normal_dir)
+            flatten_file_count = count_files(flatten_dir)
+
+            print("\nFile counts:")
+            print(f"  Normal: {normal_file_count} files")
+            print(f"  Flatten: {flatten_file_count} files")
+
+            # Assertions
+            self.assertEqual(
+                normal_file_count,
+                flatten_file_count,
+                "Both downloads should have same number of files"
+            )
+
+            self.assertFalse(
+                flatten_has_subdirs,
+                "Flattened download should not have subdirectories"
+            )
+
+            # If dataset has sequences, verify prefixing
+            if normal_has_subdirs:
+                print("\n✓ Dataset contains sequences")
+                
+                # Check that flattened files have sequence prefixes
+                flatten_files = [
+                    f.name for f in flatten_dir.iterdir() if f.is_file()
+                ]
+                
+                # Most files should have underscore-separated components
+                # (indicating sequence_frame prefix)
+                prefixed_count = sum(
+                    1 for f in flatten_files if f.count('_') >= 1
+                )
+                
+                print(
+                    f"  Files with prefixes: "
+                    f"{prefixed_count}/{len(flatten_files)}"
+                )
+                print(f"  Sample filenames: {flatten_files[:3]}")
+                
+                # At least some files should have prefixes if sequences exist
+                self.assertGreater(
+                    prefixed_count,
+                    0,
+                    "Flattened sequence files should have prefixes"
+                )
+            else:
+                print("\n✓ Dataset contains no sequences")
+
+            print("\n✅ Flatten option test passed")
+
+        finally:
+            # Cleanup
+            import shutil
+            if normal_dir.exists():
+                shutil.rmtree(normal_dir)
+            if flatten_dir.exists():
+                shutil.rmtree(flatten_dir)
+            print("Cleaned up test directories")
+
