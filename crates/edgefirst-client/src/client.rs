@@ -380,11 +380,26 @@ impl Client {
         };
 
         if !token.is_empty() {
-            let client = self.with_token(&token)?;
-            Ok(Client {
-                token_path: Some(token_path),
-                ..client
-            })
+            match self.with_token(&token) {
+                Ok(client) => Ok(Client {
+                    token_path: Some(token_path),
+                    ..client
+                }),
+                Err(e) => {
+                    // Token is corrupted or invalid - remove it and continue with no token
+                    warn!(
+                        "Invalid or corrupted token file at {:?}: {:?}. Removing token file.",
+                        token_path, e
+                    );
+                    if let Err(remove_err) = std::fs::remove_file(&token_path) {
+                        warn!("Failed to remove corrupted token file: {:?}", remove_err);
+                    }
+                    Ok(Client {
+                        token_path: Some(token_path),
+                        ..self.clone()
+                    })
+                }
+            }
         } else {
             Ok(Client {
                 token_path: Some(token_path),

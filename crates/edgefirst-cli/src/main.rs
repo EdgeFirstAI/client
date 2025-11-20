@@ -2006,7 +2006,20 @@ async fn main() -> Result<(), Error> {
     }
 
     // Renew token for all other commands
-    client.renew_token().await?;
+    if let Err(e) = client.renew_token().await {
+        // If token renewal fails, remove the corrupted token and ask user to login
+        eprintln!("Authentication failed: {}", e);
+        eprintln!("\nYour session token is invalid or has expired.");
+        eprintln!("Please login again using:");
+        eprintln!("  edgefirst-client login");
+
+        // Attempt to clean up the invalid token
+        if let Err(logout_err) = client.logout().await {
+            eprintln!("Warning: Failed to clear invalid token: {}", logout_err);
+        }
+
+        std::process::exit(1);
+    }
 
     // Handle all other commands
     match args.cmd {

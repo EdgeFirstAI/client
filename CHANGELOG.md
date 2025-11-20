@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Included file naming conventions for both organizational patterns
   - Added examples showing directory structure transformations
 
+### Fixed
+- **Graceful handling of corrupted or expired authentication tokens**
+  - `with_token_path()` now catches token validation errors and automatically removes corrupted token files
+  - CLI displays helpful error message when token renewal fails, directing users to login again
+  - Invalid tokens are cleaned up automatically, preventing "stuck" authentication states
+  - Users can now successfully run `login` or `logout` commands even with corrupted token files
+
 ## [2.4.3] - 2025-11-18
 
 ### Added
