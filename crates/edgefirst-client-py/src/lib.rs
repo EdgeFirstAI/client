@@ -3803,6 +3803,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Experiment>()?;
     m.add_class::<TrainingSession>()?;
     m.add_class::<ValidationSession>()?;
+    m.add_class::<Snapshot>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;
