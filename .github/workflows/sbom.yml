@@ -1,0 +1,70 @@
+name: SBOM Generation & License Compliance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+
+jobs:
+  sbom-compliance:
+    name: Generate SBOM & Check License Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6d9817901c499d6b02debbb57edb38d33daa680b # stable
+        with:
+          toolchain: 1.90
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install scancode-toolkit
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install scancode-toolkit
+
+      - name: Install CycloneDX CLI
+        run: |
+          mkdir -p ~/.local/bin
+          wget -q -O ~/.local/bin/cyclonedx \
+            https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64
+          # Verify SHA-256 checksum (from CycloneDX v0.27.1 release)
+          echo "b36a12d5103c1fd799005e02ee8d5a546c8db5b67f770bb28786f15238ceac16  $HOME/.local/bin/cyclonedx" | sha256sum -c -
+          chmod +x ~/.local/bin/cyclonedx
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Generate Complete SBOM
+        run: .github/scripts/generate_sbom.sh
+
+      - name: Validate SBOM Format
+        run: cyclonedx validate --input-file sbom.json
+
+      - name: Check License Policy
+        run: python3 .github/scripts/check_license_policy.py sbom.json
+
+      - name: Upload SBOM Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90
+
+      - name: Fail on License Violations
+        if: failure()
+        run: |
+          echo "❌ SBOM generation or license policy check failed!"
+          echo "Review the output above for details."
+          exit 1
