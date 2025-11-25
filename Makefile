@@ -132,8 +132,8 @@ pre-release: clean format lint build test sbom check-license
 	@echo "Running pre-release validation..."
 	@echo ""
 	@echo "Checking version consistency..."
-	@cargo_version=$$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/'); \
-	cli_version=$$(head -20 CLI.md | grep "^**Version:**" | sed 's/\*\*Version:\*\* //'); \
+	@cargo_version=$$(grep -m 1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/'); \
+	cli_version=$$(grep -m 1 "^\*\*Version:\*\*" CLI.md | sed 's/\*\*Version:\*\* //'); \
 	if [ "$$cargo_version" != "$$cli_version" ]; then \
 		echo "❌ Version mismatch: Cargo.toml ($$cargo_version) != CLI.md ($$cli_version)"; \
 		exit 1; \
