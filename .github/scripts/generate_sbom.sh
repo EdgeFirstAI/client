@@ -47,7 +47,7 @@ echo
 
 # Extract version from Cargo.toml workspace version
 if [ -f "$VERSION_FILE" ]; then
-    VERSION=$(grep '^version = ' "$VERSION_FILE" | head -1 | sed 's/version = "\(.*\)"/\1/')
+    VERSION=$(grep -m 1 '^version = ' "$VERSION_FILE" | sed 's/version = "\(.*\)"/\1/')
     if [ -z "$VERSION" ]; then
         echo "❌ Could not extract version from $VERSION_FILE"
         exit 1
@@ -103,14 +103,15 @@ echo
 # Step 2: Merge and clean source SBOMs
 echo "[2/6] Merging and cleaning source SBOMs..."
 
-python3 << EOF
+export VERSION PROJECT_NAME PROJECT_TYPE SBOM_FILES
+python3 << 'EOF'
 import json
 import sys
 import os
 
-VERSION = "$VERSION"
-PROJECT_NAME = "$PROJECT_NAME"
-PROJECT_TYPE = "$PROJECT_TYPE"
+VERSION = os.environ['VERSION']
+PROJECT_NAME = os.environ['PROJECT_NAME']
+PROJECT_TYPE = os.environ['PROJECT_TYPE']
 
 def load_sbom(filename):
     """Load an SBOM file if it exists"""
@@ -129,7 +130,7 @@ def clean_sbom_properties(sbom):
     return sbom
 
 # Load all individual SBOMs
-sbom_files = """$SBOM_FILES""".split()
+sbom_files = os.environ['SBOM_FILES'].split()
 all_components = []
 
 for filename in sbom_files:
@@ -227,10 +228,12 @@ $CYCLONEDX merge \
     --output-file sbom-temp.json
 
 # Remove duplicate project component from components list
-python3 << EOF
+export PROJECT_NAME
+python3 << 'EOF'
 import json
+import os
 
-PROJECT_NAME = "$PROJECT_NAME"
+PROJECT_NAME = os.environ['PROJECT_NAME']
 
 with open('sbom-temp.json', 'r') as f:
     sbom = json.load(f)

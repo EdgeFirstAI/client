@@ -662,9 +662,9 @@ git rebase --signoff HEAD~N  # Where N is the number of commits
 
 - **All commits** in a pull request **must be signed off**
 - Pull requests with unsigned commits will fail automated checks
-- You can check your commits with: `git log --show-signature`
+- You can check your commits for DCO sign-off with: `git log --format=%B | grep "Signed-off-by"`
 
-**Note:** Signing off commits is **not the same** as GPG signing. DCO sign-off is a certification statement, while GPG signatures cryptographically verify commit authorship (GPG signing is optional but encouraged).
+**Note:** Signing off commits is **not the same** as GPG signing. DCO sign-off is a certification statement, while GPG signatures cryptographically verify commit authorship (GPG signing is optional but encouraged). Use `git log --show-signature` to check GPG signatures.
 
 ## License
 
