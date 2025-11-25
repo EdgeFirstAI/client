@@ -90,7 +90,7 @@ Follow the coding standards below:
 #### Python Code
 
 - Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/) strictly (79-character line limit)
-- Use `autopep8` for automatic formatting
+- Use `ruff format` for formatting and `ruff check --fix` for linting
 - Use type hints where possible
 - Maintain `.pyi` type stubs in `crates/edgefirst-client-py/edgefirst_client.pyi`
 - Add docstrings for public functions and classes
@@ -136,7 +136,8 @@ python -m unittest discover -s . -p "test*.py"
 cargo +nightly fmt --all
 
 # Python
-autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
 ```
 
 ### 6. Run Linting
@@ -255,7 +256,7 @@ Brief summary of what changed and why
 ### Python-Specific
 
 - Follow PEP 8 strictly (79-character line limit)
-- Use `autopep8 --in-place --aggressive --aggressive` for formatting
+- Use `ruff format` for formatting and `ruff check --fix` for linting
 - **Pylance type checking**: Code must be Pylance-clean
 - Type narrowing patterns: `self.assertIsNotNone(x)` → `assert x is not None`
 - Maintain `.pyi` stubs synchronized with implementation

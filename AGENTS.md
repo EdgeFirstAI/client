@@ -227,7 +227,7 @@ Brief summary of what changed and why
 
 **Python:**
 - Follow PEP 8 strictly (79-character line limit)
-- Use `autopep8 --in-place --aggressive --aggressive` for formatting
+- Use `ruff format` for formatting and `ruff check --fix` for linting
 - Maintain `.pyi` type stubs in `crates/edgefirst-client-py/edgefirst_client.pyi`
 - **Pylance type checking**: Code must be Pylance-clean (VS Code's Python language server)
   * All `.pyi` stubs must have complete type annotations
@@ -291,8 +291,13 @@ Before submitting code, verify:
 ### Running Tests
 
 ```bash
-# Rust tests (requires credentials)
-cargo test --all-features --locked
+# Rust tests - IMPORTANT: Run lib tests separately or use single thread to avoid conflicts
+cargo test -p edgefirst-client --lib --all-features --locked
+cargo test -p edgefirst-cli --all-features --locked
+# OR run with single thread to avoid timeouts:
+cargo test --all-features --locked -- --test-threads=1
+
+# Doc tests
 cargo test --doc --locked
 
 # Python tests (recommended: use slipcover)
@@ -306,6 +311,10 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
 cargo llvm-cov report --lcov --output-path lcov.info
 ```
+
+**CRITICAL Testing Rules:**
+- **NEVER use `tail` when running commands** - Users need to see full output for better experience. Use `| tee logfile.txt` if logs need to be captured.
+- **Run lib and CLI tests separately** - Running all tests together causes conflicts and timeouts. Use `-p edgefirst-client --lib` and `-p edgefirst-cli` separately, or `-- --test-threads=1`.
 
 **Note**: Integration tests require EdgeFirst Studio credentials. External contributors can rely on CI/CD to run these tests automatically via GitHub Actions.
 
@@ -535,7 +544,8 @@ cargo +nightly fmt --all
 cargo clippy --fix --allow-dirty --all-features --all-targets
 
 # Python formatting
-autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
 ```
 
 ### Testing Conventions
@@ -627,7 +637,8 @@ git push && git push --tags
    ```bash
    cargo +nightly fmt --all
    cargo clippy --fix --allow-dirty --all-features --all-targets
-   autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+   ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+   ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
    ```
 
 4. **Verify build succeeds** - **MUST BUILD WITHOUT ERRORS**:
