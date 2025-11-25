@@ -56,6 +56,22 @@ venv/bin/pytest tests/
 cd build && cmake ..  # Where are we now?
 ```
 
+### #1.5: NEVER Hide Command Output
+
+```bash
+# ✅ User sees full output
+cargo test --all-features --locked
+
+# ✅ If you must save logs, use tee (preserves live output)
+cargo test --all-features --locked 2>&1 | tee test.log
+
+# ❌ User can't see what's happening
+cargo test --all-features --locked | tail -20
+cargo build 2>&1 | head -50
+```
+
+**Why:** Users need to see full output for better experience and debugging. Hiding output with `head`/`tail` prevents users from understanding what's happening.
+
 ### #2: ALWAYS Use Python venv
 
 ```bash
