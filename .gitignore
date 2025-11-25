@@ -48,3 +48,5 @@ env.sh
 
 # Server reference clone (excluded from version control)
 server/
+
+/SPS/
