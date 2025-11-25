@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Test coverage for examples/download.py**
+  - Added `test/test_examples.py` with integration test for download example
+  - Refactored `download.py` to export `download_dataset_yolo()` function for testability
+  - Example now properly covered by slipcover during CI/CD test runs
+  - Improves overall test coverage metrics for SonarCloud quality gate
 - **Download dataset with flattened directory structure (`--flatten` option)**
   - New `--flatten` flag for `download-dataset` CLI command to download all files into a single directory
   - Smart filename prefixing: automatically adds `{sequence_name}_{frame}_` prefix to avoid conflicts

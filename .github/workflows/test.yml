@@ -71,7 +71,7 @@ jobs:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d
+          TEST_DATASET_TYPES: box2d,box3d,mask
 
       - name: Set up coverage environment
         if: success() || failure()
@@ -95,7 +95,7 @@ jobs:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d
+          TEST_DATASET_TYPES: box2d,box3d,mask
 
       - name: Verify nextest output
         if: always()
@@ -126,7 +126,7 @@ jobs:
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d
+          TEST_DATASET_TYPES: box2d,box3d,mask
 
       - name: Verify Python test output
         if: always()

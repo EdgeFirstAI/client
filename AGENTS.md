@@ -2,7 +2,7 @@
 
 This document provides instructions for AI coding assistants (GitHub Copilot, Cursor, Claude Code, etc.) working on the EdgeFirst Client project. These guidelines ensure consistent code quality, proper workflow adherence, and maintainable contributions.
 
-**Version:** 1.0
+**Version:** 2.0
 **Last Updated:** November 2025
 **Project:** EdgeFirst Client - Client API and CLI for EdgeFirst Studio
 
@@ -11,13 +11,14 @@ This document provides instructions for AI coding assistants (GitHub Copilot, Cu
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Git Workflow](#git-workflow)
-3. [Code Quality Standards](#code-quality-standards)
-4. [Testing Requirements](#testing-requirements)
-5. [Documentation Expectations](#documentation-expectations)
-6. [License Policy](#license-policy)
-7. [Security Practices](#security-practices)
-8. [Project-Specific Guidelines](#project-specific-guidelines)
+2. [⚠️ Critical Rules](#️-critical-rules)
+3. [Git Workflow](#git-workflow)
+4. [Code Quality Standards](#code-quality-standards)
+5. [Testing Requirements](#testing-requirements)
+6. [Documentation Expectations](#documentation-expectations)
+7. [License Policy](#license-policy)
+8. [Security Practices](#security-practices)
+9. [Project-Specific Guidelines](#project-specific-guidelines)
 
 ---
 
@@ -39,6 +40,68 @@ When contributing to EdgeFirst Client, AI assistants should prioritize:
 - **Testing**: Comprehensive coverage with unit, integration, and Studio integration tests
 - **Documentation**: Clear explanations for APIs and workflows
 - **License compliance**: Strict adherence to Apache-2.0 and approved dependencies
+
+---
+
+## ⚠️ Critical Rules
+
+### #1: NEVER Use cd Commands
+
+```bash
+# ✅ Modern tools work from root
+cargo build --release
+venv/bin/pytest tests/
+
+# ❌ AI loses context
+cd build && cmake ..  # Where are we now?
+```
+
+### #1.5: NEVER Hide Command Output
+
+```bash
+# ✅ User sees full output
+cargo test --all-features --locked
+
+# ✅ If you must save logs, use tee (preserves live output)
+cargo test --all-features --locked 2>&1 | tee test.log
+
+# ❌ User can't see what's happening
+cargo test --all-features --locked | tail -20
+cargo build 2>&1 | head -50
+```
+
+**Why:** Users need to see full output for better experience and debugging. Hiding output with `head`/`tail` prevents users from understanding what's happening.
+
+### #2: ALWAYS Use Python venv
+
+```bash
+# ✅ Direct invocation (no activation needed)
+venv/bin/python script.py
+venv/bin/pytest tests/
+
+# ❌ System Python pollution
+python script.py  # Which Python?
+```
+
+**requirements.txt - Semver ranges:**
+
+```txt
+# ✅ Allow patches/minors, block breaking changes
+numpy>=1.21.0,<2.0.0
+
+# ❌ Exact pins block security patches
+numpy==1.21.0
+```
+
+### #3: DCO Sign-Off Required
+
+All commits must include Developer Certificate of Origin sign-off:
+
+```bash
+git commit -s -m "Brief description"
+```
+
+This adds `Signed-off-by: Your Name <your.email@example.com>` to the commit message.
 
 ---
 
@@ -82,12 +145,14 @@ bugfix/STUDIO-456-fix-memory-leak
 
 **Required format**:
 ```
-<Short descriptive header>
+Short descriptive header
 
 - Bullet 1: what changed
 - Bullet 2: what changed
 - Bullet 3: what changed
-[- Fixes #123 (only if user provides issue reference)]
+
+Signed-off-by: Your Name <your.email@example.com>
+[Fixes #123 (only if user provides issue reference)]
 ```
 
 **Guidelines**:
@@ -95,6 +160,7 @@ bugfix/STUDIO-456-fix-memory-leak
 - One bullet per major change area
 - Avoid implementation details (those belong in docs/comments/issues)
 - Scannable and actionable
+- **MUST include DCO sign-off** (use `git commit -s`)
 
 **Examples of Good Commits:**
 ```bash
@@ -177,7 +243,7 @@ Brief summary of what changed and why
 
 **Python:**
 - Follow PEP 8 strictly (79-character line limit)
-- Use `autopep8 --in-place --aggressive --aggressive` for formatting
+- Use `ruff format` for formatting and `ruff check --fix` for linting
 - Maintain `.pyi` type stubs in `crates/edgefirst-client-py/edgefirst_client.pyi`
 - **Pylance type checking**: Code must be Pylance-clean (VS Code's Python language server)
   * All `.pyi` stubs must have complete type annotations
@@ -241,8 +307,13 @@ Before submitting code, verify:
 ### Running Tests
 
 ```bash
-# Rust tests (requires credentials)
-cargo test --all-features --locked
+# Rust tests - IMPORTANT: Run lib tests separately or use single thread to avoid conflicts
+cargo test -p edgefirst-client --lib --all-features --locked
+cargo test -p edgefirst-cli --all-features --locked
+# OR run with single thread to avoid timeouts:
+cargo test --all-features --locked -- --test-threads=1
+
+# Doc tests
 cargo test --doc --locked
 
 # Python tests (recommended: use slipcover)
@@ -256,6 +327,10 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
 cargo llvm-cov report --lcov --output-path lcov.info
 ```
+
+**CRITICAL Testing Rules:**
+- **NEVER use `tail` when running commands** - Users need to see full output for better experience. Use `| tee logfile.txt` if logs need to be captured.
+- **Run lib and CLI tests separately** - Running all tests together causes conflicts and timeouts. Use `-p edgefirst-client --lib` and `-p edgefirst-cli` separately, or `-- --test-threads=1`.
 
 **Note**: Integration tests require EdgeFirst Studio credentials. External contributors can rely on CI/CD to run these tests automatically via GitHub Actions.
 
@@ -485,7 +560,8 @@ cargo +nightly fmt --all
 cargo clippy --fix --allow-dirty --all-features --all-targets
 
 # Python formatting
-autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
 ```
 
 ### Testing Conventions
@@ -577,7 +653,8 @@ git push && git push --tags
    ```bash
    cargo +nightly fmt --all
    cargo clippy --fix --allow-dirty --all-features --all-targets
-   autopep8 --in-place --aggressive --aggressive *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+   ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
+   ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
    ```
 
 4. **Verify build succeeds** - **MUST BUILD WITHOUT ERRORS**:
@@ -592,6 +669,17 @@ git push && git push --tags
    cargo test --doc --locked
    maturin develop -m crates/edgefirst-client-py/Cargo.toml
    python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
+   ```
+
+6. **Check dependency licenses** (if dependencies changed):
+   ```bash
+   make sbom
+   make check-license
+   ```
+
+7. **Sign commits with DCO**:
+   ```bash
+   git commit -s -m "Your commit message"
    ```
 
 ### Common Pitfalls

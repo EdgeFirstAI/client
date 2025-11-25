@@ -61,9 +61,8 @@ class DatasetTest(TestCase):
 
         print(f"Created test dataset: {dataset_id}")
 
-        # Check if we should keep the dataset for manual inspection
-        keep_dataset_env = os.getenv("EDGEFIRST_KEEP_POPULATE_DATASET", "")
-        keep_dataset = keep_dataset_env.lower() in {"1", "true", "yes"}
+        # Check if we should skip cleanup for manual inspection
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
 
         # Create an annotation set
         print("Creating annotation set...")
@@ -262,11 +261,11 @@ class DatasetTest(TestCase):
             if test_image_path.exists():
                 test_image_path.unlink()
 
-            # Clean up test dataset (unless env var set for manual inspection)
-            if keep_dataset:
+            # Clean up test dataset (unless SKIP_CLEANUP=1 is set)
+            if skip_cleanup:
                 print(
                     "Skipping dataset deletion for manual verification "
-                    "(EDGEFIRST_KEEP_POPULATE_DATASET set)."
+                    "(SKIP_CLEANUP=1)."
                 )
             else:
                 print("\nCleaning up test dataset...")
@@ -684,8 +683,8 @@ class DatasetTest(TestCase):
         self.assertEqual(len(results), len(samples_payload))
         self.assertGreater(len(upload_progress), 0)
 
-        keep_dataset_env = os.getenv("EDGEFIRST_KEEP_ROUNDTRIP_DATASET", "")
-        keep_dataset = keep_dataset_env.lower() in {"1", "true", "yes"}
+        # Check if we should skip cleanup for manual inspection
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
 
         try:
             time.sleep(3)
@@ -777,10 +776,10 @@ class DatasetTest(TestCase):
                 )
 
         finally:
-            if keep_dataset:
+            if skip_cleanup:
                 print(
                     "Skipping dataset deletion for manual verification "
-                    "(EDGEFIRST_KEEP_ROUNDTRIP_DATASET set)."
+                    "(SKIP_CLEANUP=1)."
                 )
             else:
                 client.delete_dataset(new_dataset_id)
