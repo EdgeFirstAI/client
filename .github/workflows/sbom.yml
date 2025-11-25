@@ -41,8 +41,8 @@ jobs:
           mkdir -p ~/.local/bin
           wget -q -O ~/.local/bin/cyclonedx \
             https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64
-          # Verify SHA-256 checksum (from CycloneDX v0.27.1 release page)
-          echo "6e809a60bd74e05d3c558d554b640979fb48cf4073d4a8085f2588b1e1e2ae24  $HOME/.local/bin/cyclonedx" | sha256sum -c -
+          # Verify SHA-256 checksum (from CycloneDX v0.27.1 release)
+          echo "b36a12d5103c1fd799005e02ee8d5a546c8db5b67f770bb28786f15238ceac16  $HOME/.local/bin/cyclonedx" | sha256sum -c -
           chmod +x ~/.local/bin/cyclonedx
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
