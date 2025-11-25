@@ -52,8 +52,8 @@ fn get_test_dataset_types() -> Vec<String> {
 fn get_test_dataset_path() -> PathBuf {
     let dataset = get_test_dataset();
     // If it's a dataset ID (ds-xxx), extract a friendly name for the path
-    let normalized_name = if dataset.starts_with("ds-") {
-        format!("dataset-{}", &dataset[3..])
+    let normalized_name = if let Some(stripped) = dataset.strip_prefix("ds-") {
+        format!("dataset-{}", stripped)
     } else {
         dataset.to_lowercase().replace(' ', "-")
     };
