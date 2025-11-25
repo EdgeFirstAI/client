@@ -15,9 +15,15 @@ build-backend = "maturin"
 [tool.maturin]
 # features = ["polars"]
 
-[tool.autopep8]
-max_line_length = 79
-aggressive = 2
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
 
 [tool.pyright]
 reportUnusedImport = false
