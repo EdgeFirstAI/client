@@ -2052,10 +2052,9 @@ async fn handle_snapshot(client: &Client, snapshot_id: String) -> Result<(), Err
     let snapshot_id: u64 = snapshot_id.parse()?;
     let snapshot = client.snapshot(snapshot_id.into()).await?;
     println!(
-        "[{}] {}: {}\nPath: {}\nStatus: {}\nCreated: {}",
+        "[{}] {}\nPath: {}\nStatus: {}\nCreated: {}",
         snapshot.id(),
         snapshot.description(),
-        snapshot.status(),
         snapshot.path(),
         snapshot.status(),
         snapshot.created()
