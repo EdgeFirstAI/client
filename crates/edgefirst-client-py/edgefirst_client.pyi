@@ -2554,6 +2554,79 @@ class ValidationSession:
         ...
 
 
+class Snapshot:
+    """
+    This class represents a snapshot in EdgeFirst Studio.
+
+    Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow pairs)
+    used for MCAP uploads with AGTG or dataset backup/migration.
+    """
+
+    @property
+    def id(self) -> SnapshotID:
+        """
+        Returns the unique identifier of the snapshot.
+
+        Returns:
+            SnapshotID: The snapshot ID.
+        """
+        ...
+
+    @property
+    def uid(self) -> str:
+        """
+        Returns the unique string identifier of the snapshot.
+
+        .. deprecated::
+            Use ``str(Snapshot.id)`` instead. This property will be removed
+            in a future version.
+
+        Returns:
+            str: The snapshot UID.
+        """
+        ...
+
+    @property
+    def description(self) -> str:
+        """
+        Returns the description of the snapshot.
+
+        Returns:
+            str: The snapshot description.
+        """
+        ...
+
+    @property
+    def status(self) -> str:
+        """
+        Returns the status of the snapshot (e.g., 'available', 'processing').
+
+        Returns:
+            str: The snapshot status.
+        """
+        ...
+
+    @property
+    def path(self) -> str:
+        """
+        Returns the storage path of the snapshot.
+
+        Returns:
+            str: The snapshot path.
+        """
+        ...
+
+    @property
+    def created(self) -> str:
+        """
+        Returns the creation timestamp of the snapshot.
+
+        Returns:
+            str: The snapshot creation timestamp.
+        """
+        ...
+
+
 class Client:
     """
     Main client for interacting with EdgeFirst Studio Server.
@@ -3267,6 +3340,49 @@ class Client:
         Raises:
             Error: If the validation session does not exist or the request
                    fails.
+        """
+        ...
+
+    def snapshots(self) -> List[Snapshot]:
+        """
+        Returns a list of all snapshots available to the user.
+
+        Returns:
+            List[Snapshot]: A list of snapshot objects.
+
+        Raises:
+            Error: If the request fails.
+        """
+        ...
+
+    def snapshot(self, snapshot_id: SnapshotUID) -> Snapshot:
+        """
+        Returns the snapshot with the specified ID.
+
+        Args:
+            snapshot_id (SnapshotUID): The snapshot ID.
+
+        Returns:
+            Snapshot: The snapshot object.
+
+        Raises:
+            Error: If the snapshot does not exist or the request fails.
+        """
+        ...
+
+    def delete_snapshot(self, snapshot_id: SnapshotUID) -> None:
+        """
+        Delete a snapshot from EdgeFirst Studio.
+
+        Permanently removes a snapshot and its associated data. This operation
+        cannot be undone.
+
+        Args:
+            snapshot_id (SnapshotUID): The snapshot ID to delete.
+
+        Raises:
+            Error: If the snapshot doesn't exist, user lacks permission, or the
+                   request fails.
         """
         ...
 
