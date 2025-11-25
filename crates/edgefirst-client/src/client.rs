@@ -1727,36 +1727,38 @@ impl Client {
 
     /// Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
     ///
-    /// Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow pairs)
-    /// that serve two primary purposes:
+    /// Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow
+    /// pairs) that serve two primary purposes:
     ///
-    /// 1. **MCAP uploads**: Upload MCAP files containing sensor data (images, point
-    ///    clouds, IMU, GPS) to EdgeFirst Studio. Snapshots can then be restored with
-    ///    AGTG (Automatic Ground Truth Generation) and optional auto-depth processing.
+    /// 1. **MCAP uploads**: Upload MCAP files containing sensor data (images,
+    ///    point clouds, IMU, GPS) to EdgeFirst Studio. Snapshots can then be
+    ///    restored with AGTG (Automatic Ground Truth Generation) and optional
+    ///    auto-depth processing.
     ///
-    /// 2. **Dataset exchange**: Export datasets for backup, sharing, or migration
-    ///    between EdgeFirst Studio instances using the create → download → upload →
-    ///    restore workflow.
+    /// 2. **Dataset exchange**: Export datasets for backup, sharing, or
+    ///    migration between EdgeFirst Studio instances using the create →
+    ///    download → upload → restore workflow.
     ///
     /// Large files are automatically chunked into 100MB parts and uploaded
-    /// concurrently using S3 multipart upload with presigned URLs. Each chunk is
-    /// streamed without loading into memory, maintaining constant memory usage.
+    /// concurrently using S3 multipart upload with presigned URLs. Each chunk
+    /// is streamed without loading into memory, maintaining constant memory
+    /// usage.
     ///
     /// **Concurrency tuning**: Set `MAX_TASKS` to control concurrent
     /// uploads (default: half of CPU cores, min 2, max 8). Lower values work
-    /// better for large files to avoid timeout issues. Higher values (16-32) are better
-    /// for many small files.
+    /// better for large files to avoid timeout issues. Higher values (16-32)
+    /// are better for many small files.
     ///
     /// # Arguments
     ///
-    /// * `path` - Local file path to MCAP file or directory containing EdgeFirst
-    ///   Dataset Format files (Zip/Arrow pairs)
+    /// * `path` - Local file path to MCAP file or directory containing
+    ///   EdgeFirst Dataset Format files (Zip/Arrow pairs)
     /// * `progress` - Optional channel to receive upload progress updates
     ///
     /// # Returns
     ///
-    /// Returns a `Snapshot` object with ID, description, status, path, and creation
-    /// timestamp on success.
+    /// Returns a `Snapshot` object with ID, description, status, path, and
+    /// creation timestamp on success.
     ///
     /// # Errors
     ///
@@ -1778,8 +1780,12 @@ impl Client {
     /// let (tx, mut rx) = mpsc::channel(1);
     /// tokio::spawn(async move {
     ///     while let Some(Progress { current, total }) = rx.recv().await {
-    ///         println!("Upload: {}/{} bytes ({:.1}%)",
-    ///                  current, total, (current as f64 / total as f64) * 100.0);
+    ///         println!(
+    ///             "Upload: {}/{} bytes ({:.1}%)",
+    ///             current,
+    ///             total,
+    ///             (current as f64 / total as f64) * 100.0
+    ///         );
     ///     }
     /// });
     /// let snapshot = client.create_snapshot("data.mcap", Some(tx)).await?;
@@ -1793,8 +1799,10 @@ impl Client {
     ///
     /// # See Also
     ///
-    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to dataset
-    /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot data
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
+    /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
+    ///   data
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     /// * [Snapshots Guide](https://doc.edgefirst.ai/latest/studio/snapshots/)
@@ -2088,7 +2096,9 @@ impl Client {
     ///         println!("Download: {}/{} bytes", current, total);
     ///     }
     /// });
-    /// client.download_snapshot(snapshot_id, PathBuf::from("./output"), Some(tx)).await?;
+    /// client
+    ///     .download_snapshot(snapshot_id, PathBuf::from("./output"), Some(tx))
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -2096,7 +2106,8 @@ impl Client {
     /// # See Also
     ///
     /// * [`create_snapshot`](Self::create_snapshot) - Upload snapshot
-    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to dataset
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     pub async fn download_snapshot(
         &self,
@@ -2182,11 +2193,12 @@ impl Client {
 
     /// Restore a snapshot to a dataset in EdgeFirst Studio with optional AGTG.
     ///
-    /// Restores a snapshot (MCAP file or EdgeFirst Dataset) into a dataset in the
-    /// specified project. For MCAP files, supports:
+    /// Restores a snapshot (MCAP file or EdgeFirst Dataset) into a dataset in
+    /// the specified project. For MCAP files, supports:
     ///
     /// * **AGTG (Automatic Ground Truth Generation)**: Automatically annotate
-    ///   detected objects with 2D masks/boxes and 3D boxes (if radar/LiDAR present)
+    ///   detected objects with 2D masks/boxes and 3D boxes (if radar/LiDAR
+    ///   present)
     /// * **Auto-depth**: Generate depthmaps (Maivin/Raivin cameras only)
     /// * **Topic filtering**: Select specific MCAP topics to restore
     ///
@@ -2224,15 +2236,17 @@ impl Client {
     /// let snapshot_id = SnapshotID::from(123);
     ///
     /// // Restore MCAP with AGTG for "person" and "car" detection
-    /// let result = client.restore_snapshot(
-    ///     project_id,
-    ///     snapshot_id,
-    ///     &[], // All topics
-    ///     &["person".to_string(), "car".to_string()], // AGTG labels
-    ///     true, // Auto-depth
-    ///     Some("Highway Dataset"),
-    ///     Some("Collected on I-95")
-    /// ).await?;
+    /// let result = client
+    ///     .restore_snapshot(
+    ///         project_id,
+    ///         snapshot_id,
+    ///         &[],                                        // All topics
+    ///         &["person".to_string(), "car".to_string()], // AGTG labels
+    ///         true,                                       // Auto-depth
+    ///         Some("Highway Dataset"),
+    ///         Some("Collected on I-95"),
+    ///     )
+    ///     .await?;
     /// println!("Restored to dataset: {:?}", result.dataset_id);
     /// # Ok(())
     /// # }
@@ -2756,8 +2770,8 @@ impl Client {
 ///
 /// This helper eliminates boilerplate for parallel item processing with:
 /// - Semaphore limiting concurrent tasks to `max_tasks()` (configurable via
-///   `MAX_TASKS` environment variable, default: half of CPU cores,
-///   min 2, max 8)
+///   `MAX_TASKS` environment variable, default: half of CPU cores, min 2, max
+///   8)
 /// - Atomic progress counter with automatic item-level updates
 /// - Progress updates sent after each item completes (not byte-level streaming)
 /// - Proper error propagation from spawned tasks
