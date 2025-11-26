@@ -1,0 +1,392 @@
+name: Studio Integration Tests
+
+# Manual workflow for running tests against EdgeFirst Studio servers
+# Triggered from GitHub Actions UI with configurable options
+
+on:
+  workflow_dispatch:
+    inputs:
+      studio_server:
+        description: 'EdgeFirst Studio server environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+          - saas
+          - ocean
+        default: 'test'
+      include_ignored:
+        description: 'Run ALL tests including ignored ones'
+        required: true
+        type: boolean
+        default: false
+
+run-name: Studio Tests - ${{ inputs.studio_server }}${{ inputs.include_ignored && ' (all tests)' || '' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Pinned Rust version for CI/CD - matches test.yml
+  RUST_STABLE_VERSION: "1.90"
+  # Logging configuration for detailed troubleshooting
+  RUST_LOG: "edgefirst_client=trace"
+
+jobs:
+  rust-tests:
+    name: Rust Tests (${{ inputs.studio_server }})
+    runs-on: ubuntu-latest
+    outputs:
+      client_lib_result: ${{ steps.client_lib_tests.outcome }}
+      cli_result: ${{ steps.cli_tests.outcome }}
+      doc_result: ${{ steps.doc_tests.outcome }}
+    steps:
+      - name: Remove Junk from Host
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: studio-integration
+          shared-key: "stable"
+          save-if: false
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6f9c7cc51aa54b13cbcbd12f8bbf69d8ba405b4b # v2.62.47
+        with:
+          tool: nextest
+
+      - name: Create logs directory
+        run: mkdir -p test-logs
+
+      - name: Run edgefirst-client lib tests
+        id: client_lib_tests
+        continue-on-error: true
+        run: |
+          cargo nextest run \
+            --locked \
+            --no-fail-fast \
+            --profile ci \
+            -p edgefirst-client \
+            --lib \
+            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
+            2>&1 | tee test-logs/rust-client-lib.log
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+
+      - name: Run edgefirst-cli tests
+        id: cli_tests
+        continue-on-error: true
+        run: |
+          cargo nextest run \
+            --locked \
+            --no-fail-fast \
+            --profile ci \
+            -p edgefirst-cli \
+            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
+            2>&1 | tee test-logs/rust-cli.log
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+
+      - name: Run doc tests
+        id: doc_tests
+        continue-on-error: true
+        run: |
+          cargo test --doc --locked 2>&1 | tee test-logs/rust-doc.log
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+
+      - name: Upload Rust test logs
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: rust-test-logs-${{ inputs.studio_server }}
+          path: test-logs/rust-*.log
+          retention-days: 30
+
+      - name: Generate Rust test summary
+        if: always()
+        run: |
+          echo "## 🦀 Rust Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status | Log File |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.client_lib_tests.outcome }}" = "success" ]; then
+            echo "| edgefirst-client (lib) | ✅ **Passed** | \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| edgefirst-client (lib) | ❌ **Failed** | 📥 \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ steps.cli_tests.outcome }}" = "success" ]; then
+            echo "| edgefirst-cli | ✅ **Passed** | \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| edgefirst-cli | ❌ **Failed** | 📥 \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ steps.doc_tests.outcome }}" = "success" ]; then
+            echo "| Doc tests | ✅ **Passed** | \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Doc tests | ❌ **Failed** | 📥 \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📁 Download **rust-test-logs-${{ inputs.studio_server }}** artifact for detailed logs" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Rust test results
+        if: always()
+        run: |
+          if [ "${{ steps.client_lib_tests.outcome }}" = "failure" ] || \
+             [ "${{ steps.cli_tests.outcome }}" = "failure" ] || \
+             [ "${{ steps.doc_tests.outcome }}" = "failure" ]; then
+            echo "::error::One or more Rust test suites failed"
+            exit 1
+          fi
+
+  python-tests:
+    name: Python Tests (${{ inputs.studio_server }})
+    runs-on: ubuntu-latest
+    outputs:
+      python_result: ${{ steps.python_tests.outcome }}
+    steps:
+      - name: Remove Junk from Host
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: studio-integration-python
+          shared-key: "stable"
+          save-if: false
+
+      - name: Install Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build and install Python package
+        run: |
+          maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
+          pip install target/wheels/edgefirst_client-*.whl
+
+      - name: Create logs directory
+        run: mkdir -p test-logs
+
+      - name: Run Python tests
+        id: python_tests
+        continue-on-error: true
+        run: |
+          python3 -m unittest discover -s . -p "test*.py" -v 2>&1 | tee test-logs/python-tests.log
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+          RUST_LOG: "edgefirst_client=trace"
+
+      - name: Upload Python test logs
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: python-test-logs-${{ inputs.studio_server }}
+          path: test-logs/python-*.log
+          retention-days: 30
+
+      - name: Generate Python test summary
+        if: always()
+        run: |
+          echo "## 🐍 Python Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status | Log File |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.python_tests.outcome }}" = "success" ]; then
+            echo "| Python bindings | ✅ **Passed** | \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Python bindings | ❌ **Failed** | 📥 \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📁 Download **python-test-logs-${{ inputs.studio_server }}** artifact for detailed logs" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Python test results
+        if: always()
+        run: |
+          if [ "${{ steps.python_tests.outcome }}" = "failure" ]; then
+            echo "::error::Python tests failed"
+            exit 1
+          fi
+
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [rust-tests, python-tests]
+    if: always()
+    steps:
+      - name: Download all logs
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: '*-test-logs-${{ inputs.studio_server }}'
+          merge-multiple: true
+          path: all-logs
+
+      - name: Upload combined logs
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: all-test-logs-${{ inputs.studio_server }}
+          path: all-logs/
+          retention-days: 30
+
+      - name: Generate workflow summary
+        run: |
+          # Determine overall status
+          RUST_STATUS="${{ needs.rust-tests.result }}"
+          PYTHON_STATUS="${{ needs.python-tests.result }}"
+          
+          if [ "$RUST_STATUS" = "success" ] && [ "$PYTHON_STATUS" = "success" ]; then
+            OVERALL_ICON="✅"
+            OVERALL_STATUS="All Tests Passed"
+          else
+            OVERALL_ICON="❌"
+            OVERALL_STATUS="Some Tests Failed"
+          fi
+          
+          echo "# $OVERALL_ICON Studio Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## $OVERALL_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📋 Test Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Server** | \`${{ inputs.studio_server }}.edgefirst.studio\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Include Ignored Tests** | \`${{ inputs.include_ignored }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered By** | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Run ID** | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | [\`${GITHUB_SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📊 Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Rust tests breakdown
+          CLIENT_LIB="${{ needs.rust-tests.outputs.client_lib_result }}"
+          CLI="${{ needs.rust-tests.outputs.cli_result }}"
+          DOC="${{ needs.rust-tests.outputs.doc_result }}"
+          
+          if [ "$CLIENT_LIB" = "success" ]; then
+            echo "| 🦀 edgefirst-client (lib) | ✅ **Passed** | Library unit tests |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 🦀 edgefirst-client (lib) | ❌ **Failed** | 📥 See \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$CLI" = "success" ]; then
+            echo "| 🦀 edgefirst-cli | ✅ **Passed** | CLI integration tests |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 🦀 edgefirst-cli | ❌ **Failed** | 📥 See \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$DOC" = "success" ]; then
+            echo "| 🦀 Doc tests | ✅ **Passed** | Documentation examples |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 🦀 Doc tests | ❌ **Failed** | 📥 See \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          PYTHON="${{ needs.python-tests.outputs.python_result }}"
+          if [ "$PYTHON" = "success" ]; then
+            echo "| 🐍 Python bindings | ✅ **Passed** | PyO3 binding tests |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 🐍 Python bindings | ❌ **Failed** | 📥 See \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📥 Downloadable Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | Description |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`all-test-logs-${{ inputs.studio_server }}\` | Combined logs from all test suites |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-test-logs-${{ inputs.studio_server }}\` | Rust test logs only |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`python-test-logs-${{ inputs.studio_server }}\` | Python test logs only |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "> 💡 **Tip:** Logs include \`RUST_LOG=edgefirst_client=trace\` output for detailed debugging" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add failure guidance if tests failed
+          if [ "$RUST_STATUS" != "success" ] || [ "$PYTHON_STATUS" != "success" ]; then
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔍 Troubleshooting Failed Tests" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "1. Download the relevant log artifact from the **Artifacts** section above" >> $GITHUB_STEP_SUMMARY
+            echo "2. Search for \`FAILED\` or \`error\` in the log files" >> $GITHUB_STEP_SUMMARY
+            echo "3. Look for \`TRACE\` entries preceding failures for API call details" >> $GITHUB_STEP_SUMMARY
+            echo "4. Check if the failure is related to:" >> $GITHUB_STEP_SUMMARY
+            echo "   - Server connectivity (\`${{ inputs.studio_server }}.edgefirst.studio\`)" >> $GITHUB_STEP_SUMMARY
+            echo "   - Authentication issues (verify secrets are configured)" >> $GITHUB_STEP_SUMMARY
+            echo "   - Test data availability (Unit Testing project structure)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check overall results
+        run: |
+          if [ "${{ needs.rust-tests.result }}" != "success" ] || \
+             [ "${{ needs.python-tests.result }}" != "success" ]; then
+            echo "::error::Some test suites failed. Check the logs for details."
+            exit 1
+          fi
