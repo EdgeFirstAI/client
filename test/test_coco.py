@@ -107,9 +107,9 @@ class TestCOCO(unittest.TestCase):
 
         client = get_client()
 
-        # Find Sample Project
-        projects = client.projects("Sample Project")
-        self.assertGreater(len(projects), 0, "Sample Project should exist")
+        # Find Unit Testing
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0, "Unit Testing should exist")
         project = projects[0]
 
         # Find COCO dataset
@@ -153,9 +153,9 @@ class TestCOCO(unittest.TestCase):
         """Test COCO dataset exists and samples are retrievable."""
         client = get_client()
 
-        # Find Sample Project
-        projects = client.projects("Sample Project")
-        self.assertGreater(len(projects), 0, "Sample Project should exist")
+        # Find Unit Testing
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0, "Unit Testing should exist")
         project = projects[0]
 
         # Find COCO dataset
@@ -185,9 +185,9 @@ class TestCOCO(unittest.TestCase):
 
         client = get_client()
 
-        # Find Sample Project and COCO dataset
-        projects = client.projects("Sample Project")
-        self.assertGreater(len(projects), 0, "Sample Project should exist")
+        # Find Unit Testing and COCO dataset
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0, "Unit Testing should exist")
         project = projects[0]
 
         datasets = client.datasets(project.id, "COCO")

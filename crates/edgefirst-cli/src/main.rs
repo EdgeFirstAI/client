@@ -3,7 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationType, Client, Dataset, Error, FileType, Progress, SnapshotID, TrainingSession,
+    AnnotationType, Client, Dataset, Error, FileType, Progress, SnapshotID, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -313,7 +313,14 @@ enum Command {
         manager: Option<String>,
     },
     /// Retrieve information about a specific task.
-    Task { task_id: String },
+    Task {
+        /// Task ID to retrieve
+        task_id: String,
+
+        /// Monitor the task progress until completion
+        #[clap(long)]
+        monitor: bool,
+    },
     /// List validation sessions for the provided project ID.
     ValidationSessions {
         /// Project ID
@@ -377,6 +384,10 @@ enum Command {
         /// Dataset description
         #[clap(long)]
         dataset_description: Option<String>,
+
+        /// Monitor the restore task progress until completion
+        #[clap(long)]
+        monitor: bool,
     },
     /// Delete a snapshot from EdgeFirst Studio.
     DeleteSnapshot {
@@ -2004,9 +2015,141 @@ async fn handle_tasks(
     Ok(())
 }
 
-async fn handle_task(client: &Client, task_id: String) -> Result<(), Error> {
-    let info = client.task_info(task_id.try_into()?).await?;
-    println!("{:?}", info);
+async fn handle_task(client: &Client, task_id: String, monitor: bool) -> Result<(), Error> {
+    let task_id = task_id.try_into()?;
+    if monitor {
+        monitor_task(client, task_id).await
+    } else {
+        let info = client.task_info(task_id).await?;
+
+        // Display formatted task information
+        println!("[{}] {}", info.id(), info.workflow());
+        println!("  Description: {}", info.description());
+        println!(
+            "  Status:      {}",
+            info.status()
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        if let Some(project_id) = info.project_id() {
+            println!("  Project:     {}", project_id);
+        }
+        println!(
+            "  Created:     {}",
+            info.created().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        println!(
+            "  Completed:   {}",
+            info.completed().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+
+        // Display stages if present
+        let stages = info.stages();
+        if !stages.is_empty() {
+            println!("  Stages:");
+            for (name, stage) in &stages {
+                let status = stage.status().clone().unwrap_or_default();
+                let pct = stage.percentage();
+                println!("    {:<20} {:>3}% ({})", name, pct, status);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Monitor a task's progress with a progress bar until completion.
+/// Polls the task status every 2 seconds and displays stage progress.
+async fn monitor_task(client: &Client, task_id: TaskID) -> Result<(), Error> {
+    use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+    use std::{collections::HashMap, time::Duration};
+
+    let multi = MultiProgress::new();
+    let mut stage_bars: HashMap<String, ProgressBar> = HashMap::new();
+
+    let spinner_style = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
+    let progress_style =
+        ProgressStyle::with_template("  {spinner:.cyan} {msg:<30} [{bar:40.cyan/blue}] {pos:>3}%")
+            .unwrap()
+            .progress_chars("█▇▆▅▄▃▂▁  ");
+
+    // Main task progress bar
+    let main_bar = multi.add(ProgressBar::new_spinner());
+    main_bar.set_style(spinner_style.clone());
+    main_bar.enable_steady_tick(Duration::from_millis(100));
+
+    loop {
+        let info = client.task_info(task_id).await?;
+        let status = info
+            .status()
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        let stages = info.stages();
+
+        // Update main bar with task status
+        main_bar.set_message(format!("Task {} - Status: {}", task_id, status));
+
+        // Update or create stage progress bars
+        for (stage_name, stage) in &stages {
+            let bar = stage_bars.entry(stage_name.clone()).or_insert_with(|| {
+                let bar = multi.add(ProgressBar::new(100));
+                bar.set_style(progress_style.clone());
+                bar
+            });
+
+            let stage_status = stage.status().clone().unwrap_or_default();
+            let percentage = stage.percentage() as u64;
+
+            bar.set_position(percentage);
+            bar.set_message(format!("{}: {}", stage_name, stage_status));
+
+            // Mark completed stages
+            if percentage >= 100 || stage_status == "completed" || stage_status == "done" {
+                bar.finish();
+            }
+        }
+
+        // Check if task is complete
+        let is_complete = matches!(
+            status.to_lowercase().as_str(),
+            "complete" | "completed" | "done" | "failed" | "error" | "cancelled" | "canceled"
+        );
+
+        if is_complete {
+            main_bar.finish_with_message(format!("Task {} - Status: {} ✓", task_id, status));
+
+            // Finish all stage bars
+            for bar in stage_bars.values() {
+                bar.finish();
+            }
+
+            // Print final summary
+            println!("\nTask completed with status: {}", status);
+            if !stages.is_empty() {
+                println!("Stages:");
+                for (name, stage) in &stages {
+                    println!(
+                        "  {} - {}% ({})",
+                        name,
+                        stage.percentage(),
+                        stage.status().clone().unwrap_or_default()
+                    );
+                }
+            }
+
+            if status.to_lowercase() == "failed" || status.to_lowercase() == "error" {
+                eprintln!("Task {} failed with status: {}", task_id, status);
+                std::process::exit(1);
+            }
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
     Ok(())
 }
 
@@ -2128,7 +2271,7 @@ async fn handle_download_snapshot(
 
     let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
     client
-        .download_snapshot(snapshot_id.into(), output, Some(tx))
+        .download_snapshot(snapshot_id, output, Some(tx))
         .await?;
     println!("Snapshot downloaded successfully");
     Ok(())
@@ -2142,6 +2285,7 @@ struct RestoreSnapshotParams {
     autodepth: bool,
     dataset_name: Option<String>,
     dataset_description: Option<String>,
+    monitor: bool,
 }
 
 async fn handle_restore_snapshot(
@@ -2161,9 +2305,20 @@ async fn handle_restore_snapshot(
         )
         .await?;
     println!(
-        "Snapshot restored successfully to dataset: [{}]",
+        "Snapshot restore initiated for dataset: [{}]",
         result.dataset_id
     );
+
+    // If monitoring is enabled and we have a task ID, monitor the task
+    if params.monitor {
+        if let Some(task_id) = result.task_id {
+            println!("Monitoring task: {}", task_id);
+            monitor_task(client, task_id).await?;
+        } else {
+            println!("No task ID returned - restore may be synchronous or already complete");
+        }
+    }
+
     Ok(())
 }
 
@@ -2309,7 +2464,7 @@ async fn main() -> Result<(), Error> {
             status,
             manager,
         } => handle_tasks(&client, stages, name, workflow, status, manager).await,
-        Command::Task { task_id } => handle_task(&client, task_id).await,
+        Command::Task { task_id, monitor } => handle_task(&client, task_id, monitor).await,
         Command::ValidationSessions { project_id } => {
             handle_validation_sessions(&client, project_id).await
         }
@@ -2331,6 +2486,7 @@ async fn main() -> Result<(), Error> {
             autodepth,
             dataset_name,
             dataset_description,
+            monitor,
         } => {
             handle_restore_snapshot(
                 &client,
@@ -2342,6 +2498,7 @@ async fn main() -> Result<(), Error> {
                     autodepth,
                     dataset_name,
                     dataset_description,
+                    monitor,
                 },
             )
             .await

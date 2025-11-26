@@ -92,7 +92,7 @@ coco_labels = {
 
 if __name__ == "__main__":
     client = Client(token=environ.get("STUDIO_TOKEN"))
-    project = client.projects("Sample Project")[0]
+    project = client.projects("Unit Testing")[0]
     dataset = client.datasets(project.id, "COCO")
     # Filter to avoid fetching the COCO People dataset.
     dataset = filter(lambda d: d.name == "COCO", dataset)
