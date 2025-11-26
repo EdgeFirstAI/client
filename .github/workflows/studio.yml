@@ -28,19 +28,18 @@ run-name: Studio Tests - ${{ inputs.studio_server }}${{ inputs.include_ignored &
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Pinned Rust version for CI/CD - matches test.yml
   RUST_STABLE_VERSION: "1.90"
-  # Logging configuration for detailed troubleshooting
   RUST_LOG: "edgefirst_client=trace"
 
 jobs:
-  rust-tests:
-    name: Rust Tests (${{ inputs.studio_server }})
+  rust-client-lib:
+    name: Rust Client Library (${{ inputs.studio_server }})
     runs-on: ubuntu-latest
     outputs:
-      client_lib_result: ${{ steps.client_lib_tests.outcome }}
-      cli_result: ${{ steps.cli_tests.outcome }}
-      doc_result: ${{ steps.doc_tests.outcome }}
+      result: ${{ steps.set_result.outputs.result }}
+      passed: ${{ steps.set_result.outputs.passed }}
+      failed: ${{ steps.set_result.outputs.failed }}
+      ignored: ${{ steps.set_result.outputs.ignored }}
     steps:
       - name: Remove Junk from Host
         uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
@@ -63,7 +62,7 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
-          key: studio-integration
+          key: studio-rust-client
           shared-key: "stable"
           save-if: false
 
@@ -72,13 +71,13 @@ jobs:
         with:
           tool: nextest
 
-      - name: Create logs directory
-        run: mkdir -p test-logs
+      - name: Create output directories
+        run: mkdir -p test-results test-logs
 
       - name: Run edgefirst-client lib tests
-        id: client_lib_tests
-        continue-on-error: true
+        id: tests
         run: |
+          set +e
           cargo nextest run \
             --locked \
             --no-fail-fast \
@@ -87,92 +86,123 @@ jobs:
             --lib \
             ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
             2>&1 | tee test-logs/rust-client-lib.log
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          exit 0
         env:
           STUDIO_SERVER: ${{ inputs.studio_server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
 
-      - name: Run edgefirst-cli tests
-        id: cli_tests
-        continue-on-error: true
+      - name: Parse test results and generate JUnit XML
+        id: parse
+        if: always()
         run: |
-          cargo nextest run \
-            --locked \
-            --no-fail-fast \
-            --profile ci \
-            -p edgefirst-cli \
-            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
-            2>&1 | tee test-logs/rust-cli.log
-        env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
+          LOG_FILE="test-logs/rust-client-lib.log"
+          RESULT_LINE=$(grep -E "^test result:" "$LOG_FILE" | tail -1 || echo "")
+          
+          if [ -n "$RESULT_LINE" ]; then
+            PASSED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= passed)' || echo "0")
+            FAILED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= failed)' || echo "0")
+            IGNORED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= ignored)' || echo "0")
+          else
+            PASSED=0
+            FAILED=0
+            IGNORED=0
+          fi
+          
+          TOTAL=$((PASSED + FAILED))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "ignored=$IGNORED" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          
+          # Generate JUnit XML
+          cat > test-results/rust-client-lib-junit.xml << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuites name="edgefirst-client lib" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+            <testsuite name="edgefirst-client" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+          EOF
+          
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" "$LOG_FILE" | while read -r line; do
+            TEST_NAME=$(echo "$line" | sed -E 's/^test ([^ ]+) \.\.\..*$/\1/')
+            STATUS=$(echo "$line" | grep -oE '(ok|FAILED|ignored)$')
+            
+            echo "    <testcase name=\"$TEST_NAME\" classname=\"edgefirst-client\">" >> test-results/rust-client-lib-junit.xml
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "      <failure message=\"Test failed\">See logs for details</failure>" >> test-results/rust-client-lib-junit.xml
+            elif [ "$STATUS" = "ignored" ]; then
+              echo "      <skipped/>" >> test-results/rust-client-lib-junit.xml
+            fi
+            echo "    </testcase>" >> test-results/rust-client-lib-junit.xml
+          done
+          
+          cat >> test-results/rust-client-lib-junit.xml << EOF
+            </testsuite>
+          </testsuites>
+          EOF
 
-      - name: Run doc tests
-        id: doc_tests
-        continue-on-error: true
+      - name: Set result output
+        id: set_result
+        if: always()
         run: |
-          cargo test --doc --locked 2>&1 | tee test-logs/rust-doc.log
-        env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
+          if [ "${{ steps.tests.outputs.exit_code }}" = "0" ]; then
+            echo "result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "result=failed" >> $GITHUB_OUTPUT
+          fi
+          echo "passed=${{ steps.parse.outputs.passed }}" >> $GITHUB_OUTPUT
+          echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
+          echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
 
-      - name: Upload Rust test logs
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: rust-test-logs-${{ inputs.studio_server }}
-          path: test-logs/rust-*.log
+          name: rust-client-lib-results-${{ inputs.studio_server }}
+          path: |
+            test-results/
+            test-logs/
           retention-days: 30
 
-      - name: Generate Rust test summary
+      - name: Generate job summary
         if: always()
         run: |
-          echo "## 🦀 Rust Test Results" >> $GITHUB_STEP_SUMMARY
+          EXIT_CODE="${{ steps.tests.outputs.exit_code }}"
+          PASSED="${{ steps.parse.outputs.passed }}"
+          FAILED="${{ steps.parse.outputs.failed }}"
+          IGNORED="${{ steps.parse.outputs.ignored }}"
+          
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "# ✅ PASSED: Rust Client Library Tests" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "# ❌ FAILED: Rust Client Library Tests" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status | Log File |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|----------|" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.client_lib_tests.outcome }}" = "success" ]; then
-            echo "| edgefirst-client (lib) | ✅ **Passed** | \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| edgefirst-client (lib) | ❌ **Failed** | 📥 \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [ "${{ steps.cli_tests.outcome }}" = "success" ]; then
-            echo "| edgefirst-cli | ✅ **Passed** | \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| edgefirst-cli | ❌ **Failed** | 📥 \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [ "${{ steps.doc_tests.outcome }}" = "success" ]; then
-            echo "| Doc tests | ✅ **Passed** | \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Doc tests | ❌ **Failed** | 📥 \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📁 Download **rust-test-logs-${{ inputs.studio_server }}** artifact for detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "> �� Download \`rust-client-lib-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
-      - name: Check Rust test results
-        if: always()
+      - name: Fail job if tests failed
+        if: always() && steps.tests.outputs.exit_code != '0'
         run: |
-          if [ "${{ steps.client_lib_tests.outcome }}" = "failure" ] || \
-             [ "${{ steps.cli_tests.outcome }}" = "failure" ] || \
-             [ "${{ steps.doc_tests.outcome }}" = "failure" ]; then
-            echo "::error::One or more Rust test suites failed"
-            exit 1
-          fi
+          echo "::error::Rust Client Library tests FAILED with exit code ${{ steps.tests.outputs.exit_code }}"
+          exit 1
 
-  python-tests:
-    name: Python Tests (${{ inputs.studio_server }})
+  rust-cli:
+    name: Rust CLI (${{ inputs.studio_server }})
     runs-on: ubuntu-latest
     outputs:
-      python_result: ${{ steps.python_tests.outcome }}
+      result: ${{ steps.set_result.outputs.result }}
+      passed: ${{ steps.set_result.outputs.passed }}
+      failed: ${{ steps.set_result.outputs.failed }}
+      ignored: ${{ steps.set_result.outputs.ignored }}
     steps:
       - name: Remove Junk from Host
         uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
@@ -195,7 +225,318 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
-          key: studio-integration-python
+          key: studio-rust-cli
+          shared-key: "stable"
+          save-if: false
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6f9c7cc51aa54b13cbcbd12f8bbf69d8ba405b4b # v2.62.47
+        with:
+          tool: nextest
+
+      - name: Create output directories
+        run: mkdir -p test-results test-logs
+
+      - name: Run edgefirst-cli tests
+        id: tests
+        run: |
+          set +e
+          cargo nextest run \
+            --locked \
+            --no-fail-fast \
+            --profile ci \
+            -p edgefirst-cli \
+            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
+            2>&1 | tee test-logs/rust-cli.log
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          exit 0
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+
+      - name: Parse test results and generate JUnit XML
+        id: parse
+        if: always()
+        run: |
+          LOG_FILE="test-logs/rust-cli.log"
+          RESULT_LINE=$(grep -E "^test result:" "$LOG_FILE" | tail -1 || echo "")
+          
+          if [ -n "$RESULT_LINE" ]; then
+            PASSED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= passed)' || echo "0")
+            FAILED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= failed)' || echo "0")
+            IGNORED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= ignored)' || echo "0")
+          else
+            PASSED=0
+            FAILED=0
+            IGNORED=0
+          fi
+          
+          TOTAL=$((PASSED + FAILED))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "ignored=$IGNORED" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          
+          cat > test-results/rust-cli-junit.xml << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuites name="edgefirst-cli" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+            <testsuite name="edgefirst-cli" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+          EOF
+          
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" "$LOG_FILE" | while read -r line; do
+            TEST_NAME=$(echo "$line" | sed -E 's/^test ([^ ]+) \.\.\..*$/\1/')
+            STATUS=$(echo "$line" | grep -oE '(ok|FAILED|ignored)$')
+            
+            echo "    <testcase name=\"$TEST_NAME\" classname=\"edgefirst-cli\">" >> test-results/rust-cli-junit.xml
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "      <failure message=\"Test failed\">See logs for details</failure>" >> test-results/rust-cli-junit.xml
+            elif [ "$STATUS" = "ignored" ]; then
+              echo "      <skipped/>" >> test-results/rust-cli-junit.xml
+            fi
+            echo "    </testcase>" >> test-results/rust-cli-junit.xml
+          done
+          
+          cat >> test-results/rust-cli-junit.xml << EOF
+            </testsuite>
+          </testsuites>
+          EOF
+
+      - name: Set result output
+        id: set_result
+        if: always()
+        run: |
+          if [ "${{ steps.tests.outputs.exit_code }}" = "0" ]; then
+            echo "result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "result=failed" >> $GITHUB_OUTPUT
+          fi
+          echo "passed=${{ steps.parse.outputs.passed }}" >> $GITHUB_OUTPUT
+          echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
+          echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: rust-cli-results-${{ inputs.studio_server }}
+          path: |
+            test-results/
+            test-logs/
+          retention-days: 30
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.tests.outputs.exit_code }}"
+          PASSED="${{ steps.parse.outputs.passed }}"
+          FAILED="${{ steps.parse.outputs.failed }}"
+          IGNORED="${{ steps.parse.outputs.ignored }}"
+          
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "# ✅ PASSED: Rust CLI Tests" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "# ❌ FAILED: Rust CLI Tests" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> �� Download \`rust-cli-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail job if tests failed
+        if: always() && steps.tests.outputs.exit_code != '0'
+        run: |
+          echo "::error::Rust CLI tests FAILED with exit code ${{ steps.tests.outputs.exit_code }}"
+          exit 1
+
+  rust-doc:
+    name: Rust Doc Tests (${{ inputs.studio_server }})
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.set_result.outputs.result }}
+      passed: ${{ steps.set_result.outputs.passed }}
+      failed: ${{ steps.set_result.outputs.failed }}
+      ignored: ${{ steps.set_result.outputs.ignored }}
+    steps:
+      - name: Remove Junk from Host
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: studio-rust-doc
+          shared-key: "stable"
+          save-if: false
+
+      - name: Create output directories
+        run: mkdir -p test-results test-logs
+
+      - name: Run doc tests
+        id: tests
+        run: |
+          set +e
+          cargo test --doc --locked 2>&1 | tee test-logs/rust-doc.log
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          exit 0
+        env:
+          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          TEST_DATASET_TYPES: box2d,box3d,mask
+
+      - name: Parse test results and generate JUnit XML
+        id: parse
+        if: always()
+        run: |
+          LOG_FILE="test-logs/rust-doc.log"
+          RESULT_LINE=$(grep -E "^test result:" "$LOG_FILE" | tail -1 || echo "")
+          
+          if [ -n "$RESULT_LINE" ]; then
+            PASSED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= passed)' || echo "0")
+            FAILED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= failed)' || echo "0")
+            IGNORED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= ignored)' || echo "0")
+          else
+            PASSED=0
+            FAILED=0
+            IGNORED=0
+          fi
+          
+          TOTAL=$((PASSED + FAILED))
+          
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "ignored=$IGNORED" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          
+          cat > test-results/rust-doc-junit.xml << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuites name="doc-tests" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+            <testsuite name="doc-tests" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
+          EOF
+          
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" "$LOG_FILE" | while read -r line; do
+            TEST_NAME=$(echo "$line" | sed -E 's/^test ([^ ]+) \.\.\..*$/\1/')
+            STATUS=$(echo "$line" | grep -oE '(ok|FAILED|ignored)$')
+            
+            echo "    <testcase name=\"$TEST_NAME\" classname=\"doc-tests\">" >> test-results/rust-doc-junit.xml
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "      <failure message=\"Test failed\">See logs for details</failure>" >> test-results/rust-doc-junit.xml
+            elif [ "$STATUS" = "ignored" ]; then
+              echo "      <skipped/>" >> test-results/rust-doc-junit.xml
+            fi
+            echo "    </testcase>" >> test-results/rust-doc-junit.xml
+          done
+          
+          cat >> test-results/rust-doc-junit.xml << EOF
+            </testsuite>
+          </testsuites>
+          EOF
+
+      - name: Set result output
+        id: set_result
+        if: always()
+        run: |
+          if [ "${{ steps.tests.outputs.exit_code }}" = "0" ]; then
+            echo "result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "result=failed" >> $GITHUB_OUTPUT
+          fi
+          echo "passed=${{ steps.parse.outputs.passed }}" >> $GITHUB_OUTPUT
+          echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
+          echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: rust-doc-results-${{ inputs.studio_server }}
+          path: |
+            test-results/
+            test-logs/
+          retention-days: 30
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.tests.outputs.exit_code }}"
+          PASSED="${{ steps.parse.outputs.passed }}"
+          FAILED="${{ steps.parse.outputs.failed }}"
+          IGNORED="${{ steps.parse.outputs.ignored }}"
+          
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "# ✅ PASSED: Rust Doc Tests" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "# ❌ FAILED: Rust Doc Tests" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📥 Download \`rust-doc-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail job if tests failed
+        if: always() && steps.tests.outputs.exit_code != '0'
+        run: |
+          echo "::error::Rust Doc tests FAILED with exit code ${{ steps.tests.outputs.exit_code }}"
+          exit 1
+
+  python-lib:
+    name: Python Library (${{ inputs.studio_server }})
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.set_result.outputs.result }}
+      passed: ${{ steps.set_result.outputs.passed }}
+      failed: ${{ steps.set_result.outputs.failed }}
+      ignored: ${{ steps.set_result.outputs.ignored }}
+    steps:
+      - name: Remove Junk from Host
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          verbose: 'true'
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: studio-python-lib
           shared-key: "stable"
           save-if: false
 
@@ -212,14 +553,17 @@ jobs:
           maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
           pip install target/wheels/edgefirst_client-*.whl
 
-      - name: Create logs directory
-        run: mkdir -p test-logs
+      - name: Create output directories
+        run: mkdir -p test-results test-logs
 
       - name: Run Python tests
-        id: python_tests
-        continue-on-error: true
+        id: tests
         run: |
-          python3 -m unittest discover -s . -p "test*.py" -v 2>&1 | tee test-logs/python-tests.log
+          set +e
+          python3 -m xmlrunner discover -s . -p "test*.py" -o test-results -v 2>&1 | tee test-logs/python-lib.log
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+          exit 0
         env:
           STUDIO_SERVER: ${{ inputs.studio_server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
@@ -227,76 +571,142 @@ jobs:
           TEST_DATASET_TYPES: box2d,box3d,mask
           RUST_LOG: "edgefirst_client=trace"
 
-      - name: Upload Python test logs
+      - name: Parse test results
+        id: parse
+        if: always()
+        run: |
+          # Parse from xmlrunner output files
+          if ls test-results/TEST-*.xml 1> /dev/null 2>&1; then
+            TOTAL=$(grep -h '<testsuite' test-results/TEST-*.xml | grep -oP 'tests="\K\d+' | awk '{s+=$1} END {print s+0}')
+            FAILURES=$(grep -h '<testsuite' test-results/TEST-*.xml | grep -oP 'failures="\K\d+' | awk '{s+=$1} END {print s+0}')
+            ERRORS=$(grep -h '<testsuite' test-results/TEST-*.xml | grep -oP 'errors="\K\d+' | awk '{s+=$1} END {print s+0}')
+            SKIPPED=$(grep -h '<testsuite' test-results/TEST-*.xml | grep -oP 'skipped="\K\d+' | awk '{s+=$1} END {print s+0}')
+            FAILED=$((FAILURES + ERRORS))
+            PASSED=$((TOTAL - FAILED - SKIPPED))
+          else
+            # Fallback to parsing unittest output
+            TOTAL=0
+            PASSED=0
+            FAILED=0
+            SKIPPED=0
+            if grep -q "^OK" test-logs/python-lib.log; then
+              PASSED=$(grep -oP 'Ran \K\d+' test-logs/python-lib.log || echo "0")
+              TOTAL=$PASSED
+            elif grep -q "^FAILED" test-logs/python-lib.log; then
+              TOTAL=$(grep -oP 'Ran \K\d+' test-logs/python-lib.log || echo "0")
+              FAILED=$(grep -oP 'failures=\K\d+' test-logs/python-lib.log || echo "0")
+              ERRORS=$(grep -oP 'errors=\K\d+' test-logs/python-lib.log || echo "0")
+              FAILED=$((FAILED + ERRORS))
+              PASSED=$((TOTAL - FAILED))
+            fi
+          fi
+          
+          echo "passed=${PASSED:-0}" >> $GITHUB_OUTPUT
+          echo "failed=${FAILED:-0}" >> $GITHUB_OUTPUT
+          echo "ignored=${SKIPPED:-0}" >> $GITHUB_OUTPUT
+          echo "total=${TOTAL:-0}" >> $GITHUB_OUTPUT
+
+      - name: Set result output
+        id: set_result
+        if: always()
+        run: |
+          if [ "${{ steps.tests.outputs.exit_code }}" = "0" ]; then
+            echo "result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "result=failed" >> $GITHUB_OUTPUT
+          fi
+          echo "passed=${{ steps.parse.outputs.passed }}" >> $GITHUB_OUTPUT
+          echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
+          echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
+
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: python-test-logs-${{ inputs.studio_server }}
-          path: test-logs/python-*.log
+          name: python-lib-results-${{ inputs.studio_server }}
+          path: |
+            test-results/
+            test-logs/
           retention-days: 30
 
-      - name: Generate Python test summary
+      - name: Generate job summary
         if: always()
         run: |
-          echo "## 🐍 Python Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status | Log File |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          EXIT_CODE="${{ steps.tests.outputs.exit_code }}"
+          PASSED="${{ steps.parse.outputs.passed }}"
+          FAILED="${{ steps.parse.outputs.failed }}"
+          IGNORED="${{ steps.parse.outputs.ignored }}"
           
-          if [ "${{ steps.python_tests.outcome }}" = "success" ]; then
-            echo "| Python bindings | ✅ **Passed** | \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "# ✅ PASSED: Python Library Tests" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| Python bindings | ❌ **Failed** | 📥 \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+            echo "# ❌ FAILED: Python Library Tests" >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📁 Download **python-test-logs-${{ inputs.studio_server }}** artifact for detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | $IGNORED |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 📥 Download \`python-lib-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
-      - name: Check Python test results
-        if: always()
+      - name: Fail job if tests failed
+        if: always() && steps.tests.outputs.exit_code != '0'
         run: |
-          if [ "${{ steps.python_tests.outcome }}" = "failure" ]; then
-            echo "::error::Python tests failed"
-            exit 1
-          fi
+          echo "::error::Python Library tests FAILED with exit code ${{ steps.tests.outputs.exit_code }}"
+          exit 1
 
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [rust-tests, python-tests]
+    needs: [rust-client-lib, rust-cli, rust-doc, python-lib]
     if: always()
     steps:
-      - name: Download all logs
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          pattern: '*-test-logs-${{ inputs.studio_server }}'
-          merge-multiple: true
-          path: all-logs
-
-      - name: Upload combined logs
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: all-test-logs-${{ inputs.studio_server }}
-          path: all-logs/
-          retention-days: 30
-
       - name: Generate workflow summary
         run: |
-          # Determine overall status
-          RUST_STATUS="${{ needs.rust-tests.result }}"
-          PYTHON_STATUS="${{ needs.python-tests.result }}"
+          # Collect results from job outputs
+          CLIENT_LIB_RESULT="${{ needs.rust-client-lib.outputs.result }}"
+          CLIENT_LIB_PASSED="${{ needs.rust-client-lib.outputs.passed }}"
+          CLIENT_LIB_FAILED="${{ needs.rust-client-lib.outputs.failed }}"
+          CLIENT_LIB_IGNORED="${{ needs.rust-client-lib.outputs.ignored }}"
           
-          if [ "$RUST_STATUS" = "success" ] && [ "$PYTHON_STATUS" = "success" ]; then
-            OVERALL_ICON="✅"
-            OVERALL_STATUS="All Tests Passed"
+          CLI_RESULT="${{ needs.rust-cli.outputs.result }}"
+          CLI_PASSED="${{ needs.rust-cli.outputs.passed }}"
+          CLI_FAILED="${{ needs.rust-cli.outputs.failed }}"
+          CLI_IGNORED="${{ needs.rust-cli.outputs.ignored }}"
+          
+          DOC_RESULT="${{ needs.rust-doc.outputs.result }}"
+          DOC_PASSED="${{ needs.rust-doc.outputs.passed }}"
+          DOC_FAILED="${{ needs.rust-doc.outputs.failed }}"
+          DOC_IGNORED="${{ needs.rust-doc.outputs.ignored }}"
+          
+          PYTHON_RESULT="${{ needs.python-lib.outputs.result }}"
+          PYTHON_PASSED="${{ needs.python-lib.outputs.passed }}"
+          PYTHON_FAILED="${{ needs.python-lib.outputs.failed }}"
+          PYTHON_IGNORED="${{ needs.python-lib.outputs.ignored }}"
+          
+          # Calculate totals
+          TOTAL_PASSED=$((${CLIENT_LIB_PASSED:-0} + ${CLI_PASSED:-0} + ${DOC_PASSED:-0} + ${PYTHON_PASSED:-0}))
+          TOTAL_FAILED=$((${CLIENT_LIB_FAILED:-0} + ${CLI_FAILED:-0} + ${DOC_FAILED:-0} + ${PYTHON_FAILED:-0}))
+          TOTAL_IGNORED=$((${CLIENT_LIB_IGNORED:-0} + ${CLI_IGNORED:-0} + ${DOC_IGNORED:-0} + ${PYTHON_IGNORED:-0}))
+          TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))
+          
+          # Determine overall status - CLEAR pass/fail based on actual results
+          ALL_PASSED="true"
+          if [ "$CLIENT_LIB_RESULT" != "passed" ]; then ALL_PASSED="false"; fi
+          if [ "$CLI_RESULT" != "passed" ]; then ALL_PASSED="false"; fi
+          if [ "$DOC_RESULT" != "passed" ]; then ALL_PASSED="false"; fi
+          if [ "$PYTHON_RESULT" != "passed" ]; then ALL_PASSED="false"; fi
+          
+          if [ "$ALL_PASSED" = "true" ]; then
+            echo "# ✅ ALL TESTS PASSED" >> $GITHUB_STEP_SUMMARY
           else
-            OVERALL_ICON="❌"
-            OVERALL_STATUS="Some Tests Failed"
+            echo "# ❌ TESTS FAILED" >> $GITHUB_STEP_SUMMARY
           fi
-          
-          echo "# $OVERALL_ICON Studio Integration Tests" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## $OVERALL_STATUS" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 📊 Overall Results: $TOTAL_PASSED passed, $TOTAL_FAILED failed, $TOTAL_IGNORED ignored" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "---" >> $GITHUB_STEP_SUMMARY
@@ -309,84 +719,82 @@ jobs:
           echo "| **Server** | \`${{ inputs.studio_server }}.edgefirst.studio\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Include Ignored Tests** | \`${{ inputs.include_ignored }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Triggered By** | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Run ID** | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | [\`${GITHUB_SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${GITHUB_SHA:0:7}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          echo "### 📊 Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Test Results by Suite" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status | Details |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Result | ✅ Passed | ❌ Failed | ⏭️ Ignored |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|-----------|-----------|------------|" >> $GITHUB_STEP_SUMMARY
           
-          # Rust tests breakdown
-          CLIENT_LIB="${{ needs.rust-tests.outputs.client_lib_result }}"
-          CLI="${{ needs.rust-tests.outputs.cli_result }}"
-          DOC="${{ needs.rust-tests.outputs.doc_result }}"
-          
-          if [ "$CLIENT_LIB" = "success" ]; then
-            echo "| 🦀 edgefirst-client (lib) | ✅ **Passed** | Library unit tests |" >> $GITHUB_STEP_SUMMARY
+          # Rust Client Library - CLEAR status
+          if [ "$CLIENT_LIB_RESULT" = "passed" ]; then
+            echo "| 🦀 Rust Client Library | ✅ **PASSED** | ${CLIENT_LIB_PASSED:-0} | ${CLIENT_LIB_FAILED:-0} | ${CLIENT_LIB_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| 🦀 edgefirst-client (lib) | ❌ **Failed** | 📥 See \`rust-client-lib.log\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🦀 Rust Client Library | ❌ **FAILED** | ${CLIENT_LIB_PASSED:-0} | ${CLIENT_LIB_FAILED:-0} | ${CLIENT_LIB_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ "$CLI" = "success" ]; then
-            echo "| 🦀 edgefirst-cli | ✅ **Passed** | CLI integration tests |" >> $GITHUB_STEP_SUMMARY
+          # Rust CLI - CLEAR status
+          if [ "$CLI_RESULT" = "passed" ]; then
+            echo "| 🦀 Rust CLI | ✅ **PASSED** | ${CLI_PASSED:-0} | ${CLI_FAILED:-0} | ${CLI_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| 🦀 edgefirst-cli | ❌ **Failed** | 📥 See \`rust-cli.log\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🦀 Rust CLI | ❌ **FAILED** | ${CLI_PASSED:-0} | ${CLI_FAILED:-0} | ${CLI_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ "$DOC" = "success" ]; then
-            echo "| 🦀 Doc tests | ✅ **Passed** | Documentation examples |" >> $GITHUB_STEP_SUMMARY
+          # Rust Doc Tests - CLEAR status
+          if [ "$DOC_RESULT" = "passed" ]; then
+            echo "| 🦀 Rust Doc Tests | ✅ **PASSED** | ${DOC_PASSED:-0} | ${DOC_FAILED:-0} | ${DOC_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| 🦀 Doc tests | ❌ **Failed** | 📥 See \`rust-doc.log\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🦀 Rust Doc Tests | ❌ **FAILED** | ${DOC_PASSED:-0} | ${DOC_FAILED:-0} | ${DOC_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          PYTHON="${{ needs.python-tests.outputs.python_result }}"
-          if [ "$PYTHON" = "success" ]; then
-            echo "| 🐍 Python bindings | ✅ **Passed** | PyO3 binding tests |" >> $GITHUB_STEP_SUMMARY
+          # Python Library - CLEAR status
+          if [ "$PYTHON_RESULT" = "passed" ]; then
+            echo "| 🐍 Python Library | ✅ **PASSED** | ${PYTHON_PASSED:-0} | ${PYTHON_FAILED:-0} | ${PYTHON_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| 🐍 Python bindings | ❌ **Failed** | 📥 See \`python-tests.log\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🐍 Python Library | ❌ **FAILED** | ${PYTHON_PASSED:-0} | ${PYTHON_FAILED:-0} | ${PYTHON_IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
           fi
           
+          echo "| **TOTAL** | | **$TOTAL_PASSED** | **$TOTAL_FAILED** | **$TOTAL_IGNORED** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          echo "### 📥 Downloadable Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Artifacts (JUnit XML + Logs)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Artifact | Description |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| \`all-test-logs-${{ inputs.studio_server }}\` | Combined logs from all test suites |" >> $GITHUB_STEP_SUMMARY
-          echo "| \`rust-test-logs-${{ inputs.studio_server }}\` | Rust test logs only |" >> $GITHUB_STEP_SUMMARY
-          echo "| \`python-test-logs-${{ inputs.studio_server }}\` | Python test logs only |" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | Contents |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-client-lib-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust client library |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-cli-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust CLI |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-doc-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust doc tests |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`python-lib-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Python library |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          echo "> 💡 **Tip:** Logs include \`RUST_LOG=edgefirst_client=trace\` output for detailed debugging" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 💡 All logs include \`RUST_LOG=edgefirst_client=trace\` for detailed debugging" >> $GITHUB_STEP_SUMMARY
           
           # Add failure guidance if tests failed
-          if [ "$RUST_STATUS" != "success" ] || [ "$PYTHON_STATUS" != "success" ]; then
+          if [ "$ALL_PASSED" != "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "---" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔍 Troubleshooting Failed Tests" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔍 Troubleshooting" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "1. Download the relevant log artifact from the **Artifacts** section above" >> $GITHUB_STEP_SUMMARY
-            echo "2. Search for \`FAILED\` or \`error\` in the log files" >> $GITHUB_STEP_SUMMARY
-            echo "3. Look for \`TRACE\` entries preceding failures for API call details" >> $GITHUB_STEP_SUMMARY
-            echo "4. Check if the failure is related to:" >> $GITHUB_STEP_SUMMARY
-            echo "   - Server connectivity (\`${{ inputs.studio_server }}.edgefirst.studio\`)" >> $GITHUB_STEP_SUMMARY
-            echo "   - Authentication issues (verify secrets are configured)" >> $GITHUB_STEP_SUMMARY
-            echo "   - Test data availability (Unit Testing project structure)" >> $GITHUB_STEP_SUMMARY
+            echo "1. Download the artifact for the failed test suite" >> $GITHUB_STEP_SUMMARY
+            echo "2. Check the JUnit XML file for test details" >> $GITHUB_STEP_SUMMARY
+            echo "3. Search for \`FAILED\` or \`error\` in the log file" >> $GITHUB_STEP_SUMMARY
+            echo "4. Look for \`TRACE\` entries for API call details" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Check overall results
+      - name: Fail workflow if any tests failed
         run: |
-          if [ "${{ needs.rust-tests.result }}" != "success" ] || \
-             [ "${{ needs.python-tests.result }}" != "success" ]; then
-            echo "::error::Some test suites failed. Check the logs for details."
+          if [ "${{ needs.rust-client-lib.outputs.result }}" != "passed" ] || \
+             [ "${{ needs.rust-cli.outputs.result }}" != "passed" ] || \
+             [ "${{ needs.rust-doc.outputs.result }}" != "passed" ] || \
+             [ "${{ needs.python-lib.outputs.result }}" != "passed" ]; then
+            echo "::error::One or more test suites FAILED"
             exit 1
           fi
