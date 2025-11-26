@@ -3,7 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationType, Client, Dataset, Error, FileType, Progress, TrainingSession,
+    AnnotationType, Client, Dataset, Error, FileType, Progress, SnapshotID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -2049,8 +2049,8 @@ async fn handle_snapshots(client: &Client) -> Result<(), Error> {
 }
 
 async fn handle_snapshot(client: &Client, snapshot_id: String) -> Result<(), Error> {
-    let snapshot_id: u64 = snapshot_id.parse()?;
-    let snapshot = client.snapshot(snapshot_id.into()).await?;
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    let snapshot = client.snapshot(snapshot_id).await?;
     println!(
         "[{}] {}\nPath: {}\nStatus: {}\nCreated: {}",
         snapshot.id(),
@@ -2126,7 +2126,7 @@ async fn handle_download_snapshot(
         pb.finish_with_message("Download complete");
     });
 
-    let snapshot_id: u64 = snapshot_id.parse()?;
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
     client
         .download_snapshot(snapshot_id.into(), output, Some(tx))
         .await?;
@@ -2148,11 +2148,11 @@ async fn handle_restore_snapshot(
     client: &Client,
     params: RestoreSnapshotParams,
 ) -> Result<(), Error> {
-    let snapshot_id: u64 = params.snapshot_id.parse()?;
+    let snapshot_id = SnapshotID::try_from(params.snapshot_id.as_str())?;
     let result = client
         .restore_snapshot(
             params.project_id.try_into()?,
-            snapshot_id.into(),
+            snapshot_id,
             &params.topics,
             &params.autolabel,
             params.autodepth,
@@ -2168,8 +2168,8 @@ async fn handle_restore_snapshot(
 }
 
 async fn handle_delete_snapshot(client: &Client, snapshot_id: String) -> Result<(), Error> {
-    let snapshot_id: u64 = snapshot_id.parse()?;
-    client.delete_snapshot(snapshot_id.into()).await?;
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    client.delete_snapshot(snapshot_id).await?;
     println!("Snapshot deleted successfully");
     Ok(())
 }
