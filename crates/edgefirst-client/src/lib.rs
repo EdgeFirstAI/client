@@ -64,8 +64,8 @@ pub use crate::{
         AnnotationSetID, AppId, Artifact, DatasetID, DatasetParams, Experiment, ExperimentID,
         ImageId, Organization, OrganizationID, Parameter, PresignedUrl, Project, ProjectID,
         SampleID, SamplesCountResult, SamplesPopulateParams, SamplesPopulateResult, SequenceId,
-        Snapshot, SnapshotID, Stage, Task, TaskID, TaskInfo, TrainingSession, TrainingSessionID,
-        ValidationSession, ValidationSessionID,
+        Snapshot, SnapshotID, SnapshotRestoreResult, Stage, Task, TaskID, TaskInfo,
+        TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
     },
     client::{Client, Progress},
     dataset::{

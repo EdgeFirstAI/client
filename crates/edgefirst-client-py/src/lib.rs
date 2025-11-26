@@ -2133,6 +2133,57 @@ impl Snapshot {
 }
 
 #[pyclass(module = "edgefirst_client")]
+pub struct SnapshotRestoreResult(edgefirst_client::SnapshotRestoreResult);
+
+#[pymethods]
+impl SnapshotRestoreResult {
+    #[getter]
+    pub fn id(&self) -> SnapshotID {
+        SnapshotID(self.0.id)
+    }
+
+    #[getter]
+    pub fn description(&self) -> &str {
+        &self.0.description
+    }
+
+    #[getter]
+    pub fn dataset_name(&self) -> &str {
+        &self.0.dataset_name
+    }
+
+    #[getter]
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id)
+    }
+
+    #[getter]
+    pub fn annotation_set_id(&self) -> AnnotationSetID {
+        AnnotationSetID(self.0.annotation_set_id)
+    }
+
+    #[getter]
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.0.task_id)
+    }
+
+    #[getter]
+    pub fn date(&self) -> String {
+        self.0.date.to_string()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "SnapshotRestoreResult(dataset_id={}, dataset_name='{}', annotation_set_id={}, task_id={})",
+            self.0.dataset_id,
+            self.0.dataset_name,
+            self.0.annotation_set_id,
+            self.0.task_id
+        )
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
 pub struct DatasetParams(edgefirst_client::DatasetParams);
 
 #[pymethods]
@@ -3123,6 +3174,52 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    pub fn create_snapshot(&self, path: &str) -> Result<Snapshot, Error> {
+        Ok(Snapshot(self.0.create_snapshot(path, None).await?))
+    }
+
+    #[tokio_wrap::sync]
+    pub fn download_snapshot<'py>(
+        &self,
+        snapshot_id: Bound<'py, PyAny>,
+        output: &str,
+    ) -> Result<(), Error> {
+        let snapshot_id: SnapshotID = snapshot_id.try_into()?;
+        self.0
+            .download_snapshot(snapshot_id.0, std::path::PathBuf::from(output), None)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio_wrap::sync]
+    pub fn restore_snapshot<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        snapshot_id: Bound<'py, PyAny>,
+        topics: Vec<String>,
+        autolabel: Vec<String>,
+        autodepth: bool,
+        dataset_name: Option<String>,
+        dataset_description: Option<String>,
+    ) -> Result<SnapshotRestoreResult, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let snapshot_id: SnapshotID = snapshot_id.try_into()?;
+        Ok(SnapshotRestoreResult(
+            self.0
+                .restore_snapshot(
+                    project_id.0,
+                    snapshot_id.0,
+                    &topics,
+                    &autolabel,
+                    autodepth,
+                    dataset_name.as_deref(),
+                    dataset_description.as_deref(),
+                )
+                .await?,
+        ))
+    }
+
+    #[tokio_wrap::sync]
     pub fn artifacts<'py>(
         &self,
         training_session_id: Bound<'py, PyAny>,
@@ -3804,6 +3901,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TrainingSession>()?;
     m.add_class::<ValidationSession>()?;
     m.add_class::<Snapshot>()?;
+    m.add_class::<SnapshotRestoreResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;

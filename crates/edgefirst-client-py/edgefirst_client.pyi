@@ -2627,6 +2627,86 @@ class Snapshot:
         ...
 
 
+class SnapshotRestoreResult:
+    """
+    Result of a snapshot restore operation.
+
+    Contains information about the dataset created from restoring a snapshot,
+    including the dataset ID, annotation set ID, and associated task ID for
+    tracking the restore process.
+    """
+
+    @property
+    def id(self) -> SnapshotID:
+        """
+        Returns the unique identifier of the snapshot that was restored.
+
+        Returns:
+            SnapshotID: The snapshot ID.
+        """
+        ...
+
+    @property
+    def description(self) -> str:
+        """
+        Returns the description of the restore operation.
+
+        Returns:
+            str: The restore description.
+        """
+        ...
+
+    @property
+    def dataset_name(self) -> str:
+        """
+        Returns the name of the created dataset.
+
+        Returns:
+            str: The dataset name.
+        """
+        ...
+
+    @property
+    def dataset_id(self) -> DatasetID:
+        """
+        Returns the ID of the dataset created from the restore.
+
+        Returns:
+            DatasetID: The dataset ID.
+        """
+        ...
+
+    @property
+    def annotation_set_id(self) -> AnnotationSetID:
+        """
+        Returns the ID of the annotation set in the restored dataset.
+
+        Returns:
+            AnnotationSetID: The annotation set ID.
+        """
+        ...
+
+    @property
+    def task_id(self) -> TaskID:
+        """
+        Returns the ID of the task processing the restore operation.
+
+        Returns:
+            TaskID: The task ID for tracking restore progress.
+        """
+        ...
+
+    @property
+    def date(self) -> str:
+        """
+        Returns the timestamp when the restore was initiated.
+
+        Returns:
+            str: The restore timestamp.
+        """
+        ...
+
+
 class Client:
     """
     Main client for interacting with EdgeFirst Studio Server.
@@ -3367,6 +3447,109 @@ class Client:
 
         Raises:
             Error: If the snapshot does not exist or the request fails.
+        """
+        ...
+
+    def create_snapshot(self, path: str) -> Snapshot:
+        """
+        Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
+
+        Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow
+        pairs) that serve two primary purposes:
+
+        1. **MCAP uploads**: Upload MCAP files containing sensor data (images,
+           point clouds, IMU, GPS) to EdgeFirst Studio.
+        2. **Dataset exchange**: Export datasets for backup, sharing, or
+           migration between EdgeFirst Studio instances.
+
+        Args:
+            path (str): Local file path to MCAP file or directory containing
+                       EdgeFirst Dataset Format files (Zip/Arrow pairs).
+
+        Returns:
+            Snapshot: The created snapshot object with ID, description, status,
+                     path, and creation timestamp.
+
+        Raises:
+            Error: If path doesn't exist, file format is invalid, or upload fails.
+
+        Example:
+            >>> client = Client().with_token_path(None)
+            >>> snapshot = client.create_snapshot("data.mcap")
+            >>> print(f"Created snapshot: {snapshot.id}")
+        """
+        ...
+
+    def download_snapshot(self, snapshot_id: SnapshotUID, output: str) -> None:
+        """
+        Download a snapshot from EdgeFirst Studio to local storage.
+
+        Downloads all files in a snapshot (single MCAP file or directory of
+        EdgeFirst Dataset Format files) to the specified output path.
+
+        Args:
+            snapshot_id (SnapshotUID): The snapshot ID to download.
+            output (str): Local directory path to save downloaded files.
+
+        Raises:
+            Error: If snapshot doesn't exist, output directory cannot be
+                  created, or download fails.
+
+        Example:
+            >>> client = Client().with_token_path(None)
+            >>> client.download_snapshot("ss-abc123", "./output")
+        """
+        ...
+
+    def restore_snapshot(
+        self,
+        project_id: ProjectUID,
+        snapshot_id: SnapshotUID,
+        topics: List[str],
+        autolabel: List[str],
+        autodepth: bool,
+        dataset_name: Optional[str] = None,
+        dataset_description: Optional[str] = None,
+    ) -> "SnapshotRestoreResult":
+        """
+        Restore a snapshot to a dataset in EdgeFirst Studio with optional AGTG.
+
+        Restores a snapshot (MCAP file or EdgeFirst Dataset) into a dataset in
+        the specified project. For MCAP files, supports:
+
+        * **AGTG (Automatic Ground Truth Generation)**: Automatically annotate
+          detected objects
+        * **Auto-depth**: Generate depthmaps (Maivin/Raivin cameras only)
+        * **Topic filtering**: Select specific MCAP topics to restore
+
+        Args:
+            project_id (ProjectUID): Target project ID.
+            snapshot_id (SnapshotUID): Snapshot ID to restore.
+            topics (List[str]): MCAP topics to include (empty = all topics).
+            autolabel (List[str]): Object labels for AGTG (empty = no
+                                  auto-annotation).
+            autodepth (bool): Generate depthmaps (Maivin/Raivin only).
+            dataset_name (Optional[str]): Optional custom dataset name.
+            dataset_description (Optional[str]): Optional dataset description.
+
+        Returns:
+            SnapshotRestoreResult: Result containing the new dataset ID and status.
+
+        Raises:
+            Error: If snapshot or project doesn't exist, or restoration fails.
+
+        Example:
+            >>> client = Client().with_token_path(None)
+            >>> result = client.restore_snapshot(
+            ...     "p-1",
+            ...     "ss-abc123",
+            ...     [],  # All topics
+            ...     ["person", "car"],  # AGTG labels
+            ...     True,  # Auto-depth
+            ...     "Highway Dataset",
+            ...     "Collected on I-95",
+            ... )
+            >>> print(f"Restored to dataset: {result.dataset_id}")
         """
         ...
 
