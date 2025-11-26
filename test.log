@@ -1,0 +1,831 @@
+warning: use of deprecated function `dataset::annotations_dataframe`: Use `samples_dataframe()` for complete 2025.10 schema support
+  --> crates/edgefirst-client/src/lib.rs:80:25
+   |
+80 | pub use crate::dataset::annotations_dataframe;
+   |                         ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `dataset::annotations_dataframe`: Use `samples_dataframe()` for complete 2025.10 schema support
+    --> crates/edgefirst-client/src/client.rs:1644:29
+     |
+1644 |         use crate::dataset::annotations_dataframe;
+     |                             ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `edgefirst-client` (lib) generated 2 warnings
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+  --> crates/edgefirst-cli/tests/cli.rs:64:28
+   |
+64 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+   |                            ^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+  --> crates/edgefirst-cli/tests/cli.rs:91:32
+   |
+91 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+   |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:101:32
+    |
+101 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:123:28
+    |
+123 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:211:28
+    |
+211 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:243:28
+    |
+243 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:638:28
+    |
+638 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:648:28
+    |
+648 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:678:28
+    |
+678 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:688:28
+    |
+688 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:727:28
+    |
+727 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:799:28
+    |
+799 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:807:28
+    |
+807 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:826:28
+    |
+826 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:840:28
+    |
+840 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:874:28
+    |
+874 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:883:28
+    |
+883 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:909:28
+    |
+909 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:929:28
+    |
+929 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:940:28
+    |
+940 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:978:28
+    |
+978 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+   --> crates/edgefirst-cli/tests/cli.rs:990:28
+    |
+990 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1021:28
+     |
+1021 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1041:28
+     |
+1041 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1049:28
+     |
+1049 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1063:28
+     |
+1063 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1077:32
+     |
+1077 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1091:28
+     |
+1091 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1100:28
+     |
+1100 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1113:32
+     |
+1113 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1124:28
+     |
+1124 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1137:32
+     |
+1137 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1152:28
+     |
+1152 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1165:32
+     |
+1165 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1181:28
+     |
+1181 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1194:32
+     |
+1194 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1208:36
+     |
+1208 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1233:28
+     |
+1233 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1256:28
+     |
+1256 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1292:28
+     |
+1292 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1306:28
+     |
+1306 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1321:28
+     |
+1321 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1422:28
+     |
+1422 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1434:28
+     |
+1434 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1446:28
+     |
+1446 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1594:28
+     |
+1594 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1607:32
+     |
+1607 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1617:28
+     |
+1617 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1630:32
+     |
+1630 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1648:28
+     |
+1648 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1661:32
+     |
+1661 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1682:36
+     |
+1682 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1695:28
+     |
+1695 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1708:32
+     |
+1708 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1729:36
+     |
+1729 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1740:28
+     |
+1740 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1753:32
+     |
+1753 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1773:36
+     |
+1773 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1792:28
+     |
+1792 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1805:32
+     |
+1805 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1825:36
+     |
+1825 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1842:40
+     |
+1842 |                 let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                        ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1856:28
+     |
+1856 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1869:32
+     |
+1869 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1889:36
+     |
+1889 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1905:40
+     |
+1905 |                 let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                        ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1922:28
+     |
+1922 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1935:32
+     |
+1935 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1955:36
+     |
+1955 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1971:40
+     |
+1971 |                 let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                        ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:1988:28
+     |
+1988 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2001:32
+     |
+2001 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2021:36
+     |
+2021 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2037:40
+     |
+2037 |                 let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                        ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2110:28
+     |
+2110 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2117:28
+     |
+2117 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2127:28
+     |
+2127 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2138:28
+     |
+2138 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2156:28
+     |
+2156 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2180:28
+     |
+2180 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2193:32
+     |
+2193 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2213:36
+     |
+2213 |             let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                    ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2234:40
+     |
+2234 |                 let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                        ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2257:28
+     |
+2257 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2265:28
+     |
+2265 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2277:28
+     |
+2277 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2292:28
+     |
+2292 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2306:32
+     |
+2306 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2320:28
+     |
+2320 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2341:28
+     |
+2341 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2358:28
+     |
+2358 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2376:28
+     |
+2376 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2395:32
+     |
+2395 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2417:28
+     |
+2417 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2433:28
+     |
+2433 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2453:28
+     |
+2453 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2503:28
+     |
+2503 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2549:28
+     |
+2549 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2595:28
+     |
+2595 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2636:28
+     |
+2636 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2696:28
+     |
+2696 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2731:28
+     |
+2731 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2761:28
+     |
+2761 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2784:28
+     |
+2784 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2801:28
+     |
+2801 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2828:28
+     |
+2828 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2857:28
+     |
+2857 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2877:28
+     |
+2877 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2910:28
+     |
+2910 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:2922:28
+     |
+2922 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3033:28
+     |
+3033 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3053:28
+     |
+3053 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3076:32
+     |
+3076 |         let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                                ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3113:28
+     |
+3113 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3176:28
+     |
+3176 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3200:28
+     |
+3200 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3223:28
+     |
+3223 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3244:28
+     |
+3244 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: use of deprecated associated function `assert_cmd::Command::cargo_bin`: incompatible with a custom cargo build-dir, see instead `cargo::cargo_bin_cmd!`
+    --> crates/edgefirst-cli/tests/cli.rs:3261:28
+     |
+3261 |     let mut cmd = Command::cargo_bin("edgefirst-client")?;
+     |                            ^^^^^^^^^
+
+warning: `edgefirst-cli` (test "cli") generated 119 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running tests/cli.rs (target/debug/deps/cli-ed1d747b1d736230)
+
+running 51 tests
+test test_dataset_roundtrip ... ignored, Requires EDGEFIRST_TIMEOUT=120 due to large dataset upload (1600+ samples). Run with: cargo test test_dataset_roundtrip -- --ignored
+test test_corrupted_token_handling ... FAILED
+test test_datasets_list_all ... ok
+test test_experiments_filter_by_name ... ok
+test test_experiments_list ... ok
+test test_datasets_by_project ... ok
+test test_organization ... ok
+test test_organization_details ... ok
+test test_projects_filter_by_name ... ok
+test test_experiment_by_id ... ok
+test test_dataset_by_id ... ok
+test test_snapshot_restore_workflow ... ignored, Requires test data. Run manually with: cargo test test_snapshot_restore_workflow -- --ignored
+test test_datasets_with_labels ... ok
+test test_projects_list ... ok
+test test_project_by_id ... ok
+test test_tasks_list ... ok
+test test_dataset_crud ... ok
+test test_tasks_with_name_filter ... ok
+test test_task_by_id ... ok
+test test_token ... ok
+test test_tasks_with_stages ... ok
+test test_training_session_by_id ... ok
+test test_training_session_with_artifacts ... ok
+test test_training_session_with_dataset_params ... ok
+test test_training_session_with_model_params ... ok
+test test_training_sessions_filter_by_name ... ok
+test test_training_sessions_list ... ok
+test test_download_annotations ... ok
+test test_datasets_with_annotation_sets ... ok
+test test_upload_dataset_full_mode ... ok
+test test_upload_artifact ... ok
+test test_upload_dataset_images_only ... ok
+test test_upload_dataset_invalid_path ... ok
+test test_snapshots_list ... ok
+test test_validation_session_details ... ok
+test test_validation_sessions_list ... ok
+test test_version ... ok
+test test_upload_dataset_batching ... ok
+test test_upload_dataset_warning_no_annotation_set_id ... ok
+test test_upload_dataset_auto_discovery ... ok
+test test_download_dataset_flatten ... ok
+test test_logout ... FAILED
+test test_login ... FAILED
+test test_login_creates_new_token ... FAILED
+test test_download_artifact ... ok
+test test_logout_after_sleep ... FAILED
+test test_upload_dataset_missing_parameters ... ok
+test test_sleep_30_seconds has been running for over 60 seconds
+test test_snapshot_create_download_delete_workflow has been running for over 60 seconds
+test test_snapshot_get has been running for over 60 seconds
+test test_sleep_30_seconds ... ok
+test test_snapshot_create_download_delete_workflow ... ok
+test test_snapshot_get ... ok
+test test_upload_dataset_persistent_copy has been running for over 60 seconds
+test test_upload_dataset_persistent_copy ... ok
+
+failures:
+
+---- test_corrupted_token_handling stdout ----
+
+thread 'test_corrupted_token_handling' (3824998) panicked at crates/edgefirst-cli/tests/cli.rs:971:37:
+STUDIO_USERNAME must be set for authentication tests: NotPresent
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- test_logout stdout ----
+
+thread 'test_logout' (3825030) panicked at crates/edgefirst-cli/tests/cli.rs:790:37:
+STUDIO_USERNAME must be set for authentication tests: NotPresent
+
+---- test_login stdout ----
+
+thread 'test_login' (3825025) panicked at crates/edgefirst-cli/tests/cli.rs:713:37:
+STUDIO_USERNAME must be set for authentication tests: NotPresent
+
+---- test_login_creates_new_token stdout ----
+
+thread 'test_login_creates_new_token' (3825027) panicked at crates/edgefirst-cli/tests/cli.rs:922:37:
+STUDIO_USERNAME must be set for authentication tests: NotPresent
+
+---- test_logout_after_sleep stdout ----
+
+thread 'test_logout_after_sleep' (3825039) panicked at crates/edgefirst-cli/tests/cli.rs:867:37:
+STUDIO_USERNAME must be set for authentication tests: NotPresent
+
+
+failures:
+    test_corrupted_token_handling
+    test_login
+    test_login_creates_new_token
+    test_logout
+    test_logout_after_sleep
+
+test result: FAILED. 44 passed; 5 failed; 2 ignored; 0 measured; 0 filtered out; finished in 153.66s
+
+error: test failed, to rerun pass `-p edgefirst-cli --test cli`

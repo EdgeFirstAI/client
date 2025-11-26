@@ -16,6 +16,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Helper to create a Command for the edgefirst-client binary
+fn edgefirst_cmd() -> Command {
+    Command::new(assert_cmd::cargo::cargo_bin!("edgefirst-client"))
+}
+
 /// Get the test data directory (target/testdata)
 /// Creates it if it doesn't exist
 fn get_test_data_dir() -> PathBuf {
@@ -52,8 +57,8 @@ fn get_test_dataset_types() -> Vec<String> {
 fn get_test_dataset_path() -> PathBuf {
     let dataset = get_test_dataset();
     // If it's a dataset ID (ds-xxx), extract a friendly name for the path
-    let normalized_name = if dataset.starts_with("ds-") {
-        format!("dataset-{}", &dataset[3..])
+    let normalized_name = if let Some(stripped) = dataset.strip_prefix("ds-") {
+        format!("dataset-{}", stripped)
     } else {
         dataset.to_lowercase().replace(' ', "-")
     };
@@ -61,7 +66,7 @@ fn get_test_dataset_path() -> PathBuf {
 }
 
 fn get_project_id_by_name(name: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg(name);
 
     let output = cmd.ok()?.stdout;
@@ -88,7 +93,7 @@ fn get_dataset_and_first_annotation_set(
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
     let dataset_id = if dataset.starts_with("ds-") {
         // It's a dataset ID - verify it exists
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("dataset").arg(dataset);
 
         let result = cmd.ok();
@@ -98,7 +103,7 @@ fn get_dataset_and_first_annotation_set(
         dataset.to_string()
     } else {
         // It's a dataset name - search all projects for exact match
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("datasets").arg("--name").arg(dataset);
 
         let output = cmd.ok()?.stdout;
@@ -120,7 +125,7 @@ fn get_dataset_and_first_annotation_set(
             .ok_or_else(|| format!("Dataset '{}' not found in any project", dataset))?
     };
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("dataset").arg(&dataset_id).arg("--annotation-sets");
 
     let output = cmd.ok()?.stdout;
@@ -208,7 +213,7 @@ fn download_dataset_from_server(dataset_id: &str) -> Result<PathBuf, Box<dyn std
     ));
     fs::create_dir_all(&download_dir)?;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-dataset")
         .arg(dataset_id)
         .arg("--output")
@@ -240,7 +245,7 @@ fn download_annotations_from_server_with_types(
         timestamp
     ));
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-annotations")
         .arg(annotation_set_id)
         .arg("--types")
@@ -635,7 +640,7 @@ fn test_version() -> Result<(), Box<dyn std::error::Error>> {
     println!("STUDIO_USERNAME: {:?}", env::var("STUDIO_USERNAME"));
     println!("STUDIO_PASSWORD: {:?}", env::var("STUDIO_PASSWORD"));
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("version");
     cmd.assert()
         .success()
@@ -645,7 +650,7 @@ fn test_version() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_token() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("token");
 
     let token = cmd.ok()?.stdout;
@@ -675,7 +680,7 @@ fn test_token() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_organization() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("organization");
     cmd.assert()
         .success()
@@ -685,7 +690,7 @@ fn test_organization() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_organization_details() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("organization");
 
     let output = cmd.ok()?.stdout;
@@ -724,7 +729,7 @@ fn test_login() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Run login command with environment variables
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
 
     let output = cmd.ok()?.stdout;
@@ -796,7 +801,7 @@ fn test_logout() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
 
     // Login first to ensure token exists
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -804,7 +809,7 @@ fn test_logout() -> Result<(), Box<dyn std::error::Error>> {
     assert!(token_path.exists(), "Token file should exist before logout");
 
     // Run logout command
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("logout");
 
     let output = cmd.ok()?.stdout;
@@ -823,7 +828,7 @@ fn test_logout() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Token file removed: {:?}", token_path);
 
     // Re-login for other tests (cleanup)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -837,7 +842,7 @@ fn test_sleep_30_seconds() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("sleep").arg("30");
 
     let output = cmd.ok()?.stdout;
@@ -871,7 +876,7 @@ fn test_logout_after_sleep() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
 
     // Login first
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -880,7 +885,7 @@ fn test_logout_after_sleep() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
     // Run logout command
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("logout");
 
     let output = cmd.ok()?.stdout;
@@ -906,7 +911,7 @@ fn test_logout_after_sleep() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Re-login for other tests
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -926,7 +931,7 @@ fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
 
     // First login
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -937,7 +942,7 @@ fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     // Second login
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -975,7 +980,7 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
 
     // Login first to create a valid token
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -987,7 +992,7 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to run a command that requires authentication WITHOUT credentials
     // This should gracefully handle the corrupted token
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("organization");
     // Clear environment variables so the command can't auto-login
     cmd.env_remove("STUDIO_USERNAME");
@@ -1018,7 +1023,7 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
     println!("Token file exists after error: {}", token_path.exists());
 
     // Should be able to login again
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
 
@@ -1038,7 +1043,7 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_projects_list() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects");
     cmd.assert().success();
     Ok(())
@@ -1046,7 +1051,7 @@ fn test_projects_list() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_projects_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1060,7 +1065,7 @@ fn test_projects_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_project_by_id() -> Result<(), Box<dyn std::error::Error>> {
     // First get the project list to extract an ID
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1074,7 +1079,7 @@ fn test_project_by_id() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("project").arg(&id);
         cmd.assert()
             .success()
@@ -1088,7 +1093,7 @@ fn test_project_by_id() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_datasets_list_all() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("datasets");
     cmd.assert().success();
     Ok(())
@@ -1097,7 +1102,7 @@ fn test_datasets_list_all() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_datasets_by_project() -> Result<(), Box<dyn std::error::Error>> {
     // First get project ID
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1110,7 +1115,7 @@ fn test_datasets_by_project() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("datasets").arg(&id);
         cmd.assert().success();
     }
@@ -1121,7 +1126,7 @@ fn test_datasets_by_project() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_datasets_with_labels() -> Result<(), Box<dyn std::error::Error>> {
     // Get Sample Project with COCO dataset
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Sample Project");
 
     let output = cmd.ok()?.stdout;
@@ -1134,7 +1139,7 @@ fn test_datasets_with_labels() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("datasets").arg(&id).arg("--labels");
 
         let output = cmd.ok()?.stdout;
@@ -1149,7 +1154,7 @@ fn test_datasets_with_labels() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_datasets_with_annotation_sets() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Sample Project");
 
     let output = cmd.ok()?.stdout;
@@ -1162,7 +1167,7 @@ fn test_datasets_with_annotation_sets() -> Result<(), Box<dyn std::error::Error>
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("datasets").arg(&id).arg("--annotation-sets");
 
         let output = cmd.ok()?.stdout;
@@ -1178,7 +1183,7 @@ fn test_datasets_with_annotation_sets() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
     // Get a dataset ID from Unit Testing project
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1191,7 +1196,7 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("datasets").arg(&proj_id);
 
         let output = cmd.ok()?.stdout;
@@ -1205,7 +1210,7 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
         if let Some(ds_id) = dataset_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("dataset").arg(&ds_id);
             cmd.assert().success();
         }
@@ -1230,7 +1235,7 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id()
     ));
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-annotations")
         .arg(&annotation_set_id)
         .arg(&json_file);
@@ -1253,7 +1258,7 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id()
     ));
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-annotations")
         .arg(&annotation_set_id)
         .arg(&arrow_file);
@@ -1289,7 +1294,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let new_dataset_name = format!("QA {} Upload {}", dataset, timestamp);
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-dataset")
         .arg(&project_id)
         .arg(&new_dataset_name);
@@ -1303,7 +1308,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
         .ok_or_else(|| "Failed to parse dataset ID from create-dataset output".to_string())?;
 
     let annotation_set_name = format!("{} Annotations", new_dataset_name);
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-annotation-set")
         .arg(&new_dataset_id)
         .arg(&annotation_set_name);
@@ -1318,7 +1323,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
             "Failed to parse annotation set ID from create-annotation-set output".to_string()
         })?;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&new_dataset_id)
         .arg("--annotations")
@@ -1419,7 +1424,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let new_dataset_name = format!("{} Roundtrip {}", dataset, timestamp);
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-dataset")
         .arg(&project_id)
         .arg(&new_dataset_name);
@@ -1431,7 +1436,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
 
     let annotation_set_name = format!("{} Annotations", new_dataset_name);
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-annotation-set")
         .arg(&new_dataset_id)
         .arg(&annotation_set_name);
@@ -1443,7 +1448,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| "Failed to parse annotation set ID".to_string())?;
 
     // Upload with sequence support
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&new_dataset_id)
         .arg("--annotations")
@@ -1591,7 +1596,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_experiments_list() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1604,7 +1609,7 @@ fn test_experiments_list() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments").arg(&id);
         cmd.assert().success();
     }
@@ -1614,7 +1619,7 @@ fn test_experiments_list() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_experiments_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1627,7 +1632,7 @@ fn test_experiments_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&id)
             .arg("--name")
@@ -1645,7 +1650,7 @@ fn test_experiments_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_experiment_by_id() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1658,7 +1663,7 @@ fn test_experiment_by_id() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1679,7 +1684,7 @@ fn test_experiment_by_id() -> Result<(), Box<dyn std::error::Error>> {
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("experiment").arg(&id);
             cmd.assert()
                 .success()
@@ -1692,7 +1697,7 @@ fn test_experiment_by_id() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_training_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1705,7 +1710,7 @@ fn test_training_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1726,7 +1731,7 @@ fn test_training_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions").arg(&id);
             cmd.assert().success();
         }
@@ -1737,7 +1742,7 @@ fn test_training_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_training_sessions_filter_by_name() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1750,7 +1755,7 @@ fn test_training_sessions_filter_by_name() -> Result<(), Box<dyn std::error::Err
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1770,7 +1775,7 @@ fn test_training_sessions_filter_by_name() -> Result<(), Box<dyn std::error::Err
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -1789,7 +1794,7 @@ fn test_training_sessions_filter_by_name() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn test_training_session_by_id() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1802,7 +1807,7 @@ fn test_training_session_by_id() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1822,7 +1827,7 @@ fn test_training_session_by_id() -> Result<(), Box<dyn std::error::Error>> {
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -1839,7 +1844,7 @@ fn test_training_session_by_id() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| s.to_string());
 
             if let Some(sid) = session_id {
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
+                let mut cmd = edgefirst_cmd();
                 cmd.arg("training-session").arg(&sid);
                 cmd.assert()
                     .success()
@@ -1853,7 +1858,7 @@ fn test_training_session_by_id() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_training_session_with_model_params() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1866,7 +1871,7 @@ fn test_training_session_with_model_params() -> Result<(), Box<dyn std::error::E
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1886,7 +1891,7 @@ fn test_training_session_with_model_params() -> Result<(), Box<dyn std::error::E
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -1902,7 +1907,7 @@ fn test_training_session_with_model_params() -> Result<(), Box<dyn std::error::E
                 .map(|s| s.to_string());
 
             if let Some(sid) = session_id {
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
+                let mut cmd = edgefirst_cmd();
                 cmd.arg("training-session").arg(&sid).arg("--model");
 
                 let output = cmd.ok()?.stdout;
@@ -1919,7 +1924,7 @@ fn test_training_session_with_model_params() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn test_training_session_with_dataset_params() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1932,7 +1937,7 @@ fn test_training_session_with_dataset_params() -> Result<(), Box<dyn std::error:
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -1952,7 +1957,7 @@ fn test_training_session_with_dataset_params() -> Result<(), Box<dyn std::error:
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -1968,7 +1973,7 @@ fn test_training_session_with_dataset_params() -> Result<(), Box<dyn std::error:
                 .map(|s| s.to_string());
 
             if let Some(sid) = session_id {
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
+                let mut cmd = edgefirst_cmd();
                 cmd.arg("training-session").arg(&sid).arg("--dataset");
 
                 let output = cmd.ok()?.stdout;
@@ -1985,7 +1990,7 @@ fn test_training_session_with_dataset_params() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn test_training_session_with_artifacts() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -1998,7 +2003,7 @@ fn test_training_session_with_artifacts() -> Result<(), Box<dyn std::error::Erro
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -2018,7 +2023,7 @@ fn test_training_session_with_artifacts() -> Result<(), Box<dyn std::error::Erro
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -2034,7 +2039,7 @@ fn test_training_session_with_artifacts() -> Result<(), Box<dyn std::error::Erro
                 .map(|s| s.to_string());
 
             if let Some(sid) = session_id {
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
+                let mut cmd = edgefirst_cmd();
                 cmd.arg("training-session").arg(&sid).arg("--artifacts");
 
                 let output = cmd.ok()?.stdout;
@@ -2107,14 +2112,14 @@ fn extract_artifact_name(output: &str) -> Option<String> {
 fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
 
     let proj_id = extract_first_id(&output_str).ok_or("Failed to extract project ID")?;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("experiments")
         .arg(&proj_id)
         .arg("--name")
@@ -2124,7 +2129,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
 
     let exp_id = find_experiment_id(&output_str).ok_or("Failed to find experiment ID")?;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("training-sessions")
         .arg(&exp_id)
         .arg("--name")
@@ -2135,7 +2140,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
     let session_id = find_training_session_id(&output_str, "modelpack-960x540")
         .ok_or("Failed to find training session")?;
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("training-session")
         .arg(&session_id)
         .arg("--artifacts");
@@ -2153,7 +2158,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
         fs::remove_file(&output_file)?;
     }
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-artifact")
         .arg(&session_id)
         .arg(&artifact_name)
@@ -2177,7 +2182,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
 fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs::File, io::Write};
 
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -2190,7 +2195,7 @@ fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.trim_start_matches('[').parse::<String>().ok());
 
     if let Some(proj_id) = project_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("experiments")
             .arg(&proj_id)
             .arg("--name")
@@ -2210,7 +2215,7 @@ fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
             });
 
         if let Some(id) = exp_id {
-            let mut cmd = Command::cargo_bin("edgefirst-client")?;
+            let mut cmd = edgefirst_cmd();
             cmd.arg("training-sessions")
                 .arg(&id)
                 .arg("--name")
@@ -2231,7 +2236,7 @@ fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
                 let mut file = File::create(test_file)?;
                 writeln!(file, "Checkpoint from CLI test")?;
 
-                let mut cmd = Command::cargo_bin("edgefirst-client")?;
+                let mut cmd = edgefirst_cmd();
                 cmd.arg("upload-artifact")
                     .arg(&sid)
                     .arg(test_file)
@@ -2254,7 +2259,7 @@ fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_tasks_list() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("tasks");
     cmd.assert().success();
     Ok(())
@@ -2262,7 +2267,7 @@ fn test_tasks_list() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_tasks_with_name_filter() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("tasks").arg("--name").arg("modelpack-usermanaged");
 
     let output = cmd.ok()?.stdout;
@@ -2274,7 +2279,7 @@ fn test_tasks_with_name_filter() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_tasks_with_stages() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("tasks")
         .arg("--name")
         .arg("modelpack-usermanaged")
@@ -2289,7 +2294,7 @@ fn test_tasks_with_stages() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_task_by_id() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("tasks").arg("--name").arg("modelpack-usermanaged");
 
     let output = cmd.ok()?.stdout;
@@ -2303,7 +2308,7 @@ fn test_task_by_id() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.trim().to_string());
 
     if let Some(id) = task_id {
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("task").arg(&id);
         cmd.assert().success();
         println!("Retrieved task details for ID: {}", id);
@@ -2317,7 +2322,7 @@ fn test_task_by_id() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_validation_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
     // First get the "Unit Testing" project ID
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -2338,7 +2343,7 @@ fn test_validation_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
     println!("Found project ID: {}", project_id);
 
     // Now list validation sessions for this project
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("validation-sessions").arg(&project_id);
 
     let output = cmd.ok()?.stdout;
@@ -2355,7 +2360,7 @@ fn test_validation_sessions_list() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_validation_session_details() -> Result<(), Box<dyn std::error::Error>> {
     // First get the "Unit Testing" project ID
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
@@ -2373,7 +2378,7 @@ fn test_validation_session_details() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Could not find Unit Testing project");
 
     // Get validation sessions
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("validation-sessions").arg(&project_id);
 
     let output = cmd.ok()?.stdout;
@@ -2392,7 +2397,7 @@ fn test_validation_session_details() -> Result<(), Box<dyn std::error::Error>> {
         println!("Found validation session ID: {}", id);
 
         // Get validation session details
-        let mut cmd = Command::cargo_bin("edgefirst-client")?;
+        let mut cmd = edgefirst_cmd();
         cmd.arg("validation-session").arg(&id);
 
         let output = cmd.ok()?.stdout;
@@ -2414,7 +2419,7 @@ fn test_validation_session_details() -> Result<(), Box<dyn std::error::Error>> {
 /// Helper function to get "Test Labels" dataset for write operations
 fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Error>> {
     // Get Unit Testing project
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -2430,7 +2435,7 @@ fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Err
         .expect("Could not find Unit Testing project");
 
     // Get datasets and find "Test Labels" dataset
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("datasets").arg(&project_id);
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -2450,7 +2455,7 @@ fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Err
     println!("Found Test Labels dataset: {}", test_labels_dataset);
 
     // Get annotation sets for the dataset
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("dataset")
         .arg(&test_labels_dataset)
         .arg("--annotation-sets");
@@ -2500,7 +2505,7 @@ fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Run upload-dataset with all parameters (full mode)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--annotations")
@@ -2546,7 +2551,7 @@ fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>
     // Test auto-discovery: For {dataset}-stage.arrow, try to find folder/zip
     // Since we have {dataset}/ (not {dataset}-stage/), auto-discovery should fail
     // gracefully Run upload-dataset WITHOUT --images parameter
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--annotations")
@@ -2592,7 +2597,7 @@ fn test_upload_dataset_images_only() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Run upload-dataset in images-only mode (no annotations)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--images")
@@ -2633,7 +2638,7 @@ fn test_upload_dataset_warning_no_annotation_set_id() -> Result<(), Box<dyn std:
     }
 
     // Run upload-dataset with annotations but NO annotation_set_id (should warn)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--annotations")
@@ -2693,7 +2698,7 @@ fn test_upload_dataset_batching() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Run upload-dataset with full dataset (should trigger batching at 500 samples)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--annotations")
@@ -2728,7 +2733,7 @@ fn test_upload_dataset_missing_parameters() -> Result<(), Box<dyn std::error::Er
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
 
     // Try to run upload-dataset with NEITHER annotations NOR images (should fail)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset").arg(&dataset_id);
 
     let result = cmd.output()?;
@@ -2758,7 +2763,7 @@ fn test_upload_dataset_invalid_path() -> Result<(), Box<dyn std::error::Error>> 
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
 
     // Try to upload with non-existent path
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("upload-dataset")
         .arg(&dataset_id)
         .arg("--images")
@@ -2781,7 +2786,7 @@ fn test_upload_dataset_invalid_path() -> Result<(), Box<dyn std::error::Error>> 
 #[serial]
 fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     // Get Unit Testing project
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -2798,7 +2803,7 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Create a test dataset
     let dataset_name = format!("CLI CRUD Test {}", chrono::Utc::now().timestamp());
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-dataset")
         .arg(&project_id)
         .arg(&dataset_name)
@@ -2825,7 +2830,7 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Create an annotation set for the dataset
     let annotation_set_name = format!("CLI CRUD AnnotationSet {}", chrono::Utc::now().timestamp());
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("create-annotation-set")
         .arg(dataset_id)
         .arg(&annotation_set_name)
@@ -2854,7 +2859,7 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Step 3: Skipped - Upload samples (future enhancement)");
 
     // 4. Delete the annotation set
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("delete-annotation-set").arg(annotation_set_id);
 
     let result = cmd.output()?;
@@ -2874,7 +2879,7 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 5. Delete the dataset (this will also delete associated annotation sets)
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("delete-dataset").arg(dataset_id);
 
     let output = cmd.ok()?.stdout;
@@ -2907,7 +2912,7 @@ fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&normal_dir)?;
 
     println!("Downloading dataset with normal structure...");
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-dataset")
         .arg(&dataset_id)
         .arg("--output")
@@ -2919,7 +2924,7 @@ fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&flatten_dir)?;
 
     println!("Downloading dataset with --flatten option...");
-    let mut cmd = Command::cargo_bin("edgefirst-client")?;
+    let mut cmd = edgefirst_cmd();
     cmd.arg("download-dataset")
         .arg(&dataset_id)
         .arg("--output")
@@ -3020,5 +3025,321 @@ fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n✅ Flatten option test completed successfully");
+    Ok(())
+}
+
+// ============================================================================
+// SNAPSHOT TESTS
+// ============================================================================
+
+#[test]
+#[serial]
+fn test_snapshots_list() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("snapshots");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    println!("Snapshots list output:\n{}", output_str);
+
+    // Should have header or at least complete without error
+    assert!(
+        output_str.contains("ss-") || output_str.is_empty() || output_str.contains("No snapshots"),
+        "Expected snapshot list with ss- IDs or empty/no snapshots message"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
+    // First, list snapshots to get a valid ID
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("snapshots");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    // Extract first snapshot ID (format: [ss-XXXX] where XXXX is hexadecimal)
+    let snapshot_id = output_str
+        .lines()
+        .find_map(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .filter(|id| {
+                    id.starts_with("ss-") && id.len() > 3 && 
+                    id.chars().skip(3).all(|c| c.is_ascii_hexdigit())
+                })
+                .map(|s| s.trim().to_string())
+        });
+
+    if let Some(id) = snapshot_id {
+        println!("Testing with snapshot ID: {}", id);
+
+        // Get snapshot details - allow failure if snapshot was deleted
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("snapshot").arg(&id);
+        
+        match cmd.ok() {
+            Ok(result) => {
+                let output_str = String::from_utf8(result.stdout)?;
+                println!("Snapshot details:\n{}", output_str);
+
+                // Should contain the ID and basic info
+                assert!(
+                    output_str.contains(&id),
+                    "Expected snapshot details to contain ID"
+                );
+            }
+            Err(_) => {
+                println!("⚠️  Snapshot {} may have been deleted - skipping verification", id);
+            }
+        }
+    } else {
+        println!("⚠️  No snapshots found - skipping snapshot get test");
+    }
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::error::Error>> {
+    // This test covers create, download, and delete in a single workflow
+    
+    // Create a test file to snapshot
+    let test_data_dir = get_test_data_dir();
+    let test_file = test_data_dir.join("test_snapshot_workflow.txt");
+    fs::write(&test_file, b"Test snapshot workflow data")?;
+
+    println!("=== STEP 1: Create Snapshot ===");
+    // Create snapshot (no dataset ID needed - snapshots are project-agnostic)
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-snapshot").arg(&test_file);
+    let create_output = cmd.ok()?.stdout;
+    let create_output_str = String::from_utf8(create_output)?;
+
+    println!("Create snapshot output:\n{}", create_output_str);
+
+    // Extract snapshot ID from creation output (format: [ss-XXX] name)
+    let snapshot_id = create_output_str
+        .lines()
+        .find_map(|line| {
+            // Look for pattern like "[ss-e0e]"
+            if let Some(start) = line.find('[') {
+                if let Some(end) = line[start..].find(']') {
+                    let id_with_brackets = &line[start..start + end + 1];
+                    let id = id_with_brackets.trim_start_matches('[').trim_end_matches(']');
+                    if id.starts_with("ss-") {
+                        return Some(id.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .expect("Could not extract snapshot ID from creation output");
+
+    println!("✓ Created snapshot: {}", snapshot_id);
+
+    println!("\n=== STEP 2: Wait for Snapshot Processing ===");
+    // Wait for snapshot to be completed (snapshots need processing time)
+    // Use the API directly to check status
+    use edgefirst_client::{Client as EdgFirstClient, SnapshotID};
+    let api_client = EdgFirstClient::new()?.with_token_path(None)?;
+    let snap_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    
+    let rt = tokio::runtime::Runtime::new()?;
+    let mut attempts = 0;
+    let max_attempts = 30; // 30 seconds max wait
+    loop {
+        let snapshot = rt.block_on(api_client.snapshot(snap_id))?;
+        let status = snapshot.status();
+        
+        // Snapshot is ready when status is "available" or "completed"
+        if status == "available" || status == "completed" {
+            println!("✓ Snapshot ready (status: {})", status);
+            break;
+        }
+        
+        attempts += 1;
+        if attempts >= max_attempts {
+            panic!("Snapshot did not become available within {} seconds. Last status: {}", max_attempts, status);
+        }
+        
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    println!("\n=== STEP 3: Download Snapshot ===");
+    // Create download directory
+    let downloads_root = get_test_data_dir().join("downloads");
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let download_dir = downloads_root.join(format!("snapshot_{}_{}", std::process::id(), timestamp));
+    fs::create_dir_all(&download_dir)?;
+
+    // Download snapshot (signature: snapshot_id --output path)
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("download-snapshot")
+        .arg(&snapshot_id)
+        .arg("--output")
+        .arg(&download_dir);
+    let download_output = cmd.ok()?.stdout;
+    let download_output_str = String::from_utf8(download_output)?;
+
+    println!("Download snapshot output:\n{}", download_output_str);
+
+    // Verify download directory has content
+    let entries: Vec<_> = fs::read_dir(&download_dir)?
+        .filter_map(|e| e.ok())
+        .collect();
+
+    assert!(
+        !entries.is_empty(),
+        "Expected downloaded snapshot to contain files"
+    );
+
+    println!("✓ Downloaded {} items", entries.len());
+
+    println!("\n=== STEP 4: Delete Snapshot ===");
+    // Delete the snapshot
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-snapshot").arg(&snapshot_id);
+    let delete_output = cmd.ok()?.stdout;
+    let delete_output_str = String::from_utf8(delete_output)?;
+
+    println!("Delete snapshot output:\n{}", delete_output_str);
+
+    println!("✓ Deleted snapshot: {}", snapshot_id);
+
+    // Clean up test file
+    let _ = fs::remove_file(&test_file);
+
+    println!("\n✅ Snapshot workflow test completed successfully");
+    Ok(())
+}
+
+#[test]
+#[serial]
+#[ignore = "Requires test data. Run manually with: cargo test test_snapshot_restore_workflow -- --ignored"]
+fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
+    // This test covers restore functionality with and without AGTG
+    
+    let mut datasets_to_cleanup = Vec::new();
+    
+    // Get Unit Testing project ID
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("projects").arg("--name").arg("Unit Testing");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+    let project_id = output_str
+        .lines()
+        .next()
+        .and_then(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .map(|s| s.trim().to_string())
+        })
+        .expect("Could not find Unit Testing project");
+    
+    // List snapshots to get a valid ID
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("snapshots");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    // Extract first snapshot ID
+    let snapshot_id = output_str
+        .lines()
+        .find_map(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .filter(|id| id.starts_with("ss-"))
+                .map(|s| s.trim().to_string())
+        })
+        .expect("No snapshots available for restore test");
+
+    println!("Testing restore workflows with snapshot ID: {} into project {}", snapshot_id, project_id);
+
+    println!("\n=== STEP 1: Basic Restore ===");
+    // Restore snapshot (basic restore without AGTG or autodepth)
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("restore-snapshot").arg(&project_id).arg(&snapshot_id);
+    let restore_output = cmd.ok()?.stdout;
+    let restore_output_str = String::from_utf8(restore_output)?;
+
+    println!("Restore snapshot output:\n{}", restore_output_str);
+
+    // Extract dataset ID from restore output
+    if let Some(dataset_id) = restore_output_str
+        .lines()
+        .find_map(|line| {
+            if line.contains("ds-") {
+                line.split_whitespace()
+                    .find(|word| word.starts_with("ds-"))
+                    .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
+            } else {
+                None
+            }
+        })
+    {
+        datasets_to_cleanup.push(dataset_id.clone());
+        println!("✓ Basic restore completed - dataset: {}", dataset_id);
+    } else {
+        println!("✓ Basic restore completed (no dataset ID in output)");
+    }
+
+    println!("\n=== STEP 2: Restore with AGTG ===");
+    // Restore snapshot with AGTG enabled
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("restore-snapshot")
+        .arg(&project_id)
+        .arg(&snapshot_id)
+        .arg("--autolabel");
+    let agtg_output = cmd.ok()?.stdout;
+    let agtg_output_str = String::from_utf8(agtg_output)?;
+
+    println!("Restore with AGTG output:\n{}", agtg_output_str);
+
+    // Extract dataset ID from AGTG restore output
+    if let Some(dataset_id) = agtg_output_str
+        .lines()
+        .find_map(|line| {
+            if line.contains("ds-") {
+                line.split_whitespace()
+                    .find(|word| word.starts_with("ds-"))
+                    .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
+            } else {
+                None
+            }
+        })
+    {
+        datasets_to_cleanup.push(dataset_id.clone());
+        println!("✓ Restore with AGTG completed - dataset: {}", dataset_id);
+    } else {
+        println!("✓ Restore with AGTG completed (no dataset ID in output)");
+    }
+
+    // CLEANUP: Delete all restored datasets
+    println!("\n=== CLEANUP: Deleting {} Restored Datasets ===", datasets_to_cleanup.len());
+    for dataset_id in datasets_to_cleanup {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("delete-dataset").arg(&dataset_id);
+        match cmd.output() {
+            Ok(output) if output.status.success() => {
+                println!("✓ Deleted dataset: {}", dataset_id);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("⚠ Failed to delete dataset {}: {}", dataset_id, stderr);
+            }
+            Err(e) => {
+                println!("⚠ Error deleting dataset {}: {}", dataset_id, e);
+            }
+        }
+    }
+
+    println!("\n✅ Snapshot restore workflow test completed successfully");
     Ok(())
 }

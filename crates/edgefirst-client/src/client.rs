@@ -44,8 +44,21 @@ use walkdir::WalkDir;
 #[cfg(feature = "polars")]
 use polars::prelude::*;
 
-static MAX_TASKS: usize = 32;
 static PART_SIZE: usize = 100 * 1024 * 1024;
+
+fn max_tasks() -> usize {
+    std::env::var("MAX_TASKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            // Default to half the number of CPUs, minimum 2, maximum 8
+            // Lower max prevents timeout issues with large file uploads
+            let cpus = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            (cpus / 2).clamp(2, 8)
+        })
+}
 
 fn sanitize_path_component(name: &str) -> String {
     let trimmed = name.trim();
@@ -1712,12 +1725,87 @@ impl Client {
         self.rpc("snapshots.get".to_owned(), Some(params)).await
     }
 
-    /// Create a new snapshot from the file at the specified path.  If the path
-    /// is a directory then all the files in the directory are uploaded.  The
-    /// snapshot name will be the specified path, either file or directory.
+    /// Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
     ///
-    /// The progress callback can be used to monitor the progress of the upload
-    /// over a watch channel.
+    /// Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow
+    /// pairs) that serve two primary purposes:
+    ///
+    /// 1. **MCAP uploads**: Upload MCAP files containing sensor data (images,
+    ///    point clouds, IMU, GPS) to EdgeFirst Studio. Snapshots can then be
+    ///    restored with AGTG (Automatic Ground Truth Generation) and optional
+    ///    auto-depth processing.
+    ///
+    /// 2. **Dataset exchange**: Export datasets for backup, sharing, or
+    ///    migration between EdgeFirst Studio instances using the create →
+    ///    download → upload → restore workflow.
+    ///
+    /// Large files are automatically chunked into 100MB parts and uploaded
+    /// concurrently using S3 multipart upload with presigned URLs. Each chunk
+    /// is streamed without loading into memory, maintaining constant memory
+    /// usage.
+    ///
+    /// **Concurrency tuning**: Set `MAX_TASKS` to control concurrent
+    /// uploads (default: half of CPU cores, min 2, max 8). Lower values work
+    /// better for large files to avoid timeout issues. Higher values (16-32)
+    /// are better for many small files.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Local file path to MCAP file or directory containing
+    ///   EdgeFirst Dataset Format files (Zip/Arrow pairs)
+    /// * `progress` - Optional channel to receive upload progress updates
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Snapshot` object with ID, description, status, path, and
+    /// creation timestamp on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Path doesn't exist or contains invalid UTF-8
+    /// * File format is invalid (not MCAP or EdgeFirst Dataset Format)
+    /// * Upload fails or network error occurs
+    /// * Server rejects the snapshot
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::{Client, Progress};
+    /// # use tokio::sync::mpsc;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    ///
+    /// // Upload MCAP file with progress tracking
+    /// let (tx, mut rx) = mpsc::channel(1);
+    /// tokio::spawn(async move {
+    ///     while let Some(Progress { current, total }) = rx.recv().await {
+    ///         println!(
+    ///             "Upload: {}/{} bytes ({:.1}%)",
+    ///             current,
+    ///             total,
+    ///             (current as f64 / total as f64) * 100.0
+    ///         );
+    ///     }
+    /// });
+    /// let snapshot = client.create_snapshot("data.mcap", Some(tx)).await?;
+    /// println!("Created snapshot: {:?}", snapshot.id());
+    ///
+    /// // Upload dataset directory (no progress)
+    /// let snapshot = client.create_snapshot("./dataset_export/", None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
+    /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
+    ///   data
+    /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
+    /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
+    /// * [Snapshots Guide](https://doc.edgefirst.ai/latest/studio/snapshots/)
     pub async fn create_snapshot(
         &self,
         path: &str,
@@ -1929,10 +2017,98 @@ impl Client {
         self.snapshot(snapshot_id).await
     }
 
-    /// Downloads a snapshot from the server.  The snapshot could be a single
-    /// file or a directory of files.  The snapshot is downloaded to the
-    /// specified path.  A progress callback can be provided to monitor the
-    /// progress of the download over a watch channel.
+    /// Delete a snapshot from EdgeFirst Studio.
+    ///
+    /// Permanently removes a snapshot and its associated data. This operation
+    /// cannot be undone.
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot_id` - The snapshot ID to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Snapshot doesn't exist
+    /// * User lacks permission to delete the snapshot
+    /// * Server error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::{Client, SnapshotID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let snapshot_id = SnapshotID::from(123);
+    /// client.delete_snapshot(snapshot_id).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload snapshot
+    /// * [`snapshots`](Self::snapshots) - List all snapshots
+    pub async fn delete_snapshot(&self, snapshot_id: SnapshotID) -> Result<(), Error> {
+        let params = HashMap::from([("snapshot_id", snapshot_id)]);
+        let _: String = self
+            .rpc("snapshots.delete".to_owned(), Some(params))
+            .await?;
+        Ok(())
+    }
+
+    /// Download a snapshot from EdgeFirst Studio to local storage.
+    ///
+    /// Downloads all files in a snapshot (single MCAP file or directory of
+    /// EdgeFirst Dataset Format files) to the specified output path. Files are
+    /// downloaded concurrently with progress tracking.
+    ///
+    /// **Concurrency tuning**: Set `MAX_TASKS` to control concurrent
+    /// downloads (default: half of CPU cores, min 2, max 8).
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot_id` - The snapshot ID to download
+    /// * `output` - Local directory path to save downloaded files
+    /// * `progress` - Optional channel to receive download progress updates
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Snapshot doesn't exist
+    /// * Output directory cannot be created
+    /// * Download fails or network error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::{Client, SnapshotID, Progress};
+    /// # use tokio::sync::mpsc;
+    /// # use std::path::PathBuf;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let snapshot_id = SnapshotID::from(123);
+    ///
+    /// // Download with progress tracking
+    /// let (tx, mut rx) = mpsc::channel(1);
+    /// tokio::spawn(async move {
+    ///     while let Some(Progress { current, total }) = rx.recv().await {
+    ///         println!("Download: {}/{} bytes", current, total);
+    ///     }
+    /// });
+    /// client
+    ///     .download_snapshot(snapshot_id, PathBuf::from("./output"), Some(tx))
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload snapshot
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
+    /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     pub async fn download_snapshot(
         &self,
         snapshot_id: SnapshotID,
@@ -1948,7 +2124,7 @@ impl Client {
 
         let total = Arc::new(AtomicUsize::new(0));
         let current = Arc::new(AtomicUsize::new(0));
-        let sem = Arc::new(Semaphore::new(MAX_TASKS));
+        let sem = Arc::new(Semaphore::new(max_tasks()));
 
         let tasks = items
             .iter()
@@ -2015,20 +2191,72 @@ impl Client {
         Ok(())
     }
 
-    /// The snapshot restore method is used to restore a snapshot to the server.
-    /// The restore method can perform a few different operations depending on
-    /// the snapshot type.
+    /// Restore a snapshot to a dataset in EdgeFirst Studio with optional AGTG.
     ///
-    /// The auto-annotation workflow is used to automatically annotate the
-    /// dataset with 2D masks and boxes using the labels within the
-    /// autolabel list. If autolabel is empty then the auto-annotation
-    /// workflow is not used. If the MCAP includes radar or LiDAR data then
-    /// the auto-annotation workflow will also generate 3D bounding boxes
-    /// for detected objects.
+    /// Restores a snapshot (MCAP file or EdgeFirst Dataset) into a dataset in
+    /// the specified project. For MCAP files, supports:
     ///
-    /// The autodepth flag is used to determine if a depthmap should be
-    /// automatically generated for the dataset, this will currently only work
-    /// accurately for Maivin or Raivin cameras.
+    /// * **AGTG (Automatic Ground Truth Generation)**: Automatically annotate
+    ///   detected objects with 2D masks/boxes and 3D boxes (if radar/LiDAR
+    ///   present)
+    /// * **Auto-depth**: Generate depthmaps (Maivin/Raivin cameras only)
+    /// * **Topic filtering**: Select specific MCAP topics to restore
+    ///
+    /// For EdgeFirst Dataset snapshots, this simply imports the pre-existing
+    /// dataset structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `project_id` - Target project ID
+    /// * `snapshot_id` - Snapshot ID to restore
+    /// * `topics` - MCAP topics to include (empty = all topics)
+    /// * `autolabel` - Object labels for AGTG (empty = no auto-annotation)
+    /// * `autodepth` - Generate depthmaps (Maivin/Raivin only)
+    /// * `dataset_name` - Optional custom dataset name
+    /// * `dataset_description` - Optional dataset description
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SnapshotRestoreResult` with the new dataset ID and status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Snapshot or project doesn't exist
+    /// * Snapshot format is invalid
+    /// * Server rejects restoration parameters
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::{Client, ProjectID, SnapshotID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let project_id = ProjectID::from(1);
+    /// let snapshot_id = SnapshotID::from(123);
+    ///
+    /// // Restore MCAP with AGTG for "person" and "car" detection
+    /// let result = client
+    ///     .restore_snapshot(
+    ///         project_id,
+    ///         snapshot_id,
+    ///         &[],                                        // All topics
+    ///         &["person".to_string(), "car".to_string()], // AGTG labels
+    ///         true,                                       // Auto-depth
+    ///         Some("Highway Dataset"),
+    ///         Some("Collected on I-95"),
+    ///     )
+    ///     .await?;
+    /// println!("Restored to dataset: {:?}", result.dataset_id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload snapshot
+    /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
+    /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     #[allow(clippy::too_many_arguments)]
     pub async fn restore_snapshot(
         &self,
@@ -2541,7 +2769,9 @@ impl Client {
 /// tracking.
 ///
 /// This helper eliminates boilerplate for parallel item processing with:
-/// - Semaphore limiting concurrent tasks to MAX_TASKS
+/// - Semaphore limiting concurrent tasks to `max_tasks()` (configurable via
+///   `MAX_TASKS` environment variable, default: half of CPU cores, min 2, max
+///   8)
 /// - Atomic progress counter with automatic item-level updates
 /// - Progress updates sent after each item completes (not byte-level streaming)
 /// - Proper error propagation from spawned tasks
@@ -2577,7 +2807,7 @@ where
 {
     let total = items.len();
     let current = Arc::new(AtomicUsize::new(0));
-    let sem = Arc::new(Semaphore::new(MAX_TASKS));
+    let sem = Arc::new(Semaphore::new(max_tasks()));
     let work_fn = Arc::new(work_fn);
 
     let tasks = items
@@ -2634,7 +2864,8 @@ where
 ///
 /// This function handles:
 /// - Splitting files into parts based on PART_SIZE (100MB)
-/// - Parallel upload with concurrency limiting (MAX_TASKS = 32)
+/// - Parallel upload with concurrency limiting via `max_tasks()` (configurable
+///   with `MAX_TASKS`, default: half of CPU cores, min 2, max 8)
 /// - Retry logic (handled by reqwest client)
 /// - Progress tracking across all parts
 ///
@@ -2660,7 +2891,7 @@ async fn upload_multipart(
 ) -> Result<SnapshotCompleteMultipartParams, Error> {
     let filesize = path.metadata()?.len() as usize;
     let n_parts = filesize.div_ceil(PART_SIZE);
-    let sem = Arc::new(Semaphore::new(MAX_TASKS));
+    let sem = Arc::new(Semaphore::new(max_tasks()));
 
     let key = part.key.ok_or(Error::InvalidResponse)?;
     let upload_id = part.upload_id;

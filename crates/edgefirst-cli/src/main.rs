@@ -3,7 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationType, Client, Dataset, Error, FileType, Progress, TrainingSession,
+    AnnotationType, Client, Dataset, Error, FileType, Progress, SnapshotID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -323,6 +323,65 @@ enum Command {
     ValidationSession {
         /// Validation Session ID
         session_id: String,
+    },
+    /// List all snapshots available to the user.
+    Snapshots,
+    /// Retrieve snapshot information for the provided snapshot ID.
+    Snapshot {
+        /// Snapshot ID
+        snapshot_id: String,
+    },
+    /// Create a snapshot from an MCAP file or EdgeFirst Dataset directory.
+    /// Snapshots enable MCAP uploads with AGTG (Automatic Ground Truth
+    /// Generation) and dataset backup/migration workflows.
+    CreateSnapshot {
+        /// Path to MCAP file or directory with EdgeFirst Dataset Format files
+        path: PathBuf,
+    },
+    /// Download a snapshot to local storage.
+    DownloadSnapshot {
+        /// Snapshot ID
+        snapshot_id: String,
+
+        /// Output directory path
+        #[clap(long)]
+        output: PathBuf,
+    },
+    /// Restore a snapshot to a dataset in EdgeFirst Studio.
+    /// Supports MCAP uploads with optional AGTG (auto-annotation) and
+    /// auto-depth generation.
+    RestoreSnapshot {
+        /// Project ID to restore snapshot into
+        project_id: String,
+
+        /// Snapshot ID to restore
+        snapshot_id: String,
+
+        /// MCAP topics to include (comma-separated, empty = all)
+        #[clap(long, value_delimiter = ',')]
+        topics: Vec<String>,
+
+        /// Object labels for AGTG auto-annotation (comma-separated, empty = no
+        /// AGTG)
+        #[clap(long, value_delimiter = ',')]
+        autolabel: Vec<String>,
+
+        /// Generate depthmaps (Maivin/Raivin cameras only)
+        #[clap(long)]
+        autodepth: bool,
+
+        /// Custom dataset name
+        #[clap(long)]
+        dataset_name: Option<String>,
+
+        /// Dataset description
+        #[clap(long)]
+        dataset_description: Option<String>,
+    },
+    /// Delete a snapshot from EdgeFirst Studio.
+    DeleteSnapshot {
+        /// Snapshot ID to delete
+        snapshot_id: String,
     },
 }
 
@@ -1975,6 +2034,146 @@ async fn handle_validation_session(client: &Client, session_id: String) -> Resul
     Ok(())
 }
 
+async fn handle_snapshots(client: &Client) -> Result<(), Error> {
+    let snapshots = client.snapshots(None).await?;
+    for snapshot in snapshots {
+        println!(
+            "[{}] {}: {} ({})",
+            snapshot.id(),
+            snapshot.description(),
+            snapshot.path(),
+            snapshot.status()
+        );
+    }
+    Ok(())
+}
+
+async fn handle_snapshot(client: &Client, snapshot_id: String) -> Result<(), Error> {
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    let snapshot = client.snapshot(snapshot_id).await?;
+    println!(
+        "[{}] {}\nPath: {}\nStatus: {}\nCreated: {}",
+        snapshot.id(),
+        snapshot.description(),
+        snapshot.path(),
+        snapshot.status(),
+        snapshot.created()
+    );
+    Ok(())
+}
+
+async fn handle_create_snapshot(client: &Client, path: PathBuf) -> Result<(), Error> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let pb = ProgressBar::new(100);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+
+    tokio::spawn(async move {
+        while let Some(Progress { current, total }) = rx.recv().await {
+            pb.set_length(total as u64);
+            pb.set_position(current as u64);
+        }
+        pb.finish_with_message("Upload complete");
+    });
+
+    let path_str = path.to_str().ok_or_else(|| {
+        Error::IoError(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Path contains invalid UTF-8",
+        ))
+    })?;
+
+    let snapshot = client.create_snapshot(path_str, Some(tx)).await?;
+    println!(
+        "Snapshot created successfully: [{}] {}",
+        snapshot.id(),
+        snapshot.description()
+    );
+    Ok(())
+}
+
+async fn handle_download_snapshot(
+    client: &Client,
+    snapshot_id: String,
+    output: PathBuf,
+) -> Result<(), Error> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let pb = ProgressBar::new(100);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+
+    tokio::spawn(async move {
+        while let Some(Progress { current, total }) = rx.recv().await {
+            pb.set_length(total as u64);
+            pb.set_position(current as u64);
+        }
+        pb.finish_with_message("Download complete");
+    });
+
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    client
+        .download_snapshot(snapshot_id.into(), output, Some(tx))
+        .await?;
+    println!("Snapshot downloaded successfully");
+    Ok(())
+}
+
+struct RestoreSnapshotParams {
+    project_id: String,
+    snapshot_id: String,
+    topics: Vec<String>,
+    autolabel: Vec<String>,
+    autodepth: bool,
+    dataset_name: Option<String>,
+    dataset_description: Option<String>,
+}
+
+async fn handle_restore_snapshot(
+    client: &Client,
+    params: RestoreSnapshotParams,
+) -> Result<(), Error> {
+    let snapshot_id = SnapshotID::try_from(params.snapshot_id.as_str())?;
+    let result = client
+        .restore_snapshot(
+            params.project_id.try_into()?,
+            snapshot_id,
+            &params.topics,
+            &params.autolabel,
+            params.autodepth,
+            params.dataset_name.as_deref(),
+            params.dataset_description.as_deref(),
+        )
+        .await?;
+    println!(
+        "Snapshot restored successfully to dataset: [{}]",
+        result.dataset_id
+    );
+    Ok(())
+}
+
+async fn handle_delete_snapshot(client: &Client, snapshot_id: String) -> Result<(), Error> {
+    let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
+    client.delete_snapshot(snapshot_id).await?;
+    println!("Snapshot deleted successfully");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -2117,12 +2316,52 @@ async fn main() -> Result<(), Error> {
         Command::ValidationSession { session_id } => {
             handle_validation_session(&client, session_id).await
         }
+        Command::Snapshots => handle_snapshots(&client).await,
+        Command::Snapshot { snapshot_id } => handle_snapshot(&client, snapshot_id).await,
+        Command::CreateSnapshot { path } => handle_create_snapshot(&client, path).await,
+        Command::DownloadSnapshot {
+            snapshot_id,
+            output,
+        } => handle_download_snapshot(&client, snapshot_id, output).await,
+        Command::RestoreSnapshot {
+            project_id,
+            snapshot_id,
+            topics,
+            autolabel,
+            autodepth,
+            dataset_name,
+            dataset_description,
+        } => {
+            handle_restore_snapshot(
+                &client,
+                RestoreSnapshotParams {
+                    project_id,
+                    snapshot_id,
+                    topics,
+                    autolabel,
+                    autodepth,
+                    dataset_name,
+                    dataset_description,
+                },
+            )
+            .await
+        }
+        Command::DeleteSnapshot { snapshot_id } => {
+            handle_delete_snapshot(&client, snapshot_id).await
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Type aliases for cleaner test function signatures
+    type BoundingBox = (f64, f64, f64, f64); // (cx, cy, w, h)
+    type PolygonPoint = (f32, f32); // (x, y)
+    type Polygon = Vec<PolygonPoint>;
+    type OptionalBox2dData = Option<Vec<Option<BoundingBox>>>;
+    type OptionalMaskData = Option<Vec<Option<Polygon>>>;
 
     #[test]
     fn test_is_valid_image_extension() {
@@ -2251,8 +2490,8 @@ mod tests {
             names: Vec<&str>,
             groups: Option<Vec<Option<&str>>>,
             labels: Option<Vec<Option<&str>>>,
-            box2d_data: Option<Vec<Option<(f64, f64, f64, f64)>>>,
-            mask_data: Option<Vec<Option<Vec<(f32, f32)>>>>,
+            box2d_data: OptionalBox2dData,
+            mask_data: OptionalMaskData,
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Ensure parent directory exists
             if let Some(parent) = path.parent() {
@@ -2317,8 +2556,8 @@ mod tests {
             samples: Vec<(&str, &str)>, // (name, frame)
             groups: Option<Vec<Option<&str>>>,
             labels: Option<Vec<Option<&str>>>,
-            box2d_data: Option<Vec<Option<(f64, f64, f64, f64)>>>,
-            mask_data: Option<Vec<Option<Vec<(f32, f32)>>>>,
+            box2d_data: OptionalBox2dData,
+            mask_data: OptionalMaskData,
         ) -> Result<(), Box<dyn std::error::Error>> {
             // Ensure parent directory exists
             if let Some(parent) = path.parent() {

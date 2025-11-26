@@ -49,6 +49,14 @@
 //! Both scopes use the same configurable retry count (`EDGEFIRST_MAX_RETRIES`,
 //! default: 3), but differ in error classification:
 //!
+//! # Environment Variables
+//!
+//! - `EDGEFIRST_MAX_RETRIES`: Maximum number of retries for failed requests
+//!   (default: 3)
+//! - `MAX_TASKS`: Maximum concurrent upload/download tasks (default: half of
+//!   CPU cores, min 2, max 8). Lower values (2-8) work better for large files
+//!   to avoid timeouts. Higher values (16-32) are better for many small files.
+//!
 //! ## StudioApi Error Classification
 //!
 //! - **Never retry**: 401 Unauthorized, 403 Forbidden (auth failures)
