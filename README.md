@@ -169,6 +169,38 @@ edgefirst-client training-session <SESSION_ID> --artifacts
 edgefirst-client download-artifact <SESSION_ID> modelpack.onnx --output ./models/
 ```
 
+#### Work with Snapshots
+
+Snapshots preserve complete copies of sensor data, datasets, or directories for versioning and backup. Restore them with optional automatic annotation (AGTG) and depth map generation.
+
+```bash
+# List all snapshots
+edgefirst-client snapshots
+
+# Create snapshot from MCAP file
+edgefirst-client create-snapshot <DATASET_ID> recording.mcap
+
+# Create snapshot from directory
+edgefirst-client create-snapshot <DATASET_ID> ./sensor_data/
+
+# Download snapshot
+edgefirst-client download-snapshot <SNAPSHOT_ID> ./snapshot_backup/
+
+# Restore snapshot to new dataset
+edgefirst-client restore-snapshot <SNAPSHOT_ID>
+
+# Restore with automatic annotation (AGTG)
+edgefirst-client restore-snapshot <SNAPSHOT_ID> --autolabel
+
+# Restore with AGTG and depth map generation
+edgefirst-client restore-snapshot <SNAPSHOT_ID> --autolabel --autodepth
+
+# Delete snapshot
+edgefirst-client delete-snapshot <SNAPSHOT_ID>
+```
+
+For detailed snapshot documentation, see the [EdgeFirst Studio Snapshots Guide](https://doc.edgefirst.ai/saas/studio/snapshots/).
+
 ### Rust Library
 
 ```rust

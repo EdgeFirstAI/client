@@ -396,6 +396,139 @@ edgefirst-client upload-dataset 12345 \
 
 **Note:** Uploads are batched (500 samples per batch) with progress tracking. Arrow files must conform to the EdgeFirst Dataset Format.
 
+## SNAPSHOTS
+
+Dataset snapshots preserve a complete copy of raw sensor data (MCAP files), directories, or EdgeFirst Dataset Format data at a specific point in time. They can be restored to create new datasets with optional automatic annotation (AGTG) and depth map generation.
+
+For detailed information about snapshots, see: https://doc.edgefirst.ai/saas/studio/snapshots/
+
+### snapshots
+
+List all snapshots available to the authenticated user.
+
+**edgefirst-client snapshots**
+
+Displays snapshot ID, dataset reference, creation date, and username.
+
+### snapshot
+
+Retrieve detailed information for a specific snapshot.
+
+**edgefirst-client snapshot** *SNAPSHOT_ID*
+
+**Arguments:**
+
+*SNAPSHOT_ID*
+:   The unique identifier of the snapshot (format: **ss-xxx**).
+
+### create-snapshot
+
+Create a new snapshot from a local file or directory. Supports MCAP files, directories, and EdgeFirst Dataset Format (Zip/Arrow pairs).
+
+**edgefirst-client create-snapshot** *DATASET_ID* *PATH*
+
+**Arguments:**
+
+*DATASET_ID*
+:   Dataset ID to associate the snapshot with (used for project context).
+
+*PATH*
+:   Path to file or directory to snapshot. Supported formats:
+    - MCAP files (**.mcap**)
+    - EdgeFirst Dataset Format (**.zip** with **.arrow** pair)
+    - Directories (all files recursively included)
+
+**Example:**
+
+```bash
+# Create snapshot from MCAP file
+edgefirst-client create-snapshot ds-12345 recording.mcap
+
+# Create snapshot from directory
+edgefirst-client create-snapshot ds-12345 ./sensor_data/
+
+# Create snapshot from EdgeFirst Dataset Format
+edgefirst-client create-snapshot ds-12345 dataset.zip
+```
+
+**Note:** Large files (>100MB) use multipart upload with automatic chunking. Progress is displayed during upload.
+
+### download-snapshot
+
+Download a snapshot to a local directory.
+
+**edgefirst-client download-snapshot** *SNAPSHOT_ID* *OUTPUT*
+
+**Arguments:**
+
+*SNAPSHOT_ID*
+:   The unique identifier of the snapshot (format: **ss-xxx**).
+
+*OUTPUT*
+:   Output directory path where snapshot contents will be downloaded.
+
+**Example:**
+
+```bash
+# Download snapshot
+edgefirst-client download-snapshot ss-abc123 ./snapshot_data/
+```
+
+### restore-snapshot
+
+Restore a snapshot to create a new dataset. Optionally enable automatic annotation (AGTG) and depth map generation for compatible camera data.
+
+**edgefirst-client restore-snapshot** [*OPTIONS*] *SNAPSHOT_ID*
+
+**Arguments:**
+
+*SNAPSHOT_ID*
+:   The unique identifier of the snapshot to restore (format: **ss-xxx**).
+
+**Options:**
+
+**\--autolabel**
+:   Enable automatic annotation generation (AGTG) for restored dataset. Requires compatible sensor data and trained models.
+
+**\--autodepth**
+:   Enable automatic depth map generation for Maivin/Raivin camera data.
+
+**Example:**
+
+```bash
+# Basic restore
+edgefirst-client restore-snapshot ss-abc123
+
+# Restore with automatic annotation
+edgefirst-client restore-snapshot ss-abc123 --autolabel
+
+# Restore with both AGTG and depth generation
+edgefirst-client restore-snapshot ss-abc123 --autolabel --autodepth
+```
+
+**Note:** Restoration creates a new dataset. The original snapshot remains unchanged and can be restored multiple times. AGTG processing runs asynchronously - monitor task status for completion.
+
+For more information about AGTG, see: https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/
+
+### delete-snapshot
+
+Delete a snapshot permanently. This operation cannot be undone.
+
+**edgefirst-client delete-snapshot** *SNAPSHOT_ID*
+
+**Arguments:**
+
+*SNAPSHOT_ID*
+:   The unique identifier of the snapshot to delete (format: **ss-xxx**).
+
+**Example:**
+
+```bash
+edgefirst-client delete-snapshot ss-abc123
+```
+
+**Warning:** Deletion is permanent. Ensure the snapshot is no longer needed before deleting.
+
 ## TRAINING
 
 ### experiments
