@@ -2163,8 +2163,8 @@ impl SnapshotRestoreResult {
     }
 
     #[getter]
-    pub fn task_id(&self) -> TaskID {
-        TaskID(self.0.task_id)
+    pub fn task_id(&self) -> Option<TaskID> {
+        self.0.task_id.map(TaskID)
     }
 
     #[getter]
@@ -2173,12 +2173,13 @@ impl SnapshotRestoreResult {
     }
 
     pub fn __repr__(&self) -> String {
+        let task_id_str = match &self.0.task_id {
+            Some(id) => id.to_string(),
+            None => "None".to_string(),
+        };
         format!(
             "SnapshotRestoreResult(dataset_id={}, dataset_name='{}', annotation_set_id={}, task_id={})",
-            self.0.dataset_id,
-            self.0.dataset_name,
-            self.0.annotation_set_id,
-            self.0.task_id
+            self.0.dataset_id, self.0.dataset_name, self.0.annotation_set_id, task_id_str
         )
     }
 }

@@ -1009,8 +1009,8 @@ pub struct SnapshotRestoreResult {
     pub dataset_name: String,
     pub dataset_id: DatasetID,
     pub annotation_set_id: AnnotationSetID,
-    #[serde(rename = "docker_task_id")]
-    pub task_id: TaskID,
+    #[serde(default)]
+    pub task_id: Option<TaskID>,
     pub date: DateTime<Utc>,
 }
 

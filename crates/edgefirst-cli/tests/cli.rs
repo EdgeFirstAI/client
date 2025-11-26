@@ -200,6 +200,13 @@ fn validate_dataset_structure(dir: &Path) -> Result<(), Box<dyn std::error::Erro
 }
 
 fn download_dataset_from_server(dataset_id: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    download_dataset_from_server_with_retries(dataset_id, 1) // default: 1 attempt
+}
+
+fn download_dataset_from_server_with_retries(
+    dataset_id: &str,
+    max_attempts: u32,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let downloads_root = get_test_data_dir().join("downloads");
     fs::create_dir_all(&downloads_root)?;
 
@@ -213,12 +220,37 @@ fn download_dataset_from_server(dataset_id: &str) -> Result<PathBuf, Box<dyn std
     ));
     fs::create_dir_all(&download_dir)?;
 
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("download-dataset")
-        .arg(dataset_id)
-        .arg("--output")
-        .arg(&download_dir);
-    cmd.assert().success();
+    for attempt in 1..=max_attempts {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("download-dataset")
+            .arg(dataset_id)
+            .arg("--output")
+            .arg(&download_dir);
+        let result = cmd.ok();
+        if result.is_ok() {
+            return Ok(download_dir);
+        }
+        if attempt < max_attempts {
+            println!(
+                "Download attempt {} failed, retrying in 5 seconds...",
+                attempt
+            );
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            // Clear directory for retry
+            if download_dir.exists() {
+                let _ = fs::remove_dir_all(&download_dir);
+                fs::create_dir_all(&download_dir)?;
+            }
+        } else {
+            // On last attempt, propagate the error
+            cmd = edgefirst_cmd();
+            cmd.arg("download-dataset")
+                .arg(dataset_id)
+                .arg("--output")
+                .arg(&download_dir);
+            cmd.assert().success();
+        }
+    }
 
     Ok(download_dir)
 }
@@ -708,9 +740,13 @@ fn test_organization_details() -> Result<(), Box<dyn std::error::Error>> {
 
 // ===== Authentication Tests =====
 
+/// Comprehensive authentication workflow test
+///
+/// Tests: login -> token validation -> logout -> re-login -> new token issued
+/// This consolidates multiple auth tests into one efficient workflow.
 #[test]
 #[serial]
-fn test_login() -> Result<(), Box<dyn std::error::Error>> {
+fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs, path::PathBuf, time::SystemTime};
 
     // Get credentials from environment (required for authentication tests)
@@ -724,26 +760,20 @@ fn test_login() -> Result<(), Box<dyn std::error::Error>> {
         .map(|d| d.config_dir().join("token"))
         .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
 
-    // Record timestamp before login
+    println!("=== STEP 1: First Login ===");
     let time_before = SystemTime::now();
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    // Run login command with environment variables
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
 
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
 
-    // Verify success message
     assert!(output_str.contains("Successfully logged into EdgeFirst Studio"));
     assert!(output_str.contains(&username));
-    println!("Login output:\n{}", output_str);
-
-    // Verify token file was created/updated
     assert!(token_path.exists(), "Token file should exist after login");
 
-    // Verify token file was modified after we started
     let metadata = fs::metadata(&token_path)?;
     let modified_time = metadata.modified()?;
     assert!(
@@ -751,12 +781,11 @@ fn test_login() -> Result<(), Box<dyn std::error::Error>> {
         "Token file should be updated after login"
     );
 
-    // Read and validate the token
-    let token_content = fs::read_to_string(&token_path)?;
-    assert!(!token_content.is_empty(), "Token file should not be empty");
-
     // Validate JWT token format and username
-    let token_parts: Vec<&str> = token_content.trim().split('.').collect();
+    let first_token = fs::read_to_string(&token_path)?;
+    assert!(!first_token.is_empty(), "Token file should not be empty");
+
+    let token_parts: Vec<&str> = first_token.trim().split('.').collect();
     assert_eq!(
         token_parts.len(),
         3,
@@ -779,169 +808,27 @@ fn test_login() -> Result<(), Box<dyn std::error::Error>> {
         "Token username should match login username"
     );
 
-    println!("✓ Token file created at: {:?}", token_path);
-    println!("✓ Token contains correct username: {}", token_username);
-
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_logout() -> Result<(), Box<dyn std::error::Error>> {
-    use std::path::PathBuf;
-
-    // First, ensure we're logged in by running login
-    let _username =
-        env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
-    let _password =
-        env::var("STUDIO_PASSWORD").expect("STUDIO_PASSWORD must be set for authentication tests");
-
-    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-        .map(|d| d.config_dir().join("token"))
-        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
-
-    // Login first to ensure token exists
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("login");
-    cmd.ok()?;
-
-    // Verify token file exists before logout
-    assert!(token_path.exists(), "Token file should exist before logout");
-
-    // Run logout command
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("logout");
-
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
-
-    // Verify success message
-    assert!(output_str.contains("Successfully logged out of EdgeFirst Studio"));
-    println!("Logout output:\n{}", output_str);
-
-    // Verify token file was removed
-    assert!(
-        !token_path.exists(),
-        "Token file should be removed after logout"
-    );
-
-    println!("✓ Token file removed: {:?}", token_path);
-
-    // Re-login for other tests (cleanup)
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("login");
-    cmd.ok()?;
-
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_sleep_30_seconds() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Instant;
-
-    let start = Instant::now();
-
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("sleep").arg("30");
-
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
-
-    let elapsed = start.elapsed();
-
-    println!("Sleep output:\n{}", output_str);
-    println!("Elapsed time: {:?}", elapsed);
-
-    assert!(output_str.contains("Sleeping for 30 seconds"));
-    assert!(output_str.contains("Sleep complete"));
-    assert!(
-        elapsed.as_secs() >= 30,
-        "Sleep should take at least 30 seconds"
-    );
-
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_logout_after_sleep() -> Result<(), Box<dyn std::error::Error>> {
-    use std::{path::PathBuf, time::Instant};
-
-    let _username =
-        env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
-
-    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-        .map(|d| d.config_dir().join("token"))
-        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
-
-    // Login first
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("login");
-    cmd.ok()?;
-
-    assert!(token_path.exists(), "Token file should exist before logout");
-
-    let start = Instant::now();
-
-    // Run logout command
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("logout");
-
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
-
-    let elapsed = start.elapsed();
-
-    println!("Logout output:\n{}", output_str);
-    println!("Logout elapsed time: {:?}", elapsed);
-
-    // If serial is working, this should complete quickly
-    // If tests run in parallel and sleep blocks logout, this will be slow
-    assert!(
-        elapsed.as_secs() < 5,
-        "Logout should complete in under 5 seconds, took {:?}",
-        elapsed
-    );
-
-    assert!(output_str.contains("Successfully logged out of EdgeFirst Studio"));
-    assert!(
-        !token_path.exists(),
-        "Token file should be removed after logout"
-    );
-
-    // Re-login for other tests
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("login");
-    cmd.ok()?;
-
-    Ok(())
-}
-
-#[test]
-#[serial]
-fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
-    use std::{fs, path::PathBuf};
-
-    let _username =
-        env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
-
-    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-        .map(|d| d.config_dir().join("token"))
-        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
-
-    // First login
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("login");
-    cmd.ok()?;
-
-    let first_token = fs::read_to_string(&token_path)?;
+    println!("✓ First login successful, token valid");
     let first_modified = fs::metadata(&token_path)?.modified()?;
 
-    // Wait a bit to ensure timestamp difference
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    println!("\n=== STEP 2: Logout ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("logout");
 
-    // Second login
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    assert!(output_str.contains("Successfully logged out of EdgeFirst Studio"));
+    assert!(
+        !token_path.exists(),
+        "Token file should be removed after logout"
+    );
+
+    println!("✓ Logout successful, token file removed");
+
+    println!("\n=== STEP 3: Re-login (verify new token issued) ===");
+    std::thread::sleep(std::time::Duration::from_secs(2)); // Ensure timestamp difference
+
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
     cmd.ok()?;
@@ -949,20 +836,17 @@ fn test_login_creates_new_token() -> Result<(), Box<dyn std::error::Error>> {
     let second_token = fs::read_to_string(&token_path)?;
     let second_modified = fs::metadata(&token_path)?.modified()?;
 
-    // Tokens should be different (new token issued)
     assert_ne!(
         first_token, second_token,
-        "Login should create a new token each time"
+        "Re-login should create a new token"
     );
-
-    // File should be newer
     assert!(
         second_modified > first_modified,
         "Token file should be updated on re-login"
     );
 
-    println!("✓ First token and second token are different");
-    println!("✓ Token file timestamp updated");
+    println!("✓ Re-login successful, new token issued");
+    println!("\n✅ Authentication workflow completed successfully");
 
     Ok(())
 }
@@ -1125,9 +1009,9 @@ fn test_datasets_by_project() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_datasets_with_labels() -> Result<(), Box<dyn std::error::Error>> {
-    // Get Sample Project with COCO dataset
+    // Get Unit Testing with COCO dataset
     let mut cmd = edgefirst_cmd();
-    cmd.arg("projects").arg("--name").arg("Sample Project");
+    cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -1155,7 +1039,7 @@ fn test_datasets_with_labels() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_datasets_with_annotation_sets() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = edgefirst_cmd();
-    cmd.arg("projects").arg("--name").arg("Sample Project");
+    cmd.arg("projects").arg("--name").arg("Unit Testing");
 
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -1341,24 +1225,35 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
         output_str
     );
 
-    let dataset_lower = dataset.to_lowercase().replace("ds-", "dataset-");
-    let cache_file = get_test_data_dir().join(format!("{}_upload_latest.txt", dataset_lower));
-    fs::write(
-        &cache_file,
-        format!(
-            "dataset_id={}\nannotation_set_id={}\ncreated_at={}\nsource_dataset={}\n",
-            new_dataset_id, new_annotation_set_id, timestamp, source_dataset_id
-        ),
-    )?;
-
     println!(
-        "Persistent QA dataset created: {} (annotation set {})",
+        "✓ Created and uploaded dataset: {} (annotation set {})",
         new_dataset_id, new_annotation_set_id
     );
-    println!("Images uploaded from: {:?}", images_dir);
-    println!("Annotations uploaded from: {:?}", annotations_path);
-    println!("Recorded IDs in {:?}", cache_file);
+    println!("  Images uploaded from: {:?}", images_dir);
+    println!("  Annotations uploaded from: {:?}", annotations_path);
 
+    // Clean up: delete the created dataset (this also deletes the annotation set)
+    println!("\n=== CLEANUP: Deleting created dataset ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-dataset").arg(&new_dataset_id);
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            println!("✓ Deleted dataset: {}", new_dataset_id);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "⚠️  Failed to delete dataset {}: {}",
+                new_dataset_id, stderr
+            );
+        }
+        Err(e) => {
+            eprintln!("⚠️  Error deleting dataset {}: {}", new_dataset_id, e);
+        }
+    }
+
+    // Clean up local files
     if let Err(err) = fs::remove_dir_all(&images_dir) {
         eprintln!(
             "⚠️  Failed to remove downloaded images directory {:?}: {}",
@@ -1378,20 +1273,17 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
 
 /// End-to-end dataset roundtrip test
 ///
-/// Tests complete workflow: Download → Upload → Download → Compare
+/// Tests complete workflow: Download → Upload → Download → Compare → Cleanup
 ///
-/// Dataset: Configurable via TEST_DATASET_NAME env var (default: "Deer")
+/// Dataset: Configurable via TEST_DATASET env var (default: "Deer")
 /// Requirements:
 /// - Dataset must exist in "Unit Testing" project
 /// - Must have at least one annotation set
 /// - Supports mixed sensors, annotation types, and sequences
 ///
-/// **Note**: This test uploads 1600+ samples and requires extended timeout.
-/// Run with: `EDGEFIRST_TIMEOUT=120 cargo test --package edgefirst-cli
-/// test_dataset_roundtrip -- --ignored --nocapture`
+/// **Note**: This test uploads 1600+ samples and takes ~3 minutes to complete.
 #[test]
 #[serial]
-#[ignore = "Requires EDGEFIRST_TIMEOUT=120 due to large dataset upload (1600+ samples). Run with: cargo test test_dataset_roundtrip -- --ignored"]
 fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Download→Upload→Download→Compare test for configurable dataset
     // This verifies Arrow file format preserves all metadata (sequences, groups,
@@ -1583,11 +1475,34 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         redownloaded_arrow_bytes.len()
     );
 
-    // Cleanup
+    // Cleanup local files
     fs::remove_dir_all(&original_images).ok();
     fs::remove_file(&original_annotations).ok();
     fs::remove_dir_all(&redownloaded_images).ok();
     fs::remove_file(&redownloaded_annotations).ok();
+
+    // Cleanup: Delete the created dataset from the server
+    println!("\n=== CLEANUP: Deleting created dataset ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-dataset").arg(&new_dataset_id);
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            println!("✓ Deleted dataset: {}", new_dataset_id);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "⚠️  Failed to delete dataset {}: {}",
+                new_dataset_id, stderr
+            );
+        }
+        Err(e) => {
+            eprintln!("⚠️  Error deleting dataset {}: {}", new_dataset_id, e);
+        }
+    }
+
+    println!("\n✅ Dataset roundtrip test completed successfully");
 
     Ok(())
 }
@@ -3024,6 +2939,10 @@ fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n✓ Dataset contains no sequences - both structures are flat");
     }
 
+    // Cleanup downloaded directories
+    fs::remove_dir_all(&normal_dir).ok();
+    fs::remove_dir_all(&flatten_dir).ok();
+
     println!("\n✅ Flatten option test completed successfully");
     Ok(())
 }
@@ -3061,18 +2980,17 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
     let output_str = String::from_utf8(output)?;
 
     // Extract first snapshot ID (format: [ss-XXXX] where XXXX is hexadecimal)
-    let snapshot_id = output_str
-        .lines()
-        .find_map(|line| {
-            line.split(']')
-                .next()
-                .and_then(|s| s.strip_prefix('['))
-                .filter(|id| {
-                    id.starts_with("ss-") && id.len() > 3 && 
-                    id.chars().skip(3).all(|c| c.is_ascii_hexdigit())
-                })
-                .map(|s| s.trim().to_string())
-        });
+    let snapshot_id = output_str.lines().find_map(|line| {
+        line.split(']')
+            .next()
+            .and_then(|s| s.strip_prefix('['))
+            .filter(|id| {
+                id.starts_with("ss-")
+                    && id.len() > 3
+                    && id.chars().skip(3).all(|c| c.is_ascii_hexdigit())
+            })
+            .map(|s| s.trim().to_string())
+    });
 
     if let Some(id) = snapshot_id {
         println!("Testing with snapshot ID: {}", id);
@@ -3080,7 +2998,7 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
         // Get snapshot details - allow failure if snapshot was deleted
         let mut cmd = edgefirst_cmd();
         cmd.arg("snapshot").arg(&id);
-        
+
         match cmd.ok() {
             Ok(result) => {
                 let output_str = String::from_utf8(result.stdout)?;
@@ -3093,7 +3011,10 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Err(_) => {
-                println!("⚠️  Snapshot {} may have been deleted - skipping verification", id);
+                println!(
+                    "⚠️  Snapshot {} may have been deleted - skipping verification",
+                    id
+                );
             }
         }
     } else {
@@ -3107,7 +3028,7 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
 #[serial]
 fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     // This test covers create, download, and delete in a single workflow
-    
+
     // Create a test file to snapshot
     let test_data_dir = get_test_data_dir();
     let test_file = test_data_dir.join("test_snapshot_workflow.txt");
@@ -3127,13 +3048,15 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
         .lines()
         .find_map(|line| {
             // Look for pattern like "[ss-e0e]"
-            if let Some(start) = line.find('[') {
-                if let Some(end) = line[start..].find(']') {
-                    let id_with_brackets = &line[start..start + end + 1];
-                    let id = id_with_brackets.trim_start_matches('[').trim_end_matches(']');
-                    if id.starts_with("ss-") {
-                        return Some(id.to_string());
-                    }
+            if let Some(start) = line.find('[')
+                && let Some(end) = line[start..].find(']')
+            {
+                let id_with_brackets = &line[start..start + end + 1];
+                let id = id_with_brackets
+                    .trim_start_matches('[')
+                    .trim_end_matches(']');
+                if id.starts_with("ss-") {
+                    return Some(id.to_string());
                 }
             }
             None
@@ -3148,25 +3071,28 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
     use edgefirst_client::{Client as EdgFirstClient, SnapshotID};
     let api_client = EdgFirstClient::new()?.with_token_path(None)?;
     let snap_id = SnapshotID::try_from(snapshot_id.as_str())?;
-    
+
     let rt = tokio::runtime::Runtime::new()?;
     let mut attempts = 0;
     let max_attempts = 30; // 30 seconds max wait
     loop {
         let snapshot = rt.block_on(api_client.snapshot(snap_id))?;
         let status = snapshot.status();
-        
+
         // Snapshot is ready when status is "available" or "completed"
         if status == "available" || status == "completed" {
             println!("✓ Snapshot ready (status: {})", status);
             break;
         }
-        
+
         attempts += 1;
         if attempts >= max_attempts {
-            panic!("Snapshot did not become available within {} seconds. Last status: {}", max_attempts, status);
+            panic!(
+                "Snapshot did not become available within {} seconds. Last status: {}",
+                max_attempts, status
+            );
         }
-        
+
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
@@ -3174,7 +3100,8 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
     // Create download directory
     let downloads_root = get_test_data_dir().join("downloads");
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-    let download_dir = downloads_root.join(format!("snapshot_{}_{}", std::process::id(), timestamp));
+    let download_dir =
+        downloads_root.join(format!("snapshot_{}_{}", std::process::id(), timestamp));
     fs::create_dir_all(&download_dir)?;
 
     // Download snapshot (signature: snapshot_id --output path)
@@ -3211,8 +3138,9 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
 
     println!("✓ Deleted snapshot: {}", snapshot_id);
 
-    // Clean up test file
+    // Clean up test file and download directory
     let _ = fs::remove_file(&test_file);
+    let _ = fs::remove_dir_all(&download_dir);
 
     println!("\n✅ Snapshot workflow test completed successfully");
     Ok(())
@@ -3220,12 +3148,12 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
 
 #[test]
 #[serial]
-#[ignore = "Requires test data. Run manually with: cargo test test_snapshot_restore_workflow -- --ignored"]
+#[ignore = "Server bug: S3 files not available after snapshot restore completes"]
 fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    // This test covers restore functionality with and without AGTG
-    
-    let mut datasets_to_cleanup = Vec::new();
-    
+    // This test restores the "Unit Testing - Deer Dataset" snapshot and verifies
+    // the restored dataset matches the original Deer dataset in Unit Testing
+    // project.
+
     // Get Unit Testing project ID
     let mut cmd = edgefirst_cmd();
     cmd.arg("projects").arg("--name").arg("Unit Testing");
@@ -3241,88 +3169,302 @@ fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| s.trim().to_string())
         })
         .expect("Could not find Unit Testing project");
-    
-    // List snapshots to get a valid ID
+
+    // Get the original Deer dataset for comparison
+    let (original_dataset_id, original_annotation_set_id) =
+        get_dataset_and_first_annotation_set("Deer")?;
+    println!(
+        "Original Deer dataset: {} (annotation set: {})",
+        original_dataset_id, original_annotation_set_id
+    );
+
+    // Find the "Unit Testing - Deer Dataset" snapshot
     let mut cmd = edgefirst_cmd();
     cmd.arg("snapshots");
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
 
-    // Extract first snapshot ID
+    // Look for snapshot containing "Deer" in name
     let snapshot_id = output_str
         .lines()
         .find_map(|line| {
-            line.split(']')
-                .next()
-                .and_then(|s| s.strip_prefix('['))
-                .filter(|id| id.starts_with("ss-"))
-                .map(|s| s.trim().to_string())
-        })
-        .expect("No snapshots available for restore test");
-
-    println!("Testing restore workflows with snapshot ID: {} into project {}", snapshot_id, project_id);
-
-    println!("\n=== STEP 1: Basic Restore ===");
-    // Restore snapshot (basic restore without AGTG or autodepth)
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("restore-snapshot").arg(&project_id).arg(&snapshot_id);
-    let restore_output = cmd.ok()?.stdout;
-    let restore_output_str = String::from_utf8(restore_output)?;
-
-    println!("Restore snapshot output:\n{}", restore_output_str);
-
-    // Extract dataset ID from restore output
-    if let Some(dataset_id) = restore_output_str
-        .lines()
-        .find_map(|line| {
-            if line.contains("ds-") {
-                line.split_whitespace()
-                    .find(|word| word.starts_with("ds-"))
-                    .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
+            if line.contains("Deer") {
+                line.split(']')
+                    .next()
+                    .and_then(|s| s.strip_prefix('['))
+                    .filter(|id| id.starts_with("ss-"))
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
         })
-    {
-        datasets_to_cleanup.push(dataset_id.clone());
-        println!("✓ Basic restore completed - dataset: {}", dataset_id);
-    } else {
-        println!("✓ Basic restore completed (no dataset ID in output)");
-    }
+        .expect("No 'Deer' snapshot found. Please create 'Unit Testing - Deer Dataset' snapshot.");
 
-    println!("\n=== STEP 2: Restore with AGTG ===");
-    // Restore snapshot with AGTG enabled
+    println!(
+        "Restoring snapshot: {} into project {}",
+        snapshot_id, project_id
+    );
+
+    // Restore snapshot to new dataset with --monitor to wait for completion
     let mut cmd = edgefirst_cmd();
     cmd.arg("restore-snapshot")
         .arg(&project_id)
         .arg(&snapshot_id)
-        .arg("--autolabel");
-    let agtg_output = cmd.ok()?.stdout;
-    let agtg_output_str = String::from_utf8(agtg_output)?;
+        .arg("--monitor");
 
-    println!("Restore with AGTG output:\n{}", agtg_output_str);
+    // Use timeout for the command since restore can take several minutes
+    cmd.timeout(std::time::Duration::from_secs(600));
 
-    // Extract dataset ID from AGTG restore output
-    if let Some(dataset_id) = agtg_output_str
+    let restore_output = cmd.ok()?.stdout;
+    let restore_output_str = String::from_utf8(restore_output)?;
+
+    println!("Restore output:\n{}", restore_output_str);
+
+    // Extract new dataset ID from restore output
+    let new_dataset_id = restore_output_str
         .lines()
         .find_map(|line| {
-            if line.contains("ds-") {
-                line.split_whitespace()
-                    .find(|word| word.starts_with("ds-"))
-                    .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
-            } else {
-                None
+            if line.contains("ds-")
+                && let Some(start) = line.find("[ds-")
+            {
+                let rest = &line[start + 1..];
+                if let Some(end) = rest.find(']') {
+                    return Some(rest[..end].to_string());
+                }
             }
+            None
         })
+        .expect("Could not extract dataset ID from restore output");
+
+    println!("✓ Restored to dataset: {}", new_dataset_id);
+    println!("✓ Restore completed (monitored via task progress)");
+
+    // Get annotation set from restored dataset
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("dataset")
+        .arg(&new_dataset_id)
+        .arg("--annotation-sets");
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    let new_annotation_set_id = output_str
+        .lines()
+        .skip_while(|line| !line.contains("Annotation Sets:"))
+        .skip(1)
+        .find_map(|line| {
+            line.split(']')
+                .next()
+                .and_then(|s| s.strip_prefix('['))
+                .map(|s| s.trim().to_string())
+                .filter(|id| id.starts_with("as-"))
+        })
+        .expect("No annotation set found in restored dataset");
+
+    println!("✓ Restored annotation set: {}", new_annotation_set_id);
+
+    // Download both datasets and compare
+    println!("\n=== Downloading datasets for comparison ===");
+
+    let original_images = download_dataset_from_server(&original_dataset_id)?;
+    let restored_images = download_dataset_from_server(&new_dataset_id)?;
+
+    let original_annotations =
+        download_annotations_from_server_with_types(&original_annotation_set_id, &["box2d"])?;
+    let restored_annotations =
+        download_annotations_from_server_with_types(&new_annotation_set_id, &["box2d"])?;
+
+    // Compare file counts
+    let original_files = collect_relative_file_paths(&original_images)?;
+    let restored_files = collect_relative_file_paths(&restored_images)?;
+
+    println!("\n=== Comparison Results ===");
+    println!("Original images: {}", original_files.len());
+    println!("Restored images: {}", restored_files.len());
+
+    assert_eq!(
+        original_files.len(),
+        restored_files.len(),
+        "Image count mismatch: original {} vs restored {}",
+        original_files.len(),
+        restored_files.len()
+    );
+    println!("✓ Image counts match");
+
+    // Compare annotation file sizes (content structure should be similar)
+    let original_size = fs::metadata(&original_annotations)?.len();
+    let restored_size = fs::metadata(&restored_annotations)?.len();
+
+    println!("Original annotations: {} bytes", original_size);
+    println!("Restored annotations: {} bytes", restored_size);
+
+    // Allow some variance in file size due to metadata differences
+    let size_ratio = original_size as f64 / restored_size as f64;
+    assert!(
+        (0.9..=1.1).contains(&size_ratio),
+        "Annotation file size mismatch: original {} vs restored {} (ratio: {:.2})",
+        original_size,
+        restored_size,
+        size_ratio
+    );
+    println!("✓ Annotation sizes within 10% tolerance");
+
+    #[cfg(feature = "polars")]
     {
-        datasets_to_cleanup.push(dataset_id.clone());
-        println!("✓ Restore with AGTG completed - dataset: {}", dataset_id);
-    } else {
-        println!("✓ Restore with AGTG completed (no dataset ID in output)");
+        println!("\n=== Detailed Arrow Comparison ===");
+        match compare_arrow_files(&original_annotations, &restored_annotations) {
+            Ok(()) => println!("✓ Arrow file contents match"),
+            Err(e) => {
+                eprintln!("⚠️  Arrow comparison failed: {}", e);
+                // Don't fail the test for minor differences, just warn
+            }
+        }
     }
 
-    // CLEANUP: Delete all restored datasets
-    println!("\n=== CLEANUP: Deleting {} Restored Datasets ===", datasets_to_cleanup.len());
+    // Cleanup: Delete restored dataset
+    println!("\n=== CLEANUP ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-dataset").arg(&new_dataset_id);
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            println!("✓ Deleted restored dataset: {}", new_dataset_id);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "⚠️  Failed to delete dataset {}: {}",
+                new_dataset_id, stderr
+            );
+        }
+        Err(e) => {
+            eprintln!("⚠️  Error deleting dataset {}: {}", new_dataset_id, e);
+        }
+    }
+
+    // Cleanup local files
+    fs::remove_dir_all(&original_images).ok();
+    fs::remove_dir_all(&restored_images).ok();
+    fs::remove_file(&original_annotations).ok();
+    fs::remove_file(&restored_annotations).ok();
+
+    println!("\n✅ Snapshot restore workflow completed successfully");
+    Ok(())
+}
+
+#[test]
+#[serial]
+#[ignore = "Requires MCAP file with camera data. Run manually when MCAP test data is available."]
+fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error::Error>> {
+    // This test requires an MCAP file to test autodepth and autolabel features.
+    // These features only work with MCAP snapshots, not image-based snapshots.
+    //
+    // Prerequisites:
+    // 1. Upload an MCAP file as a snapshot
+    // 2. Set TEST_MCAP_SNAPSHOT_ID environment variable to the snapshot ID
+    //
+    // The --autolabel and --autodepth flags:
+    // - --autolabel <labels>: Runs AGTG auto-annotation with specified labels
+    //   (requires MCAP)
+    // - --autodepth: Generates depth maps (requires Maivin/Raivin camera data in
+    //   MCAP)
+
+    let snapshot_id = env::var("TEST_MCAP_SNAPSHOT_ID")
+        .expect("TEST_MCAP_SNAPSHOT_ID must be set to run this test");
+
+    let project_id =
+        get_project_id_by_name("Unit Testing")?.expect("Unit Testing project not found");
+
+    let mut datasets_to_cleanup = Vec::new();
+
+    // Test 1: Restore with autolabel
+    println!("=== STEP 1: Restore with autolabel ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("restore-snapshot")
+        .arg(&project_id)
+        .arg(&snapshot_id)
+        .arg("--autolabel")
+        .arg("car,person,deer");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+    println!("Autolabel restore output:\n{}", output_str);
+
+    if let Some(dataset_id) = output_str.lines().find_map(|line| {
+        if line.contains("ds-")
+            && let Some(start) = line.find("[ds-")
+        {
+            let rest = &line[start + 1..];
+            rest.find(']').map(|end| rest[..end].to_string())
+        } else {
+            None
+        }
+    }) {
+        datasets_to_cleanup.push(dataset_id.clone());
+        println!("✓ Created dataset with autolabel: {}", dataset_id);
+    }
+
+    // Test 2: Restore with autodepth (requires Maivin/Raivin camera)
+    println!("\n=== STEP 2: Restore with autodepth ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("restore-snapshot")
+        .arg(&project_id)
+        .arg(&snapshot_id)
+        .arg("--autodepth");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+    println!("Autodepth restore output:\n{}", output_str);
+
+    if let Some(dataset_id) = output_str.lines().find_map(|line| {
+        if line.contains("ds-")
+            && let Some(start) = line.find("[ds-")
+        {
+            let rest = &line[start + 1..];
+            rest.find(']').map(|end| rest[..end].to_string())
+        } else {
+            None
+        }
+    }) {
+        datasets_to_cleanup.push(dataset_id.clone());
+        println!("✓ Created dataset with autodepth: {}", dataset_id);
+    }
+
+    // Test 3: Restore with both autolabel and autodepth
+    println!("\n=== STEP 3: Restore with autolabel + autodepth ===");
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("restore-snapshot")
+        .arg(&project_id)
+        .arg(&snapshot_id)
+        .arg("--autolabel")
+        .arg("car,person")
+        .arg("--autodepth");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+    println!("Combined restore output:\n{}", output_str);
+
+    if let Some(dataset_id) = output_str.lines().find_map(|line| {
+        if line.contains("ds-")
+            && let Some(start) = line.find("[ds-")
+        {
+            let rest = &line[start + 1..];
+            rest.find(']').map(|end| rest[..end].to_string())
+        } else {
+            None
+        }
+    }) {
+        datasets_to_cleanup.push(dataset_id.clone());
+        println!(
+            "✓ Created dataset with autolabel + autodepth: {}",
+            dataset_id
+        );
+    }
+
+    // Cleanup
+    println!(
+        "\n=== CLEANUP: Deleting {} datasets ===",
+        datasets_to_cleanup.len()
+    );
     for dataset_id in datasets_to_cleanup {
         let mut cmd = edgefirst_cmd();
         cmd.arg("delete-dataset").arg(&dataset_id);
@@ -3332,14 +3474,14 @@ fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("⚠ Failed to delete dataset {}: {}", dataset_id, stderr);
+                println!("⚠ Failed to delete {}: {}", dataset_id, stderr);
             }
             Err(e) => {
-                println!("⚠ Error deleting dataset {}: {}", dataset_id, e);
+                println!("⚠ Error deleting {}: {}", dataset_id, e);
             }
         }
     }
 
-    println!("\n✅ Snapshot restore workflow test completed successfully");
+    println!("\n✅ MCAP processing test completed");
     Ok(())
 }

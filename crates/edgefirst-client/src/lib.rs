@@ -625,6 +625,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires modelpack-usermanaged tasks in Unit Testing project"]
     async fn test_tasks() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;

@@ -2687,12 +2687,12 @@ class SnapshotRestoreResult:
         ...
 
     @property
-    def task_id(self) -> TaskID:
+    def task_id(self) -> TaskID | None:
         """
-        Returns the ID of the task processing the restore operation.
+        Returns the ID of the task processing the restore operation, if available.
 
         Returns:
-            TaskID: The task ID for tracking restore progress.
+            TaskID | None: The task ID for tracking restore progress, or None if not available.
         """
         ...
 
