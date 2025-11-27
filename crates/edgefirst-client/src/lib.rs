@@ -625,13 +625,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires modelpack-usermanaged tasks in Unit Testing project"]
+    #[ignore = "DE-1235: Server bug - task.list pagination prevents finding old tasks"]
     async fn test_tasks() -> Result<(), Error> {
         let client = get_client().await?;
-        let project = client.projects(Some("Unit Testing")).await?;
-        let project = project
-            .first()
-            .expect("'Unit Testing' project should exist");
         let tasks = client.tasks(None, None, None, None).await?;
 
         for task in tasks {
@@ -647,10 +643,6 @@ mod tests {
             .map(|t| client.task_info(t.id()))
             .collect::<Vec<_>>();
         let tasks = futures::future::try_join_all(tasks).await?;
-        let tasks = tasks
-            .into_iter()
-            .filter(|t| t.project_id() == Some(project.id()))
-            .collect::<Vec<_>>();
         assert_ne!(tasks.len(), 0);
         let task = &tasks[0];
 
