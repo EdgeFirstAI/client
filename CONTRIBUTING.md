@@ -564,32 +564,35 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ## Release Process
 
-> **Note**: Releases are managed by maintainers using [cargo-release](https://github.com/crate-ci/cargo-release).
+> **Note**: Releases follow the [SPS (Software Process Specification)](https://github.com/au-zone/sps) guidelines and are managed by maintainers.
 
 Contributors should focus on:
 
-1. Updating CHANGELOG.md under `[Unreleased]` section
-2. Updating CLI.md if CLI changes are included
-3. Ensuring all tests pass
+1. Updating CHANGELOG.md under `[Unreleased]` section during development
+2. Updating CLI.md if CLI commands change
+3. Ensuring all tests pass before merge
 4. Verifying documentation is current
 
-Maintainers handle the release process:
+Maintainers handle the release process following SPS guidelines:
 
 ```bash
-# 1. Update CHANGELOG.md with release notes
-# 2. Update CLI.md version and date
-# 3. Run cargo-release
-cargo release patch --execute --no-confirm  # or: minor, major
-# 4. Push to trigger CI/CD
-git push && git push --tags
+# 1. Update version in Cargo.toml (workspace and dependencies)
+# 2. Update CHANGELOG.md: Move [Unreleased] to [X.Y.Z] - YYYY-MM-DD
+# 3. Update CLI.md header with new version and date
+# 4. Commit: git commit -s -m "chore: prepare vX.Y.Z release"
+# 5. Create tag: git tag -a vX.Y.Z -m "Release vX.Y.Z"
+# 6. Push: git push origin main --tags
 ```
 
-GitHub Actions automatically:
+GitHub Actions automatically (triggered by tag push):
 
-- Builds binaries
+- Verifies version matches tag
+- Builds binaries for all platforms
 - Publishes to crates.io and PyPI
-- Creates GitHub Release
-- Generates man page as release artifact
+- Creates GitHub Release with artifacts
+- Generates man page and SBOM
+
+**Tag Format**: Always use `vX.Y.Z` format (e.g., `v2.5.0`), not `X.Y.Z`
 
 ## Getting Help
 
