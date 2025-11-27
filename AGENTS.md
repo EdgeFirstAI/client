@@ -624,63 +624,62 @@ ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.
 
 - **Why**: PyPI requires `rcN` format (PEP 440), maturin doesn't convert
 - **Workspace versioning**: Single version in root `Cargo.toml` via `version.workspace = true`
+- **Git tags**: Use `vX.Y.Z` format (e.g., `v2.5.0`)
 
 **Semantic versioning**:
 
-- **PATCH** (X.Y.Z+1): Bug fixes, backward-compatible additions (default)
-- **MINOR** (X.Y+1.0): Breaking API changes
-- **MAJOR** (X+1.0.0): Major architectural changes (maintainer decision only)
+- **PATCH** (X.Y.Z+1): Bug fixes, backward-compatible additions
+- **MINOR** (X.Y+1.0): New features (backwards compatible)
+- **MAJOR** (X+1.0.0): Breaking API changes
 
-### Release Process
+**For detailed release management procedures**, refer to [~/Documents/SPS/10-release-management.md](https://github.com/au-zone/sps) for authoritative guidance on version management, git workflow, and release processes.
 
-**IMPORTANT**: Use `cargo-release` for all releases. Do NOT manually update version numbers.
+### Release Process (SPS-Compliant)
 
 **Pre-release checklist:**
 
 1. ✅ All changes committed and tests passing
-2. ✅ CHANGELOG.md updated under `[Unreleased]` section (user-facing changes only)
+2. ✅ CHANGELOG.md updated: Move `[Unreleased]` section to versioned release with date
 3. ✅ All documentation current (README.md, API docs, .pyi stubs)
+4. ✅ Version numbers synchronized across all files
 
-**Release steps (maintainers only):**
+**Release steps (manual - per SPS guidelines):**
 
 ```bash
 # 1. Ensure working directory is clean
-git status  # Should show no uncommitted changes except CHANGELOG.md
+git status  # Should show no uncommitted changes
 
-# 2. Run cargo-release (automatically handles version bump, CLI.md updates, tagging)
-cargo release patch --execute --no-confirm  # or: minor, major
+# 2. Update version in Cargo.toml (workspace and dependencies)
+# Change version = "X.Y.Z" to version = "X.Y.Z+1"
 
-# 3. Verify the release commit and tag were created
-git log --oneline -2
-git describe  # Should show new version like 2.4.3
+# 3. Update CLI.md header with new version and date
+# footer: edgefirst-client X.Y.Z+1
+# date: YYYY-MM-DD
 
-# 4. If CHANGELOG.md needs updates after cargo-release:
-#    - Edit CHANGELOG.md (move [Unreleased] to [X.Y.Z] - YYYY-MM-DD)
-#    - Commit changes
-#    - Re-create tag with: cargo release tag --execute
+# 4. Update CHANGELOG.md: Move [Unreleased] to [X.Y.Z+1] - YYYY-MM-DD
 
-# 5. Push to trigger CI/CD (builds binaries, publishes to crates.io/PyPI)
-git push && git push --tags
+# 5. Commit all changes with DCO sign-off
+git add Cargo.toml CHANGELOG.md CLI.md
+git commit -s -m "chore: prepare vX.Y.Z+1 release
+
+- Bump version from X.Y.Z to X.Y.Z+1
+- Update CHANGELOG.md with release date
+- Update CLI.md with new version and date"
+
+# 6. Create annotated tag with vX.Y.Z format
+git tag -a vX.Y.Z+1 -m "Release vX.Y.Z+1"
+
+# 7. Push to trigger GitHub Actions release workflow
+git push origin main --tags
 ```
-
-**What cargo-release does automatically:**
-
-- Bumps version in `Cargo.toml` (workspace version)
-- Updates `CLI.md` version and date (via `release.toml` configuration)
-- Creates release commit: "Release X.Y.Z Preparations"
-- Creates git tag: `X.Y.Z`
-
-**What you must do manually:**
-
-- Update CHANGELOG.md from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
-- Ensure all user-facing changes documented
 
 **GitHub Actions (automatic on tag push):**
 
+- Verifies version in tag matches Cargo.toml
 - Builds binaries for all platforms
 - Publishes to crates.io and PyPI
 - Creates GitHub Release with artifacts
-- Generates man page
+- Generates man page and SBOM
 
 ### Pre-Commit Requirements
 
