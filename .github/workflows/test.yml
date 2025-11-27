@@ -89,6 +89,7 @@ jobs:
         run: cargo build --locked
 
       - name: Run Rust unit tests
+        id: rust_tests
         if: success() || failure()
         run: cargo nextest run --locked --no-fail-fast --profile ci
         env:
@@ -106,6 +107,12 @@ jobs:
           echo "Contents of target/nextest/ci/:"
           find target/nextest/ci/ -type f || true
 
+      - name: Check Rust test failure
+        if: failure() || steps.rust_tests.outcome == 'failure'
+        run: |
+          echo "::error::Rust unit tests failed"
+          exit 1
+
       - name: Install Python dependencies
         if: success() || failure()
         run: |
@@ -120,6 +127,7 @@ jobs:
         run: pip install target/wheels/edgefirst_client-*.whl
 
       - name: Run Python tests
+        id: python_tests
         if: success() || failure()
         run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
         env:
@@ -138,7 +146,14 @@ jobs:
           echo "Python coverage file:"
           ls -lh coverage.xml || echo "coverage.xml not found"
 
+      - name: Check Python test failure
+        if: failure() || steps.python_tests.outcome == 'failure'
+        run: |
+          echo "::error::Python tests failed"
+          exit 1
+
       - name: Publish test results
+        id: publish_results
         uses: EnricoMi/publish-unit-test-result-action@34d7c956a59aed1bfebf31df77b8de55db9bbaaf # v2.21.0
         if: success() || failure()
         with:
@@ -154,6 +169,28 @@ jobs:
           job_summary: true
           compare_to_earlier_commit: true
           check_run_annotations: all tests, skipped tests
+
+      - name: Check test results action outcome
+        if: always()
+        run: |
+          # Check if publish-unit-test-result-action reported test failures
+          if [ "${{ steps.publish_results.outcome }}" = "failure" ]; then
+            echo "::error::Tests failed - action detected test failures"
+            exit 1
+          fi
+          
+          # Also check for specific Rust test failures by looking at exit code
+          # The rust_tests step should have failed if tests failed
+          if [ "${{ steps.rust_tests.outcome }}" = "failure" ]; then
+            echo "::error::Rust tests failed"
+            exit 1
+          fi
+          
+          # Check for Python test failures
+          if [ "${{ steps.python_tests.outcome }}" = "failure" ]; then
+            echo "::error::Python tests failed"
+            exit 1
+          fi
 
       - name: Generate coverage report
         if: success() || failure()
