@@ -10,7 +10,7 @@ homepage = "https://edgefirst.ai"
 repository = "https://github.com/EdgeFirstAI/client"
 readme = "README.md"
 license = "Apache-2.0"
-version = "2.4.3"
+version = "2.5.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -26,7 +26,7 @@ clap = { version = "4.5.51", features = ["derive", "env"] }
 config = "0.15.18"
 ctor = "0.6.1"
 directories = "6.0.0"
-edgefirst-client = { version = "2.4.3", path = "crates/edgefirst-client" }
+edgefirst-client = { version = "2.5.0", path = "crates/edgefirst-client" }
 env_logger = "0.11.8"
 futures = "0.3.31"
 imagesize = "0.14.0"
