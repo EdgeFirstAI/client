@@ -856,14 +856,15 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 #[serial]
 fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
-    use std::{fs, path::PathBuf};
-
     let _username =
         env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
 
+    // Get the token path - must match what the CLI uses
     let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
         .map(|d| d.config_dir().join("token"))
-        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
+        .ok_or("ProjectDirs::from returned None - cannot determine token path")?;
+
+    println!("Token path: {:?}", token_path);
 
     // Login first to create a valid token
     let mut cmd = edgefirst_cmd();
@@ -874,13 +875,15 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
 
     // Corrupt the token file with invalid data
     fs::write(&token_path, "this.is.corrupted")?;
-    println!("✓ Corrupted token file created");
+    println!("✓ Corrupted token file created at {:?}", token_path);
 
     // Try to run a command that requires authentication WITHOUT credentials
     // This should gracefully handle the corrupted token
     let mut cmd = edgefirst_cmd();
     cmd.arg("organization");
-    // Clear environment variables so the command can't auto-login
+    // Explicitly unset authentication environment variables so the command can't
+    // auto-login via clap's env feature. Keep STUDIO_SERVER as it controls which
+    // server instance to connect to.
     cmd.env_remove("STUDIO_USERNAME");
     cmd.env_remove("STUDIO_PASSWORD");
     cmd.env_remove("STUDIO_TOKEN");
