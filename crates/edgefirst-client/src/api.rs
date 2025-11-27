@@ -1482,6 +1482,8 @@ impl DatasetParams {
 pub struct TasksListParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub types: Option<Vec<String>>,
     #[serde(rename = "manage_types", skip_serializing_if = "Option::is_none")]
     pub manager: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

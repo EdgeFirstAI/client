@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
 from polars import DataFrame
-from typing import Any, Callable, Dict, Optional, List, Tuple, Union
 
 #: Progress callback for long-running operations.
 #:
@@ -21,7 +22,6 @@ from typing import Any, Callable, Dict, Optional, List, Tuple, Union
 #:     >>> client.upload_dataset("/path/to/data", "ds-abc123",
 #:     ...                      progress=progress_callback)
 Progress = Callable[[int, int], None]
-
 
 class Parameter:
     """
@@ -194,7 +194,7 @@ class Parameter:
         """
         Extract as Python list if this is an Array parameter.
 
-        Returns None if this is not an Array parameter (caller should check type).
+        Returns None if this is not an Array parameter.
         Elements are converted to native Python types recursively.
 
         Examples:
@@ -204,7 +204,7 @@ class Parameter:
             ...     Parameter.string("test")
             ... ])
             >>> p.as_array()  # Returns: [1, 2.5, "test"]
-            >>> Parameter.integer(42).as_array()  # Returns: None (not an Array)
+            >>> Parameter.integer(42).as_array()  # Returns: None
         """
         ...
 
@@ -212,7 +212,7 @@ class Parameter:
         """
         Extract as Python dict if this is an Object parameter.
 
-        Returns None if this is not an Object parameter (caller should check type).
+        Returns None if this is not an Object parameter.
         Values are converted to native Python types recursively.
 
         Examples:
@@ -221,7 +221,7 @@ class Parameter:
             ...     "ratio": Parameter.real(3.14)
             ... })
             >>> p.as_object()  # Returns: {"count": 42, "ratio": 3.14}
-            >>> Parameter.integer(42).as_object()  # Returns: None (not an Object)
+            >>> Parameter.integer(42).as_object()  # Returns: None
         """
         ...
 
@@ -351,7 +351,6 @@ class Parameter:
         """
         ...
 
-
 #: Type alias for parameter values used in metrics and configurations
 ParameterValue = Union[str, float, bool]
 ParameterDict = Dict[
@@ -364,10 +363,7 @@ ParameterDict = Dict[
     ],
 ]
 
-
-class Error(Exception):
-    ...
-
+class Error(Exception): ...
 
 class ProjectID:
     """
@@ -395,7 +391,6 @@ class ProjectID:
         """
         ...
 
-
 class DatasetID:
     """
     Unique identifier for a dataset within a project.
@@ -421,7 +416,6 @@ class DatasetID:
         Returns the integer value of the dataset ID.
         """
         ...
-
 
 class ExperimentID:
     """
@@ -449,7 +443,6 @@ class ExperimentID:
         """
         ...
 
-
 class OrganizationID:
     """
     Unique identifier for an organization in EdgeFirst Studio.
@@ -476,7 +469,6 @@ class OrganizationID:
         """
         ...
 
-
 class SampleID:
     """
     Unique identifier for a sample in EdgeFirst Studio. Internally a
@@ -492,7 +484,6 @@ class SampleID:
         Returns the integer value of the sample ID.
         """
         ...
-
 
 class AnnotationSetID:
     """
@@ -510,7 +501,6 @@ class AnnotationSetID:
         """
         ...
 
-
 class TaskID:
     """
     Unique identifier for a task in EdgeFirst Studio. Internally a TaskID
@@ -526,7 +516,6 @@ class TaskID:
         Returns the integer value of the task ID.
         """
         ...
-
 
 class TrainingSessionID:
     """
@@ -554,7 +543,6 @@ class TrainingSessionID:
         """
         ...
 
-
 class ValidationSessionID:
     """
     Unique identifier for a validation session within an experiment.
@@ -580,7 +568,6 @@ class ValidationSessionID:
         Returns the integer value of the validation session ID.
         """
         ...
-
 
 class SnapshotID:
     """
@@ -608,7 +595,6 @@ class SnapshotID:
         """
         ...
 
-
 class ImageId:
     """
     Unique identifier for an image in EdgeFirst Studio. Internally an
@@ -624,7 +610,6 @@ class ImageId:
         Returns the integer value of the image ID.
         """
         ...
-
 
 class SequenceId:
     """
@@ -642,7 +627,6 @@ class SequenceId:
         """
         ...
 
-
 class AppId:
     """
     Unique identifier for an application in EdgeFirst Studio. Internally
@@ -659,7 +643,6 @@ class AppId:
         """
         ...
 
-
 # Type aliases for User ID patterns (TypeUID = Type User ID)
 ProjectUID = Union[ProjectID, int, str]
 DatasetUID = Union[DatasetID, int, str]
@@ -674,7 +657,6 @@ SnapshotUID = Union[SnapshotID, int, str]
 ImageUID = Union[ImageId, int, str]
 SequenceUID = Union[SequenceId, int, str]
 AppUID = Union[AppId, int, str]
-
 
 class Organization:
     """
@@ -710,7 +692,6 @@ class Organization:
         The number of credits available to the organization.
         """
         ...
-
 
 class Project:
     """
@@ -766,7 +747,6 @@ class Project:
         """
         ...
 
-
 class AnnotationSet:
     """
     The AnnotationSet class represents the collection of annotations for a
@@ -809,7 +789,6 @@ class AnnotationSet:
     def created(self) -> datetime:
         """The creation date of the annotation set."""
         ...
-
 
 class Label:
     """
@@ -859,7 +838,6 @@ class Label:
     def set_index(self, client: Client, index: int) -> None:
         """Set the index of the label."""
         ...
-
 
 class Dataset:
     """
@@ -944,7 +922,6 @@ class Dataset:
         """Remove a label from the dataset."""
         ...
 
-
 class FileType(Enum):
     """
     File types supported in EdgeFirst Studio datasets.
@@ -995,7 +972,6 @@ class FileType(Enum):
     RadarPcd: "FileType"
     RadarCube: "FileType"
 
-
 class AnnotationType(Enum):
     """
     Annotation types supported for labeling data in EdgeFirst Studio.
@@ -1022,7 +998,6 @@ class AnnotationType(Enum):
     Box2d: "AnnotationType"
     Box3d: "AnnotationType"
     Mask: "AnnotationType"
-
 
 class Box2d:
     """
@@ -1121,7 +1096,6 @@ class Box2d:
             float: The y-center coordinate of the bounding box.
         """
         ...
-
 
 class Box3d:
     """
@@ -1244,7 +1218,6 @@ class Box3d:
         """
         ...
 
-
 class Mask:
     """
     Represents a segmentation mask using polygonal annotations.
@@ -1277,7 +1250,6 @@ class Mask:
             List[List[float]]: A list of polygons representing the mask.
         """
         ...
-
 
 class SampleFile:
     """
@@ -1312,7 +1284,6 @@ class SampleFile:
         """URL for downloaded files, or None if for upload."""
         ...
 
-
 class PresignedUrl:
     """
     A presigned URL for uploading a file to S3.
@@ -1335,7 +1306,6 @@ class PresignedUrl:
         """The presigned URL for uploading (use PUT request)."""
         ...
 
-
 class SamplesCountResult:
     """
     Result of counting samples in a dataset.
@@ -1347,7 +1317,6 @@ class SamplesCountResult:
     def total(self) -> int:
         """The total number of samples."""
         ...
-
 
 class SamplesPopulateResult:
     """
@@ -1366,7 +1335,6 @@ class SamplesPopulateResult:
     def urls(self) -> List[PresignedUrl]:
         """Presigned URLs for uploading files associated with this sample."""
         ...
-
 
 class Annotation:
     """
@@ -1515,7 +1483,6 @@ class Annotation:
             Optional[Mask]: The segmentation mask or None.
         """
         ...
-
 
 class Sample:
     """
@@ -1754,7 +1721,6 @@ class Sample:
         """
         ...
 
-
 class Experiment:
     """
     Represents an experiment in EdgeFirst Studio which are used to organize
@@ -1801,7 +1767,6 @@ class Experiment:
             Optional[str]: The experiment description or None.
         """
         ...
-
 
 class Task:
     """
@@ -1893,7 +1858,6 @@ class Task:
         """
         ...
 
-
 class Stage:
     """
     Represents a stage in the task.
@@ -1959,7 +1923,6 @@ class Stage:
                  representing 1% of the total.
         """
         ...
-
 
 class TaskInfo:
     """
@@ -2093,7 +2056,6 @@ class TaskInfo:
         """
         ...
 
-
 class DatasetParams:
     """
     Represents the parameters for a dataset used in a training session.
@@ -2139,7 +2101,6 @@ class DatasetParams:
         """
         ...
 
-
 class Artifact:
     """
     Represents an artifact produced by a training session.
@@ -2164,7 +2125,6 @@ class Artifact:
             str: The model type.
         """
         ...
-
 
 class TrainingSession:
     """
@@ -2394,7 +2354,6 @@ class TrainingSession:
         """
         ...
 
-
 class ValidationSession:
     """
     This class represents a validation session for a given model and dataset.
@@ -2553,7 +2512,6 @@ class ValidationSession:
         """
         ...
 
-
 class Snapshot:
     """
     This class represents a snapshot in EdgeFirst Studio.
@@ -2626,7 +2584,6 @@ class Snapshot:
         """
         ...
 
-
 class SnapshotRestoreResult:
     """
     Result of a snapshot restore operation.
@@ -2689,10 +2646,10 @@ class SnapshotRestoreResult:
     @property
     def task_id(self) -> TaskID | None:
         """
-        Returns the ID of the task processing the restore operation, if available.
+        Returns the ID of the task processing the restore operation.
 
         Returns:
-            TaskID | None: The task ID for tracking restore progress, or None if not available.
+            TaskID | None: The task ID for tracking progress, or None.
         """
         ...
 
@@ -2705,7 +2662,6 @@ class SnapshotRestoreResult:
             str: The restore timestamp.
         """
         ...
-
 
 class Client:
     """
@@ -3471,7 +3427,7 @@ class Client:
                      path, and creation timestamp.
 
         Raises:
-            Error: If path doesn't exist, file format is invalid, or upload fails.
+            Error: If path doesn't exist, format is invalid, or upload fails.
 
         Example:
             >>> client = Client().with_token_path(None)
@@ -3533,7 +3489,7 @@ class Client:
             dataset_description (Optional[str]): Optional dataset description.
 
         Returns:
-            SnapshotRestoreResult: Result containing the new dataset ID and status.
+            SnapshotRestoreResult: Result with the new dataset ID and status.
 
         Raises:
             Error: If snapshot or project doesn't exist, or restoration fails.
@@ -3653,10 +3609,13 @@ class Client:
         kubernetes for on-premise installations.
 
         Args:
-            name (Optional[str]): The name of the task to filter by.
-            workflow (Optional[str]): The workflow name to filter by.
-            status (Optional[str]): The status to filter by.
-            manager (Optional[str]): The task manager to filter by.
+            name (Optional[str]): Task name filter (client-side substring).
+            workflow (Optional[str]): Workflow type filter. Values: "trainer",
+                "validation", "snapshot-create", "snapshot-restore", "copyds",
+                "upload", "auto-ann", "auto-seg", "aigt", "import", "export",
+                "convertor", "twostage".
+            status (Optional[str]): Status filter ("running", "complete", etc).
+            manager (Optional[str]): Manager filter ("aws", "user", etc).
 
         Returns:
             List[Task]: A list of Task objects.
@@ -3743,7 +3702,6 @@ class Client:
         """
         ...
 
-
 def version() -> str:
     """
     Get the version of the edgefirst_client library.
@@ -3757,7 +3715,6 @@ def version() -> str:
         0.3.0
     """
     ...
-
 
 def is_polars_enabled() -> bool:
     """
