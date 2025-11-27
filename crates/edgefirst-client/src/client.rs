@@ -2499,6 +2499,19 @@ impl Client {
     }
 
     /// Return a list of tasks for the current user.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Optional filter for task name (client-side substring match)
+    /// * `workflow` - Optional filter for workflow/task type. If provided,
+    ///   filters server-side by exact match. Valid values include: "trainer",
+    ///   "validation", "snapshot-create", "snapshot-restore", "copyds",
+    ///   "upload", "auto-ann", "auto-seg", "aigt", "import", "export",
+    ///   "convertor", "twostage"
+    /// * `status` - Optional filter for task status (e.g., "running",
+    ///   "complete", "error")
+    /// * `manager` - Optional filter for task manager type (e.g., "aws",
+    ///   "user", "kubernetes")
     pub async fn tasks(
         &self,
         name: Option<&str>,
@@ -2508,6 +2521,7 @@ impl Client {
     ) -> Result<Vec<Task>, Error> {
         let mut params = TasksListParams {
             continue_token: None,
+            types: workflow.map(|w| vec![w.to_owned()]),
             status: status.map(|s| vec![s.to_owned()]),
             manager: manager.map(|m| vec![m.to_owned()]),
         };
@@ -2532,10 +2546,6 @@ impl Client {
 
         if let Some(name) = name {
             tasks.retain(|t| t.name().contains(name));
-        }
-
-        if let Some(workflow) = workflow {
-            tasks.retain(|t| t.workflow().contains(workflow));
         }
 
         Ok(tasks)
