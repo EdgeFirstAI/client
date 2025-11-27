@@ -481,8 +481,10 @@ fn compare_arrow_files(
         }
 
         println!("✓ Groups verified: all samples have matching groups");
-    } else if original_has_group || redownloaded_has_group {
-        println!("⚠️  Warning: One file has groups but the other doesn't");
+    } else if original_has_group && !redownloaded_has_group {
+        return Err("Original file has groups but redownloaded file does not".into());
+    } else if !original_has_group && redownloaded_has_group {
+        return Err("Redownloaded file has groups but original file does not".into());
     }
 
     // Verify masks if present
@@ -3011,14 +3013,15 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Err(_) => {
+                // Snapshot may have been deleted between list and get - this is acceptable
                 println!(
-                    "⚠️  Snapshot {} may have been deleted - skipping verification",
+                    "Note: Snapshot {} may have been deleted - skipping verification",
                     id
                 );
             }
         }
     } else {
-        println!("⚠️  No snapshots found - skipping snapshot get test");
+        return Err("No snapshots found - test server should have at least one snapshot".into());
     }
 
     Ok(())
@@ -3148,7 +3151,7 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
 
 #[test]
 #[serial]
-#[ignore = "Server bug: snapshot restore does not preserve group assignments (see GROUP_PRESERVATION_BUG.md)"]
+#[ignore = "DE-1234: Server bug - snapshot restore does not preserve group assignments"]
 fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
     // This test restores the "Unit Testing - Deer Dataset" snapshot and verifies
     // the restored dataset matches the original Deer dataset in Unit Testing
@@ -3311,13 +3314,8 @@ fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "polars")]
     {
         println!("\n=== Detailed Arrow Comparison ===");
-        match compare_arrow_files(&original_annotations, &restored_annotations) {
-            Ok(()) => println!("✓ Arrow file contents match"),
-            Err(e) => {
-                eprintln!("⚠️  Arrow comparison failed: {}", e);
-                // Don't fail the test for minor differences, just warn
-            }
-        }
+        compare_arrow_files(&original_annotations, &restored_annotations)?;
+        println!("✓ Arrow file contents match");
     }
 
     // Cleanup: Delete restored dataset
@@ -3353,7 +3351,7 @@ fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 #[serial]
-#[ignore = "Requires MCAP file with camera data. Run manually when MCAP test data is available."]
+#[ignore = "Requires MCAP test data (4GB+). Set TEST_MCAP_SNAPSHOT_ID to run."]
 fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error::Error>> {
     // This test requires an MCAP file to test autodepth and autolabel features.
     // These features only work with MCAP snapshots, not image-based snapshots.
