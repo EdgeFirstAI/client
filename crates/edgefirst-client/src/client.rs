@@ -363,6 +363,12 @@ impl Client {
         let login: LoginResult = self
             .rpc_without_auth("auth.login".to_owned(), Some(params))
             .await?;
+
+        // Validate that the server returned a non-empty token
+        if login.token.is_empty() {
+            return Err(Error::EmptyToken);
+        }
+
         Ok(Client {
             token: Arc::new(tokio::sync::RwLock::new(login.token)),
             ..self.clone()
