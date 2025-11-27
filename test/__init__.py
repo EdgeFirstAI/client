@@ -18,11 +18,33 @@ def get_client():
     """
     Create an authenticated EdgeFirst Studio client for testing.
 
+    Supports authentication via:
+    - STUDIO_TOKEN environment variable (direct token)
+    - STUDIO_USERNAME and STUDIO_PASSWORD environment variables (login)
+
+    The STUDIO_SERVER environment variable can specify the server instance
+    (e.g., "test", "stage", "saas"). Defaults to "saas" if not set.
+
     Returns:
-        Client: Authenticated client instance using STUDIO_TOKEN from
-            environment.
+        Client: Authenticated client instance.
+
+    Raises:
+        RuntimeError: If no authentication credentials are available.
     """
-    return Client(token=environ.get("STUDIO_TOKEN"))
+    token = environ.get("STUDIO_TOKEN")
+    username = environ.get("STUDIO_USERNAME")
+    password = environ.get("STUDIO_PASSWORD")
+    server = environ.get("STUDIO_SERVER")
+
+    if token:
+        return Client(token=token)
+    elif username and password:
+        return Client(username=username, password=password, server=server)
+    else:
+        raise RuntimeError(
+            "No authentication credentials found. Set STUDIO_TOKEN or "
+            "STUDIO_USERNAME and STUDIO_PASSWORD environment variables."
+        )
 
 
 def get_test_data_dir():
