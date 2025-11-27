@@ -749,7 +749,7 @@ fn test_organization_details() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 #[serial]
 fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    use std::{fs, path::PathBuf, time::SystemTime};
+    use std::{fs, time::SystemTime};
 
     // Get credentials from environment (required for authentication tests)
     let username =
@@ -757,11 +757,21 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     let _password =
         env::var("STUDIO_PASSWORD").expect("STUDIO_PASSWORD must be set for authentication tests");
 
-    // Determine token path (same logic as in client.rs)
+    // Get the token path - must match what the CLI uses (no fallback)
     let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
         .map(|d| d.config_dir().join("token"))
-        .unwrap_or_else(|| PathBuf::from(".edgefirst_token"));
+        .ok_or("ProjectDirs::from returned None - cannot determine token path")?;
 
+    // Debug: Show environment info to help diagnose path issues
+    println!("HOME: {:?}", env::var("HOME"));
+    println!("XDG_CONFIG_HOME: {:?}", env::var("XDG_CONFIG_HOME"));
+    println!("Token path: {:?}", token_path);
+    if token_path.exists() {
+        println!(
+            "Token file already exists with {} bytes",
+            fs::metadata(&token_path).map(|m| m.len()).unwrap_or(0)
+        );
+    }
     println!("=== STEP 1: First Login ===");
     let time_before = SystemTime::now();
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -769,11 +779,29 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
 
-    let output = cmd.ok()?.stdout;
-    let output_str = String::from_utf8(output)?;
+    let output = cmd.output()?;
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    println!("Login stdout:\n{}", stdout_str);
+    println!("Login stderr:\n{}", stderr_str);
+    println!("Login exit status: {:?}", output.status);
 
-    assert!(output_str.contains("Successfully logged into EdgeFirst Studio"));
-    assert!(output_str.contains(&username));
+    assert!(
+        output.status.success(),
+        "Login command should succeed (exit code: {:?})",
+        output.status
+    );
+    assert!(
+        stdout_str.contains("Successfully logged into EdgeFirst Studio"),
+        "Should contain success message, got: {}",
+        stdout_str
+    );
+    assert!(
+        stdout_str.contains(&username),
+        "Should contain username '{}', got: {}",
+        username,
+        stdout_str
+    );
     assert!(token_path.exists(), "Token file should exist after login");
 
     let metadata = fs::metadata(&token_path)?;
@@ -785,7 +813,16 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
 
     // Validate JWT token format and username
     let first_token = fs::read_to_string(&token_path)?;
-    assert!(!first_token.is_empty(), "Token file should not be empty");
+    println!(
+        "Token file size: {} bytes, path: {:?}",
+        first_token.len(),
+        token_path
+    );
+    assert!(
+        !first_token.is_empty(),
+        "Token file should not be empty (path: {:?})",
+        token_path
+    );
 
     let token_parts: Vec<&str> = first_token.trim().split('.').collect();
     assert_eq!(
