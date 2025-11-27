@@ -22,6 +22,7 @@ For a complete list of third-party dependencies, their licenses, and attribution
   - Download `THIRD_PARTY.md` from the latest release assets.
 
 - **Generate locally**:
+
   ```bash
   cargo install cargo-license
   cargo license --authors --all-features --tsv > THIRD_PARTY.tsv

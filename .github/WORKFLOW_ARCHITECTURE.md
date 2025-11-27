@@ -25,6 +25,7 @@ This document provides a comprehensive overview of the GitHub Actions workflows 
 **Purpose**: Code quality checks, testing, coverage, and security audit
 
 **Triggers**:
+
 - Push to `main` branch
 - Pull requests to `main` branch
 - Manual workflow dispatch
@@ -52,6 +53,7 @@ test.yml
 ```
 
 **Key Features**:
+
 - **Merged lint and test jobs**: Both use nightly rust, share single cache for maximum efficiency
 - **Audit uses stable rust**: Matches distributed binaries for security vulnerability scanning
 - **Intelligent caching**: Swatinem/rust-cache with incremental compilation support
@@ -60,6 +62,7 @@ test.yml
 - **SonarCloud integration**: Quality gate checks on pull requests
 
 **Secrets Required**:
+
 - `CODECOV_TOKEN`: For uploading coverage reports
 - `SONAR_TOKEN`: For SonarCloud analysis and quality gate checks
 - `STUDIO_USERNAME`: For running Studio integration tests
@@ -68,6 +71,7 @@ test.yml
 **Studio Integration Tests**:
 
 The CI workflow runs integration tests that authenticate and interact with EdgeFirst Studio test servers. These tests validate server-side behavior including:
+
 - Authentication (login/logout with JWT token management)
 - Dataset operations (download datasets and annotations)
 - Project operations (list, create, read)
@@ -75,6 +79,7 @@ The CI workflow runs integration tests that authenticate and interact with EdgeF
 - Artifact management
 
 **Test Infrastructure:**
+
 - Test servers: `test`, `stage`, and `saas` environments
 - Test data conventions: Common `test` user, `Unit Testing` project, `Deer` and `Test Labels` datasets
 - Server selection: `STUDIO_SERVER` environment variable (set to `test` in CI)
@@ -84,6 +89,7 @@ The CI workflow runs integration tests that authenticate and interact with EdgeF
 Studio credentials are only available to project maintainers. Contributors can run the full test suite by creating pull requests, which trigger CI workflows with stored credentials. This ensures comprehensive testing while maintaining credential security.
 
 **Artifacts Generated**:
+
 - `coverage-reports`: lcov.info and coverage.xml files
 
 ---
@@ -93,6 +99,7 @@ Studio credentials are only available to project maintainers. Contributors can r
 **Purpose**: Build CLI binaries and Python wheels for multiple platforms (unified workflow)
 
 **Triggers**:
+
 - Push to `main` branch
 - Pull requests to `main` branch
 - Manual workflow dispatch
@@ -118,6 +125,7 @@ build.yml
 ```
 
 **Matrix Strategy** (same for CLI and wheels):
+
 | OS | Target | CLI Output | Wheel Platform |
 |---|---|---|---|
 | ubuntu-latest | x86_64-unknown-linux-gnu | edgefirst-client-linux-amd64 | wheels-linux-x86_64 |
@@ -127,6 +135,7 @@ build.yml
 | windows-latest | x86_64-pc-windows-msvc | edgefirst-client-windows-amd64.exe | wheels-windows-x86_64 |
 
 **Key Features**:
+
 - **Serial execution**: Wheels build after CLI to maximize incremental compilation cache benefits
 - **Shared cache**: Both CLI and wheels use same cache key per target (`{target}-build`)
 - **Cross-compilation**: Uses `cargo-zigbuild` with zig for Linux targets (manylinux2014 compatibility)
@@ -135,8 +144,10 @@ build.yml
 - **Swatinem/rust-cache**: Intelligent caching with incremental compilation state preservation
 
 **Artifacts Generated**:
+
 - CLI: Individual binary artifacts per platform (e.g., `edgefirst-client-linux-amd64`)
 - Wheels: Platform-specific wheel artifacts (e.g., `wheels-linux-x86_64`)
+
 ---
 
 ### 3. Release Workflow (`.github/workflows/release.yml`)
@@ -144,7 +155,8 @@ build.yml
 **Purpose**: Complete release automation with publishing
 
 **Triggers**:
-- Tags matching semantic versioning: 
+
+- Tags matching semantic versioning:
   - Stable releases: `[0-9]+.[0-9]+.[0-9]+`
     - Examples: `1.0.0`, `2.1.3`, `0.5.0`
   - Release candidates: `[0-9]+.[0-9]+.[0-9]+rc[0-9]+`
@@ -212,6 +224,7 @@ Tag Push (e.g., 1.0.0 or 1.0.0rc1)
 ```
 
 **Key Features**:
+
 - Automatic version extraction from git tag
 - **Verifies Cargo.toml version matches tag** (fails if mismatch)
 - Parallel builds for all platforms
@@ -226,11 +239,13 @@ Tag Push (e.g., 1.0.0 or 1.0.0rc1)
 **Important**: The version in `Cargo.toml` must be updated to match the git tag **before** creating the tag. The workflow will verify this and fail if they don't match. For release candidates, use the format `X.Y.ZrcN` (e.g., `1.0.0rc1`) with no separators.
 
 **Secrets Required**:
+
 - `CARGO_TOKEN`: For publishing to crates.io
 
 **Note**: PyPI publishing uses **Trusted Publisher** authentication (OpenID Connect) and does not require an API token. The workflow uses the `pypi` environment with `id-token: write` permission for secure, token-less authentication.
 
 **Artifacts Created**:
+
 - **GitHub Release** with:
   - CLI binaries for 5 platforms (compressed)
   - Python wheels for 5 platforms
@@ -258,10 +273,12 @@ cache:
 ```
 
 **Cache Key Strategy**: Each workflow/job has a unique cache key to avoid conflicts:
+
 - **Lint & Test**: `nightly-lint-test` (nightly toolchain for all checks and tests)
 - **Build (CLI + Python)**: `{target}-build` (per-target architecture, shared between CLI and Python wheel builds)
 
 **Key Features**:
+
 - **Incremental compilation**: Preserves compiler state for faster rebuilds
 - **Target-specific caching**: Separate caches for different architectures prevent conflicts
 - **Profile-aware**: Different caches for different use cases (lint/test vs release builds)
@@ -269,12 +286,14 @@ cache:
 - **Shared cache optimization**: CLI and Python builds use same cache, maximizing incremental compilation benefits
 
 **Benefits**:
+
 - **10x faster builds**: Typical build time reduced from ~10 minutes to ~1 minute on cache hit
 - **Sequential build optimization**: Python wheels run after CLI builds, reusing compiled dependencies
 - **Reduced CI costs**: Less compute time means lower GitHub Actions usage
 - **Better reliability**: Less network dependency, fewer transient failures
 
 **Design Decisions**:
+
 - Merged lint and test jobs since both use nightly toolchain, maximizing cache reuse
 - Merged Python wheels into build workflow to share cache with CLI builds (serial execution for incremental benefits)
 - Audit job uses stable rust to match distributed binaries (critical for security audits)
@@ -305,23 +324,27 @@ The project uses version formats compatible with both Python (PEP 440) and Rust 
 The CI workflow includes SonarCloud analysis for continuous code quality monitoring:
 
 **Features**:
+
 - Analyzes both Rust and Python code
 - Tracks code coverage (from cargo-llvm-cov and slipcover)
 - Detects code smells, bugs, and security vulnerabilities
 - Quality gate enforcement for pull requests
 
 **Configuration**:
+
 - Project configuration: `sonar-project.properties`
 - Organization: `edgefirstai`
 - Project key: `EdgeFirstAI_client`
 
 **Quality Gate**:
+
 - Runs automatically on all pull requests
 - Blocks merge if quality standards not met
 - Timeout: 5 minutes
 - Only fails on pull requests (not on main branch pushes)
 
 **Metrics Tracked**:
+
 - Code coverage (Rust and Python)
 - Maintainability rating
 - Reliability rating
@@ -362,6 +385,7 @@ Wheel Build
 ### Pre-Release Testing
 
 Before creating a release tag, manually test:
+
 1. Trigger build workflows
 2. Download and test artifacts
 3. Verify documentation builds
@@ -400,11 +424,13 @@ Test Execution
 > **Note**: This project uses [cargo-release](https://github.com/crate-ci/cargo-release) for automated version management and tagging. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-process) for complete details.
 
 **1. Install cargo-release** (if not already installed)
+
 ```bash
 cargo install cargo-release
 ```
 
 **2. Update CHANGELOG.md**
+
 ```bash
 # Add release notes for the new version
 # Edit CHANGELOG.md manually
@@ -413,6 +439,7 @@ cargo install cargo-release
 **3. Run cargo-release**
 
 For **stable releases**:
+
 ```bash
 # Patch release (e.g., 2.2.2 → 2.2.3)
 cargo release patch --execute --no-confirm
@@ -425,6 +452,7 @@ cargo release major --execute --no-confirm
 ```
 
 For **release candidates** (rarely used):
+
 ```bash
 # Manually edit version to use rcN format (e.g., 2.3.0rc1)
 sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
@@ -433,21 +461,25 @@ cargo release 2.3.0rc1 --execute --no-confirm
 ```
 
 **4. Push changes and tags**
+
 ```bash
 git push && git push --tags
 ```
 
-**Important**: 
+**Important**:
+
 - The workflow will fail if the tag version doesn't match the version in `Cargo.toml`
 - cargo-release automatically updates all workspace crates and creates the git tag locally
 - Tags use format `X.Y.Z` (no "v" prefix)
 
 **5. Monitor Workflow**
+
 - Go to Actions tab
 - Watch "Release" workflow
 - Verify all jobs complete successfully
 
 **6. Verify Release**
+
 - Check GitHub release page
 - Verify crates.io publication
 - Verify PyPI publication
@@ -456,6 +488,7 @@ git push && git push --tags
 ### What cargo-release Does
 
 When you run `cargo release`, it automatically:
+
 1. Updates workspace version in root `Cargo.toml`
 2. Updates workspace dependency version for `edgefirst-client`
 3. Updates all crate versions (inherited via `version.workspace = true`)
@@ -464,6 +497,7 @@ When you run `cargo release`, it automatically:
 6. Creates git tag: `X.Y.Z` (locally, not pushed)
 
 Configuration is in `release.toml`:
+
 - Only allows releases from `main` branch (safety)
 - Uses tag format `X.Y.Z` without "v" prefix
 - Disables automatic publishing (handled by CI)
@@ -472,6 +506,7 @@ Configuration is in `release.toml`:
 ### GitHub Actions Workflow
 
 After pushing the tag, the workflow automatically:
+
 1. Verifies Cargo.toml version matches the tag
 2. Creates GitHub release
 3. Builds CLI binaries (5 platforms)
@@ -496,6 +531,7 @@ RUST_BACKTRACE: 1           # Full backtraces on error
 ### Job-Specific Variables
 
 **Testing Jobs**:
+
 ```yaml
 STUDIO_SERVER: test         # Test environment
 STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
@@ -562,6 +598,7 @@ None currently required.
 ### For Contributors
 
 1. **Always run locally first**:
+
    ```bash
    cargo fmt --all
    cargo clippy --all-targets
@@ -600,6 +637,7 @@ None currently required.
 ## Support
 
 For questions about workflows:
+
 - Review this document
 - Check `CONTRIBUTING.md` for development guidelines
 - Open an issue if problems persist

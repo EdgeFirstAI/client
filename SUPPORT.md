@@ -9,6 +9,7 @@ For comprehensive documentation on EdgeFirst products and services:
 **[EdgeFirst User Manual](https://doc.edgefirst.ai)**
 
 The User Manual includes documentation for:
+
 - EdgeFirst Studio SaaS platform
 - EdgeFirst AI Middleware
 - EdgeFirst Client library and CLI
@@ -24,6 +25,7 @@ For community support, questions, and discussions about EdgeFirst open source pr
 **[EdgeFirst Community Discussions](https://github.com/orgs/EdgeFirstAI/discussions)**
 
 This is the best place to:
+
 - Ask questions about using EdgeFirst Client
 - Share your projects and use cases
 - Discuss feature ideas and enhancements
@@ -31,6 +33,7 @@ This is the best place to:
 - Get help from the community
 
 Categories include:
+
 - **General**: General discussions about EdgeFirst
 - **Q&A**: Ask the community for help
 - **Ideas**: Share ideas for new features
@@ -43,6 +46,7 @@ For bug reports and feature requests specific to EdgeFirst Client:
 **[EdgeFirst Client Issues](https://github.com/EdgeFirstAI/client/issues)**
 
 Please use the provided issue templates:
+
 - 🐛 [Bug Report](.github/ISSUE_TEMPLATE/bug_report.yml)
 - 💡 [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml)
 
@@ -53,6 +57,7 @@ For professional support, service level agreements (SLAs), and enterprise requir
 ### EdgeFirst Studio Subscription
 
 Active EdgeFirst Studio subscribers receive:
+
 - Priority technical support
 - Service level agreements
 - Custom integration assistance
@@ -63,6 +68,7 @@ Active EdgeFirst Studio subscribers receive:
 ### Professional Services
 
 Au-Zone Technologies offers professional services for:
+
 - Custom development and integration
 - Training and workshops
 - Architecture consulting
@@ -90,11 +96,13 @@ See our [Security Policy](SECURITY.md) for responsible disclosure procedures.
 ## ⏱️ Response Times
 
 **Community Support** (GitHub Discussions/Issues):
+
 - Best effort response from community and maintainers
 - No guaranteed response time
 - Issues are prioritized based on severity and impact
 
 **Commercial Support** (EdgeFirst Studio subscribers):
+
 - Response times based on subscription tier and SLA
 - Priority support for critical issues
 - Contact your account manager for details

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - **Test coverage for examples/download.py**
   - Added `test/test_examples.py` with integration test for download example
   - Refactored `download.py` to export `download_dataset_yolo()` function for testability
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added examples showing directory structure transformations
 
 ### Fixed
+
 - **Graceful handling of corrupted or expired authentication tokens**
   - `with_token_path()` now catches token validation errors and automatically removes corrupted token files
   - CLI displays helpful error message when token renewal fails, directing users to login again
@@ -44,11 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.3] - 2025-11-18
 
 ### Added
+
 - **Python bindings: Pythonic dict/list-like API for `Parameter` class**
   - `.get(key, default=None)`: Dict-like method for Object parameters (recommended API)
   - `.keys()`, `.values()`, `.items()`: Dict-like iteration methods for Object parameters
 
 ### Changed
+
 - **Python bindings: `__str__()` for String parameters now returns plain string values**
   - `str(Parameter.string("hello"))` now returns `"hello"` instead of `"String(hello)"`
   - `__repr__()` still returns descriptive format `"String(hello)"` for debugging
@@ -58,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Eliminates unnecessary INFO messages during normal operation
 
 ### Notes
+
 - **Python bindings: Parameter API limitations due to PyO3**
   - Bracket indexing (`param["key"]` or `param[0]`) is not supported directly on Parameter objects
   - `len()` and `in` operators not supported directly on Parameter objects
@@ -72,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.2] - 2025-11-17
 
 ### Added
+
 - **URL-based retry classification** for intelligent error handling
   - Classifies requests into two categories: StudioApi vs FileIO
   - **StudioApi** (`*.edgefirst.studio/api`): Fast-fail on auth errors (401/403), retry server errors
@@ -81,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - See `crates/edgefirst-client/src/retry.rs` for detailed documentation
 
 ### Fixed
+
 - **JWT token parsing now correctly extracts server name from `server` field instead of `database` field**
   - Fixes authentication failures when using tokens from SaaS server
   - `Client::with_token()` now properly identifies target EdgeFirst Studio instance
@@ -95,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internal: Added `Sleep` command for diagnostic testing (not for production use)
 
 ### Changed
+
 - HTTP timeout defaults changed to improve test performance
   - Default timeout: 120s → 30s (override with `EDGEFIRST_TIMEOUT=<seconds>`)
   - Default max retries: 5 → 3 (override with `EDGEFIRST_MAX_RETRIES=<count>`)
@@ -105,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.1] - 2025-11-06
 
 ### Fixed
+
 - Internal: CLI tests now run serially to prevent concurrent Studio server access issues
   - Added `#[serial]` attribute to `test_download_annotations`, `test_download_artifact`, and `test_upload_artifact`
   - Prevents race conditions and server overload during integration testing
@@ -116,11 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added error type classification (is_timeout, is_connect, is_request)
 
 ### Changed
+
 - Internal: Updated GitHub Actions image references for CI/CD pipeline
 
 ## [2.4.0] - 2025-11-06
 
 ### Fixed
+
 - Annotation object tracking IDs now correctly preserved through upload/download cycle
   - Fixed `Annotation.object_id` field serialization: now sends `object_reference` (server consumes and responds with this field name)
   - Added `object_id` as alias for forward compatibility
@@ -135,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Reduces Arrow file size by ~5-10% (integers more efficient than strings)
 
 ### Added
+
 - Mask polygon conversion helpers for public API
   - Added `unflatten_polygon_coordinates()` function: reconstructs nested polygon structure from flat coordinates with NaN separators
   - Enables CLI to properly convert Arrow file mask data back to Studio's expected nested format during upload
@@ -171,6 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sample struct: Added `degradation: Option<String>` field for image quality metadata
 
 ### Changed
+
 - Documentation consolidation: Removed redundant files
   - Removed: `JSON_FORMAT_SPECIFICATION.md`, `DATASET_STRUCTURE.md`, `DATASET_DOCS_REVIEW.md`, `JSON_NESTED_ANALYSIS.md`, `JSON_OPTIONAL_FIELDS.md`, `FIELD_RENAMING_SUMMARY.md`
   - All content merged into comprehensive `DATASET_FORMAT.md`
@@ -184,6 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Affects `annotations_dataframe()` (deprecated) for backward compatibility
 
 ### Deprecated
+
 - `annotations_dataframe()` function - use `samples_dataframe()` instead
   - Rust: `edgefirst_client::annotations_dataframe(&[Annotation])`
   - Python: `Client.annotations_dataframe(annotation_set_id, groups, annotation_types, progress)`
@@ -195,6 +209,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Migration Guide
 
 #### Rust API
+
 ```rust
 // OLD (deprecated):
 let annotations = client.annotations(annotation_set_id, &groups, &types, Some(tx)).await?;
@@ -207,6 +222,7 @@ let df = client.samples_dataframe(dataset_id, Some(annotation_set_id), &groups, 
 ```
 
 #### Python API
+
 ```python
 # OLD (deprecated):
 df = client.annotations_dataframe(annotation_set_id, ["train"], [], None)
@@ -216,21 +232,25 @@ df = client.samples_dataframe(dataset_id, annotation_set_id, ["train"], [], None
 ```
 
 #### CLI (Automatic)
+
 The CLI `download` command automatically uses the new API - no user changes required.
 
 #### DataFrame Schema Changes
+
 - Column count: 9 columns → 13 columns
 - New optional columns: `size` (Array<UInt32, 2>), `location` (Array<Float32, 2>), `pose` (Array<Float32, 3>), `degradation` (String)
 - Column names: `label_name` → `label`, `group_name` → `group`
 - Existing columns unchanged: name, frame, object_reference, label_index, mask, box2d, box3d
 
 ### Changed
+
 - **BREAKING**: `annotations_dataframe()` now returns `Result<DataFrame, Error>` instead of `DataFrame`
   - Polars operations (casting, DataFrame construction) now properly propagate errors
   - Callers must handle the Result with `?` or `.unwrap()` / `.expect()`
   - Improves robustness by eliminating panics in dataframe construction
 
 ### Deprecated
+
 - Python bindings: All `.uid` properties are now deprecated
   - Affected classes: Project, Dataset, AnnotationSet, Experiment, TrainingSession, ValidationSession, Task, TaskInfo, Sample
   - Emits `DeprecationWarning` when accessed: "X.uid is deprecated and will be removed in a future version. Use str(X.id) instead."
@@ -238,6 +258,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
   - Backward compatible: Properties still functional but will be removed in next major version
 
 ### Fixed
+
 - Rust client: Updated samples.populate2 annotation serialization to match server schema
   - Emits annotations as a flat array with nested `box2d`/`box3d` geometry objects
   - Segmentation masks serialize as polygon arrays (`"mask": [[[x, y], ...]]`)
@@ -254,6 +275,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.3.1] - 2025-10-24
 
 ### Added
+
 - `Sample` accessor functions for all fields in Rust API
   - `uuid()`, `sequence_uuid()`, `sequence_description()`, `frame_number()`
   - `image_name()`, `image_url()`, `width()`, `height()`, `date()`, `source()`
@@ -288,6 +310,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
   - Uses timestamp-based unique names to avoid conflicts
 
 ### Changed
+
 - `test_populate_samples` now creates and cleans up temporary datasets and annotation sets
   - Creates test dataset with random suffix to avoid conflicts
   - Creates annotation set for the new dataset
@@ -303,6 +326,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
   - Both Rust and Python tests use this improved pattern
 
 ### Fixed
+
 - `test_labels` test now uses random label names to avoid conflicts with parallel test execution
   - Previously tried to delete all labels which caused race conditions
   - Now creates/verifies/deletes a uniquely named test label
@@ -310,6 +334,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.3.0] - 2025-10-23
 
 ### Added
+
 - `Client::populate_samples()` method for importing samples with annotations
   - Automatically uploads local files to S3 using presigned URLs
   - Auto-generates UUIDs for samples if not provided (uuid crate v1.11.0)
@@ -343,6 +368,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
   - **Tested with 1646-sample Deer dataset** across all workflow modes
 
 ### Changed
+
 - **BREAKING**: Simplified `Sample` and `Annotation` field types for better ergonomics
   - `Sample.files` changed from `Option<Vec<SampleFile>>` to `Vec<SampleFile>`
   - `Sample.annotations` changed from `Option<Vec<Annotation>>` to `Vec<Annotation>`
@@ -359,6 +385,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
   - Documents server limitations (width/height not returned in samples.list)
 
 ### Fixed
+
 - Corrected field serialization names to match EdgeFirst Studio API
   - `Sample.location` now serializes as `"sensors"` (GPS/IMU data)
   - `Annotation.object_id` now serializes as `"object_reference"`
@@ -372,6 +399,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Updated dependencies
 
 ### Added
+
 - Automatic file upload in `populate_samples()` - detects local files and uploads to presigned S3 URLs
 - Automatic UUID generation for samples in `populate_samples()` using UUIDv4
 - Example `populate_with_circle.rs` demonstrating bbox annotations with auto-generated image and UUID
@@ -381,6 +409,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Added `uuid` crate dependency (v1.11.0) with v4 and serde features
 
 ### Changed (License)
+
 - Updated project license to Apache-2.0
 
 ---
@@ -388,12 +417,14 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.1.0] - 2025-10-08
 
 ### Added
+
 - Comprehensive API documentation throughout the codebase
 - CLI testing support with unit tests
 - Python coverage reporting (coverage.xml)
 - Coverage reporting integration in CI/CD pipelines
 
 ### Changed
+
 - Replaced generic `ID` type with strongly typed ID classes for better type safety
 - Removed `server()` API; replaced with `url()` function that doesn't require a valid token
 - `client::with_token` now returns self instead of error when given an empty token
@@ -401,6 +432,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Moved Python examples to dedicated examples folder
 
 ### Fixed
+
 - Handle missing `project_id` in `TaskInfo`
 - Correctly handle `STUDIO_USERNAME`/`STUDIO_PASSWORD` or `STUDIO_TOKEN` from CLI
 - Updated tests to use `client.url` instead of `client.server`
@@ -410,9 +442,11 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.8] - 2025-09-30
 
 ### Fixed
+
 - The `annotations` function now returns empty annotations for images containing no annotations (instead of error)
 
 ### Changed
+
 - Clippy fixes and code quality improvements
 - Added `.gitignore` rule for HTML files generated by code coverage tools
 
@@ -421,6 +455,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.7] - 2025-09-24
 
 ### Added
+
 - Extended task filtering capabilities
 - Improved `Box3d` API consistency
 
@@ -429,6 +464,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.6] - 2025-09-23
 
 ### Added
+
 - Label index support
 - Updated dependencies
 
@@ -437,6 +473,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.5] - 2025-09-23
 
 ### Changed
+
 - Dependency updates
 
 ---
@@ -444,10 +481,12 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.4] - 2025-09-18
 
 ### Changed
+
 - Cleaned up logging output
 - Enabled automatic token renewal when using the CLI
 
 ### Updated
+
 - Rust toolchain updated to 1.89.0
 
 ---
@@ -455,6 +494,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.3] - 2025-09-10
 
 ### Fixed
+
 - Corrected `edgefirst_client.data` location to be under `crates/edgefirst-client-py`
 
 ---
@@ -462,6 +502,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.2] - 2025-09-10
 
 ### Fixed
+
 - Arrow dataframes corrected to use YOLO box2d format (center coordinates) by default
 - Fixed splitting name and frame for arrow dataframe export
 
@@ -470,9 +511,11 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.1] - 2025-09-09
 
 ### Changed
+
 - Renamed binary to `edgefirst-client`
 
 ### Fixed
+
 - Fixed ID usage in downloads
 - Renamed `validation_session_id` parameter to `session_id`
 
@@ -481,6 +524,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [2.0.0] - 2025-09-09
 
 ### Breaking Changes
+
 - Major refactoring of authentication mechanism:
   - Rust client now uses factory-like pattern with `with_token()`, `with_server()`, `with_login()` extensions
   - Base `new()` method is now barebones; authentication methods add fields to Client
@@ -491,6 +535,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Major Python client interface refactoring
 
 ### Added
+
 - COCO label index/name support with tests
 - Derive traits for `Label` type
 - File upload and download APIs for sessions
@@ -508,12 +553,14 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Nested parameters support in `ValidationSession`
 
 ### Changed
+
 - Refactored `download_artifact` API to allow default parameters for local path
 - Updated `set_stages` API to use array of tuples instead of HashMap (preserves ordering)
 - Workspace restructured with split crates
 - Save images with correct extension for given image file format
 
 ### Fixed
+
 - Login function now uses `rpc_without_auth`
 - Python tests now passing
 
@@ -522,6 +569,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.6] - 2025-05-28
 
 ### Added
+
 - Default Python parameters for `restore_snapshot_sync` API
 
 ---
@@ -529,6 +577,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.5] - 2025-05-28
 
 ### Fixed
+
 - Raise error from `upload_multipart` instead of unwrapping on progress feedback
 
 ---
@@ -536,6 +585,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.4] - 2025-05-02
 
 ### Fixed
+
 - Fixed issue with `annotations_sync` function from Python
 
 ---
@@ -543,13 +593,16 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.3] - 2025-04-30
 
 ### Added
+
 - Progress feedback to annotations download (improves UX for slow operations)
 
 ### Changed
+
 - Updated Cargo dependencies
 - Added `.gitignore` rule for `*.arrow` files
 
 ### Fixed
+
 - Fixed annotations feedback progress when multiple annotation types are requested
 
 ---
@@ -557,9 +610,11 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.1] - 2025-04-16
 
 ### Fixed
+
 - When combining annotations, use `object_id+image_id` as the key to ensure uniqueness across frames
 
 ### Changed
+
 - Use `*.edgefirst.studio` URL instead of `*.dveml.com`
 
 ---
@@ -567,13 +622,13 @@ The CLI `download` command automatically uses the new API - no user changes requ
 ## [1.3.0] - 2025-04-10
 
 - The annotations function will provide box2d using center-points (yolo format)
-    - Studio uses top-left (coco format) internally but we document center-points.
+  - Studio uses top-left (coco format) internally but we document center-points.
 - The annotations_list function is now private.
 - Trainer renamed to Experiement to match the EdgeFirst Studio terminology in the UI.
-    - Previously Trainer was used which is the terminology used by the REST API.
-    - Functions `trainers`, `trainer`, `find_trainers` renamed to `experiements`, `experiment`, `find_experiments`.
+  - Previously Trainer was used which is the terminology used by the REST API.
+  - Functions `trainers`, `trainer`, `find_trainers` renamed to `experiements`, `experiment`, `find_experiments`.
 - The `find_item` functions have been renamed `find_items` to emphasize that multiple matches can be returned.
 - Functions returning objects instead of object_id have been added throughout the API.
-    - For example Experiment can return the parent Project directly instead of project_id.
-    - As well Experiement can return the list of TrainingSessions directly instead of having to use the Experiement ID when calling the `Client::training_sessions`.
+  - For example Experiment can return the parent Project directly instead of project_id.
+  - As well Experiement can return the list of TrainingSessions directly instead of having to use the Experiement ID when calling the `Client::training_sessions`.
 - TrainingDataset has been renamed DatasetParams and the `TrainingSession::dataset()` renamed `TrainingSession::dataset_params()`.

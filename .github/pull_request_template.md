@@ -25,9 +25,9 @@ Fixes #(issue number)
 
 <!-- Provide a detailed list of changes -->
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Testing
 
@@ -40,9 +40,10 @@ Fixes #(issue number)
 - [ ] Manual testing performed
 
 **Test environment:**
-- OS: 
-- Rust version: 
-- Python version: 
+
+- OS:
+- Rust version:
+- Python version:
 
 ## Checklist
 

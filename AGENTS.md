@@ -29,12 +29,14 @@ This document provides instructions for AI coding assistants (GitHub Copilot, Cu
 ### Project Context
 
 EdgeFirst Client serves as the **bridge between developers and EdgeFirst Studio**, providing:
+
 - Direct integration with EdgeFirst Studio's REST API
 - Automation for CI/CD pipelines and custom workflows
 - Production-grade reliability (used internally by EdgeFirst Studio's training and validation services)
 - Cross-platform support (Rust library + Python bindings + CLI)
 
 When contributing to EdgeFirst Client, AI assistants should prioritize:
+
 - **EdgeFirst Studio integration**: Maintain seamless compatibility with the platform
 - **Code quality**: Maintainability, readability, and adherence to established patterns
 - **Testing**: Comprehensive coverage with unit, integration, and Studio integration tests
@@ -110,6 +112,7 @@ This adds `Signed-off-by: Your Name <your.email@example.com>` to the commit mess
 ### Branch Naming Convention
 
 **For External Contributors (Recommended):**
+
 ```bash
 feature/description-of-feature
 bugfix/description-of-bug
@@ -120,11 +123,13 @@ hotfix/critical-issue-description
 Use JIRA-integrated format: `<type>/<PROJECTKEY-###>[-optional-description]`
 
 **Branch Types:**
+
 - `feature/` - New features and enhancements
 - `bugfix/` - Non-critical bug fixes
 - `hotfix/` - Critical issues requiring immediate fix
 
 **Examples:**
+
 ```bash
 # External contributors (GitHub issue-based)
 feature/add-batch-upload
@@ -137,6 +142,7 @@ bugfix/STUDIO-456-fix-memory-leak
 ```
 
 **Rules:**
+
 - Branch from `main` for all work
 - Use kebab-case for descriptions (lowercase with hyphens)
 - Keep descriptions concise but meaningful
@@ -144,6 +150,7 @@ bugfix/STUDIO-456-fix-memory-leak
 ### Commit Message Format
 
 **Required format**:
+
 ```
 Short descriptive header
 
@@ -156,6 +163,7 @@ Signed-off-by: Your Name <your.email@example.com>
 ```
 
 **Guidelines**:
+
 - Keep it succinct: Focus on **what** changed, not detailed **why** or **how**
 - One bullet per major change area
 - Avoid implementation details (those belong in docs/comments/issues)
@@ -163,6 +171,7 @@ Signed-off-by: Your Name <your.email@example.com>
 - **MUST include DCO sign-off** (use `git commit -s`)
 
 **Examples of Good Commits:**
+
 ```bash
 Add JWT authentication to user API
 
@@ -186,11 +195,13 @@ Optimize S3 upload performance
 ### Pull Request Process
 
 **Requirements:**
+
 - All CI/CD checks must pass
 - PR title: Brief description of changes (no specific format required for external contributors)
 - PR description should link to relevant issues
 
 **PR Description Template:**
+
 ```markdown
 ## Related Issues
 Fixes #123
@@ -213,6 +224,7 @@ Brief summary of what changed and why
 ```
 
 **Process:**
+
 1. Create PR via GitHub web interface
 2. Link to related issues in description
 3. Wait for CI/CD to complete successfully
@@ -234,6 +246,7 @@ Brief summary of what changed and why
 ### Language-Specific Standards
 
 **Rust:**
+
 - Use `cargo +nightly fmt` for formatting (project uses nightly for formatting features)
 - Run `cargo clippy --all-features --all-targets` and fix all warnings
 - Follow Rust API guidelines
@@ -242,17 +255,19 @@ Brief summary of what changed and why
 - Async-first design: All API calls are `async fn` using Tokio
 
 **Python:**
+
 - Follow PEP 8 strictly (79-character line limit)
 - Use `ruff format` for formatting and `ruff check --fix` for linting
 - Maintain `.pyi` type stubs in `crates/edgefirst-client-py/edgefirst_client.pyi`
 - **Pylance type checking**: Code must be Pylance-clean (VS Code's Python language server)
-  * All `.pyi` stubs must have complete type annotations
-  * Use type narrowing patterns: `self.assertIsNotNone(x)` → `assert x is not None`
-  * Prefer specific assertions: `assertGreater(len(x), 0)`
+  - All `.pyi` stubs must have complete type annotations
+  - Use type narrowing patterns: `self.assertIsNotNone(x)` → `assert x is not None`
+  - Prefer specific assertions: `assertGreater(len(x), 0)`
 
 ### Code Quality Tools
 
 Before submitting code, verify:
+
 - [ ] Code follows project style guidelines (check `.editorconfig`, `rustfmt.toml`)
 - [ ] No commented-out code or debug statements
 - [ ] Error handling is comprehensive with useful messages
@@ -276,33 +291,37 @@ Before submitting code, verify:
 ### Test Types
 
 **Unit Tests (Rust):**
+
 - Test individual functions/methods in isolation
 - Co-located in `#[cfg(test)] mod tests` at end of implementation files
 - Mock external dependencies
 - Fast execution
 
 **Integration Tests (Rust):**
+
 - Separate `tests/` directory at crate root
 - Test API workflows end-to-end
 - Use real EdgeFirst Studio test servers (requires credentials)
 
 **Python Tests:**
+
 - Framework: Python `unittest`
 - Test files: `test*.py` in repository root
 - **Recommended**: Use `slipcover` to match CI/CD behavior
 - Fixtures: Standard unittest patterns
 
 **Studio Integration Tests:**
+
 - Require authenticated access to EdgeFirst Studio test servers
 - Test data:
-  * Test server: `test.edgefirst.studio`
-  * Test user: `testing`
-  * Test project: `Unit Testing`
-  * Static dataset: `Deer`
+  - Test server: `test.edgefirst.studio`
+  - Test user: `testing`
+  - Test project: `Unit Testing`
+  - Static dataset: `Deer`
 - Environment variables:
-  * `STUDIO_SERVER=test` (or `stage`, `saas`)
-  * `STUDIO_USERNAME=<username>`
-  * `STUDIO_PASSWORD=<password>`
+  - `STUDIO_SERVER=test` (or `stage`, `saas`)
+  - `STUDIO_USERNAME=<username>`
+  - `STUDIO_PASSWORD=<password>`
 
 ### Running Tests
 
@@ -329,6 +348,7 @@ cargo llvm-cov report --lcov --output-path lcov.info
 ```
 
 **CRITICAL Testing Rules:**
+
 - **NEVER use `tail` when running commands** - Users need to see full output for better experience. Use `| tee logfile.txt` if logs need to be captured.
 - **Run lib and CLI tests separately** - Running all tests together causes conflicts and timeouts. Use `-p edgefirst-client --lib` and `-p edgefirst-cli` separately, or `-- --test-threads=1`.
 
@@ -341,12 +361,14 @@ cargo llvm-cov report --lcov --output-path lcov.info
 ### Code Documentation
 
 **When to document:**
+
 - Public APIs, functions, and classes (ALWAYS)
 - Complex algorithms or non-obvious logic
 - EdgeFirst Studio integration patterns
 - Error conditions and edge cases
 
 **Rust documentation style:**
+
 ```rust
 /// Downloads a dataset from EdgeFirst Studio with optional progress tracking.
 ///
@@ -378,6 +400,7 @@ pub async fn download_dataset(&self, dataset_id: DatasetID, ...) -> Result<()> {
 ```
 
 **Python documentation style:**
+
 ```python
 def download_dataset(self, dataset_id: str, types: List[str], output_path: str) -> None:
     """
@@ -401,6 +424,7 @@ def download_dataset(self, dataset_id: str, types: List[str], output_path: str) 
 ### Project Documentation
 
 **Essential files:**
+
 - `README.md` - Project overview, quick start, EdgeFirst Studio integration
 - `CONTRIBUTING.md` - Development setup, contribution process
 - `CODE_OF_CONDUCT.md` - Community standards
@@ -412,6 +436,7 @@ def download_dataset(self, dataset_id: str, types: List[str], output_path: str) 
 ### Documentation Updates
 
 When modifying code, update corresponding documentation:
+
 - README.md if user-facing behavior changes
 - CLI.md if CLI commands/options change (update version/date on release)
 - API docs if function signatures or semantics change
@@ -427,6 +452,7 @@ When modifying code, update corresponding documentation:
 ### Allowed Licenses
 
 ✅ **Permissive licenses (APPROVED)**:
+
 - MIT
 - Apache-2.0
 - BSD-2-Clause, BSD-3-Clause
@@ -437,12 +463,14 @@ When modifying code, update corresponding documentation:
 ### Review Required
 
 ⚠️ **Weak copyleft (REQUIRES LEGAL REVIEW)**:
+
 - MPL-2.0 (Mozilla Public License)
 - LGPL-2.1-or-later, LGPL-3.0-or-later (if dynamically linked)
 
 ### Strictly Disallowed
 
 ❌ **NEVER USE THESE LICENSES**:
+
 - GPL (any version)
 - AGPL (any version)
 - Creative Commons with NC (Non-Commercial) or ND (No Derivatives)
@@ -452,11 +480,13 @@ When modifying code, update corresponding documentation:
 ### Verification Process
 
 **Before adding dependencies:**
+
 1. Check license compatibility with Apache-2.0
 2. Verify no GPL/AGPL in dependency tree
 3. Document third-party licenses appropriately
 
 **CI/CD will automatically:**
+
 - Validate license compatibility
 - Block PR merges if violations detected
 
@@ -467,17 +497,20 @@ When modifying code, update corresponding documentation:
 ### Secure Coding Guidelines
 
 **Credential Handling:**
+
 - Never hardcode credentials or API keys
 - Use environment variables or secure token storage
 - Session tokens stored in OS-specific config directories
 - Never log credentials or tokens
 
 **Network Security:**
+
 - All communications over HTTPS/TLS (enforced)
 - Uses `rustls-tls` backend for TLS
 - Connects only to `*.edgefirst.studio` domains
 
 **Data Protection:**
+
 - Encrypt sensitive data in transit (HTTPS)
 - Session tokens are time-limited
 - Proper error handling without exposing sensitive details
@@ -485,6 +518,7 @@ When modifying code, update corresponding documentation:
 ### Vulnerability Reporting
 
 For security issues:
+
 - **GitHub Security Advisories**: [Report a vulnerability](https://github.com/EdgeFirstAI/client/security/advisories)
 - **Email**: support@au-zone.com with subject "[SECURITY] EdgeFirst Client"
 - **Do not**: Open public GitHub issues for security vulnerabilities
@@ -497,9 +531,9 @@ For security issues:
 
 - **Languages**: Rust 1.90+ (nightly for formatting), Python 3.8+
 - **Architecture**: Cargo workspace monorepo with 3 crates:
-  * `crates/edgefirst-client/`: Core Rust library
-  * `crates/edgefirst-cli/`: CLI application
-  * `crates/edgefirst-client-py/`: Python bindings via PyO3
+  - `crates/edgefirst-client/`: Core Rust library
+  - `crates/edgefirst-cli/`: CLI application
+  - `crates/edgefirst-client-py/`: Python bindings via PyO3
 - **Key dependencies**: Tokio (async runtime), reqwest (HTTP with rustls-tls), serde (JSON), PyO3 (Python bindings)
 - **TLS**: reqwest with `rustls-tls` only (no native-tls)
 - **Target platforms**: Linux, macOS, Windows (x86_64, ARM64)
@@ -507,11 +541,13 @@ For security issues:
 ### Architecture Patterns
 
 **Authentication:**
+
 - JWT token cached in OS-specific config directory (7-day expiry)
 - Auto-renewal via `verify_token()` → `renew_token()` flow
 - Override with `STUDIO_TOKEN` environment variable
 
 **JSON-RPC Pattern:**
+
 ```rust
 let request = RpcRequest {
     id: 0,
@@ -523,6 +559,7 @@ let response: RpcResponse<ResultType> = self.rpc(request).await?;
 ```
 
 **Progress Tracking:**
+
 ```rust
 let (tx, mut rx) = mpsc::channel(1);
 tokio::spawn(async move {
@@ -534,6 +571,7 @@ client.download_dataset(id, &["image"], path, Some(tx)).await?;
 ```
 
 **Async Design:**
+
 - All API calls are `async fn` using Tokio runtime
 - Concurrency limiting: Semaphore with `MAX_TASKS = 32`
 - Multipart upload: Files chunked at `PART_SIZE = 100MB` with pre-signed S3 URLs
@@ -567,12 +605,14 @@ ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.
 ### Testing Conventions
 
 **Rust:**
+
 - Unit tests: Co-located in `#[cfg(test)] mod tests` at end of implementation files
 - Integration tests: Separate `tests/` directory at project root
 - Test naming: `test_<function>_<scenario>` format
 - Run with: `cargo test --all-features --locked`
 
 **Python:**
+
 - Framework: Python `unittest`
 - Test files: `test*.py` in repository root
 - Run with slipcover (recommended): `python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python`
@@ -581,10 +621,12 @@ ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.
 ### Versioning & Release
 
 **Version format**: `X.Y.Z` for stable, `X.Y.ZrcN` for release candidates (NO separators like `-rc.1`)
+
 - **Why**: PyPI requires `rcN` format (PEP 440), maturin doesn't convert
 - **Workspace versioning**: Single version in root `Cargo.toml` via `version.workspace = true`
 
 **Semantic versioning**:
+
 - **PATCH** (X.Y.Z+1): Bug fixes, backward-compatible additions (default)
 - **MINOR** (X.Y+1.0): Breaking API changes
 - **MAJOR** (X+1.0.0): Major architectural changes (maintainer decision only)
@@ -594,6 +636,7 @@ ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.
 **IMPORTANT**: Use `cargo-release` for all releases. Do NOT manually update version numbers.
 
 **Pre-release checklist:**
+
 1. ✅ All changes committed and tests passing
 2. ✅ CHANGELOG.md updated under `[Unreleased]` section (user-facing changes only)
 3. ✅ All documentation current (README.md, API docs, .pyi stubs)
@@ -621,16 +664,19 @@ git push && git push --tags
 ```
 
 **What cargo-release does automatically:**
+
 - Bumps version in `Cargo.toml` (workspace version)
 - Updates `CLI.md` version and date (via `release.toml` configuration)
 - Creates release commit: "Release X.Y.Z Preparations"
 - Creates git tag: `X.Y.Z`
 
 **What you must do manually:**
+
 - Update CHANGELOG.md from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`
 - Ensure all user-facing changes documented
 
 **GitHub Actions (automatic on tag push):**
+
 - Builds binaries for all platforms
 - Publishes to crates.io and PyPI
 - Creates GitHub Release with artifacts
@@ -650,6 +696,7 @@ git push && git push --tags
 2. **Update CHANGELOG.md** for user-visible changes only
 
 3. **Run code quality checks**:
+
    ```bash
    cargo +nightly fmt --all
    cargo clippy --fix --allow-dirty --all-features --all-targets
@@ -658,12 +705,14 @@ git push && git push --tags
    ```
 
 4. **Verify build succeeds** - **MUST BUILD WITHOUT ERRORS**:
+
    ```bash
    cargo build --all-features --locked  # MUST succeed
    cargo clippy --all-features --all-targets --locked  # MUST pass
    ```
 
 5. **Run tests** (if credentials available) - **ALL TESTS MUST PASS**:
+
    ```bash
    cargo test --all-features --locked
    cargo test --doc --locked
@@ -672,12 +721,14 @@ git push && git push --tags
    ```
 
 6. **Check dependency licenses** (if dependencies changed):
+
    ```bash
    make sbom
    make check-license
    ```
 
 7. **Sign commits with DCO**:
+
    ```bash
    git commit -s -m "Your commit message"
    ```
@@ -709,6 +760,7 @@ When making changes that affect EdgeFirst Studio integration:
 ### For GitHub Copilot / Cursor
 
 These tools provide inline suggestions. Ensure:
+
 - Suggestions match project conventions (run linters after accepting)
 - Complex logic has explanatory comments
 - Generated tests have meaningful assertions
@@ -717,6 +769,7 @@ These tools provide inline suggestions. Ensure:
 ### For Claude Code / Chat-Based Assistants
 
 When working with conversational AI:
+
 1. **Provide context**: Share relevant files, error messages, and requirements
 2. **Verify outputs**: Review generated code critically before committing
 3. **Iterate**: Refine solutions through follow-up questions
@@ -738,17 +791,20 @@ When working with conversational AI:
 ## Getting Help
 
 **For development questions:**
+
 - Check `CONTRIBUTING.md` for setup instructions
 - Review existing code for patterns and conventions
 - Search [GitHub Issues](https://github.com/EdgeFirstAI/client/issues)
 - Ask in [GitHub Discussions](https://github.com/orgs/EdgeFirstAI/discussions)
 
 **For security concerns:**
+
 - Use [GitHub Security Advisories](https://github.com/EdgeFirstAI/client/security/advisories)
 - Email `support@au-zone.com` with subject "[SECURITY] EdgeFirst Client"
 - Do not disclose vulnerabilities publicly
 
 **For EdgeFirst Studio questions:**
+
 - [EdgeFirst User Manual](https://doc.edgefirst.ai)
 - EdgeFirst Studio documentation and API reference
 
@@ -757,6 +813,7 @@ When working with conversational AI:
 ## Document Maintenance
 
 **Project maintainers should:**
+
 - Keep project-specific guidelines current
 - Update examples when APIs change
 - Review and update after major EdgeFirst Studio API changes
