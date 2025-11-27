@@ -3148,7 +3148,7 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
 
 #[test]
 #[serial]
-#[ignore = "Server bug: S3 files not available after snapshot restore completes"]
+#[ignore = "Server bug: snapshot restore does not preserve group assignments (see GROUP_PRESERVATION_BUG.md)"]
 fn test_snapshot_restore_workflow() -> Result<(), Box<dyn std::error::Error>> {
     // This test restores the "Unit Testing - Deer Dataset" snapshot and verifies
     // the restored dataset matches the original Deer dataset in Unit Testing
