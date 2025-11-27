@@ -270,6 +270,7 @@ session.set_metrics(client, metrics)
 ## Architecture
 
 EdgeFirst Client is a REST API client built with:
+
 - **TLS 1.2+ enforcement** for secure communication with EdgeFirst Studio
 - **Session token authentication** with automatic renewal
 - **Progress tracking** for long-running uploads/downloads
@@ -298,6 +299,7 @@ EdgeFirst Client is a REST API client built with:
 This client is the official API gateway for **[EdgeFirst Studio](https://edgefirst.studio)** - the complete MLOps platform for 3D visual and 4D spatial perception AI:
 
 **🚀 EdgeFirst Studio Features:**
+
 - **Dataset Management**: Organize, annotate, and version your perception datasets
 - **Automated Ground-Truth Generation (AGTG)**: Upload MCAP recordings and get automatic annotations
 - **Model Training**: Train custom perception models with your datasets
@@ -307,6 +309,7 @@ This client is the official API gateway for **[EdgeFirst Studio](https://edgefir
 - **Collaboration**: Team workspaces and project management
 
 **💰 Free Tier Available:**
+
 - 100,000 images
 - 10 hours of training per month
 - Full access to all features
@@ -317,6 +320,7 @@ This client is the official API gateway for **[EdgeFirst Studio](https://edgefir
 ### Hardware Platforms
 
 EdgeFirst Client works seamlessly with **[EdgeFirst Modules](https://www.edgefirst.ai/edgefirstmodules)**:
+
 - Operates reliably in harsh conditions with an IP67-rated enclosure and -40°C to +65°C range
 - On-device integrated dataset collection, playback, and publishing
 - Deploy models onto EdgeFirst Modules with full AI Acceleration up-to 40-TOPS
@@ -358,6 +362,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#sonarcloud-code-quality-analysis) for deta
 ## Security
 
 For security vulnerabilities, please use our responsible disclosure process:
+
 - **GitHub Security Advisories**: [Report a vulnerability](https://github.com/EdgeFirstAI/client/security/advisories)
 - **Email**: support@au-zone.com with subject "[SECURITY] EdgeFirst Client"
 

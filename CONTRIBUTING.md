@@ -20,6 +20,7 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 ### EdgeFirst Studio Integration
 
 When contributing, consider how changes might affect:
+
 - **EdgeFirst Studio compatibility**: Maintain seamless integration with the platform
 - **API versioning**: Ensure backward compatibility where possible
 - **User workflows**: Common patterns users rely on
@@ -70,6 +71,7 @@ git checkout -b fix/my-bugfix
 ```
 
 **Branch Naming:**
+
 - Use descriptive names: `feature/add-batch-upload`, `bugfix/fix-token-refresh`
 - Use kebab-case (lowercase with hyphens)
 - Keep descriptions concise but meaningful
@@ -99,15 +101,18 @@ Follow the coding standards below:
 ### 3. Add Tests
 
 **Rust Tests:**
+
 - Add tests in the same file (`#[cfg(test)] mod tests`) or in `tests/` directory
 - Test naming: `test_<function>_<scenario>` format
 
 **Python Tests:**
+
 - Add tests to `test*.py` files
 - Use Python `unittest` framework
 - Follow existing test patterns
 
 **EdgeFirst Studio Integration Tests:**
+
 - Add tests that validate Studio API compatibility
 - Use test servers and test data conventions
 - Requires credentials (see [Studio Integration Tests](#studio-integration-tests))
@@ -149,6 +154,7 @@ cargo clippy --all-targets --all-features
 ### 7. Update Documentation
 
 If your changes affect:
+
 - **README.md**: User-facing features, installation, usage
 - **CLI.md**: CLI commands, options, examples (update version/date on release)
 - **CONTRIBUTING.md**: Development workflows, build processes
@@ -161,6 +167,7 @@ If your changes affect:
 Update `CHANGELOG.md` for user-visible changes only:
 
 ✅ **Document:**
+
 - New features
 - API changes
 - Behavior changes
@@ -168,6 +175,7 @@ Update `CHANGELOG.md` for user-visible changes only:
 - Breaking changes
 
 ❌ **Skip:**
+
 - Internal refactoring
 - Test updates
 - Code cleanup
@@ -201,6 +209,7 @@ Then create a Pull Request using the PR template.
 **Title**: Brief description of changes (no specific format required)
 
 **Description Template:**
+
 ```markdown
 ## Related Issues
 Fixes #123
@@ -293,26 +302,31 @@ client/
 ### Running Tests
 
 **All Rust tests:**
+
 ```bash
 cargo test --all-features --locked
 ```
 
 **Specific test:**
+
 ```bash
 cargo test test_name
 ```
 
 **With output:**
+
 ```bash
 cargo test -- --nocapture
 ```
 
 **Doc tests:**
+
 ```bash
 cargo test --doc --locked
 ```
 
 **Python tests:**
+
 ```bash
 # Recommended: Run with slipcover (matches CI/CD behavior)
 python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
@@ -322,6 +336,7 @@ python -m unittest discover -s . -p "test*.py"
 ```
 
 **Why use slipcover locally?**
+
 - Matches CI/CD behavior exactly
 - Catches syntax errors that unittest may miss
 - Zero performance overhead
@@ -367,6 +382,7 @@ The project uses SonarCloud for automated code quality and security analysis. Th
    - Create a new token with read permissions
 
 2. **Set up environment variables:**
+
    ```bash
    export SONAR_TOKEN=your_token_here
    export SONAR_ORG=edgefirstai
@@ -374,6 +390,7 @@ The project uses SonarCloud for automated code quality and security analysis. Th
    ```
 
 3. **Fetch current findings:**
+
    ```bash
    # All open issues
    python3 sonar.py --branch main --output sonar-issues.json --verbose
@@ -395,17 +412,20 @@ The CLI test suite includes integration tests that interact with EdgeFirst Studi
 **Test Infrastructure:**
 
 **Test Servers:**
+
 - `test`: https://test.edgefirst.studio (primary test environment)
 - `stage`: https://stage.edgefirst.studio (staging environment)
 - `saas`: https://edgefirst.studio (production environment)
 
 **Test Data Conventions:**
+
 - Test user: `testing` (common across all environments)
 - Test project: `Unit Testing` (exists on all servers)
 - Static dataset: `Deer` (for download, train, and validation operations)
 - CRUD dataset: `Test Labels` (for create/update/delete operations)
 
 **Environment Variables:**
+
 - `STUDIO_SERVER`: Server environment name (`test`, `stage`, or `saas`)
 - `STUDIO_USERNAME`: Username for authentication tests
 - `STUDIO_PASSWORD`: Password for authentication tests
@@ -415,6 +435,7 @@ The CLI test suite includes integration tests that interact with EdgeFirst Studi
 > **Note**: Test credentials are **not publicly available**. Only project maintainers have access.
 
 Contributors can run the full test suite through GitHub Actions CI/CD pipelines:
+
 1. Fork the repository
 2. Push changes to your fork
 3. Create a pull request
@@ -423,6 +444,7 @@ Contributors can run the full test suite through GitHub Actions CI/CD pipelines:
 **For Local Development:**
 
 Without Studio credentials, you can:
+
 - Run all non-authenticated tests
 - Develop and test CLI changes locally
 - Rely on CI/CD for full integration testing
@@ -430,6 +452,7 @@ Without Studio credentials, you can:
 **For Maintainers:**
 
 With Studio credentials:
+
 ```bash
 export STUDIO_SERVER=test
 export STUDIO_USERNAME=<username>
@@ -484,6 +507,7 @@ man ./edgefirst-client.1
 5. The man page is automatically built and included in GitHub releases
 
 **On release:** Update version in `CLI.md` YAML front matter:
+
 ```yaml
 ---
 footer: edgefirst-client X.Y.Z  # <-- Update this
@@ -501,12 +525,14 @@ This project follows [Semantic Versioning](https://semver.org/):
 - **Beta releases**: `X.Y.ZbN` (e.g., `0.1.0b1`)
 
 **Important**: Use format without separators (e.g., `1.0.0rc1`, not `1.0.0-rc.1`) for compatibility with both:
+
 - Python's PEP 440 standard (PyPI)
 - Rust's Cargo/SemVer standard (crates.io)
 
 ### Choosing the Version Number
 
 **PATCH (X.Y.Z → X.Y.Z+1)** - Default for most releases:
+
 - Bug fixes (no API changes)
 - Performance improvements
 - Internal refactoring
@@ -515,6 +541,7 @@ This project follows [Semantic Versioning](https://semver.org/):
 - Examples: `2.1.0 → 2.1.1`
 
 **MINOR (X.Y.Z → X.Y+1.0)** - Required for breaking changes:
+
 - API changes breaking backward compatibility
 - Removing public functions/methods/types
 - Changing function signatures
@@ -522,11 +549,13 @@ This project follows [Semantic Versioning](https://semver.org/):
 - Examples: `2.1.5 → 2.2.0`
 
 **MAJOR (X.Y.Z → X+1.0.0)** - Reserved for maintainers:
+
 - Major architectural changes
 - Complete API rewrites
 - Examples: `2.9.5 → 3.0.0`
 
 **CHANGELOG Requirements:**
+
 - **PATCH**: Document features or fixes in CHANGELOG
 - **MINOR**: Document breaking changes with migration guidance
 - **MAJOR**: Provide comprehensive migration guide
@@ -538,12 +567,14 @@ This project follows [Semantic Versioning](https://semver.org/):
 > **Note**: Releases are managed by maintainers using [cargo-release](https://github.com/crate-ci/cargo-release).
 
 Contributors should focus on:
+
 1. Updating CHANGELOG.md under `[Unreleased]` section
 2. Updating CLI.md if CLI changes are included
 3. Ensuring all tests pass
 4. Verifying documentation is current
 
 Maintainers handle the release process:
+
 ```bash
 # 1. Update CHANGELOG.md with release notes
 # 2. Update CLI.md version and date
@@ -554,6 +585,7 @@ git push && git push --tags
 ```
 
 GitHub Actions automatically:
+
 - Builds binaries
 - Publishes to crates.io and PyPI
 - Creates GitHub Release
@@ -562,17 +594,20 @@ GitHub Actions automatically:
 ## Getting Help
 
 **For development questions:**
+
 - Check this `CONTRIBUTING.md` for setup instructions
 - Review [AGENTS.md](AGENTS.md) for project conventions
 - Search [GitHub Issues](https://github.com/EdgeFirstAI/client/issues)
 - Ask in [GitHub Discussions](https://github.com/orgs/EdgeFirstAI/discussions)
 
 **For EdgeFirst Studio questions:**
+
 - [EdgeFirst User Manual](https://doc.edgefirst.ai)
 - [EdgeFirst Studio documentation](https://doc.edgefirst.ai/latest/)
 - EdgeFirst Studio API reference
 
 **For security concerns:**
+
 - Use [GitHub Security Advisories](https://github.com/EdgeFirstAI/client/security/advisories)
 - Email `support@au-zone.com` with subject "[SECURITY] EdgeFirst Client"
 - See [SECURITY.md](SECURITY.md) for complete security policy
@@ -673,6 +708,7 @@ By contributing, you agree that your contributions will be licensed under the Ap
 ## Recognition
 
 Contributors will be recognized in:
+
 - Release notes
 - Project contributors list
 - GitHub contributor graphs

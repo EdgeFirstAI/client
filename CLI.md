@@ -287,6 +287,7 @@ edgefirst-client download-dataset 12345 \
 **Directory Structure:**
 
 By default, downloads are organized by sequence:
+
 ```
 output/
 ├── sequence_A/
@@ -298,6 +299,7 @@ output/
 ```
 
 With **\--flatten**, all files are placed in the output root with sequence prefixes:
+
 ```
 output/
 ├── sequence_A_001.camera.jpeg

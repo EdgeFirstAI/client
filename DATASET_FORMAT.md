@@ -66,6 +66,7 @@ graph TB
 ```
 
 **Key Principles**:
+
 - **Normalized coordinates**: All spatial data uses 0..1 range (resolution-independent)
 - **Two annotation formats**: DataFrame (flat, columnar) and JSON (nested, human-readable)
 - **Both formats contain annotations and sample metadata**: DataFrame and JSON both store complete annotation and sample data
@@ -108,10 +109,12 @@ graph LR
 ```
 
 Both formats represent the same annotation and sample metadata, but with different structural approaches:
+
 - **JSON**: One object per sample, with nested annotations array
 - **DataFrame**: One row per annotation, with sample fields repeated
 
 **Note**: The EdgeFirst Client SDK (Python/Rust) provides direct API access to export data in any custom format without requiring JSON conversion. Use the API methods to access raw data and transform to your preferred structure.
+
 - **JSON**: One object per sample, with nested annotations array
 - **DataFrame**: One row per annotation, with sample fields repeated
 
@@ -165,10 +168,12 @@ Video frames with temporal ordering (from MCAP recordings or video files):
 ```
 
 **File naming convention**:
+
 - Sequence format: `{hostname}_{date}_{time}` (from MCAP)
 - Frame format: `{sequence_name}_{frame_number}.{sensor}.{ext}`
 
 **Example**:
+
 ```
 deer_dataset/
 ├── deer_dataset.arrow
@@ -220,6 +225,7 @@ EdgeFirst supports two organizational patterns for sensor data:
 **1. Nested Structure (Default)**
 
 Sequences are organized in subdirectories:
+
 ```
 dataset_name/
 ├── dataset_name.arrow
@@ -236,6 +242,7 @@ dataset_name/
 **2. Flattened Structure**
 
 All files in a single directory with sequence prefixes:
+
 ```
 dataset_name/
 ├── dataset_name.arrow
@@ -250,10 +257,12 @@ dataset_name/
 #### File Naming Conventions
 
 **Sequence samples** (when `frame` column is not-null in Arrow file):
+
 - **Nested**: `{sequence_name}/{sequence_name}_{frame}.{sensor}.{ext}`
 - **Flattened**: `{sequence_name}_{frame}_{original_name}` (where `original_name` includes the extension)
 
 **Standalone samples** (when `frame` column is null):
+
 - **Nested**: `{image_name}.{ext}`
 - **Flattened**: `{image_name}.{ext}` (unchanged)
 
@@ -278,6 +287,7 @@ Clients should support both nested and flattened structures:
 - When `flatten=true`, filenames are automatically prefixed with `{sequence_name}_{frame}_` if not already present
 
 **ZIP format support**: EdgeFirst uses ZIP64 (standardized 2001) for broad compatibility:
+
 - Random access via file index
 - Optional per-file compression
 - Cross-platform support
@@ -292,12 +302,14 @@ Clients should support both nested and flattened structures:
 **Source**: H.265 video from MCAP converted to discrete frames
 
 **EXIF metadata** (embedded in images):
+
 - GPS coordinates (from MCAP `/gps` topic or NavSat)
 - Capture timestamp
 - Camera parameters
 - Device information
 
 **File extensions**:
+
 - `.camera.jpeg` - Camera image (default)
 - `.camera.png` - Camera image (lossless)
 - `.jpg`, `.png` - Generic image formats
@@ -310,6 +322,7 @@ Clients should support both nested and flattened structures:
 **Extension**: `.radar.pcd`
 
 **Fields**:
+
 ```
 x, y, z          # Cartesian position (meters)
 speed            # Velocity (m/s)
@@ -327,6 +340,7 @@ rcs              # Radar cross-section
 **Typical shape**: `[2, 4, 200, 256]`
 
 **PNG encoding**:
+
 - 4×2 grid layout (4 columns = RX antennas, 2 rows = sequences)
 - Complex int16 split into pair of int16 values (PNG doesn't support complex)
 - **int16 shifted to uint16** for PNG storage (shift back to int16 for processing)
@@ -341,6 +355,7 @@ rcs              # Radar cross-section
 **Extension**: `.lidar.pcd`
 
 **Additional formats**:
+
 - `.lidar.png` - Depth map visualization
 - `.lidar.jpeg` - Reflectivity visualization
 
@@ -359,6 +374,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 **Structure**: Flat columnar format (one row per annotation)
 
 **Schema**:
+
 ```python
 (
     ('name', String),
@@ -380,6 +396,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 **Note**: Sample metadata fields (size, location, pose, degradation) are optional columns added in version 2025.10. Files from earlier versions will not have these columns.
 
 **Array formats**:
+
 - **box2d**: `[cx, cy, w, h]` - center coordinates and dimensions
 - **box3d**: `[x, y, z, w, h, l]` - center coordinates and dimensions  
 - **size**: `[width, height]` - image dimensions in pixels (new in 2025.10)
@@ -387,6 +404,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 - **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees (new in 2025.10)
 
 **Characteristics**:
+
 - Columnar compression (smaller file size)
 - Efficient querying and filtering
 - High-performance in-memory processing
@@ -394,12 +412,14 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 - SQL-like operations via Polars
 
 **Use cases**:
+
 - Data analysis and exploration
 - Efficient batch processing
 - Training pipelines (PyTorch DataLoader)
 - Statistical queries
 
 **Loading**:
+
 ```python
 import polars as pl
 df = pl.read_ipc("dataset.arrow")
@@ -410,6 +430,7 @@ df = pl.read_ipc("dataset.arrow")
 **Structure**: Nested format (one object per sample, annotations array)
 
 **Example**:
+
 ```json
 {
   "image_name": "deer_001.camera.jpeg",
@@ -453,6 +474,7 @@ df = pl.read_ipc("dataset.arrow")
 ```
 
 **Characteristics**:
+
 - Human-readable and editable
 - Preserves sample metadata (width, height, sensors, GPS, IMU)
 - Includes unannotated samples (empty annotations array)
@@ -460,6 +482,7 @@ df = pl.read_ipc("dataset.arrow")
 - Self-documenting structure
 
 **Use cases**:
+
 - Manual editing and auditing
 - API communication (Studio RPC)
 - Dataset distribution and archival
@@ -488,20 +511,24 @@ df = pl.read_ipc("dataset.arrow")
 ### Field Definitions
 
 #### name
+
 **Type**: `String`  
 **Description**: Sample identifier extracted from image filename
 
 **Extraction rules**:
+
 1. Remove file extension (everything after last `.`)
 2. Remove `.camera` suffix if present
 3. Remove `_frame` suffix (for sequences)
 
 **Examples**:
+
 - `scene_001.camera.jpg` → `scene_001`
 - `deer_sequence_042.jpg` → `deer_sequence` (frame stripped)
 - `background.png` → `background`
 
 #### frame
+
 **Type**: `UInt64` (nullable)  
 **Description**: Frame number within a sequence
 
@@ -509,14 +536,17 @@ df = pl.read_ipc("dataset.arrow")
 - **Standalone images**: `null`
 
 **File naming**:
+
 - Sequence: `{name}_{frame}.{ext}` → `deer_sequence_042.jpg`
 - Standalone: `{name}.{ext}` → `background.jpg`
 
 #### object_id
+
 **Type**: `String` (nullable)  
 **Description**: Unique identifier for tracking objects across frames and linking different annotation types.
 
 **Use cases**:
+
 - Tracking the same object across subsequent frames in a sequence
 - Associating multiple annotation geometries (e.g., Box2D + Mask) with one object
 - Multi-sensor data fusion where objects must be synchronized
@@ -526,12 +556,14 @@ df = pl.read_ipc("dataset.arrow")
 **Format**: UUID strongly recommended (guaranteed uniqueness). Legacy exports may use custom identifiers; they remain supported but should be migrated to UUIDs when possible.
 
 **Examples**:
+
 - `550e8400-e29b-41d4-a716-446655440000` (UUID - recommended)
 - `deer_01`, `car_track_5` (ensure uniqueness manually)
 
 > **Compatibility note**: Prior documentation referred to this field as `object_reference`. The client now uses `object_id` while still accepting `object_reference` when parsing older data.
 
 #### label_name
+
 **Type**: `Categorical` (String)  
 **Description**: Object class or category
 
@@ -540,12 +572,14 @@ df = pl.read_ipc("dataset.arrow")
 **Note**: Named `label_name` (not `label`) to distinguish from `label_index`
 
 #### label_index
+
 **Type**: `UInt64`  
 **Description**: Numeric index for custom label ordering
 
 **Use case**: Pre-trained models (e.g., COCO) require specific indices
 
 **Example**: COCO indices are non-alphabetical:
+
 ```
 0: person
 1: bicycle
@@ -556,6 +590,7 @@ df = pl.read_ipc("dataset.arrow")
 For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instead of `1` (alphabetical)
 
 #### group
+
 **Type**: `Categorical` (String)  
 **Description**: Dataset split assignment (train/val/test)
 
@@ -564,6 +599,7 @@ For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instea
 **DataFrame behavior**: Value repeated for each annotation row (table is flat)
 
 **JSON field name**: `group_name` (at sample level, EdgeFirst Studio API)
+
 - **Note**: The EdgeFirst Studio API uses `group_name` for both upload and download
 - Arrow/DataFrame format uses column name `group` for compatibility with ML pipelines
 - When converting between JSON and DataFrame, map `group_name` ↔ `group`
@@ -601,6 +637,7 @@ graph TB
 ```
 
 **JSON Format**:
+
 ```json
 {
   "mask": {
@@ -611,21 +648,25 @@ graph TB
   }
 }
 ```
+
 - Structure: List of polygons (nested lists)
 - Each polygon: List of `(x, y)` tuples  
 - Multiple polygons: Separate lists in outer array
 - **Studio API**: May receive as RLE (Run-Length Encoding), decoded to polygon vertices by client library
 
 **DataFrame Format**:
+
 ```python
 mask: [0.69, 0.34, 0.69, 0.34, 0.70, 0.35, NaN, 0.71, 0.36, 0.72, 0.37, 0.73, 0.38]
 ```
+
 - Type: `List(Float32)`
 - Structure: Flattened coordinates with NaN separators
 - Reason: Polars doesn't support nested list-of-lists
 - Multiple polygons: Separated by `NaN` values
 
 **Conversion**:
+
 - JSON → DataFrame: Flatten nested structure, insert NaN between polygons
 - DataFrame → JSON: Split on NaN, reconstruct nested lists
 
@@ -664,6 +705,7 @@ graph TB
 **⚠️ FORMAT DIFFERS BETWEEN JSON AND DATAFRAME**
 
 **JSON Format** (Studio API legacy):
+
 ```json
 {
   "box2d": {
@@ -674,14 +716,17 @@ graph TB
   }
 }
 ```
+
 - Origin: Top-left corner
 - Fields: `x` (left), `y` (top), `w`, `h`
 - Reason: Legacy Studio RPC API format
 
 **DataFrame Format** (Preferred):
+
 ```python
 box2d: [0.691406, 0.368056, 0.015104, 0.050926]
 ```
+
 - Type: `Array(Float32, shape=(4,))`
 - Format: `[cx, cy, width, height]`
 - Origin: Box center
@@ -689,6 +734,7 @@ box2d: [0.691406, 0.368056, 0.015104, 0.050926]
 - Reason: Standard in ML frameworks (YOLO, etc.)
 
 **Example (1920×1080 image)**:
+
 ```
 JSON:      {x: 0.683854, y: 0.342593, w: 0.015104, h: 0.050926}
 DataFrame: [0.691406, 0.368056, 0.015104, 0.050926]
@@ -715,6 +761,7 @@ Pixel coordinates:
 **Both formats use center-point representation**:
 
 **JSON Format**:
+
 ```json
 {
   "box3d": {
@@ -729,14 +776,17 @@ Pixel coordinates:
 ```
 
 **DataFrame Format**:
+
 ```python
 box3d: [0.45, 0.12, 0.03, 0.08, 0.06, 0.15]
 ```
+
 - Type: `Array(Float32, shape=(6,))`
 - Format: `[x, y, z, width, height, length]`
 - All coordinates are center-points
 
-**Reference**: 
+**Reference**:
+
 - [ROS Coordinate Conventions](https://www.ros.org/reps/rep-0103.html#coordinate-frame-conventions)
 - [Ouster Sensor Frame](https://static.ouster.dev/sensor-docs/image_route1/image_route2/sensor_data/sensor-data.html#sensor-coordinate-frame)
 
@@ -750,6 +800,7 @@ Sample-level metadata (image dimensions, GPS, IMU, degradation) is available in 
 **JSON representation**: Nested objects in sample (one copy per sample)
 
 #### size (width, height)
+
 **Type**: `Array(UInt32, shape=(2,))` (DataFrame), `Integer` fields (JSON)  
 **Description**: Image dimensions in pixels
 
@@ -757,6 +808,7 @@ Sample-level metadata (image dimensions, GPS, IMU, degradation) is available in 
 **JSON**: Separate top-level `width` and `height` fields
 
 **Example**:
+
 ```python
 # DataFrame (all rows from same sample have same size)
 shape: (3, 13)
@@ -780,12 +832,14 @@ shape: (3, 13)
 ```
 
 #### sensors
+
 **Type**: `Array` (DataFrame), `Object` (JSON)  
 **Description**: Multi-sensor metadata (GPS, IMU)
 
 ##### GPS Location
 
 **Data sources**:
+
 - Image EXIF GPS tags
 - MCAP `/gps` topic (NavSat)
 - User-provided coordinates
@@ -794,6 +848,7 @@ shape: (3, 13)
 **JSON**: Nested object with `latitude`, `longitude` fields
 
 **JSON structure**:
+
 ```json
 {
   "sensors": {
@@ -806,6 +861,7 @@ shape: (3, 13)
 ```
 
 **DataFrame structure**:
+
 ```python
 # location column: Array [lat, lon]
 [37.7749, -122.4194]
@@ -820,6 +876,7 @@ shape: (3, 13)
 ##### IMU Orientation
 
 **Data sources**:
+
 - MCAP `/imu` topic (Maivin/Raivin)
 - IMU sensor readings
 - User-provided orientation
@@ -830,6 +887,7 @@ shape: (3, 13)
 **Format**: All values in degrees
 
 **JSON structure**:
+
 ```json
 {
   "sensors": {
@@ -843,6 +901,7 @@ shape: (3, 13)
 ```
 
 **DataFrame structure**:
+
 ```python
 # pose column: Array [yaw, pitch, roll]
 [45.3, -1.2, 0.5]
@@ -853,24 +912,28 @@ shape: (3, 13)
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
 
 #### degradation
+
 **Type**: `String` (nullable)  
 **Description**: User-defined visual quality indicator for camera images
 
 **Purpose**: Indicates camera compromise (fog, rain, obstruction, low light) in multi-sensor datasets
 
 **Typical values**:
+
 - `none` - Clear view, objects fully visible
 - `low` - Slight obstruction, targets clearly visible
 - `medium` - Higher obstruction, targets visible but not obvious
 - `high` - Severe obstruction, objects cannot be seen
 
 **Use cases**:
+
 - Filter samples by image quality for training
 - Train robust models for adverse weather conditions
 - Multi-sensor fusion (use radar/LiDAR when camera degraded)
 - Dataset quality analysis and reporting
 
 **JSON example**:
+
 ```json
 {
   "image_name": "foggy_scene.jpg",
@@ -1005,6 +1068,7 @@ df.write_ipc("annotations.arrow")
 ```
 
 **Key conversions**:
+
 1. **Unnest**: One row per annotation (from nested structure)
 2. **Column names**: JSON `label_name` → DataFrame `label`, JSON `group` → DataFrame `group`
 3. **Sample metadata**: Optional columns added in 2025.10 (size, location, pose, degradation)
@@ -1111,6 +1175,7 @@ save_json(samples, "annotations.json")
 ```
 
 **Key conversions**:
+
 1. **Nest**: Group annotations by sample (name, frame)
 2. **Column names**: DataFrame `label` → JSON `label_name`, DataFrame `group` → JSON `group`
 3. **Optional metadata**: Check for size, location, pose, degradation columns (added in 2025.10)
@@ -1128,6 +1193,7 @@ save_json(samples, "annotations.json")
 ### Format Selection
 
 **Use DataFrame (Arrow) when**:
+
 - Analyzing annotation statistics
 - Training ML models (PyTorch, TensorFlow)
 - Filtering/querying annotations efficiently
@@ -1135,6 +1201,7 @@ save_json(samples, "annotations.json")
 - Working with Polars/Pandas pipelines
 
 **Use JSON when**:
+
 - Manually editing annotations
 - Communicating with EdgeFirst Studio API
 - Distributing datasets (human-readable)
@@ -1144,11 +1211,13 @@ save_json(samples, "annotations.json")
 ### Dataset Organization
 
 **Sequences**:
+
 - Use subdirectories for each sequence
 - Maintain temporal ordering (frame numbers)
 - Include all sensor types per frame
 
 **Standalone images**:
+
 - Place directly in dataset folder
 - Use descriptive filenames
 - Consider grouping by category if needed
@@ -1156,16 +1225,19 @@ save_json(samples, "annotations.json")
 ### Annotation Quality
 
 **Object reference**:
+
 - Use UUIDs for guaranteed uniqueness
 - Track objects consistently across frames
 - Link related annotations (box + mask)
 
 **Label index**:
+
 - Use pre-trained model indices (COCO, ImageNet)
 - Document custom index mapping
 - Keep indices stable across dataset versions
 
 **Group assignment**:
+
 - Typical split: 70% train, 20% val, 10% test
 - Balance classes across splits
 - Assign groups before annotation to prevent leakage
@@ -1173,17 +1245,20 @@ save_json(samples, "annotations.json")
 ### File Naming
 
 **Sequences**:
+
 ```
 {hostname}_{date}_{time}/
   └── {hostname}_{date}_{time}_{frame}.{sensor}.{ext}
 ```
 
 **Standalone**:
+
 ```
 {descriptive_name}.{ext}
 ```
 
 **Sensor extensions**:
+
 - `.camera.jpeg`, `.camera.png` - Camera images
 - `.radar.pcd` - Radar point cloud
 - `.radar.png` - Radar data cube
@@ -1203,6 +1278,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 #### Specification Enhancements
 
 **JSON Format Formalization**:
+
 - Complete schema definition for all annotation types (Box2D, Box3D, mask)
 - Documented sample metadata structure (width, height, sensors)
 - Formalized GPS and IMU sensor data representation
@@ -1210,12 +1286,14 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 - Added degradation field for visual quality tracking
 
 **DataFrame Format Documentation**:
+
 - Detailed Arrow/Parquet schema with exact data types
 - Documented array formats for geometry (box2d, box3d)
 - Added optional sample metadata columns for richer analysis
 - Clarified column naming (label, group) for consistency
 
 **Conversion Guidelines**:
+
 - Step-by-step JSON ↔ DataFrame conversion examples
 - Format-specific considerations (Box2D center vs corner, mask flattening)
 - Handling of optional fields and missing data
@@ -1223,6 +1301,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 #### New Optional DataFrame Columns
 
 **Sample Metadata** (backward compatible additions):
+
 - `size`: `Array(UInt32, shape=(2,))` = `[width, height]` - Image dimensions
 - `location`: `Array(Float32, shape=(2,))` = `[lat, lon]` - GPS coordinates
 - `pose`: `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` - IMU orientation in degrees
@@ -1233,6 +1312,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 #### Column Names (Unchanged)
 
 **DataFrame column names** (backward compatible):
+
 - `label` (Categorical): Label name - standard since 2025.01
 - `group` (Categorical): Dataset split (train/val/test) - standard since 2025.01
 - `object_id` (String): UUID for object tracking - standard since 2025.01 (legacy alias `object_reference` accepted on read)
@@ -1291,6 +1371,7 @@ if 'degradation' in df_new.columns:
 Baseline format with core annotation fields. Sample metadata (width, height, GPS, IMU) available only in JSON format, not in DataFrame.
 
 **DataFrame Schema** (9 columns):
+
 ```python
 (
     ('name', String),
@@ -1306,6 +1387,7 @@ Baseline format with core annotation fields. Sample metadata (width, height, GPS
 ```
 
 **Characteristics**:
+
 - Minimal schema with core annotation fields only
 - Sample metadata (width, height, GPS, IMU) available only in JSON format
 - Compatible with 2025.10 (new columns are optional additions)

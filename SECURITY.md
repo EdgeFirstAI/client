@@ -21,6 +21,7 @@ We recommend always using the latest stable release to receive security updates 
 ### Authentication & Credentials
 
 **What EdgeFirst Client Does:**
+
 - Transmits credentials securely over HTTPS/TLS
 - **Does NOT store usernames or passwords** - only session tokens are persisted
 - Stores session tokens in standard user configuration directories:
@@ -34,6 +35,7 @@ We recommend always using the latest stable release to receive security updates 
 > **Note**: Session tokens are currently stored as plaintext files. Future versions will use OS-native secure storage (keyring).
 
 **Your Responsibilities:**
+
 - **Protect your credentials**: Never commit credentials or tokens to version control
 - **Use environment variables**: Preferred for automation and CI/CD workflows
 - **Rotate credentials regularly**: Follow your organization's security policies
@@ -43,12 +45,14 @@ We recommend always using the latest stable release to receive security updates 
 ### Network Security
 
 **What EdgeFirst Client Does:**
+
 - Enforces HTTPS/TLS for all API communications (hardcoded `https://` URLs)
 - Uses system default TLS certificate validation via `reqwest` with `rustls-tls` backend
 - Uses `rustls-native-certs` for system certificate store integration
 - Connects only to `*.edgefirst.studio` domains
 
 **Your Responsibilities:**
+
 - **Be aware of network risks**: Using client on untrusted/public networks exposes traffic metadata
 - **DNS security**: Ensure DNS resolution is trustworthy (rogue DNS could redirect to malicious servers)
 - **Keep client updated**: Updates include latest TLS libraries and security patches
@@ -59,6 +63,7 @@ We recommend always using the latest stable release to receive security updates 
 ### Data Handling
 
 **What EdgeFirst Client Does:**
+
 - Transmits all data over encrypted HTTPS connections
 - Stores session tokens in user configuration directory (plaintext files)
 - Does not persist user credentials (username/password)
@@ -66,11 +71,13 @@ We recommend always using the latest stable release to receive security updates 
 - Accepts and processes server responses as JSON-RPC format
 
 **Current Limitations:**
+
 - Session tokens stored as plaintext (mitigated by time-limited expiration)
 - No specific response sanitization for injection attacks (server-side responsibility)
 - Token cleanup on logout requires manual file deletion or `logout()` method call
 
 **Your Responsibilities:**
+
 - **Protect local data**: Secure any files downloaded or exported by the client
 - **File permissions**: Ensure configuration directory has appropriate access controls
 - **Secure log outputs**: CLI output may contain project names, dataset IDs, and other metadata
@@ -80,6 +87,7 @@ We recommend always using the latest stable release to receive security updates 
 ### Dependency Security
 
 **What We Do:**
+
 - Regularly audit dependencies using `cargo audit`
 - Update dependencies to address known vulnerabilities
 - Pin dependencies to specific versions in releases
@@ -87,6 +95,7 @@ We recommend always using the latest stable release to receive security updates 
 - Generate and publish third-party license information (THIRD_PARTY.md)
 
 **Staying Secure:**
+
 - Subscribe to GitHub Security Advisories for this repository
 - Update to latest versions promptly when security patches are released
 - Review CHANGELOG.md for security-related updates
@@ -98,6 +107,7 @@ If you discover a security vulnerability in EdgeFirst Client, please help us mai
 ### 🔒 Private Disclosure (Preferred)
 
 **GitHub Security Advisories** (Recommended):
+
 1. Go to [Security Advisories](https://github.com/EdgeFirstAI/client/security/advisories)
 2. Click "Report a vulnerability"
 3. Fill out the advisory form with details
@@ -106,10 +116,12 @@ This creates a private discussion with the maintainers.
 
 **Email**:
 If you prefer email or cannot use GitHub Security Advisories:
+
 - **Email**: support@au-zone.com
 - **Subject**: [SECURITY] EdgeFirst Client - [Brief Description]
 
-### ⚠️ Please Do Not:
+### ⚠️ Please Do Not
+
 - Open public GitHub issues for security vulnerabilities
 - Disclose the vulnerability publicly before we've had a chance to address it
 - Exploit the vulnerability beyond what's necessary to demonstrate the issue
@@ -215,6 +227,7 @@ client = Client(username="user", password="hardcoded_password")
 ## Server-Side Security
 
 The EdgeFirst Studio platform implements comprehensive security controls including:
+
 - Multi-factor authentication (MFA)
 - Role-based access control (RBAC)
 - Audit logging
