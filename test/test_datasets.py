@@ -463,6 +463,144 @@ class DatasetTest(TestCase):
             return True
         return False
 
+    def _get_source_dataset(self, client, dataset):
+        """Load dataset by ID or name across all projects."""
+        if dataset.startswith("ds-"):
+            return client.dataset(dataset)
+        
+        projects = client.projects("")
+        for project in projects:
+            datasets = client.datasets(project.id, dataset)
+            matching = [d for d in datasets if d.name == dataset]
+            if matching:
+                return matching[0]
+        
+        raise AssertionError(
+            f"Dataset '{dataset}' not found in any project"
+        )
+
+    def _get_groups_for_testing(self, client, dataset_id, annotation_set_id):
+        """Get available groups and select first 2 for testing."""
+        all_samples = client.samples(
+            dataset_id,
+            annotation_set_id,
+            groups=[],
+        )
+        available_groups = sorted(
+            {s.group for s in all_samples if s.group}
+        )
+        selected_groups = (
+            available_groups[:2] if len(available_groups) >= 2
+            else available_groups
+        )
+        print(f"Available groups: {available_groups}")
+        print(f"Selected groups for testing: {selected_groups}")
+        return selected_groups
+
+    def _build_samples_payload(
+        self, client, selected_samples, selected_files, 
+        source_annotations, types
+    ):
+        """Build Sample objects for upload with annotations."""
+        samples_payload = []
+        source_uuid_by_image_key = {}
+        expected_groups = {}
+        expected_image_names = {}
+        selected_image_keys = []
+
+        for sample in selected_samples:
+            sample_uuid = self._sample_uuid(sample)
+            sample_key = self._sample_image_key(sample)
+            file_path = selected_files[sample_key]
+
+            source_uuid_by_image_key[sample_key] = sample_uuid
+            selected_image_keys.append(sample_key)
+            expected_groups[sample_key] = sample.group
+
+            # Create new sample with metadata
+            new_sample = Sample()
+            image_name = sample.image_name
+            if image_name is None:
+                image_name = f"{sample_key}{file_path.suffix}"
+            new_sample.set_image_name(image_name)
+            expected_image_names[sample_key] = image_name
+
+            new_sample.set_group(sample.group)
+            if sample.sequence_name is not None:
+                new_sample.set_sequence_name(sample.sequence_name)
+            if sample.frame_number is not None:
+                new_sample.set_frame_number(sample.frame_number)
+
+            new_sample.add_file(SampleFile("image", str(file_path)))
+
+            # Add related annotations
+            related_annotations = [
+                ann for ann in source_annotations
+                if self._annotation_image_key(ann) == sample_key
+            ]
+            for annotation in related_annotations:
+                new_sample.add_annotation(
+                    self._clone_annotation_for_upload(annotation)
+                )
+
+            samples_payload.append(new_sample)
+
+        return {
+            "payload": samples_payload,
+            "image_keys": selected_image_keys,
+            "source_uuids": source_uuid_by_image_key,
+            "expected_groups": expected_groups,
+            "expected_names": expected_image_names,
+        }
+
+    def _verify_roundtrip_samples(
+        self, client, new_dataset_id, new_annotation_set_id,
+        selected_image_keys, expected_groups, expected_image_names,
+        source_uuid_by_image_key
+    ):
+        """Verify uploaded samples match expected metadata."""
+        new_samples = client.samples(
+            new_dataset_id,
+            new_annotation_set_id,
+            groups=[],
+        )
+        self.assertEqual(len(new_samples), len(selected_image_keys))
+
+        new_samples_map = {
+            self._sample_image_key(s): s for s in new_samples
+        }
+        self.assertSetEqual(
+            set(selected_image_keys), set(new_samples_map)
+        )
+
+        # Verify UUIDs changed and metadata preserved
+        actual_groups = {}
+        actual_image_names = {}
+        for key in selected_image_keys:
+            sample_obj = new_samples_map[key]
+            self.assertIsNotNone(sample_obj)
+            assert sample_obj is not None
+            
+            # Check UUID changed
+            new_uuid = self._sample_uuid(sample_obj)
+            source_uuid = source_uuid_by_image_key[key]
+            self.assertNotEqual(
+                source_uuid,
+                new_uuid,
+                "Re-uploaded dataset should assign new sample UUIDs",
+            )
+            
+            actual_groups[key] = sample_obj.group
+            new_image_name = sample_obj.image_name
+            self.assertIsNotNone(new_image_name)
+            assert new_image_name is not None
+            actual_image_names[key] = new_image_name
+
+        self.assertEqual(expected_groups, actual_groups)
+        self.assertEqual(expected_image_names, actual_image_names)
+        
+        return new_samples_map
+
     def test_dataset_roundtrip(self):  # noqa: C901
         """Verify dataset download→upload→download integrity.
 
@@ -480,48 +618,20 @@ class DatasetTest(TestCase):
         types = get_test_dataset_types()
         print(f"Testing annotation types: {', '.join(types)}")
 
-        # If it's a dataset ID, get it directly
-        if dataset.startswith("ds-"):
-            source_dataset = client.dataset(dataset)
-        else:
-            # Search for dataset by name across all projects
-            projects = client.projects("")
-            source_dataset = None
-            for project in projects:
-                datasets = client.datasets(project.id, dataset)
-                matching = [d for d in datasets if d.name == dataset]
-                if matching:
-                    source_dataset = matching[0]
-                    break
-            
-            self.assertIsNotNone(
-                source_dataset,
-                f"Dataset '{dataset}' not found in any project",
-            )
-            assert source_dataset is not None
+        # Load source dataset
+        source_dataset = self._get_source_dataset(client, dataset)
 
         annotation_sets = client.annotation_sets(source_dataset.id)
         self.assertGreater(len(annotation_sets), 0)
         assert len(annotation_sets) > 0
         source_annotation_set = annotation_sets[0]
 
-        # Query available groups dynamically
-        all_samples = client.samples(
-            source_dataset.id,
-            source_annotation_set.id,
-            groups=[],
+        # Get groups for testing
+        selected_groups = self._get_groups_for_testing(
+            client, source_dataset.id, source_annotation_set.id
         )
-        available_groups = sorted(
-            list(set(s.group for s in all_samples if s.group))
-        )
-        # Use first 2 groups if available, otherwise use all groups
-        selected_groups = (
-            available_groups[:2] if len(available_groups) >= 2
-            else available_groups
-        )
-        print(f"Available groups: {available_groups}")
-        print(f"Selected groups for testing: {selected_groups}")
 
+        # Setup directories
         timestamp = int(time.time())
         test_dir = get_test_data_dir()
         export_dir = test_dir / f"labels_export_{timestamp}"
@@ -588,46 +698,15 @@ class DatasetTest(TestCase):
             key: exported_files[key] for key in selected_image_keys
         }
 
-        expected_groups = {
-            key: selected_samples[idx].group
-            for idx, key in enumerate(selected_image_keys)
-        }
-
-        expected_image_names = {}
-        source_uuid_by_image_key = {}
-        samples_payload = []
-        for sample in selected_samples:
-            sample_uuid = self._sample_uuid(sample)
-            sample_key = self._sample_image_key(sample)
-            file_path = selected_files[sample_key]
-
-            source_uuid_by_image_key[sample_key] = sample_uuid
-
-            new_sample = Sample()
-            image_name = sample.image_name
-            if image_name is None:
-                image_name = f"{sample_key}{file_path.suffix}"
-            new_sample.set_image_name(image_name)
-            expected_image_names[sample_key] = image_name
-
-            new_sample.set_group(sample.group)
-            if sample.sequence_name is not None:
-                new_sample.set_sequence_name(sample.sequence_name)
-            if sample.frame_number is not None:
-                new_sample.set_frame_number(sample.frame_number)
-
-            new_sample.add_file(SampleFile("image", str(file_path)))
-
-            related_annotations = [
-                ann for ann in source_annotations
-                if self._annotation_image_key(ann) == sample_key
-            ]
-            for annotation in related_annotations:
-                new_sample.add_annotation(
-                    self._clone_annotation_for_upload(annotation)
-                )
-
-            samples_payload.append(new_sample)
+        # Build upload payload
+        payload_info = self._build_samples_payload(
+            client, selected_samples, selected_files,
+            source_annotations, types
+        )
+        samples_payload = payload_info["payload"]
+        source_uuid_by_image_key = payload_info["source_uuids"]
+        expected_groups = payload_info["expected_groups"]
+        expected_image_names = payload_info["expected_names"]
 
         selected_annotations = [
             ann for ann in source_annotations
@@ -637,12 +716,12 @@ class DatasetTest(TestCase):
             selected_annotations
         )
 
+        # Create new dataset for roundtrip
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         new_dataset_name = f"{dataset} Roundtrip {random_suffix}"
 
-        # Get project ID for creating new dataset (use Unit Testing as default)
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         assert len(projects) > 0
@@ -689,44 +768,14 @@ class DatasetTest(TestCase):
         try:
             time.sleep(3)
 
-            new_samples = client.samples(
-                new_dataset_id,
-                new_annotation_set_id,
-                groups=[],
-            )
-            self.assertEqual(len(new_samples), len(samples_payload))
-
-            new_samples_map = {}
-            for sample in new_samples:
-                key = self._sample_image_key(sample)
-                new_samples_map[key] = sample
-            self.assertSetEqual(
-                set(selected_image_keys), set(new_samples_map)
+            # Verify uploaded samples
+            self._verify_roundtrip_samples(
+                client, new_dataset_id, new_annotation_set_id,
+                selected_image_keys, expected_groups, expected_image_names,
+                source_uuid_by_image_key
             )
 
-            actual_groups = {}
-            actual_image_names = {}
-            for key in selected_image_keys:
-                sample_obj = new_samples_map.get(key)
-                self.assertIsNotNone(sample_obj)
-                assert sample_obj is not None
-                new_uuid = self._sample_uuid(sample_obj)
-                source_uuid = source_uuid_by_image_key[key]
-                self.assertNotEqual(
-                    source_uuid,
-                    new_uuid,
-                    "Re-uploaded dataset should assign new sample UUIDs",
-                )
-                actual_groups[key] = sample_obj.group
-
-                new_image_name = sample_obj.image_name
-                self.assertIsNotNone(new_image_name)
-                assert new_image_name is not None
-                actual_image_names[key] = new_image_name
-
-            self.assertEqual(expected_groups, actual_groups)
-            self.assertEqual(expected_image_names, actual_image_names)
-
+            # Verify annotations
             new_annotations = client.annotations(
                 new_annotation_set_id,
                 groups=[],
@@ -785,6 +834,7 @@ class DatasetTest(TestCase):
                 client.delete_dataset(new_dataset_id)
             shutil.rmtree(export_dir, ignore_errors=True)
             shutil.rmtree(reexport_dir, ignore_errors=True)
+
 
     def test_helper_sample_image_key_with_image_name(self):
         """Test creating samples with specific image names."""
@@ -1203,6 +1253,51 @@ class TestLabels(TestCase):
                 "samples_count should match len(samples)")
             print("✓ Verified count matches actual samples")
 
+
+    def _download_dataset(
+        self, client, dataset_id, output_dir, flatten=False
+    ):
+        """Download dataset from EdgeFirst Studio.
+        
+        Args:
+            client: EdgeFirst client instance
+            dataset_id: Dataset ID to download
+            output_dir: Directory to download to
+            flatten: Whether to flatten the directory structure
+            
+        Raises:
+            RuntimeError: If download fails (including missing S3 files)
+        """
+        client.download_dataset(
+            dataset_id,
+            [],
+            [FileType.Image],
+            str(output_dir),
+            flatten=flatten,
+        )
+
+    def _analyze_download_structure(self, directory):
+        """Analyze downloaded dataset directory structure.
+        
+        Args:
+            directory: Path to downloaded dataset directory
+            
+        Returns:
+            Dict with structure analysis results
+        """
+        entries = list(directory.iterdir())
+        has_subdirs = any(e.is_dir() for e in entries)
+        
+        def count_files(d):
+            return sum(1 for f in d.rglob("*") if f.is_file())
+        
+        file_count = count_files(directory)
+        return {
+            "entries": entries,
+            "has_subdirs": has_subdirs,
+            "file_count": file_count,
+        }
+
     def test_download_dataset_flatten(self):
         """Test download_dataset with flatten option for sequences."""
         client = get_client()
@@ -1233,86 +1328,61 @@ class TestLabels(TestCase):
         flatten_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Download with normal structure (sequences in subdirectories)
+            # Download with normal structure
             print("\n1. Downloading with normal structure...")
-            client.download_dataset(
-                dataset_obj.id,
-                [],
-                [FileType.Image],
-                str(normal_dir),
-                flatten=False,
+            self._download_dataset(
+                client, dataset_obj.id, normal_dir, flatten=False
             )
 
             # Download with flattened structure
             print("2. Downloading with flattened structure...")
-            client.download_dataset(
-                dataset_obj.id,
-                [],
-                [FileType.Image],
-                str(flatten_dir),
-                flatten=True,
+            self._download_dataset(
+                client, dataset_obj.id, flatten_dir, flatten=True
             )
 
-            # Analyze normal structure
-            normal_entries = list(normal_dir.iterdir())
-            normal_has_subdirs = any(e.is_dir() for e in normal_entries)
-            
-            print(f"\nNormal structure: {len(normal_entries)} entries")
-            if normal_has_subdirs:
-                subdirs = [e.name for e in normal_entries if e.is_dir()]
+            # Analyze structures
+            normal = self._analyze_download_structure(normal_dir)
+            flatten = self._analyze_download_structure(flatten_dir)
+
+            print(f"\nNormal structure: {len(normal['entries'])} entries")
+            if normal["has_subdirs"]:
+                subdirs = [
+                    e.name for e in normal["entries"] if e.is_dir()
+                ]
                 print(f"  Subdirectories: {subdirs[:3]}")
 
-            # Analyze flattened structure
-            flatten_entries = list(flatten_dir.iterdir())
-            flatten_has_subdirs = any(e.is_dir() for e in flatten_entries)
-            
-            print(f"Flattened structure: {len(flatten_entries)} entries")
-            
-            # Count files recursively
-            def count_files(directory):
-                return sum(1 for f in directory.rglob("*") if f.is_file())
-
-            normal_file_count = count_files(normal_dir)
-            flatten_file_count = count_files(flatten_dir)
+            print(f"Flattened structure: {len(flatten['entries'])} entries")
 
             print("\nFile counts:")
-            print(f"  Normal: {normal_file_count} files")
-            print(f"  Flatten: {flatten_file_count} files")
+            print(f"  Normal: {normal['file_count']} files")
+            print(f"  Flatten: {flatten['file_count']} files")
 
             # Assertions
             self.assertEqual(
-                normal_file_count,
-                flatten_file_count,
+                normal["file_count"],
+                flatten["file_count"],
                 "Both downloads should have same number of files"
             )
 
             self.assertFalse(
-                flatten_has_subdirs,
+                flatten["has_subdirs"],
                 "Flattened download should not have subdirectories"
             )
 
-            # If dataset has sequences, verify prefixing
-            if normal_has_subdirs:
+            # Verify sequence prefixing if applicable
+            if normal["has_subdirs"]:
                 print("\n✓ Dataset contains sequences")
-                
-                # Check that flattened files have sequence prefixes
                 flatten_files = [
-                    f.name for f in flatten_dir.iterdir() if f.is_file()
+                    e.name for e in flatten["entries"] if e.is_file()
                 ]
-                
-                # Most files should have underscore-separated components
-                # (indicating sequence_frame prefix)
                 prefixed_count = sum(
                     1 for f in flatten_files if f.count('_') >= 1
                 )
-                
                 print(
-                    f"  Files with prefixes: "
-                    f"{prefixed_count}/{len(flatten_files)}"
+                    f"  Files with prefixes: {prefixed_count}/"
+                    f"{len(flatten_files)}"
                 )
                 print(f"  Sample filenames: {flatten_files[:3]}")
-                
-                # At least some files should have prefixes if sequences exist
                 self.assertGreater(
                     prefixed_count,
                     0,
@@ -1331,4 +1401,5 @@ class TestLabels(TestCase):
             if flatten_dir.exists():
                 shutil.rmtree(flatten_dir)
             print("Cleaned up test directories")
+
 
