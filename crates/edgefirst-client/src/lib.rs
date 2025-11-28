@@ -625,7 +625,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "DE-1235: Server bug - task.list pagination prevents finding old tasks"]
     async fn test_tasks() -> Result<(), Error> {
         let client = get_client().await?;
         let tasks = client.tasks(None, None, None, None).await?;
