@@ -24,6 +24,10 @@ __pycache__
 *.tflite
 *.rtm
 *.profraw 
+*.log
+*.old
+*.bak
+*.swp
 
 .DS_Store
 *.disabled
