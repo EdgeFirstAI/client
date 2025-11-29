@@ -830,12 +830,32 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
         3,
         "Token should be a valid JWT with 3 parts"
     );
+    
+    // Debug: Log all token parts for troubleshooting
+    println!("Token structure:");
+    println!("  Header ({}): {}", token_parts[0].len(), token_parts[0]);
+    println!("  Payload ({}): {}", token_parts[1].len(), token_parts[1]);
+    println!("  Signature ({}): {}", token_parts[2].len(), token_parts[2]);
 
     let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
         .decode(token_parts[1])
-        .expect("Token payload should be valid base64");
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "Failed to decode JWT payload: {:?}. Payload part: {}",
+                e, token_parts[1]
+            );
+            panic!("Token payload should be valid base64: {:?}", e)
+        });
+    
+    // Debug: Log the decoded payload for troubleshooting
+    let decoded_str = String::from_utf8_lossy(&decoded);
+    println!("Decoded JWT payload ({}): {}", decoded.len(), decoded_str);
+    
     let payload: HashMap<String, serde_json::Value> =
-        serde_json::from_slice(&decoded).expect("Token payload should be valid JSON");
+        serde_json::from_slice(&decoded).expect(&format!(
+            "Token payload should be valid JSON. Raw decoded: {}",
+            decoded_str
+        ));
 
     let token_username = payload
         .get("username")
