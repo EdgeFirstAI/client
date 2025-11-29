@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] - 2025-11-29
+
+### Fixed
+
+- **Documentation clarification for flattened dataset downloads**
+  - Clarified behavior of automatic filename prefixing in `flatten` mode
+  - Improved documentation for `Client::download_dataset()` Rust API
+  - Updated Python type hints for `download_dataset()` method
+
 ## [2.5.0] - 2025-11-27
 
 ### Added
