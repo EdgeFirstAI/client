@@ -12,25 +12,25 @@ This product is licensed under the Apache License, Version 2.0 (see [LICENSE](LI
 
 ## Third-Party Software Notices and Information
 
-This project incorporates components from third-party open source projects. The original copyright notices and the licenses under which we received such components are set forth below and in the `THIRD_PARTY.md` file included in releases.
+This project incorporates components from third-party open source projects. The original copyright notices and the licenses under which we received such components are set forth below and in the Software Bill of Materials (SBOM).
 
 ### Complete List of Dependencies
 
-For a complete list of third-party dependencies, their licenses, and attribution information, see:
+For a complete and authoritative list of third-party dependencies, their licenses, and attribution information, see:
 
 - **Release artifacts**: [https://github.com/EdgeFirstAI/client/releases](https://github.com/EdgeFirstAI/client/releases)
-  - Download `THIRD_PARTY.md` from the latest release assets.
+  - Download `sbom.json` from the latest release assets for the complete SBOM in CycloneDX format
+  - The SBOM includes all dependencies, their versions, and license information
 
 - **Generate locally**:
 
   ```bash
-  cargo install cargo-license
-  cargo license --authors --all-features --tsv > THIRD_PARTY.tsv
+  make sbom
   ```
-  
-  Or use the script from `.github/workflows/release.yml` to generate the formatted Markdown table.
 
-**Note**: The licenses for all third-party dependencies are compatible with Apache-2.0.
+  This generates `sbom.json` in CycloneDX 1.6 format with complete dependency information.
+
+**License Compliance**: All third-party dependencies are compatible with Apache-2.0. For detailed license information and compliance verification, consult the generated SBOM file.
 
 ---
 

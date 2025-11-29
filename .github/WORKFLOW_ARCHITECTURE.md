@@ -170,11 +170,11 @@ release.yml
 │   ├── Extract version from tag
 │   ├── Verify Cargo.toml version matches tag
 │   └── Create GitHub release
-├── generate-licenses
-│   ├── Install cargo-license
-│   ├── Generate TSV license file
-│   ├── Convert TSV to Markdown table
-│   └── Upload THIRD_PARTY.md to release
+├── generate-sbom
+│   ├── Install scancode-toolkit and cyclonedx-cli
+│   ├── Install cargo-cyclonedx
+│   ├── Generate SBOM using make sbom
+│   └── Upload sbom.json to release
 ├── build-cli (matrix)
 │   ├── Build CLI binaries (5 platforms)
 │   ├── Create compressed archives
@@ -202,8 +202,8 @@ Tag Push (e.g., 1.0.0 or 1.0.0rc1)
          ▼
   create-release ────┐
          │           │
-         │           ├──► generate-licenses
-         │           │       └──► Upload THIRD_PARTY.md to release
+         │           ├──► generate-sbom
+         │           │       └──► Upload sbom.json to release
          │           │
          │           ▼
          ├──────► build-cli (5 platforms)
@@ -249,7 +249,7 @@ Tag Push (e.g., 1.0.0 or 1.0.0rc1)
 - **GitHub Release** with:
   - CLI binaries for 5 platforms (compressed)
   - Python wheels for 5 platforms
-  - `THIRD_PARTY.md` - Third-party licenses as markdown table
+  - `sbom.json` - Software Bill of Materials in CycloneDX format
   - Automatic release notes
 - **crates.io** packages:
   - `edgefirst-client` - Rust library crate for EdgeFirst API

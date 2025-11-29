@@ -65,9 +65,9 @@ jobs:
             edgefirst-client = "${{ steps.get_version.outputs.version }}"
             ```
 
-  # Generate third-party licenses
-  generate-licenses:
-    name: Generate Third-Party Licenses
+  # Generate SBOM
+  generate-sbom:
+    name: Generate Software Bill of Materials
     needs: [create-release]
     runs-on: ubuntu-latest
     steps:
@@ -78,45 +78,38 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
-      - name: Install cargo-license
-        run: cargo install cargo-license
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
 
-      - name: Generate TSV license file
+      - name: Install SBOM dependencies
         run: |
-          cargo-license --authors --all-features --tsv > THIRD_PARTY.tsv
-
-      - name: Convert TSV to Markdown
-        run: |
-          cat > THIRD_PARTY.md << 'EOF'
-          # Third-Party Licenses
-
-          This file lists all third-party dependencies and their respective licenses.
-
-          EOF
+          pip install scancode-toolkit
           
-          # Convert TSV to markdown table
-          awk -F'\t' '
-          NR==1 {
-            print "| " $1 " | " $2 " | " $3 " | " $4 " | " $5 " |"
-            print "|---|---|---|---|---|"
-          }
-          NR>1 {
-            # Escape pipe characters in fields
-            gsub(/\|/, "\\|", $0)
-            print "| " $1 " | " $2 " | " $3 " | " $4 " | " $5 " |"
-          }
-          ' THIRD_PARTY.tsv >> THIRD_PARTY.md
+          # Install cyclonedx-cli from npm (faster than Python version)
+          npm install -g @cyclonedx/cyclonedx-npm --silent
+          npx @cyclonedx/cyclonedx-cli merge --help > /dev/null || echo "Warning: cyclonedx-cli may not be fully initialized"
+          
+          # Try Python version as fallback
+          pip install cyclonedx-python-lib || true
+          
+          # Install cargo-cyclonedx for Rust dependency parsing
+          cargo install cargo-cyclonedx --quiet || echo "Warning: cargo-cyclonedx installation may have issues"
 
-      - name: Upload THIRD_PARTY.md to release
+      - name: Generate SBOM using make
+        run: make sbom
+
+      - name: Upload sbom.json to release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
           tag_name: ${{ needs.create-release.outputs.version }}
-          files: THIRD_PARTY.md
+          files: sbom.json
 
   # Generate man page
   generate-manpage:
     name: Generate Man Page
-    needs: [create-release]
+    needs: [create-release, generate-sbom]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -139,7 +132,7 @@ jobs:
   # Build CLI binaries
   build-cli:
     name: Build CLI ${{ matrix.target }}
-    needs: [create-release]
+    needs: [create-release, generate-sbom]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -244,7 +237,7 @@ jobs:
   # Build Python wheels
   build-wheels:
     name: Build wheels ${{ matrix.platform }}-${{ matrix.arch }}
-    needs: [create-release]
+    needs: [create-release, generate-sbom]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
