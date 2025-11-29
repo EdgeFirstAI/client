@@ -852,10 +852,12 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     println!("Decoded JWT payload ({}): {}", decoded.len(), decoded_str);
     
     let payload: HashMap<String, serde_json::Value> =
-        serde_json::from_slice(&decoded).expect(&format!(
-            "Token payload should be valid JSON. Raw decoded: {}",
-            decoded_str
-        ));
+        serde_json::from_slice(&decoded).unwrap_or_else(|_| {
+            panic!(
+                "Token payload should be valid JSON. Raw decoded: {}",
+                decoded_str
+            )
+        });
 
     let token_username = payload
         .get("username")
