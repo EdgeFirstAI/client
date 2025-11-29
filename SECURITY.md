@@ -92,13 +92,15 @@ We recommend always using the latest stable release to receive security updates 
 - Update dependencies to address known vulnerabilities
 - Pin dependencies to specific versions in releases
 - Run security scans via SonarCloud in CI/CD
-- Generate and publish third-party license information (THIRD_PARTY.md)
+- Generate and publish Software Bill of Materials (SBOM) in CycloneDX format
+- Validate license compliance for all dependencies
 
 **Staying Secure:**
 
 - Subscribe to GitHub Security Advisories for this repository
 - Update to latest versions promptly when security patches are released
 - Review CHANGELOG.md for security-related updates
+- Check the SBOM and license information for all dependencies
 
 ## Reporting a Vulnerability
 

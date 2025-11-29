@@ -407,7 +407,7 @@ The CLI `download` command automatically uses the new API - no user changes requ
 - Example `populate_with_circle.rs` demonstrating bbox annotations with auto-generated image and UUID
 - Example `populate_with_annotations.rs` demonstrating location (sensors) usage with populate API
 - Added `cargo-license` tool to Docker build image
-- Auto-generate `THIRD_PARTY` file listing all third-party dependencies and their licenses
+- Auto-generate SBOM (Software Bill of Materials) in CycloneDX format listing all third-party dependencies and their licenses
 - Added `uuid` crate dependency (v1.11.0) with v4 and serde features
 
 ### Changed (License)

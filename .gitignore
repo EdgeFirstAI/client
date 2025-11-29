@@ -45,7 +45,10 @@ edgefirst.yaml
 
 lcov*.info
 
-THIRD_PARTY*
+# Generated SBOM and related files
+source-sbom*.json
+deps-sbom.json
+sbom-temp.json
 
 # Generated man page
 *.1
