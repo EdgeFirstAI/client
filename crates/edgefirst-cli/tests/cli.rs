@@ -830,7 +830,7 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
         3,
         "Token should be a valid JWT with 3 parts"
     );
-    
+
     // Debug: Log all token parts for troubleshooting
     println!("Token structure:");
     println!("  Header ({}): {}", token_parts[0].len(), token_parts[0]);
@@ -846,13 +846,13 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
             );
             panic!("Token payload should be valid base64: {:?}", e)
         });
-    
+
     // Debug: Log the decoded payload for troubleshooting
     let decoded_str = String::from_utf8_lossy(&decoded);
     println!("Decoded JWT payload ({}): {}", decoded.len(), decoded_str);
-    
-    let payload: HashMap<String, serde_json::Value> =
-        serde_json::from_slice(&decoded).unwrap_or_else(|_| {
+
+    let payload: HashMap<String, serde_json::Value> = serde_json::from_slice(&decoded)
+        .unwrap_or_else(|_| {
             panic!(
                 "Token payload should be valid JSON. Raw decoded: {}",
                 decoded_str

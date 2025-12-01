@@ -60,6 +60,56 @@ fn max_tasks() -> usize {
         })
 }
 
+/// Filters items by name and sorts by match quality.
+///
+/// Match quality priority (best to worst):
+/// 1. Exact match (case-sensitive)
+/// 2. Exact match (case-insensitive)
+/// 3. Substring match (shorter names first, then alphabetically)
+///
+/// This ensures that searching for "Deer" returns "Deer" before
+/// "Deer Roundtrip 20251129" or "Reindeer".
+fn filter_and_sort_by_name<T, F>(items: Vec<T>, filter: &str, get_name: F) -> Vec<T>
+where
+    F: Fn(&T) -> &str,
+{
+    let filter_lower = filter.to_lowercase();
+    let mut filtered: Vec<T> = items
+        .into_iter()
+        .filter(|item| get_name(item).to_lowercase().contains(&filter_lower))
+        .collect();
+
+    filtered.sort_by(|a, b| {
+        let name_a = get_name(a);
+        let name_b = get_name(b);
+
+        // Priority 1: Exact match (case-sensitive)
+        let exact_a = name_a == filter;
+        let exact_b = name_b == filter;
+        if exact_a != exact_b {
+            return exact_b.cmp(&exact_a); // true (exact) comes first
+        }
+
+        // Priority 2: Exact match (case-insensitive)
+        let exact_ci_a = name_a.to_lowercase() == filter_lower;
+        let exact_ci_b = name_b.to_lowercase() == filter_lower;
+        if exact_ci_a != exact_ci_b {
+            return exact_ci_b.cmp(&exact_ci_a);
+        }
+
+        // Priority 3: Shorter names first (more specific matches)
+        let len_cmp = name_a.len().cmp(&name_b.len());
+        if len_cmp != std::cmp::Ordering::Equal {
+            return len_cmp;
+        }
+
+        // Priority 4: Alphabetical order for stability
+        name_a.cmp(name_b)
+    });
+
+    filtered
+}
+
 fn sanitize_path_component(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -599,6 +649,10 @@ impl Client {
     /// returned as a vector of Project objects.  If a name filter is
     /// provided, only projects matching the filter are returned.
     ///
+    /// Results are sorted by match quality: exact matches first, then
+    /// case-insensitive exact matches, then shorter names (more specific),
+    /// then alphabetically.
+    ///
     /// Projects are the top-level organizational unit in EdgeFirst Studio.
     /// Projects contain datasets, trainers, and trainer sessions.  Projects
     /// are used to group related datasets and trainers together.
@@ -607,10 +661,7 @@ impl Client {
             .rpc::<(), Vec<Project>>("project.list".to_owned(), None)
             .await?;
         if let Some(name) = name {
-            Ok(projects
-                .into_iter()
-                .filter(|p| p.name().contains(name))
-                .collect())
+            Ok(filter_and_sort_by_name(projects, name, |p| p.name()))
         } else {
             Ok(projects)
         }
@@ -626,6 +677,11 @@ impl Client {
     /// Returns a list of datasets available to the user.  The datasets are
     /// returned as a vector of Dataset objects.  If a name filter is
     /// provided, only datasets matching the filter are returned.
+    ///
+    /// Results are sorted by match quality: exact matches first, then
+    /// case-insensitive exact matches, then shorter names (more specific),
+    /// then alphabetically. This ensures "Deer" returns before "Deer
+    /// Roundtrip".
     pub async fn datasets(
         &self,
         project_id: ProjectID,
@@ -634,10 +690,7 @@ impl Client {
         let params = HashMap::from([("project_id", project_id)]);
         let datasets: Vec<Dataset> = self.rpc("dataset.list".to_owned(), Some(params)).await?;
         if let Some(name) = name {
-            Ok(datasets
-                .into_iter()
-                .filter(|d| d.name().contains(name))
-                .collect())
+            Ok(filter_and_sort_by_name(datasets, name, |d| d.name()))
         } else {
             Ok(datasets)
         }
@@ -761,8 +814,9 @@ impl Client {
     /// * `output` - Local directory to save downloaded files
     /// * `flatten` - If true, download all files to output root without
     ///   sequence subdirectories. When flattening, filenames are prefixed with
-    ///   `{sequence_name}_{frame}_` (or `{sequence_name}_` if frame is unavailable)
-    ///   unless the filename already starts with `{sequence_name}_`, to avoid conflicts between sequences.
+    ///   `{sequence_name}_{frame}_` (or `{sequence_name}_` if frame is
+    ///   unavailable) unless the filename already starts with
+    ///   `{sequence_name}_`, to avoid conflicts between sequences.
     /// * `progress` - Optional channel for progress updates
     ///
     /// # Returns
@@ -1711,15 +1765,18 @@ impl Client {
 
     /// List available snapshots.  If a name is provided, only snapshots
     /// containing that name are returned.
+    ///
+    /// Results are sorted by match quality: exact matches first, then
+    /// case-insensitive exact matches, then shorter descriptions (more
+    /// specific), then alphabetically.
     pub async fn snapshots(&self, name: Option<&str>) -> Result<Vec<Snapshot>, Error> {
         let snapshots: Vec<Snapshot> = self
             .rpc::<(), Vec<Snapshot>>("snapshots.list".to_owned(), None)
             .await?;
         if let Some(name) = name {
-            Ok(snapshots
-                .into_iter()
-                .filter(|s| s.description().contains(name))
-                .collect())
+            Ok(filter_and_sort_by_name(snapshots, name, |s| {
+                s.description()
+            }))
         } else {
             Ok(snapshots)
         }
@@ -2292,6 +2349,10 @@ impl Client {
     /// are returned as a vector of Experiment objects.  If name is provided
     /// then only experiments containing this string are returned.
     ///
+    /// Results are sorted by match quality: exact matches first, then
+    /// case-insensitive exact matches, then shorter names (more specific),
+    /// then alphabetically.
+    ///
     /// Experiments provide a method of organizing training and validation
     /// sessions together and are akin to an Experiment in MLFlow terminology.  
     /// Each experiment can have multiple trainer sessions associated with it,
@@ -2305,10 +2366,7 @@ impl Client {
         let experiments: Vec<Experiment> =
             self.rpc("trainer.list2".to_owned(), Some(params)).await?;
         if let Some(name) = name {
-            Ok(experiments
-                .into_iter()
-                .filter(|e| e.name().contains(name))
-                .collect())
+            Ok(filter_and_sort_by_name(experiments, name, |e| e.name()))
         } else {
             Ok(experiments)
         }
@@ -2326,6 +2384,10 @@ impl Client {
     /// is provided then only trainer sessions containing this string are
     /// returned.
     ///
+    /// Results are sorted by match quality: exact matches first, then
+    /// case-insensitive exact matches, then shorter names (more specific),
+    /// then alphabetically.
+    ///
     /// Trainer sessions are akin to runs in MLFlow terminology.  These
     /// represent an actual training session which will produce metrics and
     /// model artifacts.
@@ -2339,10 +2401,7 @@ impl Client {
             .rpc("trainer.session.list".to_owned(), Some(params))
             .await?;
         if let Some(name) = name {
-            Ok(sessions
-                .into_iter()
-                .filter(|s| s.name().contains(name))
-                .collect())
+            Ok(filter_and_sort_by_name(sessions, name, |s| s.name()))
         } else {
             Ok(sessions)
         }
@@ -2551,7 +2610,7 @@ impl Client {
         }
 
         if let Some(name) = name {
-            tasks.retain(|t| t.name().contains(name));
+            tasks = filter_and_sort_by_name(tasks, name, |t| t.name());
         }
 
         Ok(tasks)
@@ -3066,6 +3125,66 @@ async fn upload_file_to_presigned_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_filter_and_sort_by_name_exact_match_first() {
+        // Test that exact matches come first
+        let items = vec![
+            "Deer Roundtrip 123".to_string(),
+            "Deer".to_string(),
+            "Reindeer".to_string(),
+            "DEER".to_string(),
+        ];
+        let result = filter_and_sort_by_name(items, "Deer", |s| s.as_str());
+        assert_eq!(result[0], "Deer"); // Exact match first
+        assert_eq!(result[1], "DEER"); // Case-insensitive exact match second
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_shorter_names_preferred() {
+        // Test that shorter names (more specific) come before longer ones
+        let items = vec![
+            "Test Dataset ABC".to_string(),
+            "Test".to_string(),
+            "Test Dataset".to_string(),
+        ];
+        let result = filter_and_sort_by_name(items, "Test", |s| s.as_str());
+        assert_eq!(result[0], "Test"); // Exact match first
+        assert_eq!(result[1], "Test Dataset"); // Shorter substring match
+        assert_eq!(result[2], "Test Dataset ABC"); // Longer substring match
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_case_insensitive_filter() {
+        // Test that filtering is case-insensitive
+        let items = vec![
+            "UPPERCASE".to_string(),
+            "lowercase".to_string(),
+            "MixedCase".to_string(),
+        ];
+        let result = filter_and_sort_by_name(items, "case", |s| s.as_str());
+        assert_eq!(result.len(), 3); // All items should match
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_no_matches() {
+        // Test that empty result is returned when no matches
+        let items = vec!["Apple".to_string(), "Banana".to_string()];
+        let result = filter_and_sort_by_name(items, "Cherry", |s| s.as_str());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_alphabetical_tiebreaker() {
+        // Test alphabetical ordering for same-length names
+        let items = vec![
+            "TestC".to_string(),
+            "TestA".to_string(),
+            "TestB".to_string(),
+        ];
+        let result = filter_and_sort_by_name(items, "Test", |s| s.as_str());
+        assert_eq!(result, vec!["TestA", "TestB", "TestC"]);
+    }
 
     #[test]
     fn test_build_filename_no_flatten() {

@@ -186,33 +186,28 @@ class DatasetTest(TestCase):
                     created_sample = s
                     break
 
-            assert (
-                created_sample is not None
-            ), f"Sample with image_name '{image_filename}' should exist"
+            assert created_sample is not None, (
+                f"Sample with image_name '{image_filename}' should exist"
+            )
 
             print(f"✓ Found sample by image_name: {image_filename}")
 
             # Verify basic properties
             assert created_sample.name == image_filename
-            assert (created_sample.group == "train" or
-                    created_sample.group is None)
+            assert created_sample.group == "train" or created_sample.group is None
 
             print("\nSample verification:")
             print(f"  ✓ image_name: {created_sample.name}")
             print(f"  ✓ group: {created_sample.group}")
-            print(
-                f"  ✓ annotations: {len(created_sample.annotations)} "
-                f"item(s)")
+            print(f"  ✓ annotations: {len(created_sample.annotations)} item(s)")
 
             # Verify annotations are returned correctly
             annotations = created_sample.annotations
-            assert len(annotations) == 1, (
-                "Should have exactly one annotation")
+            assert len(annotations) == 1, "Should have exactly one annotation"
 
             annotation = annotations[0]
             assert annotation.label == "circle"
-            assert annotation.box2d is not None, (
-                "Bounding box should be present")
+            assert annotation.box2d is not None, "Bounding box should be present"
 
             returned_bbox = annotation.box2d
             print(
@@ -234,27 +229,22 @@ class DatasetTest(TestCase):
 
             # Download the image and verify byte-for-byte match
             downloaded_data = created_sample.download(client)
-            assert downloaded_data is not None, (
-                "Downloaded data should not be None")
+            assert downloaded_data is not None, "Downloaded data should not be None"
 
             # Read original file
             with open(str(test_image_path), "rb") as f:
                 original_data = f.read()
 
-            assert len(downloaded_data) == len(
-                original_data
-            ), "Downloaded data length should match original"
-            assert (
-                downloaded_data == original_data
-            ), "Downloaded data should match original byte-for-byte"
-
-            print(
-                f"✓ Downloaded image matches original "
-                f"({len(downloaded_data)} bytes)"
+            assert len(downloaded_data) == len(original_data), (
+                "Downloaded data length should match original"
+            )
+            assert downloaded_data == original_data, (
+                "Downloaded data should match original byte-for-byte"
             )
 
-            print(
-                "\n✓ Test passed: populate_samples with automatic upload")
+            print(f"✓ Downloaded image matches original ({len(downloaded_data)} bytes)")
+
+            print("\n✓ Test passed: populate_samples with automatic upload")
 
         finally:
             # Clean up temporary file
@@ -291,10 +281,7 @@ class DatasetTest(TestCase):
         sample_name = sample.name
         self.assertIsNotNone(
             sample_name,
-            (
-                "Sample is missing image_name and name; "
-                "cannot determine file key."
-            ),
+            ("Sample is missing image_name and name; cannot determine file key."),
         )
         assert sample_name is not None
         return Path(sample_name).stem
@@ -313,13 +300,11 @@ class DatasetTest(TestCase):
         """Index exported files by stem for quick lookup."""
         indexed = {}
         # Use rglob to recursively search for files (handles sequence subdirs)
-        for path in directory.rglob('*'):
+        for path in directory.rglob("*"):
             if path.is_file():
                 stem = path.stem
                 if stem in indexed:
-                    self.fail(
-                        f"Duplicate exported file for stem '{stem}'"
-                    )
+                    self.fail(f"Duplicate exported file for stem '{stem}'")
                 indexed[stem] = path
         return indexed
 
@@ -342,10 +327,7 @@ class DatasetTest(TestCase):
         mask = annotation.mask
         if mask is not None:
             mask_sig = tuple(
-                tuple(
-                    (round(point[0], 6), round(point[1], 6))
-                    for point in polygon
-                )
+                tuple((round(point[0], 6), round(point[1], 6)) for point in polygon)
                 for polygon in mask.polygon
             )
         else:
@@ -368,12 +350,8 @@ class DatasetTest(TestCase):
             if existing[:3] != sig_identity:
                 continue
 
-            updated_bbox = (
-                existing[3] if existing[3] is not None else signature[3]
-            )
-            updated_mask = (
-                existing[4] if existing[4] is not None else signature[4]
-            )
+            updated_bbox = existing[3] if existing[3] is not None else signature[3]
+            updated_mask = existing[4] if existing[4] is not None else signature[4]
 
             if updated_bbox != existing[3] or updated_mask != existing[4]:
                 entries[idx] = (
@@ -467,17 +445,15 @@ class DatasetTest(TestCase):
         """Load dataset by ID or name across all projects."""
         if dataset.startswith("ds-"):
             return client.dataset(dataset)
-        
+
         projects = client.projects("")
         for project in projects:
             datasets = client.datasets(project.id, dataset)
             matching = [d for d in datasets if d.name == dataset]
             if matching:
                 return matching[0]
-        
-        raise AssertionError(
-            f"Dataset '{dataset}' not found in any project"
-        )
+
+        raise AssertionError(f"Dataset '{dataset}' not found in any project")
 
     def _get_groups_for_testing(self, client, dataset_id, annotation_set_id):
         """Get available groups and select first 2 for testing."""
@@ -486,20 +462,16 @@ class DatasetTest(TestCase):
             annotation_set_id,
             groups=[],
         )
-        available_groups = sorted(
-            {s.group for s in all_samples if s.group}
-        )
+        available_groups = sorted({s.group for s in all_samples if s.group})
         selected_groups = (
-            available_groups[:2] if len(available_groups) >= 2
-            else available_groups
+            available_groups[:2] if len(available_groups) >= 2 else available_groups
         )
         print(f"Available groups: {available_groups}")
         print(f"Selected groups for testing: {selected_groups}")
         return selected_groups
 
     def _build_samples_payload(
-        self, client, selected_samples, selected_files, 
-        source_annotations, types
+        self, client, selected_samples, selected_files, source_annotations, types
     ):
         """Build Sample objects for upload with annotations."""
         samples_payload = []
@@ -535,13 +507,12 @@ class DatasetTest(TestCase):
 
             # Add related annotations
             related_annotations = [
-                ann for ann in source_annotations
+                ann
+                for ann in source_annotations
                 if self._annotation_image_key(ann) == sample_key
             ]
             for annotation in related_annotations:
-                new_sample.add_annotation(
-                    self._clone_annotation_for_upload(annotation)
-                )
+                new_sample.add_annotation(self._clone_annotation_for_upload(annotation))
 
             samples_payload.append(new_sample)
 
@@ -554,9 +525,14 @@ class DatasetTest(TestCase):
         }
 
     def _verify_roundtrip_samples(
-        self, client, new_dataset_id, new_annotation_set_id,
-        selected_image_keys, expected_groups, expected_image_names,
-        source_uuid_by_image_key
+        self,
+        client,
+        new_dataset_id,
+        new_annotation_set_id,
+        selected_image_keys,
+        expected_groups,
+        expected_image_names,
+        source_uuid_by_image_key,
     ):
         """Verify uploaded samples match expected metadata."""
         new_samples = client.samples(
@@ -566,12 +542,8 @@ class DatasetTest(TestCase):
         )
         self.assertEqual(len(new_samples), len(selected_image_keys))
 
-        new_samples_map = {
-            self._sample_image_key(s): s for s in new_samples
-        }
-        self.assertSetEqual(
-            set(selected_image_keys), set(new_samples_map)
-        )
+        new_samples_map = {self._sample_image_key(s): s for s in new_samples}
+        self.assertSetEqual(set(selected_image_keys), set(new_samples_map))
 
         # Verify UUIDs changed and metadata preserved
         actual_groups = {}
@@ -580,7 +552,7 @@ class DatasetTest(TestCase):
             sample_obj = new_samples_map[key]
             self.assertIsNotNone(sample_obj)
             assert sample_obj is not None
-            
+
             # Check UUID changed
             new_uuid = self._sample_uuid(sample_obj)
             source_uuid = source_uuid_by_image_key[key]
@@ -589,7 +561,7 @@ class DatasetTest(TestCase):
                 new_uuid,
                 "Re-uploaded dataset should assign new sample UUIDs",
             )
-            
+
             actual_groups[key] = sample_obj.group
             new_image_name = sample_obj.image_name
             self.assertIsNotNone(new_image_name)
@@ -598,7 +570,7 @@ class DatasetTest(TestCase):
 
         self.assertEqual(expected_groups, actual_groups)
         self.assertEqual(expected_image_names, actual_image_names)
-        
+
         return new_samples_map
 
     def test_dataset_roundtrip(self):  # noqa: C901
@@ -675,7 +647,8 @@ class DatasetTest(TestCase):
         )
         # Filter annotations by configured types
         source_annotations = [
-            ann for ann in source_annotations
+            ann
+            for ann in source_annotations
             if self._filter_annotation_by_types(ann, types)
         ]
 
@@ -694,14 +667,11 @@ class DatasetTest(TestCase):
         for key in selected_image_keys:
             self.assertIn(key, exported_files)
 
-        selected_files = {
-            key: exported_files[key] for key in selected_image_keys
-        }
+        selected_files = {key: exported_files[key] for key in selected_image_keys}
 
         # Build upload payload
         payload_info = self._build_samples_payload(
-            client, selected_samples, selected_files,
-            source_annotations, types
+            client, selected_samples, selected_files, source_annotations, types
         )
         samples_payload = payload_info["payload"]
         source_uuid_by_image_key = payload_info["source_uuids"]
@@ -709,12 +679,11 @@ class DatasetTest(TestCase):
         expected_image_names = payload_info["expected_names"]
 
         selected_annotations = [
-            ann for ann in source_annotations
+            ann
+            for ann in source_annotations
             if self._annotation_image_key(ann) in selected_image_keys
         ]
-        expected_annotation_map = self._build_annotation_map(
-            selected_annotations
-        )
+        expected_annotation_map = self._build_annotation_map(selected_annotations)
 
         # Create new dataset for roundtrip
         random_suffix = "".join(
@@ -770,9 +739,13 @@ class DatasetTest(TestCase):
 
             # Verify uploaded samples
             self._verify_roundtrip_samples(
-                client, new_dataset_id, new_annotation_set_id,
-                selected_image_keys, expected_groups, expected_image_names,
-                source_uuid_by_image_key
+                client,
+                new_dataset_id,
+                new_annotation_set_id,
+                selected_image_keys,
+                expected_groups,
+                expected_image_names,
+                source_uuid_by_image_key,
             )
 
             # Verify annotations
@@ -782,13 +755,17 @@ class DatasetTest(TestCase):
             )
             # Filter by configured types (same as source)
             new_annotations = [
-                ann for ann in new_annotations
+                ann
+                for ann in new_annotations
                 if self._filter_annotation_by_types(ann, types)
             ]
-            new_annotation_map = self._build_annotation_map([
-                ann for ann in new_annotations
-                if self._annotation_image_key(ann) in selected_image_keys
-            ])
+            new_annotation_map = self._build_annotation_map(
+                [
+                    ann
+                    for ann in new_annotations
+                    if self._annotation_image_key(ann) in selected_image_keys
+                ]
+            )
 
             self.assertEqual(expected_annotation_map, new_annotation_map)
 
@@ -808,9 +785,7 @@ class DatasetTest(TestCase):
             self.assertGreater(len(reexport_progress), 0)
 
             reexport_files = self._collect_exported_files(reexport_dir)
-            self.assertSetEqual(
-                set(selected_image_keys), set(reexport_files)
-            )
+            self.assertSetEqual(set(selected_image_keys), set(reexport_files))
 
             for key in selected_image_keys:
                 original_path = selected_files[key]
@@ -835,41 +810,36 @@ class DatasetTest(TestCase):
             shutil.rmtree(export_dir, ignore_errors=True)
             shutil.rmtree(reexport_dir, ignore_errors=True)
 
-
     def test_helper_sample_image_key_with_image_name(self):
         """Test creating samples with specific image names."""
         client = get_client()
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         dataset_name = f"Test Sample Key {random_suffix}"
-        
-        dataset_id = client.create_dataset(
-            str(project.id), dataset_name, "Test"
-        )
-        
+
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+
         annotation_set_id = client.create_annotation_set(
             dataset_id, "Default", "Default"
         )
-        
+
         # Create sample with image name
         sample = Sample()
         sample.set_image_name("test_image.jpg")
-        
+
         img = Image.new("RGB", (100, 100), color="red")
         img_path = Path(get_test_data_dir()) / "test_image.jpg"
         img.save(str(img_path))
-        
+
         sample.add_file(SampleFile("image", str(img_path)))
-        
+
         try:
-            results = client.populate_samples(
-                dataset_id, annotation_set_id, [sample]
-            )
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
             self.assertEqual(len(results), 1)
             print("✓ Sample with image name works")
         finally:
@@ -881,40 +851,36 @@ class DatasetTest(TestCase):
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         dataset_name = f"Test Annotation Key {random_suffix}"
-        
-        dataset_id = client.create_dataset(
-            str(project.id), dataset_name, "Test"
-        )
-        
+
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+
         annotation_set_id = client.create_annotation_set(
             dataset_id, "Default", "Default"
         )
-        
+
         sample = Sample()
         sample.set_image_name("annotated.jpg")
-        
+
         annotation = Annotation()
         annotation.set_object_id("obj-1")
         annotation.set_label("test_label")
         bbox = Box2d(0.1, 0.1, 0.3, 0.3)
         annotation.set_box2d(bbox)
         sample.add_annotation(annotation)
-        
+
         img = Image.new("RGB", (100, 100), color="blue")
         img_path = Path(get_test_data_dir()) / "annotated.jpg"
         img.save(str(img_path))
-        
+
         sample.add_file(SampleFile("image", str(img_path)))
-        
+
         try:
-            results = client.populate_samples(
-                dataset_id, annotation_set_id, [sample]
-            )
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
             self.assertEqual(len(results), 1)
             print("✓ Annotation image key works")
         finally:
@@ -926,41 +892,37 @@ class DatasetTest(TestCase):
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         dataset_name = f"Test Export Files {random_suffix}"
-        
-        dataset_id = client.create_dataset(
-            str(project.id), dataset_name, "Test"
-        )
-        
+
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+
         annotation_set_id = client.create_annotation_set(
             dataset_id, "Default", "Default"
         )
-        
+
         # Create sample with annotation
         sample = Sample()
         sample.set_image_name("export_test.jpg")
-        
+
         annotation = Annotation()
         annotation.set_object_id("obj-export")
         annotation.set_label("export_label")
         bbox = Box2d(0.2, 0.2, 0.4, 0.4)
         annotation.set_box2d(bbox)
         sample.add_annotation(annotation)
-        
+
         img = Image.new("RGB", (200, 200), color="green")
         img_path = Path(get_test_data_dir()) / "export_test.jpg"
         img.save(str(img_path))
-        
+
         sample.add_file(SampleFile("image", str(img_path)))
-        
+
         try:
-            results = client.populate_samples(
-                dataset_id, annotation_set_id, [sample]
-            )
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
             self.assertEqual(len(results), 1)
             print("✓ Export files scenario works")
         finally:
@@ -972,40 +934,36 @@ class DatasetTest(TestCase):
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         dataset_name = f"Test Annotation Sig {random_suffix}"
-        
-        dataset_id = client.create_dataset(
-            str(project.id), dataset_name, "Test"
-        )
-        
+
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+
         annotation_set_id = client.create_annotation_set(
             dataset_id, "Default", "Default"
         )
-        
+
         sample = Sample()
         sample.set_image_name("sig_test.jpg")
-        
+
         annotation = Annotation()
         annotation.set_object_id("sig-obj")
         annotation.set_label("sig_label")
         bbox = Box2d(0.15, 0.25, 0.35, 0.45)
         annotation.set_box2d(bbox)
         sample.add_annotation(annotation)
-        
+
         img = Image.new("RGB", (150, 150), color="yellow")
         img_path = Path(get_test_data_dir()) / "sig_test.jpg"
         img.save(str(img_path))
-        
+
         sample.add_file(SampleFile("image", str(img_path)))
-        
+
         try:
-            results = client.populate_samples(
-                dataset_id, annotation_set_id, [sample]
-            )
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
             self.assertEqual(len(results), 1)
             print("✓ Annotation signature with bbox works")
         finally:
@@ -1017,24 +975,24 @@ class DatasetTest(TestCase):
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         datasets = client.datasets(project.id, "Unit Testing")
         if len(datasets) == 0:
             self.skipTest("No Unit Testing dataset available")
             return
-        
+
         dataset = datasets[0]
         annotation_sets = client.annotation_sets(dataset.id)
         if len(annotation_sets) == 0:
             self.skipTest("No annotation sets available")
             return
-        
+
         # Verify can fetch samples (which may have masks from server)
         samples = client.samples(dataset.id, annotation_sets[0].id)
         if len(samples) > 0:
             for sample in samples:
                 self.assertIsNotNone(sample)
-        
+
         print("✓ Mask annotation samples load correctly")
 
     def test_grouping_multiple_samples_same_image(self):
@@ -1043,23 +1001,21 @@ class DatasetTest(TestCase):
         projects = client.projects("Unit Testing")
         self.assertGreater(len(projects), 0)
         project = projects[0]
-        
+
         random_suffix = "".join(
             random.choices(string.ascii_uppercase + string.digits, k=6)
         )
         dataset_name = f"Test Multi Annot {random_suffix}"
-        
-        dataset_id = client.create_dataset(
-            str(project.id), dataset_name, "Test"
-        )
-        
+
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+
         annotation_set_id = client.create_annotation_set(
             dataset_id, "Default", "Default"
         )
-        
+
         sample = Sample()
         sample.set_image_name("multi_annot.jpg")
-        
+
         # Add multiple annotations for same image
         for i in range(3):
             annotation = Annotation()
@@ -1068,17 +1024,15 @@ class DatasetTest(TestCase):
             bbox = Box2d(0.1 * i, 0.1 * i, 0.2, 0.2)
             annotation.set_box2d(bbox)
             sample.add_annotation(annotation)
-        
+
         img = Image.new("RGB", (100, 100), color="cyan")
         img_path = Path(get_test_data_dir()) / "multi_annot.jpg"
         img.save(str(img_path))
-        
+
         sample.add_file(SampleFile("image", str(img_path)))
-        
+
         try:
-            results = client.populate_samples(
-                dataset_id, annotation_set_id, [sample]
-            )
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
             self.assertEqual(len(results), 1)
             print("✓ Multiple annotations for same image works")
         finally:
@@ -1094,17 +1048,11 @@ class TestLabels(TestCase):
 
         # Find Unit Testing project and Test Labels dataset
         projects = client.projects("Unit Testing")
-        self.assertGreater(
-            len(projects),
-            0,
-            "Unit Testing project should exist")
+        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
         project = projects[0]
 
         datasets = client.datasets(project.id, "Test Labels")
-        self.assertGreater(
-            len(datasets),
-            0,
-            "Test Labels dataset should exist")
+        self.assertGreater(len(datasets), 0, "Test Labels dataset should exist")
         dataset = datasets[0]
 
         # Generate random label name to avoid conflicts
@@ -1118,9 +1066,8 @@ class TestLabels(TestCase):
         # Verify random label doesn't exist
         label_names = [label.name for label in initial_labels]
         self.assertNotIn(
-            test_label,
-            label_names,
-            f"Random label '{test_label}' should not exist yet")
+            test_label, label_names, f"Random label '{test_label}' should not exist yet"
+        )
 
         # Add test label
         dataset.add_label(client, test_label)
@@ -1128,12 +1075,14 @@ class TestLabels(TestCase):
         self.assertEqual(
             len(labels_after_add),
             initial_count + 1,
-            "Should have one more label after adding")
+            "Should have one more label after adding",
+        )
         label_names_after = [label.name for label in labels_after_add]
         self.assertIn(
             test_label,
             label_names_after,
-            f"Label '{test_label}' should exist after adding")
+            f"Label '{test_label}' should exist after adding",
+        )
 
         # Remove test label
         dataset.remove_label(client, test_label)
@@ -1141,12 +1090,14 @@ class TestLabels(TestCase):
         self.assertEqual(
             len(labels_after_remove),
             initial_count,
-            "Should have same label count as initial after removing")
+            "Should have same label count as initial after removing",
+        )
         label_names_final = [label.name for label in labels_after_remove]
         self.assertNotIn(
             test_label,
             label_names_final,
-            f"Label '{test_label}' should not exist after removing")
+            f"Label '{test_label}' should not exist after removing",
+        )
 
     def test_update_label(self):
         """Test updating a label's properties."""
@@ -1235,8 +1186,7 @@ class TestLabels(TestCase):
         assert count_result is not None
         self.assertGreaterEqual(count_result.total, 0)
 
-        print(
-            f"✓ Dataset '{dataset.name}' has {count_result.total} samples")
+        print(f"✓ Dataset '{dataset.name}' has {count_result.total} samples")
 
         # Verify count matches actual samples (if not too many)
         if count_result.total < 100:
@@ -1250,21 +1200,19 @@ class TestLabels(TestCase):
             self.assertEqual(
                 len(samples),
                 count_result.total,
-                "samples_count should match len(samples)")
+                "samples_count should match len(samples)",
+            )
             print("✓ Verified count matches actual samples")
 
-
-    def _download_dataset(
-        self, client, dataset_id, output_dir, flatten=False
-    ):
+    def _download_dataset(self, client, dataset_id, output_dir, flatten=False):
         """Download dataset from EdgeFirst Studio.
-        
+
         Args:
             client: EdgeFirst client instance
             dataset_id: Dataset ID to download
             output_dir: Directory to download to
             flatten: Whether to flatten the directory structure
-            
+
         Raises:
             RuntimeError: If download fails (including missing S3 files)
         """
@@ -1278,19 +1226,19 @@ class TestLabels(TestCase):
 
     def _analyze_download_structure(self, directory):
         """Analyze downloaded dataset directory structure.
-        
+
         Args:
             directory: Path to downloaded dataset directory
-            
+
         Returns:
             Dict with structure analysis results
         """
         entries = list(directory.iterdir())
         has_subdirs = any(e.is_dir() for e in entries)
-        
+
         def count_files(d):
             return sum(1 for f in d.rglob("*") if f.is_file())
-        
+
         file_count = count_files(directory)
         return {
             "entries": entries,
@@ -1305,7 +1253,8 @@ class TestLabels(TestCase):
 
         print(f"\nTesting flatten option for dataset: {dataset}")
 
-        # Get dataset ID
+        # Get dataset ID - API returns results sorted by match quality,
+        # so exact matches come first, but we still verify the exact match
         if dataset.startswith("ds-"):
             dataset_obj = client.dataset(dataset)
         else:
@@ -1313,8 +1262,10 @@ class TestLabels(TestCase):
             dataset_obj = None
             for project in projects:
                 datasets = client.datasets(project.id, dataset)
-                if datasets:
-                    dataset_obj = datasets[0]
+                # API sorts by match quality, but verify exact match
+                matching = [d for d in datasets if d.name == dataset]
+                if matching:
+                    dataset_obj = matching[0]
                     break
 
         self.assertIsNotNone(dataset_obj, f"Dataset '{dataset}' not found")
@@ -1330,15 +1281,11 @@ class TestLabels(TestCase):
         try:
             # Download with normal structure
             print("\n1. Downloading with normal structure...")
-            self._download_dataset(
-                client, dataset_obj.id, normal_dir, flatten=False
-            )
+            self._download_dataset(client, dataset_obj.id, normal_dir, flatten=False)
 
             # Download with flattened structure
             print("2. Downloading with flattened structure...")
-            self._download_dataset(
-                client, dataset_obj.id, flatten_dir, flatten=True
-            )
+            self._download_dataset(client, dataset_obj.id, flatten_dir, flatten=True)
 
             # Analyze structures
             normal = self._analyze_download_structure(normal_dir)
@@ -1346,9 +1293,7 @@ class TestLabels(TestCase):
 
             print(f"\nNormal structure: {len(normal['entries'])} entries")
             if normal["has_subdirs"]:
-                subdirs = [
-                    e.name for e in normal["entries"] if e.is_dir()
-                ]
+                subdirs = [e.name for e in normal["entries"] if e.is_dir()]
                 print(f"  Subdirectories: {subdirs[:3]}")
 
             print(f"Flattened structure: {len(flatten['entries'])} entries")
@@ -1361,32 +1306,23 @@ class TestLabels(TestCase):
             self.assertEqual(
                 normal["file_count"],
                 flatten["file_count"],
-                "Both downloads should have same number of files"
+                "Both downloads should have same number of files",
             )
 
             self.assertFalse(
                 flatten["has_subdirs"],
-                "Flattened download should not have subdirectories"
+                "Flattened download should not have subdirectories",
             )
 
             # Verify sequence prefixing if applicable
             if normal["has_subdirs"]:
                 print("\n✓ Dataset contains sequences")
-                flatten_files = [
-                    e.name for e in flatten["entries"] if e.is_file()
-                ]
-                prefixed_count = sum(
-                    1 for f in flatten_files if f.count('_') >= 1
-                )
-                print(
-                    f"  Files with prefixes: {prefixed_count}/"
-                    f"{len(flatten_files)}"
-                )
+                flatten_files = [e.name for e in flatten["entries"] if e.is_file()]
+                prefixed_count = sum(1 for f in flatten_files if f.count("_") >= 1)
+                print(f"  Files with prefixes: {prefixed_count}/{len(flatten_files)}")
                 print(f"  Sample filenames: {flatten_files[:3]}")
                 self.assertGreater(
-                    prefixed_count,
-                    0,
-                    "Flattened sequence files should have prefixes"
+                    prefixed_count, 0, "Flattened sequence files should have prefixes"
                 )
             else:
                 print("\n✓ Dataset contains no sequences")
@@ -1396,10 +1332,9 @@ class TestLabels(TestCase):
         finally:
             # Cleanup
             import shutil
+
             if normal_dir.exists():
                 shutil.rmtree(normal_dir)
             if flatten_dir.exists():
                 shutil.rmtree(flatten_dir)
             print("Cleaned up test directories")
-
-

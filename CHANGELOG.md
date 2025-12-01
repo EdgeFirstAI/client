@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Improved search result ordering for name-filtered API queries**
+  - All list APIs that filter by name now return results sorted by match quality
+  - Exact matches (case-sensitive) appear first, followed by case-insensitive exact matches
+  - Shorter names (more specific matches) are prioritized over longer names
+  - Affects: `projects()`, `datasets()`, `snapshots()`, `experiments()`, `training_sessions()`, and `tasks()`
+  - Example: Searching for "Deer" now returns "Deer" before "Deer Roundtrip 20251129"
+  - Resolves test flakiness caused by stale datasets matching search patterns
+
 - **Documentation clarification for flattened dataset downloads**
   - Clarified behavior of automatic filename prefixing in `flatten` mode
   - Improved documentation for `Client::download_dataset()` Rust API
