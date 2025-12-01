@@ -3024,7 +3024,8 @@ class Client:
             flatten (bool): Download all files to output root without sequence
                 subdirectories. When True, filenames are automatically prefixed
                 with sequence name and optionally frame number (when available)
-                to avoid conflicts. Default: False (preserves sequence directory structure).
+                to avoid conflicts.
+                Default: False (preserves sequence directory structure).
             progress (Optional[Progress]): Optional progress reporter.
         """
         ...

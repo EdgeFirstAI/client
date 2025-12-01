@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.2] - 2025-12-01
+
+### Fixed
+
+- **Release workflow SBOM generation reliability**
+  - SBOM workflow (`sbom.yml`) now triggers on version tags in addition to main branch pushes
+  - Release workflow waits for SBOM workflow to complete before downloading artifact
+  - Downloads SBOM from exact tag commit SHA ensuring release integrity
+  - Removes scancode-toolkit dependency from release workflow (uses pre-built artifact)
+  - Uses `lewagon/wait-on-check-action` to synchronize workflow execution
+
 ## [2.5.1] - 2025-11-29
 
 ### Fixed
@@ -42,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Comprehensive documentation in CLI.md with directory structure examples
 
 ### Breaking Changes
+
 - **BREAKING**: Rust API: Added `flatten: bool` parameter to `Client::download_dataset()`. This changes the function signature and will break existing Rust client code that does not specify the new parameter.
 - **Upload dataset with automatic flattened structure detection**
   - `upload-dataset` now automatically detects both nested and flattened directory structures
