@@ -55,6 +55,9 @@ sbom-temp.json
 
 env.sh
 
+# Local notes
+NOTES.md
+
 # Server reference clone (excluded from version control)
 server/
 

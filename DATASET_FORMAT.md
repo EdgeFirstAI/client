@@ -388,7 +388,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
     ('box3d', Array(Float32, shape=(6,))),  # [x, y, z, w, h, l]
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - OPTIONAL
     ('location', Array(Float32, shape=(2,))),  # [lat, lon] - OPTIONAL
-    ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll] - OPTIONAL
+    ('pose', Array(Float32, shape=(3,))),  # [roll, pitch, yaw] - OPTIONAL
     ('degradation', String)  # OPTIONAL
 )
 ```
@@ -401,7 +401,7 @@ EdgeFirst supports two annotation formats optimized for different use cases.
 - **box3d**: `[x, y, z, w, h, l]` - center coordinates and dimensions  
 - **size**: `[width, height]` - image dimensions in pixels (new in 2025.10)
 - **location**: `[lat, lon]` - GPS coordinates (latitude, longitude)
-- **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees (new in 2025.10)
+- **pose**: `[roll, pitch, yaw]` - IMU orientation in degrees (new in 2025.10)
 
 **Characteristics**:
 
@@ -881,7 +881,7 @@ shape: (3, 13)
 - IMU sensor readings
 - User-provided orientation
 
-**DataFrame**: `pose` column as `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` in degrees  
+**DataFrame**: `pose` column as `Array(Float32, shape=(3,))` = `[roll, pitch, yaw]` in degrees  
 **JSON**: Nested object with `roll`, `pitch`, `yaw` fields
 
 **Format**: All values in degrees
@@ -903,10 +903,10 @@ shape: (3, 13)
 **DataFrame structure**:
 
 ```python
-# pose column: Array [yaw, pitch, roll]
-[45.3, -1.2, 0.5]
+# pose column: Array [roll, pitch, yaw]
+[0.5, -1.2, 45.3]
 
-# Access: df['pose'][0] = yaw, [1] = pitch, [2] = roll
+# Access: df['pose'][0] = roll, [1] = pitch, [2] = yaw
 ```
 
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
@@ -1021,14 +1021,14 @@ for sample in samples:
             gps_data["longitude"]
         ]
     
-    # IMU: JSON nested object → DataFrame array [yaw, pitch, roll]
+    # IMU: JSON nested object → DataFrame array [roll, pitch, yaw]
     pose = None
     if sample.get("sensors", {}).get("imu"):
         imu_data = sample["sensors"]["imu"]
         pose = [
-            imu_data["yaw"],
+            imu_data["roll"],
             imu_data["pitch"],
-            imu_data["roll"]
+            imu_data["yaw"]
         ]
     
     degradation = sample.get("degradation")  # Degradation field (new in 2025.10)
@@ -1073,7 +1073,7 @@ df.write_ipc("annotations.arrow")
 2. **Column names**: JSON `label_name` → DataFrame `label`, JSON `group` → DataFrame `group`
 3. **Sample metadata**: Optional columns added in 2025.10 (size, location, pose, degradation)
 4. **GPS conversion**: `{"latitude": lat, "longitude": lon}` → array `[lat, lon]`
-5. **IMU conversion**: `{"roll": r, "pitch": p, "yaw": y}` → array `[yaw, pitch, roll]`
+5. **IMU conversion**: `{"roll": r, "pitch": p, "yaw": y}` → array `[roll, pitch, yaw]`
 6. **Box2D**: `{x, y, w, h}` → array `[cx: x+w/2, cy: y+h/2, w, h]`
 7. **Box3D**: `{x, y, z, w, h, l}` → array `[x, y, z, w, h, l]`
 8. **Mask**: Nested lists → Flat list with NaN separators
@@ -1104,14 +1104,14 @@ for (name, frame), group_df in df.groupby(["name", "frame"]):
             "longitude": loc[1]   # lon
         }
     
-    # IMU: DataFrame array [yaw, pitch, roll] → JSON nested object
+    # IMU: DataFrame array [roll, pitch, yaw] → JSON nested object
     imu_data = None
     if first_row.get("pose"):
-        pose_array = first_row["pose"]  # Array [yaw, pitch, roll]
+        pose_array = first_row["pose"]  # Array [roll, pitch, yaw]
         imu_data = {
-            "yaw": pose_array[0],
+            "roll": pose_array[0],
             "pitch": pose_array[1],
-            "roll": pose_array[2]
+            "yaw": pose_array[2]
         }
     
     # Build annotations
@@ -1180,7 +1180,7 @@ save_json(samples, "annotations.json")
 2. **Column names**: DataFrame `label` → JSON `label_name`, DataFrame `group` → JSON `group`
 3. **Optional metadata**: Check for size, location, pose, degradation columns (added in 2025.10)
 4. **GPS conversion**: array `[lat, lon]` → `{"latitude": lat, "longitude": lon}`
-5. **IMU conversion**: array `[yaw, pitch, roll]` → `{"yaw": y, "pitch": p, "roll": r}`
+5. **IMU conversion**: array `[roll, pitch, yaw]` → `{"roll": r, "pitch": p, "yaw": y}`
 6. **Box2D**: array `[cx, cy, w, h]` → `{x: cx-w/2, y: cy-h/2, w, h}`
 7. **Box3D**: array `[x, y, z, w, h, l]` → `{x, y, z, w, h, l}`
 8. **Mask**: Flat list → Split on NaN, nest into polygon lists
@@ -1304,7 +1304,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 
 - `size`: `Array(UInt32, shape=(2,))` = `[width, height]` - Image dimensions
 - `location`: `Array(Float32, shape=(2,))` = `[lat, lon]` - GPS coordinates
-- `pose`: `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` - IMU orientation in degrees
+- `pose`: `Array(Float32, shape=(3,))` = `[roll, pitch, yaw]` - IMU orientation in degrees
 - `degradation`: `String` - Visual quality indicator (fog, rain, obstruction, low light)
 
 **Note**: These columns are optional. DataFrames from version 2025.01 without these columns remain fully valid.
@@ -1348,9 +1348,9 @@ if 'location' in df_new.columns:
     lon = df_new['location'][1]
 
 if 'pose' in df_new.columns:
-    yaw = df_new['pose'][0]
+    roll = df_new['pose'][0]
     pitch = df_new['pose'][1]
-    roll = df_new['pose'][2]
+    yaw = df_new['pose'][2]
 
 if 'degradation' in df_new.columns:
     quality = df_new['degradation']
