@@ -1014,6 +1014,33 @@ pub struct SnapshotRestoreResult {
     pub date: DateTime<Utc>,
 }
 
+/// Parameters for creating a snapshot from an existing dataset on the server.
+///
+/// This is used with the `snapshots.create` RPC to trigger server-side snapshot
+/// generation from dataset data (images + annotations).
+#[derive(Serialize, Debug)]
+pub struct SnapshotCreateFromDataset {
+    /// Name/description for the snapshot
+    pub description: String,
+    /// Dataset ID to create snapshot from
+    pub dataset_id: DatasetID,
+    /// Annotation set ID to use for snapshot creation
+    pub annotation_set_id: AnnotationSetID,
+}
+
+/// Result of creating a snapshot from an existing dataset.
+///
+/// Contains the snapshot ID and task ID for monitoring progress.
+#[derive(Deserialize, Debug)]
+pub struct SnapshotFromDatasetResult {
+    /// The created snapshot ID
+    #[serde(alias = "snapshot_id")]
+    pub id: SnapshotID,
+    /// Task ID for monitoring snapshot creation progress
+    #[serde(default)]
+    pub task_id: Option<TaskID>,
+}
+
 #[derive(Deserialize)]
 pub struct Experiment {
     id: ExperimentID,

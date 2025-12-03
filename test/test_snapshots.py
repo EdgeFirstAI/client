@@ -299,5 +299,149 @@ class TestSnapshotErrorHandling(unittest.TestCase):
             self.client.create_snapshot("/nonexistent/path/to/file.txt")
 
 
+class TestCreateSnapshotFromDataset(unittest.TestCase):
+    """Test create_snapshot_from_dataset API functionality.
+
+    This tests creating snapshots from existing datasets on the server,
+    with and without explicit annotation set IDs.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up test fixtures."""
+        cls.client = get_client()
+        # Get a test dataset - use 'Deer' dataset from Unit Testing project
+        datasets = cls.client.datasets(name="Deer")
+        if len(datasets) == 0:
+            raise RuntimeError("Deer dataset not found for testing")
+        cls.dataset = datasets[0]
+        cls.dataset_id = cls.dataset.id
+
+    def test_create_snapshot_from_dataset_no_annotation_set(self):
+        """Test creating snapshot from dataset without explicit annotation_set_id.
+
+        When annotation_set_id is not provided, the API should automatically
+        use the default 'annotations' set or the first available set.
+        """
+        result = self.client.create_snapshot_from_dataset(
+            self.dataset_id, "Test snapshot - no annotation set"
+        )
+
+        # Verify result structure
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(result.id)
+        snapshot_id_str = str(result.id)
+        self.assertTrue(
+            snapshot_id_str.startswith("ss-"),
+            f"Snapshot ID should start with 'ss-', got: {snapshot_id_str}",
+        )
+
+        # Task ID may or may not be present depending on server behavior
+        if result.task_id:
+            task_id_str = str(result.task_id)
+            self.assertTrue(
+                task_id_str.startswith("task-"),
+                f"Task ID should start with 'task-', got: {task_id_str}",
+            )
+
+        # Clean up - delete the created snapshot
+        try:
+            self.client.delete_snapshot(result.id)
+        except Exception:
+            pass  # Best effort cleanup
+
+    def test_create_snapshot_from_dataset_with_annotation_set(self):
+        """Test creating snapshot from dataset with explicit annotation_set_id."""
+        # Get annotation sets for the dataset
+        annotation_sets = self.client.annotation_sets(self.dataset_id)
+        self.assertGreater(
+            len(annotation_sets), 0, "Dataset should have at least one annotation set"
+        )
+
+        # Use the first annotation set
+        ann_set = annotation_sets[0]
+        ann_set_id = ann_set.id
+
+        result = self.client.create_snapshot_from_dataset(
+            self.dataset_id, "Test snapshot - with annotation set", ann_set_id
+        )
+
+        # Verify result structure
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(result.id)
+
+        # Clean up - delete the created snapshot
+        try:
+            self.client.delete_snapshot(result.id)
+        except Exception:
+            pass  # Best effort cleanup
+
+    def test_create_snapshot_from_dataset_string_ids(self):
+        """Test that string IDs work for create_snapshot_from_dataset."""
+        # Convert dataset_id to string format
+        dataset_id_str = str(self.dataset_id)
+        self.assertTrue(
+            dataset_id_str.startswith("ds-"),
+            f"Dataset ID should be 'ds-xxx' format: {dataset_id_str}",
+        )
+
+        result = self.client.create_snapshot_from_dataset(
+            dataset_id_str, "Test snapshot - string ID"
+        )
+
+        # Verify result
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(result.id)
+
+        # Clean up
+        try:
+            self.client.delete_snapshot(result.id)
+        except Exception:
+            pass
+
+    def test_create_snapshot_from_dataset_invalid_dataset(self):
+        """Test error handling for non-existent dataset."""
+        fake_dataset_id = "ds-ffffffffff"
+
+        with self.assertRaises(Exception):
+            self.client.create_snapshot_from_dataset(
+                fake_dataset_id, "Should fail"
+            )
+
+    def test_create_snapshot_from_dataset_invalid_annotation_set(self):
+        """Test error handling for non-existent annotation set."""
+        fake_ann_set_id = "as-ffffffffff"
+
+        with self.assertRaises(Exception):
+            self.client.create_snapshot_from_dataset(
+                self.dataset_id, "Should fail", fake_ann_set_id
+            )
+
+    def test_snapshot_from_dataset_result_properties(self):
+        """Test SnapshotFromDatasetResult class properties."""
+        result = self.client.create_snapshot_from_dataset(
+            self.dataset_id, "Test result properties"
+        )
+
+        # Test id property
+        self.assertIsNotNone(result.id)
+        id_str = str(result.id)
+        assert id_str is not None  # Pylance type narrowing
+        self.assertTrue(id_str.startswith("ss-"))
+
+        # Test task_id property (may be None)
+        task_id = result.task_id
+        if task_id is not None:
+            task_id_str = str(task_id)
+            assert task_id_str is not None  # Pylance type narrowing
+            self.assertTrue(task_id_str.startswith("task-"))
+
+        # Clean up
+        try:
+            self.client.delete_snapshot(result.id)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()

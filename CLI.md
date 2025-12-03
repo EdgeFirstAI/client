@@ -2,8 +2,8 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.5.1
-date: 2025-11-29
+footer: edgefirst-client 2.5.2
+date: 2025-12-01
 ---
 
 # NAME
@@ -425,35 +425,70 @@ Retrieve detailed information for a specific snapshot.
 
 ### create-snapshot
 
-Create a new snapshot from a local file or directory. Supports MCAP files, directories, and EdgeFirst Dataset Format (Zip/Arrow pairs).
+Create a new snapshot from a local file/directory or from an existing server-side dataset. Smart argument interpretation automatically detects the source type.
 
-**edgefirst-client create-snapshot** *DATASET_ID* *PATH*
+**edgefirst-client create-snapshot** [*OPTIONS*] *SOURCE* [*ANNOTATION_SET*]
 
 **Arguments:**
 
-*DATASET_ID*
-:   Dataset ID to associate the snapshot with (used for project context).
+*SOURCE*
+:   Source for the snapshot. Automatically interpreted based on format:
+    - **ds-xxx**: Dataset ID (creates snapshot from server dataset)
+    - **as-xxx**: Annotation Set ID (creates snapshot from parent dataset)
+    - **path/to/file.mcap**: Local MCAP file upload
+    - **path/to/folder/**: Local directory upload
+    - **path/to/file.zip**: Local ZIP file upload
 
-*PATH*
-:   Path to file or directory to snapshot. Supported formats:
-    - MCAP files (**.mcap**)
-    - EdgeFirst Dataset Format (**.zip** with **.arrow** pair)
-    - Directories (all files recursively included)
+*ANNOTATION_SET* (optional)
+:   When SOURCE is a dataset ID, optionally specify an annotation set ID (format: **as-xxx**) to include in the snapshot. If not provided, the default "annotations" set is used, or the first available annotation set if no default exists.
+
+**Options:**
+
+**-d, \--description** *DESCRIPTION*
+:   Custom description for the snapshot. If not provided, auto-generates from source name and current date/time.
+
+**\--from-path**
+:   Explicitly treat SOURCE as a local file path (overrides auto-detection).
+
+**\--from-dataset**
+:   Explicitly treat SOURCE as a dataset ID (overrides auto-detection).
+
+**-m, \--monitor**
+:   Monitor the task progress until completion (server-side creation only).
 
 **Example:**
 
 ```bash
-# Create snapshot from MCAP file
-edgefirst-client create-snapshot ds-12345 recording.mcap
+# Create snapshot from server dataset (auto-detected by ds- prefix)
+edgefirst-client create-snapshot ds-12345
 
-# Create snapshot from directory
-edgefirst-client create-snapshot ds-12345 ./sensor_data/
+# Create snapshot with specific annotation set
+edgefirst-client create-snapshot ds-12345 as-67890
 
-# Create snapshot from EdgeFirst Dataset Format
-edgefirst-client create-snapshot ds-12345 dataset.zip
+# Create snapshot with custom description
+edgefirst-client create-snapshot ds-12345 --description "Deer Dataset Backup"
+
+# Create from annotation set (auto-detected by as- prefix, looks up parent dataset)
+edgefirst-client create-snapshot as-abc123
+
+# Create from server dataset and wait for completion
+edgefirst-client create-snapshot ds-12345 --monitor
+
+# Upload local MCAP file (auto-detected by file extension)
+edgefirst-client create-snapshot ./recording.mcap
+
+# Upload local directory
+edgefirst-client create-snapshot ./sensor_data/
+
+# Upload local ZIP file
+edgefirst-client create-snapshot ./dataset.zip
+
+# Explicitly specify source type
+edgefirst-client create-snapshot ds-12345 --from-dataset
+edgefirst-client create-snapshot ./my_data --from-path
 ```
 
-**Note:** Large files (>100MB) use multipart upload with automatic chunking. Progress is displayed during upload.
+**Note:** Server-side creation runs asynchronously. Use `--monitor` to wait for completion, or check status later with `edgefirst-client task <TASK_ID>`. Local uploads display progress during transfer.
 
 ### download-snapshot
 
@@ -530,6 +565,86 @@ edgefirst-client delete-snapshot ss-abc123
 ```
 
 **Warning:** Deletion is permanent. Ensure the snapshot is no longer needed before deleting.
+
+### generate-arrow
+
+Generate an Arrow annotation file from a folder of images. This is useful for importing existing image collections into EdgeFirst Dataset Format.
+
+**edgefirst-client generate-arrow** [*OPTIONS*] **\--output** *OUTPUT* *FOLDER*
+
+The command will:
+
+1. Scan the folder recursively for image files (JPEG, PNG)
+2. Optionally detect sequence patterns (name_frame.ext)
+3. Create an Arrow file with the 2025.10 schema and null annotations
+
+**Arguments:**
+
+*FOLDER*
+:   Folder containing images to process. The command scans recursively for supported image formats.
+
+**Options:**
+
+**-o, \--output** *OUTPUT*
+:   Output Arrow file path (required). The file will be created with the EdgeFirst Dataset Format schema.
+
+**\--detect-sequences**
+:   Detect sequence patterns in filenames. Files matching patterns like `name_001.jpg`, `name_002.jpg` will be grouped into sequences.
+
+**Example:**
+
+```bash
+# Generate Arrow file from images
+edgefirst-client generate-arrow ./images --output dataset.arrow
+
+# Generate with sequence detection
+edgefirst-client generate-arrow ./images -o my_data/my_data.arrow --detect-sequences
+
+# Create Arrow file for existing dataset structure
+edgefirst-client generate-arrow ./sensor_data/camera/ --output ./sensor_data/my_data.arrow
+```
+
+**Note:** The generated Arrow file contains null annotations for each image. Use EdgeFirst Studio to add annotations, or use `create-snapshot` to upload the directory to EdgeFirst Studio.
+
+### validate-snapshot
+
+Validate a snapshot directory structure against the EdgeFirst Dataset Format specification.
+
+**edgefirst-client validate-snapshot** [*OPTIONS*] *PATH*
+
+The command checks that the directory follows the EdgeFirst Dataset Format:
+
+- Arrow file exists at expected location (`<name>.arrow` or `<name>/<name>.arrow`)
+- Sensor container directory exists (e.g., `camera/`, `lidar/`)
+- All files referenced in the Arrow file exist on disk
+
+**Arguments:**
+
+*PATH*
+:   Snapshot directory to validate. Can be a directory containing an Arrow file and sensor data.
+
+**Options:**
+
+**-v, \--verbose**
+:   Show detailed validation issues including warnings and informational messages.
+
+**Example:**
+
+```bash
+# Validate a snapshot directory
+edgefirst-client validate-snapshot ./my_dataset
+
+# Validate with detailed output
+edgefirst-client validate-snapshot ./my_dataset --verbose
+
+# Validate before uploading
+edgefirst-client validate-snapshot ./sensor_data && edgefirst-client create-snapshot ./sensor_data
+```
+
+**Exit codes:**
+
+- **0**: Validation passed (warnings may be present)
+- **1**: Validation failed with errors
 
 ## TRAINING
 

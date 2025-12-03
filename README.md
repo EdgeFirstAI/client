@@ -201,6 +201,186 @@ edgefirst-client delete-snapshot <SNAPSHOT_ID>
 
 For detailed snapshot documentation, see the [EdgeFirst Studio Snapshots Guide](https://doc.edgefirst.ai/saas/studio/snapshots/).
 
+#### EdgeFirst Dataset Format
+
+EdgeFirst Client provides tools for working with the [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/) - an Arrow-based format optimized for 3D perception AI workflows.
+
+##### What the CLI Provides
+
+The `create-snapshot` command intelligently handles multiple input types:
+
+- **Folder of images**: Automatically generates `dataset.arrow` manifest and `dataset.zip`, then uploads
+- **Arrow manifest file**: Auto-discovers matching `dataset.zip` or `dataset/` folder for images
+- **Complete dataset directory**: Validates structure and uploads as-is
+- **Server-side dataset**: Creates snapshot from existing dataset in EdgeFirst Studio
+
+##### Supported Input Structures
+
+**1. Simple folder of images** (CLI handles conversion automatically):
+
+```text
+my_images/
+├── image001.jpg
+├── image002.jpg
+└── image003.png
+```
+
+**2. Sequence-based dataset** (video frames with temporal ordering):
+
+```text
+my_dataset.arrow               # Annotation manifest
+my_dataset/                    # Sensor container (or my_dataset.zip)
+└── sequence_name/
+    ├── sequence_name_001.camera.jpeg
+    ├── sequence_name_002.camera.jpeg
+    └── sequence_name_003.camera.jpeg
+```
+
+**3. Mixed dataset** (sequences + standalone images):
+
+```text
+my_dataset.arrow
+my_dataset/
+├── video_sequence/
+│   └── video_sequence_*.camera.jpeg
+├── standalone_image1.jpg
+└── standalone_image2.png
+```
+
+##### CLI Examples
+
+```bash
+# Upload a folder of images (auto-generates Arrow manifest and ZIP)
+edgefirst-client create-snapshot ./my_images/
+
+# Upload using existing Arrow manifest (auto-discovers dataset.zip or dataset/)
+edgefirst-client create-snapshot ./my_dataset/my_dataset.arrow
+
+# Upload complete dataset directory
+edgefirst-client create-snapshot ./my_dataset/
+
+# Create snapshot from server-side dataset (with default annotation set)
+edgefirst-client create-snapshot ds-12345
+
+# Create snapshot from server-side dataset with specific annotation set
+edgefirst-client create-snapshot ds-12345 --annotation-set as-67890
+
+# Monitor server-side snapshot creation progress
+edgefirst-client create-snapshot ds-12345 --monitor
+
+# Generate Arrow manifest from images (without uploading)
+edgefirst-client generate-arrow ./images --output dataset.arrow
+
+# Generate with sequence detection for video frames
+edgefirst-client generate-arrow ./frames -o video.arrow --detect-sequences
+
+# Validate dataset structure before upload
+edgefirst-client validate-snapshot ./my_dataset
+edgefirst-client validate-snapshot ./my_dataset --verbose
+```
+
+##### Sequence Detection (`--detect-sequences`)
+
+The `--detect-sequences` flag enables automatic detection of video frame sequences based on filename patterns. When enabled, the CLI parses filenames to identify temporal ordering.
+
+**How it works:**
+
+1. **Pattern matching**: Looks for `{name}_{frame}.{ext}` pattern (e.g., `video_001.jpg`, `camera_042.png`)
+2. **Extracts frame number**: The trailing numeric part after the last underscore becomes the frame index
+3. **Groups by name**: Files with the same prefix are grouped into sequences
+
+**Detection behavior:**
+
+| Input | `--detect-sequences` OFF | `--detect-sequences` ON |
+|-------|--------------------------|-------------------------|
+| `image.jpg` | name=`image`, frame=null | name=`image`, frame=null |
+| `seq_001.jpg` | name=`seq_001`, frame=null | name=`seq`, frame=1 |
+| `camera_042.camera.jpeg` | name=`camera_042`, frame=null | name=`camera`, frame=42 |
+| `video/video_100.jpg` | name=`video_100`, frame=null | name=`video`, frame=100 |
+
+**Supported structures:**
+
+- **Nested**: `sequence_name/sequence_name_001.jpg` (frames in subdirectories)
+- **Flattened**: `sequence_name_001.jpg` (frames at root level)
+
+**⚠️ False positive considerations:**
+
+Files with names like `model_v2.jpg` or `sample_2024.png` may be incorrectly detected as sequences when `--detect-sequences` is enabled. If your dataset contains non-sequence files with `_number` suffixes, consider:
+
+- Renaming files to avoid the `_N` pattern (e.g., `model-v2.jpg`)
+- Omitting `--detect-sequences` and manually organizing sequences into subdirectories
+
+##### Supported File Types
+
+**Images**: `.jpg`, `.jpeg`, `.png`, `.camera.jpeg`, `.camera.png`
+**Point Clouds**: `.lidar.pcd` (LiDAR), `.radar.pcd` (Radar)
+**Depth Maps**: `.depth.png` (16-bit PNG)
+**Radar Cubes**: `.radar.png` (16-bit PNG with embedded dimension metadata)
+
+See [DATASET_FORMAT.md](DATASET_FORMAT.md#radar-data-cube) for technical details on radar cube encoding.
+
+##### Annotation Support
+
+The `create-snapshot` command uploads datasets **with or without annotations**:
+
+- **With annotations**: Provide an Arrow file containing annotations (see [DATASET_FORMAT.md](DATASET_FORMAT.md) for schema)
+- **Without annotations**: The CLI generates an Arrow manifest with null annotation fields
+
+When uploading unannotated datasets, EdgeFirst Studio can populate annotations via:
+
+- **Manual annotation** in the Studio web interface
+- **AGTG (Automated Ground-Truth Generation)** via `restore-snapshot --autolabel` (MCAP snapshots only)
+
+**Note**: The CLI does not currently parse annotations from other formats (e.g., COCO, YOLO). To upload pre-annotated datasets from these formats, first convert them to EdgeFirst Dataset Format using the annotation schema in [DATASET_FORMAT.md](DATASET_FORMAT.md).
+
+##### Rust API
+
+```rust
+use edgefirst_client::format::{
+    generate_arrow_from_folder, validate_dataset_structure, ValidationIssue
+};
+use std::path::PathBuf;
+
+// Generate Arrow manifest from images
+let images_dir = PathBuf::from("./images");
+let output = PathBuf::from("./dataset.arrow");
+let count = generate_arrow_from_folder(&images_dir, &output, true)?;
+println!("Generated manifest for {} images", count);
+
+// Validate dataset structure before upload
+let issues = validate_dataset_structure(&PathBuf::from("./my_dataset"))?;
+for issue in &issues {
+    match issue {
+        ValidationIssue::MissingArrowFile { .. } => eprintln!("Error: {}", issue),
+        ValidationIssue::MissingSensorContainer { .. } => eprintln!("Error: {}", issue),
+        _ => println!("Warning: {}", issue),
+    }
+}
+```
+
+##### Python API
+
+```python
+from pathlib import Path
+from edgefirst_client import Client
+
+# Create snapshot from local folder (auto-generates manifest)
+client = Client().with_token_path(None)
+snapshot = client.create_snapshot("./my_images/")
+print(f"Created snapshot: {snapshot.id()}")
+
+# Create snapshot from server-side dataset
+result = client.create_snapshot_from_dataset("ds-12345", "My backup")
+print(f"Snapshot: {result.id}, Task: {result.task_id}")
+
+# Create snapshot with explicit annotation set
+result = client.create_snapshot_from_dataset(
+    "ds-12345", "Backup with annotations", "as-67890"
+)
+```
+
+For complete format specification, see [EdgeFirst Dataset Format Documentation](https://doc.edgefirst.ai/latest/datasets/format/) or [DATASET_FORMAT.md](DATASET_FORMAT.md).
+
 ### Rust Library
 
 ```rust

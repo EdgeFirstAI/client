@@ -2184,6 +2184,38 @@ impl SnapshotRestoreResult {
     }
 }
 
+/// Result of creating a snapshot from a dataset.
+///
+/// Contains the snapshot ID and optional task ID for monitoring progress.
+#[pyclass(module = "edgefirst_client")]
+pub struct SnapshotFromDatasetResult(edgefirst_client::SnapshotFromDatasetResult);
+
+#[pymethods]
+impl SnapshotFromDatasetResult {
+    /// The ID of the created snapshot.
+    #[getter]
+    pub fn id(&self) -> SnapshotID {
+        SnapshotID(self.0.id)
+    }
+
+    /// The task ID for monitoring snapshot creation progress, if available.
+    #[getter]
+    pub fn task_id(&self) -> Option<TaskID> {
+        self.0.task_id.map(TaskID)
+    }
+
+    pub fn __repr__(&self) -> String {
+        let task_id_str = match &self.0.task_id {
+            Some(id) => id.to_string(),
+            None => "None".to_string(),
+        };
+        format!(
+            "SnapshotFromDatasetResult(id={}, task_id={})",
+            self.0.id, task_id_str
+        )
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct DatasetParams(edgefirst_client::DatasetParams);
 
@@ -3220,6 +3252,48 @@ impl Client {
         ))
     }
 
+    /// Create a snapshot from an existing dataset on the server.
+    ///
+    /// Triggers server-side snapshot generation which exports the dataset's
+    /// images and annotations into a downloadable EdgeFirst Dataset Format.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset ID to create snapshot from (DatasetID or
+    /// string like "ds-xxx").     description: Description for the created
+    /// snapshot.
+    ///     annotation_set_id: Optional annotation set ID. If not provided,
+    /// uses the "annotations" set or first available.
+    ///
+    /// Returns:
+    ///     SnapshotFromDatasetResult containing the snapshot ID and task ID.
+    ///
+    /// Example:
+    ///     >>> result = client.create_snapshot_from_dataset("ds-12345", "My
+    /// Dataset Backup")     >>> print(f"Created snapshot: {result.id}")
+    ///     >>> if result.task_id:
+    ///     ...     client.task(result.task_id, monitor=True)
+    #[pyo3(signature = (dataset_id, description, annotation_set_id = None))]
+    #[tokio_wrap::sync]
+    pub fn create_snapshot_from_dataset<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        description: &str,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+    ) -> Result<SnapshotFromDatasetResult, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: Option<AnnotationSetID> =
+            annotation_set_id.map(|a| a.try_into()).transpose()?;
+        Ok(SnapshotFromDatasetResult(
+            self.0
+                .create_snapshot_from_dataset(
+                    dataset_id.0,
+                    description,
+                    annotation_set_id.map(|a| a.0),
+                )
+                .await?,
+        ))
+    }
+
     #[tokio_wrap::sync]
     pub fn artifacts<'py>(
         &self,
@@ -3903,6 +3977,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationSession>()?;
     m.add_class::<Snapshot>()?;
     m.add_class::<SnapshotRestoreResult>()?;
+    m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;

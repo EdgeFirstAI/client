@@ -57,6 +57,7 @@ mod api;
 mod client;
 mod dataset;
 mod error;
+pub mod format;
 mod retry;
 
 pub use crate::{
@@ -64,8 +65,9 @@ pub use crate::{
         AnnotationSetID, AppId, Artifact, DatasetID, DatasetParams, Experiment, ExperimentID,
         ImageId, Organization, OrganizationID, Parameter, PresignedUrl, Project, ProjectID,
         SampleID, SamplesCountResult, SamplesPopulateParams, SamplesPopulateResult, SequenceId,
-        Snapshot, SnapshotID, SnapshotRestoreResult, Stage, Task, TaskID, TaskInfo,
-        TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
+        Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult, Stage, Task,
+        TaskID, TaskInfo, TrainingSession, TrainingSessionID, ValidationSession,
+        ValidationSessionID,
     },
     client::{Client, Progress},
     dataset::{

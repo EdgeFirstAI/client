@@ -6,9 +6,10 @@ use crate::{
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult, Organization,
         Project, ProjectID, SamplesCountResult, SamplesListParams, SamplesListResult, Snapshot,
-        SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages,
-        TaskStatus, TasksListParams, TasksListResult, TrainingSession, TrainingSessionID,
-        ValidationSession, ValidationSessionID,
+        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
+        SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
+        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
+        ValidationSessionID,
     },
     dataset::{AnnotationSet, AnnotationType, Dataset, FileType, Label, NewLabel, NewLabelObject},
     retry::{create_retry_policy, log_retry_configuration},
@@ -2120,6 +2121,94 @@ impl Client {
         Ok(())
     }
 
+    /// Create a snapshot from an existing dataset on the server.
+    ///
+    /// Triggers server-side snapshot generation which exports the dataset's
+    /// images and annotations into a downloadable EdgeFirst Dataset Format
+    /// snapshot.
+    ///
+    /// This is the inverse of [`restore_snapshot`](Self::restore_snapshot) -
+    /// while restore creates a dataset from a snapshot, this method creates a
+    /// snapshot from a dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset ID to create snapshot from
+    /// * `description` - Description for the created snapshot
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SnapshotCreateResult` containing the snapshot ID and task ID
+    /// for monitoring progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Dataset doesn't exist
+    /// * User lacks permission to access the dataset
+    /// * Server rejects the request
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::{Client, DatasetID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id = DatasetID::from(123);
+    ///
+    /// // Create snapshot from dataset (all annotation sets)
+    /// let result = client
+    ///     .create_snapshot_from_dataset(dataset_id, "My Dataset Backup", None)
+    ///     .await?;
+    /// println!("Created snapshot: {:?}", result.id);
+    ///
+    /// // Monitor progress via task ID
+    /// if let Some(task_id) = result.task_id {
+    ///     println!("Task: {}", task_id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload local files as
+    ///   snapshot
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
+    /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
+    pub async fn create_snapshot_from_dataset(
+        &self,
+        dataset_id: DatasetID,
+        description: &str,
+        annotation_set_id: Option<AnnotationSetID>,
+    ) -> Result<SnapshotFromDatasetResult, Error> {
+        // Resolve annotation_set_id: use provided value or fetch default
+        let annotation_set_id = match annotation_set_id {
+            Some(id) => id,
+            None => {
+                // Fetch annotation sets and find default ("annotations") or use first
+                let sets = self.annotation_sets(dataset_id).await?;
+                if sets.is_empty() {
+                    return Err(Error::InvalidParameters(
+                        "No annotation sets available for dataset".to_owned(),
+                    ));
+                }
+                // Look for "annotations" set (default), otherwise use first
+                sets.iter()
+                    .find(|s| s.name() == "annotations")
+                    .unwrap_or(&sets[0])
+                    .id()
+            }
+        };
+        let params = SnapshotCreateFromDataset {
+            description: description.to_owned(),
+            dataset_id,
+            annotation_set_id,
+        };
+        self.rpc("snapshots.create".to_owned(), Some(params)).await
+    }
+
     /// Download a snapshot from EdgeFirst Studio to local storage.
     ///
     /// Downloads all files in a snapshot (single MCAP file or directory of
@@ -3295,5 +3384,125 @@ mod tests {
             Some(10),
         );
         assert_eq!(result, "seq_name_with_underscores_10_sample_001.jpg");
+    }
+
+    // =========================================================================
+    // Additional filter_and_sort_by_name tests for exact match determinism
+    // =========================================================================
+
+    #[test]
+    fn test_filter_and_sort_by_name_exact_match_is_deterministic() {
+        // Test that searching for "Deer" always returns "Deer" first, not
+        // "Deer Roundtrip 20251129" or similar
+        let items = vec![
+            "Deer Roundtrip 20251129".to_string(),
+            "White-Tailed Deer".to_string(),
+            "Deer".to_string(),
+            "Deer Snapshot Test".to_string(),
+            "Reindeer Dataset".to_string(),
+        ];
+
+        let result = filter_and_sort_by_name(items, "Deer", |s| s.as_str());
+
+        // CRITICAL: First result must be exact match "Deer"
+        assert_eq!(
+            result.first().map(|s| s.as_str()),
+            Some("Deer"),
+            "Expected exact match 'Deer' first, got: {:?}",
+            result.first()
+        );
+
+        // Verify all items containing "Deer" are present (case-insensitive)
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_exact_match_with_different_cases() {
+        // Verify case-sensitive exact match takes priority over case-insensitive
+        let items = vec![
+            "DEER".to_string(),
+            "deer".to_string(),
+            "Deer".to_string(),
+            "Deer Test".to_string(),
+        ];
+
+        let result = filter_and_sort_by_name(items, "Deer", |s| s.as_str());
+
+        // Priority 1: Case-sensitive exact match "Deer" first
+        assert_eq!(result[0], "Deer");
+        // Priority 2: Case-insensitive exact matches next
+        assert!(result[1] == "DEER" || result[1] == "deer");
+        assert!(result[2] == "DEER" || result[2] == "deer");
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_snapshot_realistic_scenario() {
+        // Realistic scenario: User searches for snapshot "Deer" and multiple
+        // snapshots exist with similar names
+        let items = vec![
+            "Unit Testing - Deer Dataset Backup".to_string(),
+            "Deer".to_string(),
+            "Deer Snapshot 2025-01-15".to_string(),
+            "Original Deer".to_string(),
+        ];
+
+        let result = filter_and_sort_by_name(items, "Deer", |s| s.as_str());
+
+        // MUST return exact match first for deterministic test behavior
+        assert_eq!(
+            result[0], "Deer",
+            "Searching for 'Deer' should return exact 'Deer' first"
+        );
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_dataset_realistic_scenario() {
+        // Realistic scenario: User searches for dataset "Deer" but multiple
+        // datasets have "Deer" in their name
+        let items = vec![
+            "Deer Roundtrip".to_string(),
+            "Deer".to_string(),
+            "deer".to_string(),
+            "White-Tailed Deer".to_string(),
+            "Deer-V2".to_string(),
+        ];
+
+        let result = filter_and_sort_by_name(items, "Deer", |s| s.as_str());
+
+        // Exact case-sensitive match must be first
+        assert_eq!(result[0], "Deer");
+        // Case-insensitive exact match should be second
+        assert_eq!(result[1], "deer");
+        // Shorter names should come before longer names
+        assert!(
+            result.iter().position(|s| s == "Deer-V2").unwrap()
+                < result.iter().position(|s| s == "Deer Roundtrip").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_filter_and_sort_by_name_first_result_is_always_best_match() {
+        // CRITICAL: The first result should ALWAYS be the best match
+        // This is essential for deterministic test behavior
+        let scenarios = vec![
+            // (items, filter, expected_first)
+            (vec!["Deer Dataset", "Deer", "deer"], "Deer", "Deer"),
+            (vec!["test", "TEST", "Test Data"], "test", "test"),
+            (vec!["ABC", "ABCD", "abc"], "ABC", "ABC"),
+        ];
+
+        for (items, filter, expected_first) in scenarios {
+            let items: Vec<String> = items.iter().map(|s| s.to_string()).collect();
+            let result = filter_and_sort_by_name(items, filter, |s| s.as_str());
+
+            assert_eq!(
+                result.first().map(|s| s.as_str()),
+                Some(expected_first),
+                "For filter '{}', expected first result '{}', got: {:?}",
+                filter,
+                expected_first,
+                result.first()
+            );
+        }
     }
 }

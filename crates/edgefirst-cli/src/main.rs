@@ -3,7 +3,8 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationType, Client, Dataset, Error, FileType, Progress, SnapshotID, TaskID, TrainingSession,
+    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Progress,
+    SnapshotID, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -338,12 +339,44 @@ enum Command {
         /// Snapshot ID
         snapshot_id: String,
     },
-    /// Create a snapshot from an MCAP file or EdgeFirst Dataset directory.
-    /// Snapshots enable MCAP uploads with AGTG (Automatic Ground Truth
-    /// Generation) and dataset backup/migration workflows.
+    /// Create a snapshot from a local file/directory or server-side dataset.
+    ///
+    /// Supports multiple source types with smart argument interpretation:
+    /// - Dataset ID (ds-xxx): Create from server dataset
+    /// - Annotation Set ID (as-xxx): Create from annotation set's parent
+    ///   dataset
+    /// - Local path: Upload MCAP, Arrow manifest, folder, or ZIP file
+    ///
+    /// Examples:
+    ///   edgefirst-client create-snapshot ds-123
+    ///   edgefirst-client create-snapshot as-456
+    ///   edgefirst-client create-snapshot ./data.mcap
+    ///   edgefirst-client create-snapshot ./dataset/
     CreateSnapshot {
-        /// Path to MCAP file or directory with EdgeFirst Dataset Format files
-        path: PathBuf,
+        /// Source: dataset ID (ds-xxx), annotation set ID (as-xxx), or local
+        /// path
+        source: String,
+
+        /// Optional annotation set when source is a dataset ID
+        #[clap(long)]
+        annotation_set: Option<String>,
+
+        /// Description for the snapshot (auto-generated from source if not
+        /// provided)
+        #[clap(long, short = 'd')]
+        description: Option<String>,
+
+        /// Explicit: treat source as local path (--from-path)
+        #[clap(long, conflicts_with = "from_dataset")]
+        from_path: bool,
+
+        /// Explicit: treat source as dataset ID (--from-dataset)
+        #[clap(long, conflicts_with = "from_path")]
+        from_dataset: bool,
+
+        /// Monitor the task progress until completion (server-side only)
+        #[clap(long, short = 'm')]
+        monitor: bool,
     },
     /// Download a snapshot to local storage.
     DownloadSnapshot {
@@ -393,6 +426,49 @@ enum Command {
     DeleteSnapshot {
         /// Snapshot ID to delete
         snapshot_id: String,
+    },
+    /// Generate an Arrow annotation file from a folder of images.
+    ///
+    /// Creates an Arrow file with null annotations for each image found.
+    /// Useful for importing existing image collections into EdgeFirst format.
+    ///
+    /// The command will:
+    /// 1. Scan the folder recursively for image files (JPEG, PNG)
+    /// 2. Optionally detect sequence patterns (name_frame.ext)
+    /// 3. Create an Arrow file with the 2025.10 schema
+    ///
+    /// Examples:
+    ///   edgefirst generate-arrow ./images --output dataset.arrow
+    ///   edgefirst generate-arrow ./images -o my_data/my_data.arrow
+    /// --detect-sequences
+    GenerateArrow {
+        /// Folder containing images to process
+        folder: PathBuf,
+
+        /// Output Arrow file path
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Detect sequence patterns (name_frame.ext) in filenames
+        #[clap(long, default_value = "true")]
+        detect_sequences: bool,
+    },
+    /// Validate a snapshot directory structure.
+    ///
+    /// Checks that the directory follows the EdgeFirst Dataset Format:
+    /// - Arrow file exists at expected location
+    /// - Sensor container directory exists
+    /// - All files referenced in Arrow file exist
+    ///
+    /// Examples:
+    ///   edgefirst validate-snapshot ./my_dataset
+    ValidateSnapshot {
+        /// Snapshot directory to validate
+        path: PathBuf,
+
+        /// Show detailed validation issues
+        #[clap(long, short = 'v')]
+        verbose: bool,
     },
 }
 
@@ -1292,15 +1368,27 @@ fn parse_annotations_from_arrow(
                 .and_then(|c| c.cast(&DataType::String).ok())
                 .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
 
-            // Get or create entry for this sample
-            let entry = samples_map
-                .entry(sample_name.clone())
-                .or_insert(SampleMetadata {
+            // Get or create entry for this sample, validating group consistency
+            let entry = match samples_map.entry(sample_name.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    // Sample exists - validate group is consistent
+                    let existing = e.into_mut();
+                    if existing.group != sample_group {
+                        return Err(Error::InvalidParameters(format!(
+                            "Inconsistent group for image '{}': row has group {:?} but previous row had {:?}. \
+                            All rows for the same image must have identical group values.",
+                            sample_name, sample_group, existing.group
+                        )));
+                    }
+                    existing
+                }
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(SampleMetadata {
                     group: sample_group,
                     sequence_name: sequence_name.clone(),
                     frame_number,
                     annotations: Vec::new(),
-                });
+                }),
+            };
 
             if should_upload_annotations {
                 let mut has_annotation = false;
@@ -2050,7 +2138,12 @@ async fn handle_task(client: &Client, task_id: String, monitor: bool) -> Result<
             for (name, stage) in &stages {
                 let status = stage.status().clone().unwrap_or_default();
                 let pct = stage.percentage();
-                println!("    {:<20} {:>3}% ({})", name, pct, status);
+                let message = stage.message().clone().unwrap_or_default();
+                if message.is_empty() {
+                    println!("    {:<20} {:>3}% ({})", name, pct, status);
+                } else {
+                    println!("    {:<20} {:>3}% ({}) - {}", name, pct, status, message);
+                }
             }
         }
 
@@ -2131,16 +2224,31 @@ async fn monitor_task(client: &Client, task_id: TaskID) -> Result<(), Error> {
             if !stages.is_empty() {
                 println!("Stages:");
                 for (name, stage) in &stages {
-                    println!(
-                        "  {} - {}% ({})",
-                        name,
-                        stage.percentage(),
-                        stage.status().clone().unwrap_or_default()
-                    );
+                    let stage_status = stage.status().clone().unwrap_or_default();
+                    let message = stage.message().clone().unwrap_or_default();
+                    if message.is_empty() {
+                        println!("  {} - {}% ({})", name, stage.percentage(), stage_status);
+                    } else {
+                        println!(
+                            "  {} - {}% ({}) - {}",
+                            name,
+                            stage.percentage(),
+                            stage_status,
+                            message
+                        );
+                    }
                 }
             }
 
             if status.to_lowercase() == "failed" || status.to_lowercase() == "error" {
+                // Find and print any error messages from stages
+                for (name, stage) in &stages {
+                    if let Some(msg) = stage.message()
+                        && !msg.is_empty()
+                    {
+                        eprintln!("Error in stage '{}': {}", name, msg);
+                    }
+                }
                 eprintln!("Task {} failed with status: {}", task_id, status);
                 std::process::exit(1);
             }
@@ -2205,41 +2313,253 @@ async fn handle_snapshot(client: &Client, snapshot_id: String) -> Result<(), Err
     Ok(())
 }
 
-async fn handle_create_snapshot(client: &Client, path: PathBuf) -> Result<(), Error> {
+/// Parameters for the unified create-snapshot command.
+struct CreateSnapshotParams {
+    source: String,
+    annotation_set: Option<String>,
+    description: Option<String>,
+    from_path: bool,
+    from_dataset: bool,
+    monitor: bool,
+}
+
+/// Source type for snapshot creation, determined from user input.
+enum SnapshotSource {
+    /// Server-side dataset (optionally with specific annotation set)
+    Dataset {
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+    },
+    /// Annotation set (parent dataset will be looked up)
+    AnnotationSet(AnnotationSetID),
+    /// Local file path (MCAP, Arrow, folder, or ZIP)
+    LocalPath(PathBuf),
+}
+
+/// Parse the source argument to determine snapshot source type.
+fn parse_snapshot_source(
+    source: &str,
+    annotation_set: Option<&str>,
+    from_path: bool,
+    from_dataset: bool,
+) -> Result<SnapshotSource, Error> {
+    // Explicit flags take precedence
+    if from_path {
+        return Ok(SnapshotSource::LocalPath(PathBuf::from(source)));
+    }
+
+    if from_dataset {
+        let dataset_id = DatasetID::try_from(source)?;
+        let annotation_set_id = annotation_set.map(AnnotationSetID::try_from).transpose()?;
+        return Ok(SnapshotSource::Dataset {
+            dataset_id,
+            annotation_set_id,
+        });
+    }
+
+    // Smart detection: check for ID prefixes
+    if source.starts_with("ds-") {
+        let dataset_id = DatasetID::try_from(source)?;
+        let annotation_set_id = annotation_set.map(AnnotationSetID::try_from).transpose()?;
+        return Ok(SnapshotSource::Dataset {
+            dataset_id,
+            annotation_set_id,
+        });
+    }
+
+    if source.starts_with("as-") {
+        let annotation_set_id = AnnotationSetID::try_from(source)?;
+        return Ok(SnapshotSource::AnnotationSet(annotation_set_id));
+    }
+
+    // Check if it looks like a path (contains path separators or exists on disk)
+    let path = PathBuf::from(source);
+    if path.exists() || source.contains('/') || source.contains('\\') || source.contains('.') {
+        return Ok(SnapshotSource::LocalPath(path));
+    }
+
+    // Default to treating unknown input as an error
+    Err(Error::InvalidParameters(format!(
+        "Could not determine source type for '{}'. Use --from-path or --from-dataset to be explicit.",
+        source
+    )))
+}
+
+/// Generate a description for the snapshot based on source.
+fn generate_snapshot_description(source: &SnapshotSource, provided: Option<&str>) -> String {
+    use chrono::Local;
+
+    if let Some(desc) = provided {
+        return desc.to_string();
+    }
+
+    let date = Local::now().format("%Y-%m-%d %H:%M");
+
+    match source {
+        SnapshotSource::Dataset { dataset_id, .. } => {
+            format!("{} snapshot {}", dataset_id, date)
+        }
+        SnapshotSource::AnnotationSet(as_id) => {
+            format!("{} snapshot {}", as_id, date)
+        }
+        SnapshotSource::LocalPath(path) => {
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("local");
+            format!("{} {}", name, date)
+        }
+    }
+}
+
+async fn handle_create_snapshot(
+    client: &Client,
+    params: CreateSnapshotParams,
+) -> Result<(), Error> {
     use indicatif::{ProgressBar, ProgressStyle};
     use tokio::sync::mpsc;
 
-    let (tx, mut rx) = mpsc::channel(1);
+    // Parse the source to determine what type of snapshot creation
+    let source = parse_snapshot_source(
+        &params.source,
+        params.annotation_set.as_deref(),
+        params.from_path,
+        params.from_dataset,
+    )?;
 
-    let pb = ProgressBar::new(100);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    // Generate description
+    let description = generate_snapshot_description(&source, params.description.as_deref());
 
-    tokio::spawn(async move {
-        while let Some(Progress { current, total }) = rx.recv().await {
-            pb.set_length(total as u64);
-            pb.set_position(current as u64);
+    match source {
+        SnapshotSource::Dataset {
+            dataset_id,
+            annotation_set_id,
+        } => {
+            // Server-side creation from dataset
+            let result = client
+                .create_snapshot_from_dataset(dataset_id, &description, annotation_set_id)
+                .await?;
+
+            println!("Snapshot creation initiated: [{}]", result.id);
+
+            if let Some(task_id) = result.task_id {
+                println!("Task: [{}]", task_id);
+
+                if params.monitor {
+                    monitor_task(client, task_id).await?;
+                }
+            } else if params.monitor {
+                println!("No task ID returned - operation may be synchronous");
+            }
         }
-        pb.finish_with_message("Upload complete");
-    });
+        SnapshotSource::AnnotationSet(as_id) => {
+            // Look up parent dataset from annotation set
+            let annotation_set = client.annotation_set(as_id).await?;
+            let dataset_id = annotation_set.dataset_id();
 
-    let path_str = path.to_str().ok_or_else(|| {
-        Error::IoError(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Path contains invalid UTF-8",
-        ))
-    })?;
+            // Pass annotation_set_id explicitly for this annotation set
+            let result = client
+                .create_snapshot_from_dataset(dataset_id, &description, Some(as_id))
+                .await?;
 
-    let snapshot = client.create_snapshot(path_str, Some(tx)).await?;
-    println!(
-        "Snapshot created successfully: [{}] {}",
-        snapshot.id(),
-        snapshot.description()
-    );
+            println!(
+                "Snapshot creation initiated from annotation set {}: [{}]",
+                as_id, result.id
+            );
+
+            if let Some(task_id) = result.task_id {
+                println!("Task: [{}]", task_id);
+
+                if params.monitor {
+                    monitor_task(client, task_id).await?;
+                }
+            } else if params.monitor {
+                println!("No task ID returned - operation may be synchronous");
+            }
+        }
+        SnapshotSource::LocalPath(path) => {
+            // For directories, validate the structure before upload
+            if path.is_dir() {
+                use edgefirst_client::format::{ValidationIssue, validate_dataset_structure};
+
+                let issues = validate_dataset_structure(&path)?;
+                if !issues.is_empty() {
+                    // Separate errors from warnings
+                    let errors: Vec<_> = issues
+                        .iter()
+                        .filter(|i| {
+                            matches!(
+                                i,
+                                ValidationIssue::MissingArrowFile { .. }
+                                    | ValidationIssue::MissingSensorContainer { .. }
+                            )
+                        })
+                        .collect();
+
+                    let warnings: Vec<_> = issues
+                        .iter()
+                        .filter(|i| {
+                            !matches!(
+                                i,
+                                ValidationIssue::MissingArrowFile { .. }
+                                    | ValidationIssue::MissingSensorContainer { .. }
+                            )
+                        })
+                        .collect();
+
+                    // Print warnings but continue
+                    for warning in &warnings {
+                        eprintln!("Warning: {}", warning);
+                    }
+
+                    // Abort on errors
+                    if !errors.is_empty() {
+                        for error in &errors {
+                            eprintln!("Error: {}", error);
+                        }
+                        return Err(Error::InvalidParameters(format!(
+                            "Invalid snapshot structure: {} error(s) found. \
+                            Use 'edgefirst generate-arrow' to create an Arrow file from images.",
+                            errors.len()
+                        )));
+                    }
+                }
+            }
+
+            // Local file upload with progress bar
+            let (tx, mut rx) = mpsc::channel(1);
+
+            let pb = ProgressBar::new(100);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})",
+                    )
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+
+            tokio::spawn(async move {
+                while let Some(Progress { current, total }) = rx.recv().await {
+                    pb.set_length(total as u64);
+                    pb.set_position(current as u64);
+                }
+                pb.finish_with_message("Upload complete");
+            });
+
+            let path_str = path.to_str().ok_or_else(|| {
+                Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Path contains invalid UTF-8",
+                ))
+            })?;
+
+            let snapshot = client.create_snapshot(path_str, Some(tx)).await?;
+            println!(
+                "Snapshot created: [{}] {}",
+                snapshot.id(),
+                snapshot.description()
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -2309,14 +2629,16 @@ async fn handle_restore_snapshot(
         result.dataset_id
     );
 
-    // If monitoring is enabled and we have a task ID, monitor the task
-    if params.monitor {
-        if let Some(task_id) = result.task_id {
-            println!("Monitoring task: {}", task_id);
+    // Always print task ID if available (enables async workflow)
+    if let Some(task_id) = result.task_id {
+        println!("Task: [{}]", task_id);
+
+        // If monitoring is enabled, wait for completion
+        if params.monitor {
             monitor_task(client, task_id).await?;
-        } else {
-            println!("No task ID returned - restore may be synchronous or already complete");
         }
+    } else if params.monitor {
+        println!("No task ID returned - restore may be synchronous or already complete");
     }
 
     Ok(())
@@ -2326,6 +2648,153 @@ async fn handle_delete_snapshot(client: &Client, snapshot_id: String) -> Result<
     let snapshot_id = SnapshotID::try_from(snapshot_id.as_str())?;
     client.delete_snapshot(snapshot_id).await?;
     println!("Snapshot deleted successfully");
+    Ok(())
+}
+
+fn handle_generate_arrow(
+    folder: PathBuf,
+    output: PathBuf,
+    detect_sequences: bool,
+) -> Result<(), Error> {
+    use edgefirst_client::format::generate_arrow_from_folder;
+
+    if !folder.exists() {
+        return Err(Error::InvalidParameters(format!(
+            "Folder does not exist: {:?}",
+            folder
+        )));
+    }
+
+    if !folder.is_dir() {
+        return Err(Error::InvalidParameters(format!(
+            "Path is not a directory: {:?}",
+            folder
+        )));
+    }
+
+    println!("Scanning folder: {:?}", folder);
+
+    let count = generate_arrow_from_folder(&folder, &output, detect_sequences)?;
+
+    println!("Generated Arrow file with {} samples: {:?}", count, output);
+
+    if detect_sequences {
+        println!("Sequence detection: enabled");
+    }
+
+    Ok(())
+}
+
+fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
+    use edgefirst_client::format::{ValidationIssue, validate_dataset_structure};
+
+    if !path.exists() {
+        return Err(Error::InvalidParameters(format!(
+            "Path does not exist: {:?}",
+            path
+        )));
+    }
+
+    if !path.is_dir() {
+        return Err(Error::InvalidParameters(format!(
+            "Path is not a directory: {:?}",
+            path
+        )));
+    }
+
+    println!("Validating snapshot structure: {:?}", path);
+
+    let issues = validate_dataset_structure(&path)?;
+
+    if issues.is_empty() {
+        println!("✓ Snapshot structure is valid");
+        return Ok(());
+    }
+
+    // Categorize issues
+    let errors: Vec<_> = issues
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                ValidationIssue::MissingArrowFile { .. }
+                    | ValidationIssue::MissingSensorContainer { .. }
+            )
+        })
+        .collect();
+
+    let missing_files: Vec<_> = issues
+        .iter()
+        .filter(|i| matches!(i, ValidationIssue::MissingFile { .. }))
+        .collect();
+
+    let unreferenced: Vec<_> = issues
+        .iter()
+        .filter(|i| matches!(i, ValidationIssue::UnreferencedFile { .. }))
+        .collect();
+
+    // Print summary
+    if !errors.is_empty() {
+        println!("\n✗ {} critical error(s):", errors.len());
+        for error in &errors {
+            println!("  - {}", error);
+        }
+    }
+
+    if !missing_files.is_empty() {
+        println!("\n⚠ {} missing file(s):", missing_files.len());
+        if verbose {
+            for issue in &missing_files {
+                println!("  - {}", issue);
+            }
+        } else {
+            for issue in missing_files.iter().take(5) {
+                println!("  - {}", issue);
+            }
+            if missing_files.len() > 5 {
+                println!(
+                    "  ... and {} more (use -v to see all)",
+                    missing_files.len() - 5
+                );
+            }
+        }
+    }
+
+    if !unreferenced.is_empty() {
+        println!("\n○ {} unreferenced file(s):", unreferenced.len());
+        if verbose {
+            for issue in &unreferenced {
+                println!("  - {}", issue);
+            }
+        } else {
+            for issue in unreferenced.iter().take(5) {
+                println!("  - {}", issue);
+            }
+            if unreferenced.len() > 5 {
+                println!(
+                    "  ... and {} more (use -v to see all)",
+                    unreferenced.len() - 5
+                );
+            }
+        }
+    }
+
+    // Return error if there are critical issues
+    if !errors.is_empty() {
+        return Err(Error::InvalidParameters(format!(
+            "Snapshot validation failed with {} critical error(s)",
+            errors.len()
+        )));
+    }
+
+    // Warn but succeed if only minor issues
+    if !missing_files.is_empty() {
+        println!(
+            "\nWarning: {} file(s) referenced in Arrow but not found in container",
+            missing_files.len()
+        );
+    }
+
     Ok(())
 }
 
@@ -2473,7 +2942,27 @@ async fn main() -> Result<(), Error> {
         }
         Command::Snapshots => handle_snapshots(&client).await,
         Command::Snapshot { snapshot_id } => handle_snapshot(&client, snapshot_id).await,
-        Command::CreateSnapshot { path } => handle_create_snapshot(&client, path).await,
+        Command::CreateSnapshot {
+            source,
+            annotation_set,
+            description,
+            from_path,
+            from_dataset,
+            monitor,
+        } => {
+            handle_create_snapshot(
+                &client,
+                CreateSnapshotParams {
+                    source,
+                    annotation_set,
+                    description,
+                    from_path,
+                    from_dataset,
+                    monitor,
+                },
+            )
+            .await
+        }
         Command::DownloadSnapshot {
             snapshot_id,
             output,
@@ -2506,6 +2995,12 @@ async fn main() -> Result<(), Error> {
         Command::DeleteSnapshot { snapshot_id } => {
             handle_delete_snapshot(&client, snapshot_id).await
         }
+        Command::GenerateArrow {
+            folder,
+            output,
+            detect_sequences,
+        } => handle_generate_arrow(folder, output, detect_sequences),
+        Command::ValidateSnapshot { path, verbose } => handle_validate_snapshot(path, verbose),
     }
 }
 
@@ -3289,6 +3784,170 @@ mod tests {
 
             println!("✓ Mixed structure test passed (sequence samples only)");
 
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_inconsistent_groups_fails() {
+            // Test that parsing fails when same image has different group values across
+            // rows
+            let test_dir = std::env::temp_dir().join("arrow_test_inconsistent_groups");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with INCONSISTENT groups for same image
+            // image1.jpg appears twice with different group values (train vs val)
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg"],
+                Some(vec![Some("train"), Some("val")]), // INCONSISTENT!
+                Some(vec![Some("cat"), Some("dog")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                ]),
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(result.is_err(), "Should fail on inconsistent groups");
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Inconsistent group"),
+                "Error message should mention inconsistent group: {}",
+                err_msg
+            );
+            assert!(
+                err_msg.contains("image1"),
+                "Error message should mention image name: {}",
+                err_msg
+            );
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_consistent_groups_succeeds() {
+            // Test that parsing succeeds when same image has consistent group values
+            let test_dir = std::env::temp_dir().join("arrow_test_consistent_groups");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with CONSISTENT groups for same image
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg", "image2.jpg"],
+                Some(vec![Some("train"), Some("train"), Some("val")]), // CONSISTENT
+                Some(vec![Some("cat"), Some("dog"), Some("bird")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                    Some((5.0, 5.0, 10.0, 10.0)),
+                ]),
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg", "image2.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(result.is_ok(), "Should succeed with consistent groups");
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 2);
+
+            // Verify groups are correct
+            let image1 = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image1.jpg"))
+                .unwrap();
+            assert_eq!(image1.group(), Some(&"train".to_string()));
+            assert_eq!(image1.annotations.len(), 2);
+
+            let image2 = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("image2.jpg"))
+                .unwrap();
+            assert_eq!(image2.group(), Some(&"val".to_string()));
+            assert_eq!(image2.annotations.len(), 1);
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_inconsistent_null_vs_value_fails() {
+            // Test that parsing fails when same image has null group and non-null group
+            let test_dir = std::env::temp_dir().join("arrow_test_null_inconsistent");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with null and non-null groups for same image
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg"],
+                Some(vec![Some("train"), None]), // INCONSISTENT (value vs null)!
+                Some(vec![Some("cat"), Some("dog")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                ]),
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(
+                result.is_err(),
+                "Should fail when group is null on some rows but not others"
+            );
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Inconsistent group"),
+                "Error message should mention inconsistent group: {}",
+                err_msg
+            );
+
+            // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_parse_annotations_all_null_groups_succeeds() {
+            // Test that parsing succeeds when all rows for same image have null group
+            let test_dir = std::env::temp_dir().join("arrow_test_all_null_groups");
+            let arrow_file = test_dir.join("annotations.arrow");
+            let images_dir = test_dir.join("images");
+
+            // Create Arrow file with all null groups for same image (consistent)
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg"],
+                Some(vec![None, None]), // CONSISTENT (both null)
+                Some(vec![Some("cat"), Some("dog")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                ]),
+                None,
+            )
+            .unwrap();
+
+            create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
+
+            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true);
+            assert!(result.is_ok(), "Should succeed when all groups are null");
+            let samples = result.unwrap();
+            assert_eq!(samples.len(), 1);
+            assert_eq!(samples[0].group(), None);
+            assert_eq!(samples[0].annotations.len(), 2);
+
+            // Cleanup
             std::fs::remove_dir_all(&test_dir).ok();
         }
     }

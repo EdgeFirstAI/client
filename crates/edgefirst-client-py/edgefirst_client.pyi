@@ -2663,6 +2663,34 @@ class SnapshotRestoreResult:
         """
         ...
 
+class SnapshotFromDatasetResult:
+    """
+    Result of creating a snapshot from a dataset.
+
+    Contains the snapshot ID and task ID for monitoring the creation progress.
+    """
+
+    @property
+    def id(self) -> SnapshotID:
+        """
+        Returns the unique identifier of the created snapshot.
+
+        Returns:
+            SnapshotID: The snapshot ID.
+        """
+        ...
+
+    @property
+    def task_id(self) -> TaskID | None:
+        """
+        Returns the ID of the task processing the snapshot creation.
+
+        Returns:
+            TaskID | None: The task ID for tracking progress, or None if
+                the operation completed synchronously.
+        """
+        ...
+
 class Client:
     """
     Main client for interacting with EdgeFirst Studio Server.
@@ -3507,6 +3535,48 @@ class Client:
             ...     "Collected on I-95",
             ... )
             >>> print(f"Restored to dataset: {result.dataset_id}")
+        """
+        ...
+
+    def create_snapshot_from_dataset(
+        self,
+        dataset_id: DatasetUID,
+        description: str,
+        annotation_set_id: AnnotationSetUID | None = None,
+    ) -> "SnapshotFromDatasetResult":
+        """
+        Create a snapshot from an existing dataset on the server.
+
+        Triggers server-side snapshot generation which exports the dataset's
+        images and annotations into a downloadable EdgeFirst Dataset Format.
+
+        This is the inverse of `restore_snapshot` - while restore creates a
+        dataset from a snapshot, this method creates a snapshot from a dataset.
+
+        Args:
+            dataset_id (DatasetUID): The dataset ID to create snapshot from.
+            description (str): Description for the created snapshot.
+            annotation_set_id (AnnotationSetUID | None): Optional annotation
+                set ID. If not provided, uses the "annotations" set or first
+                available.
+
+        Returns:
+            SnapshotFromDatasetResult: Result containing the snapshot ID and
+                task ID for monitoring progress.
+
+        Raises:
+            Error: If the dataset doesn't exist, user lacks permission, or
+                the request fails.
+
+        Example:
+            >>> client = Client().with_token_path(None)
+            >>> result = client.create_snapshot_from_dataset(
+            ...     "ds-12345", "My Backup"
+            ... )
+            >>> print(f"Created snapshot: {result.id}")
+            >>> if result.task_id:
+            ...     # Monitor the creation task
+            ...     client.task(result.task_id, monitor=True)
         """
         ...
 

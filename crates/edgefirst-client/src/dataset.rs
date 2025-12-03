@@ -2779,4 +2779,210 @@ mod tests {
         let sample: Sample = serde_json::from_str(json).unwrap();
         assert_eq!(sample.frame_number, None);
     }
+
+    // =========================================================================
+    // samples_dataframe tests - CRITICAL: Verify group preservation
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_preserves_group_for_samples_without_annotations() {
+        use polars::prelude::*;
+
+        // Create sample WITH annotations
+        let mut sample_with_ann = Sample::new();
+        sample_with_ann.image_name = Some("annotated.jpg".to_string());
+        sample_with_ann.group = Some("train".to_string());
+        let mut annotation = Annotation::new();
+        annotation.set_label(Some("car".to_string()));
+        annotation.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        annotation.set_name(Some("annotated".to_string()));
+        sample_with_ann.annotations = vec![annotation];
+
+        // Create sample WITHOUT annotations (this is the critical case)
+        let mut sample_no_ann = Sample::new();
+        sample_no_ann.image_name = Some("unannotated.jpg".to_string());
+        sample_no_ann.group = Some("val".to_string()); // Should be preserved!
+        sample_no_ann.annotations = vec![]; // Empty annotations
+
+        let samples = vec![sample_with_ann, sample_no_ann];
+
+        // Convert to DataFrame
+        let df = samples_dataframe(&samples).expect("Failed to create DataFrame");
+
+        // Verify we have 2 rows (one per sample)
+        assert_eq!(df.height(), 2, "Expected 2 rows (one per sample)");
+
+        // Get the group column
+        let groups_col = df.column("group").expect("group column should exist");
+        let groups_cast = groups_col.cast(&DataType::String).expect("cast to string");
+        let groups = groups_cast.str().expect("as str");
+
+        // Find the row for "unannotated" and verify it has group "val"
+        let names_col = df.column("name").expect("name column should exist");
+        let names_cast = names_col.cast(&DataType::String).expect("cast to string");
+        let names = names_cast.str().expect("as str");
+
+        let mut found_unannotated = false;
+        for idx in 0..df.height() {
+            if let Some(name) = names.get(idx)
+                && name == "unannotated"
+            {
+                found_unannotated = true;
+                let group = groups.get(idx);
+                assert_eq!(
+                    group,
+                    Some("val"),
+                    "CRITICAL: Sample 'unannotated' without annotations must have group 'val'"
+                );
+            }
+        }
+
+        assert!(
+            found_unannotated,
+            "Did not find 'unannotated' sample in DataFrame - \
+             this means samples without annotations are not being included"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_includes_all_samples_even_without_annotations() {
+        // Verify that samples without annotations still appear in the DataFrame
+        // with null annotation fields but WITH their group field populated
+
+        let mut sample1 = Sample::new();
+        sample1.image_name = Some("with_ann.jpg".to_string());
+        sample1.group = Some("train".to_string());
+        let mut ann = Annotation::new();
+        ann.set_label(Some("person".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.0, 0.0, 0.5, 0.5)));
+        ann.set_name(Some("with_ann".to_string()));
+        sample1.annotations = vec![ann];
+
+        let mut sample2 = Sample::new();
+        sample2.image_name = Some("no_ann_train.jpg".to_string());
+        sample2.group = Some("train".to_string());
+        sample2.annotations = vec![];
+
+        let mut sample3 = Sample::new();
+        sample3.image_name = Some("no_ann_val.jpg".to_string());
+        sample3.group = Some("val".to_string());
+        sample3.annotations = vec![];
+
+        let samples = vec![sample1, sample2, sample3];
+
+        let df = samples_dataframe(&samples).expect("Failed to create DataFrame");
+
+        // We should have exactly 3 rows - one per sample
+        assert_eq!(
+            df.height(),
+            3,
+            "Expected 3 rows (samples without annotations should create one row each)"
+        );
+
+        // Check that all groups are present
+        let groups_col = df.column("group").expect("group column");
+        let groups_cast = groups_col.cast(&polars::prelude::DataType::String).unwrap();
+        let groups = groups_cast.str().unwrap();
+
+        let mut train_count = 0;
+        let mut val_count = 0;
+
+        for idx in 0..df.height() {
+            match groups.get(idx) {
+                Some("train") => train_count += 1,
+                Some("val") => val_count += 1,
+                other => panic!(
+                    "Unexpected group value at row {}: {:?}. \
+                     All samples should have their group preserved.",
+                    idx, other
+                ),
+            }
+        }
+
+        assert_eq!(train_count, 2, "Expected 2 samples in 'train' group");
+        assert_eq!(val_count, 1, "Expected 1 sample in 'val' group");
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_group_is_not_null_for_samples_with_group() {
+        // CRITICAL: Even when a sample has no annotations, if it has a group,
+        // that group must NOT be null in the DataFrame
+
+        let mut sample = Sample::new();
+        sample.image_name = Some("test.jpg".to_string());
+        sample.group = Some("test_group".to_string());
+        sample.annotations = vec![];
+
+        let df = samples_dataframe(&[sample]).expect("Failed to create DataFrame");
+
+        let groups_col = df.column("group").expect("group column");
+
+        // The group column should have NO nulls because our sample has a group
+        assert_eq!(
+            groups_col.null_count(),
+            0,
+            "Sample with group='test_group' but no annotations has NULL group in DataFrame. \
+             This is a bug in samples_dataframe - group must be preserved!"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_group_consistent_across_all_rows_for_same_image() {
+        use polars::prelude::*;
+
+        // Test that when a sample has multiple annotations, ALL rows have
+        // the same group value (not just the first one)
+
+        let mut sample = Sample::new();
+        sample.image_name = Some("multi_ann.jpg".to_string());
+        sample.group = Some("train".to_string());
+
+        // Add multiple annotations
+        let mut ann1 = Annotation::new();
+        ann1.set_label(Some("car".to_string()));
+        ann1.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann1.set_name(Some("multi_ann".to_string()));
+
+        let mut ann2 = Annotation::new();
+        ann2.set_label(Some("truck".to_string()));
+        ann2.set_box2d(Some(Box2d::new(0.5, 0.6, 0.2, 0.2)));
+        ann2.set_name(Some("multi_ann".to_string()));
+
+        let mut ann3 = Annotation::new();
+        ann3.set_label(Some("bus".to_string()));
+        ann3.set_box2d(Some(Box2d::new(0.7, 0.8, 0.1, 0.1)));
+        ann3.set_name(Some("multi_ann".to_string()));
+
+        sample.annotations = vec![ann1, ann2, ann3];
+
+        let df = samples_dataframe(&[sample]).expect("Failed to create DataFrame");
+
+        // Should have 3 rows (one per annotation)
+        assert_eq!(df.height(), 3, "Expected 3 rows (one per annotation)");
+
+        // ALL rows should have the group "train" (not just the first one)
+        let groups_col = df.column("group").expect("group column");
+        let groups_cast = groups_col.cast(&DataType::String).expect("cast to string");
+        let groups = groups_cast.str().expect("as str");
+
+        // No nulls allowed
+        assert_eq!(groups_col.null_count(), 0, "No rows should have null group");
+
+        // All rows should have the same group
+        for idx in 0..df.height() {
+            let group = groups.get(idx);
+            assert_eq!(
+                group,
+                Some("train"),
+                "Row {} should have group 'train', got {:?}. \
+                 All rows for the same image must have identical group values.",
+                idx,
+                group
+            );
+        }
+    }
 }

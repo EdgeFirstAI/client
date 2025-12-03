@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **New `create_snapshot_from_dataset` API method**
+  - Python: `client.create_snapshot_from_dataset(dataset_id, description, annotation_set_id=None)`
+  - Rust: `client.create_snapshot_from_dataset(dataset_id, description, annotation_set_id).await`
+  - Creates server-side snapshots from existing datasets
+  - Returns `SnapshotFromDatasetResult` with snapshot ID and task ID for progress monitoring
+  - Automatically selects default "annotations" set if not specified
+
+- **New `format` module for EdgeFirst Dataset Format utilities**
+  - `resolve_arrow_files()` - Read Arrow files and extract sample references
+  - `resolve_files_with_container()` - Match Arrow references against actual files
+  - `validate_dataset_structure()` - Validate dataset directory structure
+  - `generate_arrow_from_folder()` - Create Arrow manifest from image folders
+  - Exposed as `edgefirst_client::format` in Rust API
+
+- **Comprehensive snapshot workflow tests**
+  - `test_snapshot_restore` - Validates restore preserves group assignments
+  - `test_create_snapshot_from_dataset` - Validates export preserves data
+  - `test_server_rejects_inconsistent_group_snapshot` - Tests server validation
+
+- **Additional `filter_and_sort_by_name` tests**
+  - Tests ensure exact match determinism for name searches
+  - Prevents flaky tests from similarly-named resources
+
+### Changed
+
+- **README.md documentation improvements**
+  - Added comprehensive `--detect-sequences` documentation with behavior table
+  - Clarified supported file types: depth maps (16-bit PNG), radar cubes (16-bit PNG)
+  - Updated annotation support section: `create-snapshot` supports annotated Arrow files
+  - Clarified AGTG `--autolabel` only works with MCAP snapshots
+
+### Fixed
+
+- **Python bindings: Added `SnapshotFromDatasetResult` class**
+  - Complete type stub in `.pyi` file with docstrings
+  - Properties: `id` (SnapshotID), `task_id` (TaskID | None)
+
 ## [2.5.2] - 2025-12-01
 
 ### Fixed
