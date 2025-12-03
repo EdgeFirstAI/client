@@ -251,22 +251,40 @@ impl Dataset {
         &self.created
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Use client.project(dataset.project_id()) instead"
+    )]
     pub async fn project(&self, client: &Client) -> Result<crate::api::Project, Error> {
         client.project(self.project_id).await
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Use client.annotation_sets(dataset.id()) instead"
+    )]
     pub async fn annotation_sets(&self, client: &Client) -> Result<Vec<AnnotationSet>, Error> {
         client.annotation_sets(self.id).await
     }
 
+    #[deprecated(since = "2.6.0", note = "Use client.labels(dataset.id()) instead")]
     pub async fn labels(&self, client: &Client) -> Result<Vec<Label>, Error> {
         client.labels(self.id).await
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Use client.add_label(dataset.id(), name) instead"
+    )]
     pub async fn add_label(&self, client: &Client, name: &str) -> Result<(), Error> {
         client.add_label(self.id, name).await
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Use client.labels() then client.remove_label(label.id()) instead"
+    )]
+    #[allow(deprecated)]
     pub async fn remove_label(&self, client: &Client, name: &str) -> Result<(), Error> {
         let labels = self.labels(client).await?;
         let label = labels
@@ -317,6 +335,10 @@ impl AnnotationSet {
         self.created
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Use client.dataset(annotation_set.dataset_id()) instead"
+    )]
     pub async fn dataset(&self, client: &Client) -> Result<Dataset, Error> {
         client.dataset(self.dataset_id).await
     }
@@ -1111,15 +1133,24 @@ impl Label {
         &self.name
     }
 
+    #[deprecated(since = "2.6.0", note = "Use client.remove_label(label.id()) instead")]
     pub async fn remove(&self, client: &Client) -> Result<(), Error> {
         client.remove_label(self.id()).await
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Modify label and use client.update_label(&label) instead"
+    )]
     pub async fn set_name(&mut self, client: &Client, name: &str) -> Result<(), Error> {
         self.name = name.to_string();
         client.update_label(self).await
     }
 
+    #[deprecated(
+        since = "2.6.0",
+        note = "Modify label and use client.update_label(&label) instead"
+    )]
     pub async fn set_index(&mut self, client: &Client, index: u64) -> Result<(), Error> {
         self.index = index;
         client.update_label(self).await

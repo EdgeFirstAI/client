@@ -40,11 +40,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated annotation support section: `create-snapshot` supports annotated Arrow files
   - Clarified AGTG `--autolabel` only works with MCAP snapshots
 
+### Deprecated
+
+- **Python bindings: `Dataset` class label methods with `client` parameter**
+  - `Dataset.labels(client)` → use `dataset.labels()` (new) or `client.labels(dataset.id)`
+  - `Dataset.add_label(client, name)` → use `dataset.add_label(name)` (new) or `client.add_label(dataset.id, name)`
+  - `Dataset.remove_label(client, name)` → use `dataset.remove_label(name)` (new) or `client.remove_label(label.id)`
+  - New methods without `client` parameter now available (Dataset stores client reference internally)
+  - Old methods emit `DeprecationWarning` when called
+  - Planned removal: v3.0.0
+
+- **Rust: Convenience methods on data objects**
+  - `Dataset::labels(&self, client)` → use `client.labels(dataset.id())`
+  - `Dataset::add_label(&self, client, name)` → use `client.add_label(dataset.id(), name)`
+  - `Dataset::remove_label(&self, client, name)` → use `client.remove_label(label.id())`
+  - `Label::remove(&self, client)` → use `client.remove_label(label.id())`
+  - Methods marked `#[deprecated]` - emit compile-time warnings
+  - Planned removal: v3.0.0
+
 ### Fixed
 
 - **Python bindings: Added `SnapshotFromDatasetResult` class**
   - Complete type stub in `.pyi` file with docstrings
   - Properties: `id` (SnapshotID), `task_id` (TaskID | None)
+
+### Migration Guide: Dataset Label Methods
+
+The `Dataset` class now stores an internal client reference, enabling cleaner
+method calls without passing `client` explicitly. The old API with `client`
+parameter is deprecated but still works.
+
+**Before (deprecated):**
+
+```python
+# OLD: Passing client to every method (emits DeprecationWarning)
+dataset = client.dataset("ds-123")
+labels = dataset.labels(client)
+dataset.add_label(client, "person")
+dataset.remove_label(client, "car")
+```
+
+**After (recommended):**
+
+```python
+# NEW: Clean API - Dataset stores client reference internally
+dataset = client.dataset("ds-123")
+labels = dataset.labels()          # No client needed!
+dataset.add_label("person")        # Clean and simple
+dataset.remove_label("car")        # Intuitive
+
+# Alternative: Use Client methods directly (also valid)
+labels = client.labels(dataset.id)
+client.add_label(dataset.id, "person")
+```
+
+**Rust users:** Use `client.method(id)` pattern instead of `dataset.method(&client)`:
+
+```rust
+// Deprecated (emits compile warning)
+let labels = dataset.labels(&client).await?;
+
+// Recommended
+let labels = client.labels(dataset.id()).await?;
+```
+
+**Why this change?**
+
+1. **Pythonic**: Objects that can perform operations should do so directly
+2. **Ergonomic**: Less boilerplate, cleaner code
+3. **Consistent**: Rust keeps explicit `client` passing (idiomatic), Python gets OOP style
 
 ## [2.5.2] - 2025-12-01
 

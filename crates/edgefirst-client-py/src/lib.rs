@@ -5,7 +5,7 @@ use pyo3::{
     prelude::*,
     types::{PyDateTime, PyDict},
 };
-use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::sync::mpsc;
 
 /// Emit a deprecation warning for uid() methods.
@@ -18,6 +18,28 @@ fn warn_uid_deprecated(py: Python<'_>, type_name: &str) -> PyResult<()> {
         "{}.uid is deprecated and will be removed in a future version. \
          Use str({}.id) instead.",
         type_name, type_name
+    );
+    warnings.call_method1(
+        "warn",
+        (
+            message,
+            py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
+    Ok(())
+}
+
+/// Emit a deprecation warning for methods that take client as a parameter.
+///
+/// This function calls Python's warnings.warn() to notify users that passing
+/// `client` to a method is deprecated. The new API embeds the client reference
+/// internally.
+fn warn_method_deprecated(py: Python<'_>, type_name: &str, method_name: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let message = format!(
+        "{}.{}(client, ...) is deprecated and will be removed in v3.0.0. \
+         Use {}.{}(...) without the client parameter instead.",
+        type_name, method_name, type_name, method_name
     );
     warnings.call_method1(
         "warn",
@@ -1647,11 +1669,36 @@ impl Project {
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Dataset(edgefirst_client::Dataset);
+pub struct Dataset {
+    inner: edgefirst_client::Dataset,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl Dataset {
+    /// Create a Dataset with a client reference (for new ergonomic API)
+    fn with_client(
+        inner: edgefirst_client::Dataset,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+
+    /// Create a Dataset without a client reference (legacy)
+    #[allow(dead_code)]
+    fn without_client(inner: edgefirst_client::Dataset) -> Self {
+        Self {
+            inner,
+            client: None,
+        }
+    }
+}
 
 impl Display for Dataset {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -1659,52 +1706,157 @@ impl Display for Dataset {
 impl Dataset {
     #[getter]
     pub fn id(&self) -> DatasetID {
-        DatasetID(self.0.id())
+        DatasetID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "Dataset")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn project_id(&self) -> ProjectID {
-        ProjectID(self.0.project_id())
+        ProjectID(self.inner.project_id())
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
     #[getter]
     pub fn created(&self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
-        Ok(self.0.created().into_pyobject(py)?.into())
+        Ok(self.inner.created().into_pyobject(py)?.into())
     }
 
-    pub fn labels(&self, py: Python<'_>, client: &Client) -> Result<Vec<Label>, Error> {
-        let dataset_id = Bound::new(py, self.id())?.into_any();
-        client.labels(dataset_id)
+    /// Get labels for this dataset.
+    ///
+    /// New API (v2.6.0+): `dataset.labels()` - uses embedded client reference
+    /// Deprecated API: `dataset.labels(client)` - passing client explicitly
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.labels(dataset.id)` instead.
+    #[pyo3(signature = (client=None))]
+    #[tokio_wrap::sync]
+    pub fn labels(&self, py: Python<'_>, client: Option<&Client>) -> Result<Vec<Label>, Error> {
+        // If client is passed, emit deprecation warning and use it
+        if let Some(c) = client {
+            warn_method_deprecated(py, "Dataset", "labels")?;
+            let labels = c.0.labels(self.inner.id()).await?;
+            return Ok(labels.into_iter().map(Label).collect());
+        }
+
+        // Use stored client reference (new API)
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.labels(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        let labels = client_ref.labels(self.inner.id()).await?;
+        Ok(labels.into_iter().map(Label).collect())
     }
 
-    pub fn add_label(&self, py: Python<'_>, client: &Client, name: &str) -> Result<(), Error> {
-        let dataset_id = Bound::new(py, self.id())?.into_any();
-        client.add_label(dataset_id, name)
+    /// Add a label to this dataset.
+    ///
+    /// New API (v2.6.0+): `dataset.add_label("name")` - uses embedded client
+    /// reference Deprecated API: `dataset.add_label(client, "name")` -
+    /// passing client explicitly
+    #[pyo3(signature = (name_or_client, name=None))]
+    #[tokio_wrap::sync]
+    pub fn add_label(
+        &self,
+        py: Python<'_>,
+        name_or_client: &Bound<'_, PyAny>,
+        name: Option<String>,
+    ) -> Result<(), Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = name_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "Dataset", "add_label")?;
+            let label_name = name.ok_or_else(|| {
+                Error::TypeError("add_label(client, name) requires name parameter".to_string())
+            })?;
+            client.0.add_label(self.inner.id(), &label_name).await?;
+            return Ok(());
+        }
+
+        // Try to extract as string (new API)
+        if let Ok(label_name) = name_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "Dataset has no client reference. Use client.add_label(dataset.id, name) instead."
+                        .to_string(),
+                )
+            })?;
+            client_ref.add_label(self.inner.id(), &label_name).await?;
+            return Ok(());
+        }
+
+        Err(Error::TypeError(
+            "add_label() first argument must be a string (label name) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
-    pub fn remove_label(&self, py: Python<'_>, client: &Client, name: &str) -> Result<(), Error> {
-        let labels = self.labels(py, client)?;
-        let label = labels
-            .iter()
-            .find(|l| l.name() == name)
-            .ok_or_else(|| Error::Error(edgefirst_client::Error::MissingLabel(name.to_string())))?;
-        client.remove_label(label.id())
+    /// Remove a label from this dataset by name.
+    ///
+    /// New API (v2.6.0+): `dataset.remove_label("name")` - uses embedded client
+    /// reference Deprecated API: `dataset.remove_label(client, "name")` -
+    /// passing client explicitly
+    #[pyo3(signature = (name_or_client, name=None))]
+    #[tokio_wrap::sync]
+    pub fn remove_label(
+        &self,
+        py: Python<'_>,
+        name_or_client: &Bound<'_, PyAny>,
+        name: Option<String>,
+    ) -> Result<(), Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = name_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "Dataset", "remove_label")?;
+            let label_name = name.ok_or_else(|| {
+                Error::TypeError("remove_label(client, name) requires name parameter".to_string())
+            })?;
+            let labels = client.0.labels(self.inner.id()).await?;
+            let label = labels
+                .iter()
+                .find(|l| l.name() == label_name)
+                .ok_or_else(|| {
+                    Error::Error(edgefirst_client::Error::MissingLabel(label_name.clone()))
+                })?;
+            client.0.remove_label(label.id()).await?;
+            return Ok(());
+        }
+
+        // Try to extract as string (new API)
+        if let Ok(label_name) = name_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "Dataset has no client reference. Use client.remove_label(label.id) instead."
+                        .to_string(),
+                )
+            })?;
+            let labels = client_ref.labels(self.inner.id()).await?;
+            let label = labels
+                .iter()
+                .find(|l| l.name() == label_name)
+                .ok_or_else(|| {
+                    Error::Error(edgefirst_client::Error::MissingLabel(label_name.clone()))
+                })?;
+            client_ref.remove_label(label.id()).await?;
+            return Ok(());
+        }
+
+        Err(Error::TypeError(
+            "remove_label() first argument must be a string (label name) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 }
 
@@ -1734,16 +1886,19 @@ impl Label {
         DatasetID(self.0.dataset_id())
     }
 
+    #[allow(deprecated)]
     #[tokio_wrap::sync]
     pub fn remove(&self, client: &Client) -> Result<(), Error> {
         Ok(self.0.remove(&client.0).await?)
     }
 
+    #[allow(deprecated)]
     #[tokio_wrap::sync]
     pub fn set_name(&mut self, client: &Client, name: &str) -> Result<(), Error> {
         Ok(self.0.set_name(&client.0, name).await?)
     }
 
+    #[allow(deprecated)]
     #[tokio_wrap::sync]
     pub fn set_index(&mut self, client: &Client, index: u64) -> Result<(), Error> {
         Ok(self.0.set_index(&client.0, index).await?)
@@ -2535,7 +2690,8 @@ impl Client {
     #[tokio_wrap::sync]
     pub fn dataset<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Dataset, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        Ok(Dataset(self.0.dataset(dataset_id.0).await?))
+        let inner = self.0.dataset(dataset_id.0).await?;
+        Ok(Dataset::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[pyo3(signature = (project_id, name = None))]
@@ -2546,12 +2702,13 @@ impl Client {
         name: Option<&str>,
     ) -> Result<Vec<Dataset>, Error> {
         let project_id: ProjectID = project_id.try_into()?;
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .datasets(project_id.0, name)
             .await?
             .into_iter()
-            .map(Dataset)
+            .map(|d| Dataset::with_client(d, Arc::clone(&client_arc)))
             .collect())
     }
 
@@ -3472,6 +3629,7 @@ impl Client {
             .await
     }
 
+    #[allow(deprecated)]
     #[tokio_wrap::sync]
     fn annotations_dataframe_sync<'py>(
         &self,

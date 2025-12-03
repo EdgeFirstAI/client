@@ -98,7 +98,7 @@ if __name__ == "__main__":
     dataset = filter(lambda d: d.name == "COCO", dataset)
     dataset = next(dataset, None)
     assert dataset is not None
-    labels = dataset.labels(client)
+    labels = dataset.labels()  # New ergonomic API (v2.6.0+)
     assert len(labels) == 80
 
     # Two passes to reset the label indices to the correct COCO values.
@@ -114,5 +114,5 @@ if __name__ == "__main__":
         index = coco_indices[label.name]
         label.set_index(client, index)
 
-    for label in dataset.labels(client):
+    for label in dataset.labels():  # New ergonomic API (v2.6.0+)
         assert label.name == coco_labels[label.index]

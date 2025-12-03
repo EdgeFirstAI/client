@@ -910,16 +910,84 @@ class Dataset:
         """The creation date of the dataset."""
         ...
 
-    def labels(self, client: Client) -> List[Label]:
-        """The labels associated with the dataset."""
+    def labels(self, client: Optional[Client] = None) -> List[Label]:
+        """
+        Get the labels associated with the dataset.
+
+        New API (v2.6.0+):
+            >>> labels = dataset.labels()  # Uses embedded client reference
+
+        Deprecated API:
+            >>> labels = dataset.labels(client)  # Passing client explicitly
+
+        Args:
+            client: The client to use for the request. Deprecated in v2.6.0+.
+                    Use the new API without passing client.
+
+        Returns:
+            A list of labels for the dataset.
+
+        Raises:
+            TypeError: If dataset has no client reference and client is not
+                       provided.
+
+        .. deprecated::
+            Passing ``client`` parameter is deprecated since v2.6.0.
+            Use ``dataset.labels()`` instead.
+        """
         ...
 
-    def add_label(self, client: Client, name: str) -> None:
-        """Add a label to the dataset."""
+    def add_label(
+        self, name_or_client: Union[str, Client], name: Optional[str] = None
+    ) -> None:
+        """
+        Add a label to the dataset.
+
+        New API (v2.6.0+):
+            >>> dataset.add_label("new_label")  # Embedded client
+
+        Deprecated API:
+            >>> dataset.add_label(client, "new_label")  # Passing client
+
+        Args:
+            name_or_client: Label name (new API) or Client (deprecated).
+            name: The label name when using deprecated API with client.
+
+        Raises:
+            TypeError: If dataset has no client reference and first argument is
+                       not a Client.
+
+        .. deprecated::
+            Passing ``client`` as first parameter is deprecated since v2.6.0.
+            Use ``dataset.add_label("name")`` instead.
+        """
         ...
 
-    def remove_label(self, client: Client, name: str) -> None:
-        """Remove a label from the dataset."""
+    def remove_label(
+        self, name_or_client: Union[str, Client], name: Optional[str] = None
+    ) -> None:
+        """
+        Remove a label from the dataset by name.
+
+        New API (v2.6.0+):
+            >>> dataset.remove_label("old_label")  # Embedded client
+
+        Deprecated API:
+            >>> dataset.remove_label(client, "old_label")  # Passing client
+
+        Args:
+            name_or_client: Label name (new API) or Client (deprecated).
+            name: The label name when using deprecated API with client.
+
+        Raises:
+            TypeError: If dataset has no client reference and first argument is
+                       not a Client.
+            Error: If the label is not found.
+
+        .. deprecated::
+            Passing ``client`` as first parameter is deprecated since v2.6.0.
+            Use ``dataset.remove_label("name")`` instead.
+        """
         ...
 
 class FileType(Enum):
