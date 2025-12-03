@@ -239,13 +239,10 @@ class TestParameter(unittest.TestCase):
 
     def test_variant_type(self):
         """Test variant_type() returns correct type names."""
-        self.assertEqual(
-            ec.Parameter.integer(42).variant_type(), "Integer")
+        self.assertEqual(ec.Parameter.integer(42).variant_type(), "Integer")
         self.assertEqual(ec.Parameter.real(3.14).variant_type(), "Real")
-        self.assertEqual(
-            ec.Parameter.boolean(True).variant_type(), "Boolean")
-        self.assertEqual(
-            ec.Parameter.string("test").variant_type(), "String")
+        self.assertEqual(ec.Parameter.boolean(True).variant_type(), "Boolean")
+        self.assertEqual(ec.Parameter.string("test").variant_type(), "String")
         self.assertEqual(ec.Parameter.array([]).variant_type(), "Array")
         self.assertEqual(ec.Parameter.object({}).variant_type(), "Object")
 
@@ -363,12 +360,14 @@ class TestParameter(unittest.TestCase):
     def test_array_simple_roundtrip(self):
         """Test list -> Parameter -> list preserves values and types."""
         # Convert to Parameter array
-        param = ec.Parameter.array([
-            ec.Parameter.integer(42),
-            ec.Parameter.real(3.14),
-            ec.Parameter.boolean(True),
-            ec.Parameter.string("test"),
-        ])
+        param = ec.Parameter.array(
+            [
+                ec.Parameter.integer(42),
+                ec.Parameter.real(3.14),
+                ec.Parameter.boolean(True),
+                ec.Parameter.string("test"),
+            ]
+        )
 
         # Verify it's an Array parameter
         self.assertTrue(param.is_array())
@@ -398,16 +397,22 @@ class TestParameter(unittest.TestCase):
     def test_array_nested_roundtrip(self):
         """Test nested arrays preserve structure."""
         # Create nested array: [[1, 2], [3, 4]]
-        param = ec.Parameter.array([
-            ec.Parameter.array([
-                ec.Parameter.integer(1),
-                ec.Parameter.integer(2),
-            ]),
-            ec.Parameter.array([
-                ec.Parameter.integer(3),
-                ec.Parameter.integer(4),
-            ]),
-        ])
+        param = ec.Parameter.array(
+            [
+                ec.Parameter.array(
+                    [
+                        ec.Parameter.integer(1),
+                        ec.Parameter.integer(2),
+                    ]
+                ),
+                ec.Parameter.array(
+                    [
+                        ec.Parameter.integer(3),
+                        ec.Parameter.integer(4),
+                    ]
+                ),
+            ]
+        )
 
         # Extract and verify
         extracted = param.as_array()
@@ -424,12 +429,14 @@ class TestParameter(unittest.TestCase):
     def test_object_simple_roundtrip(self):
         """Test dict -> Parameter -> dict preserves values and types."""
         # Create object with various types
-        param = ec.Parameter.object({
-            "count": ec.Parameter.integer(42),
-            "ratio": ec.Parameter.real(3.14),
-            "enabled": ec.Parameter.boolean(True),
-            "name": ec.Parameter.string("test"),
-        })
+        param = ec.Parameter.object(
+            {
+                "count": ec.Parameter.integer(42),
+                "ratio": ec.Parameter.real(3.14),
+                "enabled": ec.Parameter.boolean(True),
+                "name": ec.Parameter.string("test"),
+            }
+        )
 
         # Verify it's an Object parameter
         self.assertTrue(param.is_object())
@@ -459,16 +466,22 @@ class TestParameter(unittest.TestCase):
     def test_object_nested_roundtrip(self):
         """Test nested objects preserve structure."""
         # Create nested object
-        param = ec.Parameter.object({
-            "config": ec.Parameter.object({
-                "timeout": ec.Parameter.integer(30),
-                "retries": ec.Parameter.integer(3),
-            }),
-            "data": ec.Parameter.array([
-                ec.Parameter.string("a"),
-                ec.Parameter.string("b"),
-            ]),
-        })
+        param = ec.Parameter.object(
+            {
+                "config": ec.Parameter.object(
+                    {
+                        "timeout": ec.Parameter.integer(30),
+                        "retries": ec.Parameter.integer(3),
+                    }
+                ),
+                "data": ec.Parameter.array(
+                    [
+                        ec.Parameter.string("a"),
+                        ec.Parameter.string("b"),
+                    ]
+                ),
+            }
+        )
 
         # Extract and verify
         extracted = param.as_object()
@@ -487,29 +500,41 @@ class TestParameter(unittest.TestCase):
     def test_complex_nested_structure(self):
         """Test deeply nested structure with mixed types."""
         # Create complex nested structure
-        param = ec.Parameter.object({
-            "version": ec.Parameter.integer(1),
-            "settings": ec.Parameter.object({
-                "timeout": ec.Parameter.real(30.5),
-                "retries": ec.Parameter.integer(3),
-                "features": ec.Parameter.array([
-                    ec.Parameter.string("feature1"),
-                    ec.Parameter.string("feature2"),
-                ]),
-                "flags": ec.Parameter.object({
-                    "debug": ec.Parameter.boolean(True),
-                    "verbose": ec.Parameter.boolean(False),
-                }),
-            }),
-            "data": ec.Parameter.array([
-                ec.Parameter.integer(1),
-                ec.Parameter.integer(2),
-                ec.Parameter.array([
-                    ec.Parameter.integer(3),
-                    ec.Parameter.integer(4),
-                ]),
-            ]),
-        })
+        param = ec.Parameter.object(
+            {
+                "version": ec.Parameter.integer(1),
+                "settings": ec.Parameter.object(
+                    {
+                        "timeout": ec.Parameter.real(30.5),
+                        "retries": ec.Parameter.integer(3),
+                        "features": ec.Parameter.array(
+                            [
+                                ec.Parameter.string("feature1"),
+                                ec.Parameter.string("feature2"),
+                            ]
+                        ),
+                        "flags": ec.Parameter.object(
+                            {
+                                "debug": ec.Parameter.boolean(True),
+                                "verbose": ec.Parameter.boolean(False),
+                            }
+                        ),
+                    }
+                ),
+                "data": ec.Parameter.array(
+                    [
+                        ec.Parameter.integer(1),
+                        ec.Parameter.integer(2),
+                        ec.Parameter.array(
+                            [
+                                ec.Parameter.integer(3),
+                                ec.Parameter.integer(4),
+                            ]
+                        ),
+                    ]
+                ),
+            }
+        )
 
         # Extract and verify entire structure
         extracted = param.as_object()
@@ -580,16 +605,18 @@ class TestParameter(unittest.TestCase):
 
     def test_object_getitem(self):
         """Test Object parameter supports dict-like .get() access.
-        
+
         Note: Bracket indexing (param['key']) is not supported due to PyO3
         limitations with enum variants. Use .get('key') instead.
         """
-        param = ec.Parameter.object({
-            "count": ec.Parameter.integer(42),
-            "ratio": ec.Parameter.real(3.14),
-            "enabled": ec.Parameter.boolean(True),
-            "name": ec.Parameter.string("test"),
-        })
+        param = ec.Parameter.object(
+            {
+                "count": ec.Parameter.integer(42),
+                "ratio": ec.Parameter.real(3.14),
+                "enabled": ec.Parameter.boolean(True),
+                "name": ec.Parameter.string("test"),
+            }
+        )
 
         # Test successful key access with .get()
         self.assertEqual(param.get("count"), 42)
@@ -602,10 +629,12 @@ class TestParameter(unittest.TestCase):
 
     def test_object_get_method(self):
         """Test Object parameter supports .get() method like dict."""
-        param = ec.Parameter.object({
-            "model": ec.Parameter.string("yolov5"),
-            "detection": ec.Parameter.boolean(True),
-        })
+        param = ec.Parameter.object(
+            {
+                "model": ec.Parameter.string("yolov5"),
+                "detection": ec.Parameter.boolean(True),
+            }
+        )
 
         # Test successful key access
         self.assertEqual(param.get("model"), "yolov5")
@@ -618,14 +647,20 @@ class TestParameter(unittest.TestCase):
 
     def test_object_get_nested(self):
         """Test .get() works with nested structures."""
-        param = ec.Parameter.object({
-            "model": ec.Parameter.object({
-                "detection": ec.Parameter.boolean(True),
-                "config": ec.Parameter.object({
-                    "threshold": ec.Parameter.real(0.5),
-                }),
-            }),
-        })
+        param = ec.Parameter.object(
+            {
+                "model": ec.Parameter.object(
+                    {
+                        "detection": ec.Parameter.boolean(True),
+                        "config": ec.Parameter.object(
+                            {
+                                "threshold": ec.Parameter.real(0.5),
+                            }
+                        ),
+                    }
+                ),
+            }
+        )
 
         # Get nested object
         model = param.get("model")
@@ -645,15 +680,17 @@ class TestParameter(unittest.TestCase):
 
     def test_array_iteration(self):
         """Test Array parameter can be converted to native Python list.
-        
+
         Note: Direct indexing (param[0]) is not supported due to PyO3
         limitations. Use .as_array() to get a native Python list.
         """
-        param = ec.Parameter.array([
-            ec.Parameter.integer(10),
-            ec.Parameter.real(20.5),
-            ec.Parameter.string("thirty"),
-        ])
+        param = ec.Parameter.array(
+            [
+                ec.Parameter.integer(10),
+                ec.Parameter.real(20.5),
+                ec.Parameter.string("thirty"),
+            ]
+        )
 
         # Convert to Python list for indexing
         arr = param.as_array()
@@ -683,11 +720,13 @@ class TestParameter(unittest.TestCase):
 
     def test_object_keys_values_items(self):
         """Test Object dict-like .keys(), .values(), .items()."""
-        param = ec.Parameter.object({
-            "a": ec.Parameter.integer(1),
-            "b": ec.Parameter.integer(2),
-            "c": ec.Parameter.integer(3),
-        })
+        param = ec.Parameter.object(
+            {
+                "a": ec.Parameter.integer(1),
+                "b": ec.Parameter.integer(2),
+                "c": ec.Parameter.integer(3),
+            }
+        )
 
         # Test keys()
         keys = param.keys()
@@ -707,15 +746,17 @@ class TestParameter(unittest.TestCase):
 
     def test_len_for_collections(self):
         """Test length via .keys() for Object parameters.
-        
+
         Note: len() is not supported due to PyO3 limitations.
         Use len(obj.keys()) or len(obj.as_object()) instead.
         """
         # Object length via keys()
-        obj = ec.Parameter.object({
-            "a": ec.Parameter.integer(1),
-            "b": ec.Parameter.integer(2),
-        })
+        obj = ec.Parameter.object(
+            {
+                "a": ec.Parameter.integer(1),
+                "b": ec.Parameter.integer(2),
+            }
+        )
         self.assertEqual(len(obj.keys()), 2)
         self.assertEqual(len(obj.as_object()), 2)
 
@@ -729,15 +770,17 @@ class TestParameter(unittest.TestCase):
 
     def test_contains_for_collections(self):
         """Test membership checking via .keys() for Object parameters.
-        
+
         Note: 'in' operator is not supported due to PyO3 limitations.
         Use 'key in obj.keys()' instead.
         """
         # Object contains (check keys)
-        obj = ec.Parameter.object({
-            "model": ec.Parameter.string("yolov5"),
-            "detection": ec.Parameter.boolean(True),
-        })
+        obj = ec.Parameter.object(
+            {
+                "model": ec.Parameter.string("yolov5"),
+                "detection": ec.Parameter.boolean(True),
+            }
+        )
         keys = obj.keys()
         self.assertIn("model", keys)
         self.assertIn("detection", keys)
@@ -753,19 +796,23 @@ class TestParameter(unittest.TestCase):
 
     def test_pythonic_workflow_example(self):
         """Test real-world Pythonic workflow from user feedback.
-        
+
         This demonstrates the recommended patterns for working with
         Parameter objects in a Pythonic way.
         """
         # Simulate trainer.model_params structure
-        trainer_params = ec.Parameter.object({
-            "model": ec.Parameter.object({
-                "detection": ec.Parameter.boolean(True),
-                "name": ec.Parameter.string("yolov5"),
-                "threshold": ec.Parameter.real(0.75),
-            }),
-            "epochs": ec.Parameter.integer(100),
-        })
+        trainer_params = ec.Parameter.object(
+            {
+                "model": ec.Parameter.object(
+                    {
+                        "detection": ec.Parameter.boolean(True),
+                        "name": ec.Parameter.string("yolov5"),
+                        "threshold": ec.Parameter.real(0.75),
+                    }
+                ),
+                "epochs": ec.Parameter.integer(100),
+            }
+        )
 
         # Recommended: Chained .get() calls (Pythonic pattern)
         detection = trainer_params.get("model").get("detection")
