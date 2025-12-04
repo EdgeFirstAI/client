@@ -23,16 +23,26 @@ class TestTrainingSession(unittest.TestCase):
 
         # Find Unit Testing project and experiment
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
+        self.assertGreater(
+            len(projects),
+            0,
+            "Unit Testing project should exist")
         project = projects[0]
 
         experiments = client.experiments(project.id, "Unit Testing")
-        self.assertGreater(len(experiments), 0, "Unit Testing experiment should exist")
+        self.assertGreater(
+            len(experiments),
+            0,
+            "Unit Testing experiment should exist")
         experiment = experiments[0]
 
         # Get training sessions
-        sessions = client.training_sessions(experiment.id, "modelpack-usermanaged")
-        self.assertNotEqual(len(sessions), 0, "Training sessions should exist")
+        sessions = client.training_sessions(
+            experiment.id, "modelpack-usermanaged")
+        self.assertNotEqual(
+            len(sessions),
+            0,
+            "Training sessions should exist")
         session = sessions[0]
 
         # Set metrics
@@ -48,27 +58,37 @@ class TestTrainingSession(unittest.TestCase):
         self.assertEqual(len(updated_metrics), 3, "Should have 3 metrics")
 
         # Server returns epochs as Real, not Integer
-        self.assertEqual(updated_metrics["epochs"], Parameter.real(10))
+        self.assertEqual(
+            updated_metrics["epochs"],
+            Parameter.real(10))
         self.assertEqual(updated_metrics["loss"], Parameter.real(0.05))
 
         # Verify model metric preserved as string
         self.assertIn("model", updated_metrics)
         # Use string comparison instead of Parameter comparison
-        self.assertEqual(updated_metrics["model"], "modelpack")
+        self.assertEqual(
+            updated_metrics["model"],
+            "modelpack"
+        )
 
         # Upload file
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+        with tempfile.NamedTemporaryFile(
+                mode='w',
+                delete=False,
+                suffix='.txt') as f:
             f.write("background")
             labels_path = Path(f.name)
 
         try:
-            session.upload(client, [("artifacts/labels.txt", labels_path)])
+            session.upload(
+                client, [("artifacts/labels.txt", labels_path)])
 
             # Download and verify
             labels_content = session.download(client, "artifacts/labels.txt")
             self.assertEqual(
-                labels_content, "background", "Downloaded content should match uploaded"
-            )
+                labels_content,
+                "background",
+                "Downloaded content should match uploaded")
         finally:
             # Clean up
             if labels_path.exists():
@@ -86,7 +106,10 @@ class TestValidate(unittest.TestCase):
 
         # Find Unit Testing project
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
+        self.assertGreater(
+            len(projects),
+            0,
+            "Unit Testing project should exist")
         project = projects[0]
 
         # Get validation sessions
@@ -105,8 +128,8 @@ class TestValidate(unittest.TestCase):
                 session = s
                 break
         self.assertIsNotNone(
-            session, "modelpack-usermanaged validation session should exist"
-        )
+            session,
+            "modelpack-usermanaged validation session should exist")
         assert session is not None
 
         # Set and verify metrics
@@ -114,7 +137,9 @@ class TestValidate(unittest.TestCase):
         session.set_metrics(client, metrics)
 
         retrieved_metrics = session.metrics(client)
-        self.assertEqual(retrieved_metrics["accuracy"], Parameter.real(0.95))
+        self.assertEqual(
+            retrieved_metrics["accuracy"],
+            Parameter.real(0.95))
 
 
 class TestArtifacts(unittest.TestCase):
@@ -126,18 +151,26 @@ class TestArtifacts(unittest.TestCase):
 
         # Find Unit Testing project and experiment
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
+        self.assertGreater(
+            len(projects),
+            0,
+            "Unit Testing project should exist")
         project = projects[0]
 
         experiments = client.experiments(project.id, "Unit Testing")
-        self.assertGreater(len(experiments), 0, "Unit Testing experiment should exist")
+        self.assertGreater(
+            len(experiments),
+            0,
+            "Unit Testing experiment should exist")
         experiment = experiments[0]
 
         # Get training session
-        trainers = client.training_sessions(experiment.id, "modelpack-960x540")
+        trainers = client.training_sessions(
+            experiment.id, "modelpack-960x540")
         self.assertGreater(
-            len(trainers), 0, "modelpack-960x540 training session should exist"
-        )
+            len(trainers),
+            0,
+            "modelpack-960x540 training session should exist")
         trainer = trainers[0]
 
         # Get artifacts
@@ -149,12 +182,13 @@ class TestArtifacts(unittest.TestCase):
         # Download each artifact
         for artifact in artifacts:
             output_path = test_dir / artifact.name
-            client.download_artifact(trainer.id, artifact.name, output_path, None)
+            client.download_artifact(
+                trainer.id, artifact.name, output_path, None)
 
             # Verify download
             self.assertTrue(
-                output_path.exists(), f"Artifact {artifact.name} should be downloaded"
-            )
+                output_path.exists(),
+                f"Artifact {artifact.name} should be downloaded")
 
             # Clean up
             if output_path.exists():
@@ -163,8 +197,11 @@ class TestArtifacts(unittest.TestCase):
         # Test non-existent artifact
         fake_path = test_dir / "fakefile.txt"
         with self.assertRaises(Exception):
-            client.download_artifact(trainer.id, "fakefile.txt", fake_path, None)
-        self.assertFalse(fake_path.exists(), "Fake file should not be created")
+            client.download_artifact(
+                trainer.id, "fakefile.txt", fake_path, None)
+        self.assertFalse(
+            fake_path.exists(),
+            "Fake file should not be created")
 
 
 class TestCheckpoints(unittest.TestCase):
@@ -176,18 +213,26 @@ class TestCheckpoints(unittest.TestCase):
 
         # Find Unit Testing project and experiment
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
+        self.assertGreater(
+            len(projects),
+            0,
+            "Unit Testing project should exist")
         project = projects[0]
 
         experiments = client.experiments(project.id, "Unit Testing")
-        self.assertGreater(len(experiments), 0, "Unit Testing experiment should exist")
+        self.assertGreater(
+            len(experiments),
+            0,
+            "Unit Testing experiment should exist")
         experiment = experiments[0]
 
         # Get training session
-        trainers = client.training_sessions(experiment.id, "modelpack-usermanaged")
+        trainers = client.training_sessions(
+            experiment.id, "modelpack-usermanaged")
         self.assertGreater(
-            len(trainers), 0, "modelpack-usermanaged training session should exist"
-        )
+            len(trainers),
+            0,
+            "modelpack-usermanaged training session should exist")
         trainer = trainers[0]
 
         test_dir = get_test_data_dir()
@@ -199,26 +244,32 @@ class TestCheckpoints(unittest.TestCase):
             checkpoint_path.write_text("Test Checkpoint")
 
             # Upload checkpoint
-            trainer.upload(client, [("checkpoints/checkpoint.txt", checkpoint_path)])
+            trainer.upload(
+                client,
+                [("checkpoints/checkpoint.txt", checkpoint_path)])
 
             # Download checkpoint
             client.download_checkpoint(
-                trainer.id, "checkpoint.txt", checkpoint2_path, None
-            )
+                trainer.id,
+                "checkpoint.txt",
+                checkpoint2_path,
+                None)
 
             # Verify content
             content = checkpoint2_path.read_text()
             self.assertEqual(
                 content,
                 "Test Checkpoint",
-                "Downloaded checkpoint should match uploaded",
-            )
+                "Downloaded checkpoint should match uploaded")
 
             # Test non-existent checkpoint
             fake_path = test_dir / "fakefile.txt"
             with self.assertRaises(Exception):
-                client.download_checkpoint(trainer.id, "fakefile.txt", fake_path, None)
-            self.assertFalse(fake_path.exists(), "Fake file should not be created")
+                client.download_checkpoint(
+                    trainer.id, "fakefile.txt", fake_path, None)
+            self.assertFalse(
+                fake_path.exists(),
+                "Fake file should not be created")
 
         finally:
             # Clean up
@@ -228,5 +279,5 @@ class TestCheckpoints(unittest.TestCase):
                 checkpoint2_path.unlink()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

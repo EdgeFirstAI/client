@@ -1593,11 +1593,26 @@ impl Organization {
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Project(edgefirst_client::Project);
+pub struct Project {
+    inner: edgefirst_client::Project,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl Project {
+    fn with_client(
+        inner: edgefirst_client::Project,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+}
 
 impl Display for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -1605,66 +1620,168 @@ impl Display for Project {
 impl Project {
     #[getter]
     pub fn id(&self) -> ProjectID {
-        ProjectID(self.0.id())
+        ProjectID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "Project")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
-    #[pyo3(signature = (client, name = None))]
-    pub fn datasets<'py>(
+    /// Get datasets for this project.
+    ///
+    /// New API (v2.6.0+): `project.datasets()` - uses embedded client reference
+    /// Deprecated API: `project.datasets(client)` - passing client explicitly
+    #[pyo3(signature = (client_or_name=None, name=None))]
+    #[tokio_wrap::sync]
+    pub fn datasets(
         &self,
-        py: Python<'py>,
-        client: &Client,
+        py: Python<'_>,
+        client_or_name: Option<&Bound<'_, PyAny>>,
         name: Option<&str>,
     ) -> Result<Vec<Dataset>, Error> {
-        let project_id = Bound::new(py, self.id())?.into_any();
-        let dataset = client.datasets(project_id, name)?;
-        Ok(dataset)
+        // Handle deprecated API: datasets(client, name)
+        if let Some(arg) = client_or_name {
+            if let Ok(client) = arg.extract::<PyRef<Client>>() {
+                warn_method_deprecated(py, "Project", "datasets")?;
+                let client_arc = Arc::new(client.0.clone());
+                let datasets = client.0.datasets(self.inner.id(), name).await?;
+                return Ok(datasets
+                    .into_iter()
+                    .map(|d| Dataset::with_client(d, Arc::clone(&client_arc)))
+                    .collect());
+            }
+            // First arg is name string
+            if let Ok(name_str) = arg.extract::<String>() {
+                let client_ref = self.client.as_ref().ok_or_else(|| {
+                    Error::TypeError(
+                        "Project has no client reference. Use client.datasets(project.id) instead."
+                            .to_string(),
+                    )
+                })?;
+                let datasets = client_ref
+                    .datasets(self.inner.id(), Some(&name_str))
+                    .await?;
+                return Ok(datasets
+                    .into_iter()
+                    .map(|d| Dataset::with_client(d, Arc::clone(client_ref)))
+                    .collect());
+            }
+        }
+
+        // New API: datasets() or datasets(name=...)
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Project has no client reference. Use client.datasets(project.id) instead."
+                    .to_string(),
+            )
+        })?;
+        let datasets = client_ref.datasets(self.inner.id(), name).await?;
+        Ok(datasets
+            .into_iter()
+            .map(|d| Dataset::with_client(d, Arc::clone(client_ref)))
+            .collect())
     }
 
-    #[pyo3(signature = (client, name = None))]
+    /// Get experiments for this project.
+    ///
+    /// New API (v2.6.0+): `project.experiments()` - uses embedded client
+    /// reference Deprecated API: `project.experiments(client)` - passing
+    /// client explicitly
+    #[pyo3(signature = (client_or_name=None, name=None))]
+    #[tokio_wrap::sync]
     pub fn experiments(
         &self,
         py: Python<'_>,
-        client: &Client,
+        client_or_name: Option<&Bound<'_, PyAny>>,
         name: Option<&str>,
     ) -> Result<Vec<Experiment>, Error> {
-        let project_id = Bound::new(py, self.id())?.into_any();
-        client.experiments(project_id, name)
+        if let Some(arg) = client_or_name {
+            if let Ok(client) = arg.extract::<PyRef<Client>>() {
+                warn_method_deprecated(py, "Project", "experiments")?;
+                let client_arc = Arc::new(client.0.clone());
+                let experiments = client.0.experiments(self.inner.id(), name).await?;
+                return Ok(experiments
+                    .into_iter()
+                    .map(|e| Experiment::with_client(e, Arc::clone(&client_arc)))
+                    .collect());
+            }
+            if let Ok(name_str) = arg.extract::<String>() {
+                let client_ref = self.client.as_ref().ok_or_else(|| {
+                    Error::TypeError(
+                        "Project has no client reference. Use client.experiments(project.id) instead."
+                            .to_string(),
+                    )
+                })?;
+                let client_arc = Arc::new((**client_ref).clone());
+                let experiments = client_ref
+                    .experiments(self.inner.id(), Some(&name_str))
+                    .await?;
+                return Ok(experiments
+                    .into_iter()
+                    .map(|e| Experiment::with_client(e, Arc::clone(&client_arc)))
+                    .collect());
+            }
+        }
+
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Project has no client reference. Use client.experiments(project.id) instead."
+                    .to_string(),
+            )
+        })?;
+        let client_arc = Arc::new((**client_ref).clone());
+        let experiments = client_ref.experiments(self.inner.id(), name).await?;
+        Ok(experiments
+            .into_iter()
+            .map(|e| Experiment::with_client(e, Arc::clone(&client_arc)))
+            .collect())
     }
 
-    #[pyo3(signature = (client, name = None))]
-    pub fn training_sessions(
-        &self,
-        py: Python<'_>,
-        client: &Client,
-        name: Option<&str>,
-    ) -> Result<Vec<TrainingSession>, Error> {
-        let project_id = Bound::new(py, self.id())?.into_any();
-        client.training_sessions(project_id, name)
-    }
-
+    /// Get validation sessions for this project.
+    ///
+    /// New API (v2.6.0+): `project.validation_sessions()` - uses embedded
+    /// client reference Deprecated API:
+    /// `project.validation_sessions(client)` - passing client explicitly
+    #[pyo3(signature = (client=None))]
+    #[tokio_wrap::sync]
     pub fn validation_sessions(
         &self,
         py: Python<'_>,
-        client: &Client,
+        client: Option<&Client>,
     ) -> Result<Vec<ValidationSession>, Error> {
-        let project_id = Bound::new(py, self.id())?.into_any();
-        client.validation_sessions(project_id)
+        if let Some(c) = client {
+            warn_method_deprecated(py, "Project", "validation_sessions")?;
+            let client_arc = Arc::new(c.0.clone());
+            let sessions = c.0.validation_sessions(self.inner.id()).await?;
+            return Ok(sessions
+                .into_iter()
+                .map(|s| ValidationSession::with_client(s, Arc::clone(&client_arc)))
+                .collect());
+        }
+
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Project has no client reference. Use client.validation_sessions(project.id) instead."
+                    .to_string(),
+            )
+        })?;
+        let sessions = client_ref.validation_sessions(self.inner.id()).await?;
+        Ok(sessions
+            .into_iter()
+            .map(|s| ValidationSession::with_client(s, Arc::clone(client_ref)))
+            .collect())
     }
 }
 
@@ -1858,6 +1975,326 @@ impl Dataset {
                 .to_string(),
         ))
     }
+
+    /// Download this dataset to a local directory.
+    ///
+    /// New API (v2.6.0+): `dataset.download(output, ...)` - uses embedded
+    /// client reference
+    ///
+    /// Note: For downloading multiple samples, this is the recommended approach
+    /// as it uses batch downloading for far higher performance compared to
+    /// downloading samples individually.
+    ///
+    /// Args:
+    ///     output: Local directory path to save downloaded files
+    ///     groups: Filter by sample groups (e.g., ["train", "val"])
+    ///     types: File types to download (default: [FileType.Image])
+    ///     flatten: If True, download all files to a flat directory structure
+    ///     progress: Optional callback function(current, total) for progress
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.download_dataset(dataset.id, ...)` instead.
+    #[pyo3(signature = (output, groups = vec![], types = vec![FileType::Image], flatten = false, progress = None))]
+    pub fn download(
+        &self,
+        output: PathBuf,
+        groups: Vec<String>,
+        types: Vec<FileType>,
+        flatten: bool,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.download_dataset(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+
+        let types_converted: Vec<edgefirst_client::FileType> = types
+            .into_iter()
+            .map(|x| match x {
+                FileType::Image => edgefirst_client::FileType::Image,
+                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
+                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
+                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
+                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
+                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+            })
+            .collect();
+
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = client_ref.clone();
+                let dataset_id = self.inner.id();
+                let groups_clone = groups.clone();
+                let types_clone = types_converted.clone();
+                let output_clone = output.clone();
+
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        client
+                            .download_dataset(
+                                dataset_id,
+                                &groups_clone,
+                                &types_clone,
+                                output_clone,
+                                flatten,
+                                Some(tx),
+                            )
+                            .await
+                    })
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    });
+                }
+
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let client = client_ref.clone();
+                let dataset_id = self.inner.id();
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    client
+                        .download_dataset(
+                            dataset_id,
+                            &groups,
+                            &types_converted,
+                            output,
+                            flatten,
+                            None,
+                        )
+                        .await
+                })?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Get samples for this dataset.
+    ///
+    /// New API (v2.6.0+): `dataset.samples(...)` - uses embedded client
+    /// reference
+    ///
+    /// Args:
+    ///     annotation_set_id: Optional annotation set to include annotations
+    /// from     annotation_types: Filter by annotation types
+    ///     groups: Filter by sample groups (e.g., ["train", "val"])
+    ///     types: File types to include (default: [FileType.Image])
+    ///     progress: Optional callback function(current, total) for progress
+    ///
+    /// Returns:
+    ///     List of Sample objects
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.samples(dataset.id, ...)` instead.
+    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None))]
+    pub fn samples<'py>(
+        &self,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        annotation_types: Vec<AnnotationType>,
+        groups: Vec<String>,
+        types: Vec<FileType>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Vec<Sample>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.samples(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+
+        let annotation_set_id: Option<AnnotationSetID> = match annotation_set_id {
+            Some(id) => Some(id.try_into()?),
+            None => None,
+        };
+
+        let annotation_types_converted: Vec<edgefirst_client::AnnotationType> = annotation_types
+            .into_iter()
+            .map(|x| match x {
+                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
+                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
+            })
+            .collect();
+
+        let types_converted: Vec<edgefirst_client::FileType> = types
+            .into_iter()
+            .map(|x| match x {
+                FileType::Image => edgefirst_client::FileType::Image,
+                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
+                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
+                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
+                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
+                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+            })
+            .collect();
+
+        let client_arc = Arc::clone(client_ref);
+        let samples = match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = client_ref.clone();
+                let dataset_id = self.inner.id();
+                let groups_clone = groups.clone();
+                let annotation_types_clone = annotation_types_converted.clone();
+                let types_clone = types_converted.clone();
+
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        client
+                            .samples(
+                                dataset_id,
+                                annotation_set_id.map(|x| x.0),
+                                &annotation_types_clone,
+                                &groups_clone,
+                                &types_clone,
+                                Some(tx),
+                            )
+                            .await
+                    })
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    });
+                }
+
+                task.join().unwrap()?
+            }
+            None => {
+                let client = client_ref.clone();
+                let dataset_id = self.inner.id();
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    client
+                        .samples(
+                            dataset_id,
+                            annotation_set_id.map(|x| x.0),
+                            &annotation_types_converted,
+                            &groups,
+                            &types_converted,
+                            None,
+                        )
+                        .await
+                })?
+            }
+        };
+
+        Ok(samples
+            .into_iter()
+            .map(|s| Sample::with_client(s, Arc::clone(&client_arc)))
+            .collect())
+    }
+
+    /// Get annotation sets for this dataset.
+    ///
+    /// New API (v2.6.0+): `dataset.annotation_sets()` - uses embedded client
+    /// reference
+    ///
+    /// Returns:
+    ///     List of AnnotationSet objects associated with this dataset
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.annotation_sets(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn annotation_sets(&self) -> Result<Vec<AnnotationSet>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.annotation_sets(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+
+        let client_arc = Arc::clone(client_ref);
+        let annotation_sets = client_ref.annotation_sets(self.inner.id()).await?;
+        Ok(annotation_sets
+            .into_iter()
+            .map(|a| AnnotationSet::with_client(a, Arc::clone(&client_arc)))
+            .collect())
+    }
+
+    /// Get the count of samples in this dataset.
+    ///
+    /// New API (v2.6.0+): `dataset.samples_count()` - uses embedded client
+    /// reference
+    ///
+    /// Args:
+    ///     annotation_set_id: Optional annotation set to filter by
+    ///     annotation_types: Filter by annotation types
+    ///     groups: Filter by sample groups (e.g., ["train", "val"])
+    ///     types: File types to count (default: [FileType.Image])
+    ///
+    /// Returns:
+    ///     SamplesCountResult with train/val/test counts
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.samples_count(dataset.id, ...)` instead.
+    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image]))]
+    #[tokio_wrap::sync]
+    pub fn samples_count<'py>(
+        &self,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        annotation_types: Vec<AnnotationType>,
+        groups: Vec<String>,
+        types: Vec<FileType>,
+    ) -> Result<SamplesCountResult, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.samples_count(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+
+        let annotation_set_id: Option<AnnotationSetID> = match annotation_set_id {
+            Some(id) => Some(id.try_into()?),
+            None => None,
+        };
+
+        let annotation_types_converted: Vec<edgefirst_client::AnnotationType> = annotation_types
+            .into_iter()
+            .map(|x| match x {
+                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
+                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
+            })
+            .collect();
+
+        let types_converted: Vec<edgefirst_client::FileType> = types
+            .into_iter()
+            .map(|x| match x {
+                FileType::Image => edgefirst_client::FileType::Image,
+                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
+                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
+                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
+                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
+                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+            })
+            .collect();
+
+        Ok(SamplesCountResult(
+            client_ref
+                .samples_count(
+                    self.inner.id(),
+                    annotation_set_id.map(|x| x.0),
+                    &annotation_types_converted,
+                    &groups,
+                    &types_converted,
+                )
+                .await?,
+        ))
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -1925,11 +2362,26 @@ impl Display for Label {
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct AnnotationSet(edgefirst_client::AnnotationSet);
+pub struct AnnotationSet {
+    inner: edgefirst_client::AnnotationSet,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl AnnotationSet {
+    fn with_client(
+        inner: edgefirst_client::AnnotationSet,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+}
 
 impl Display for AnnotationSet {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -1937,42 +2389,131 @@ impl Display for AnnotationSet {
 impl AnnotationSet {
     #[getter]
     pub fn id(&self) -> AnnotationSetID {
-        AnnotationSetID(self.0.id())
+        AnnotationSetID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "AnnotationSet")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.0.dataset_id())
+        DatasetID(self.inner.dataset_id())
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
     #[getter]
     pub fn created(&self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
-        Ok(self.0.created().into_pyobject(py)?.into())
+        Ok(self.inner.created().into_pyobject(py)?.into())
+    }
+
+    /// Get annotations for this annotation set.
+    ///
+    /// Args:
+    ///     groups: List of dataset groups (train, val, test)
+    ///     annotation_types: List of annotation types to filter
+    ///     progress: Optional progress callback
+    ///
+    /// Returns:
+    ///     List[Annotation]: Annotations in this set
+    #[pyo3(signature = (groups = vec![], annotation_types = vec![], progress = None))]
+    #[tokio_wrap::sync]
+    pub fn annotations(
+        &self,
+        groups: Vec<String>,
+        annotation_types: Vec<AnnotationType>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Vec<Annotation>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "AnnotationSet has no client reference. Use client.annotations(annotation_set.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+
+        let annotation_types_converted: Vec<edgefirst_client::AnnotationType> = annotation_types
+            .into_iter()
+            .map(|x| match x {
+                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
+                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
+            })
+            .collect();
+
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = client_ref.clone();
+                let annotation_set_id = self.inner.id();
+                let groups_clone = groups.clone();
+                let annotation_types_clone = annotation_types_converted.clone();
+
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        client
+                            .annotations(
+                                annotation_set_id,
+                                &groups_clone,
+                                &annotation_types_clone,
+                                Some(tx),
+                            )
+                            .await
+                    })
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    });
+                }
+
+                Ok(task.join().unwrap()?.into_iter().map(Annotation).collect())
+            }
+            None => {
+                let annotations = client_ref
+                    .annotations(self.inner.id(), &groups, &annotation_types_converted, None)
+                    .await?;
+                Ok(annotations.into_iter().map(Annotation).collect())
+            }
+        }
     }
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Experiment(edgefirst_client::Experiment);
+pub struct Experiment {
+    inner: edgefirst_client::Experiment,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl Experiment {
+    fn with_client(
+        inner: edgefirst_client::Experiment,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+}
 
 impl Display for Experiment {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -1980,32 +2521,75 @@ impl Display for Experiment {
 impl Experiment {
     #[getter]
     pub fn id(&self) -> ExperimentID {
-        ExperimentID(self.0.id())
+        ExperimentID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "Experiment")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
+    }
+
+    /// Get training sessions for this experiment.
+    #[pyo3(signature = (name = None))]
+    #[tokio_wrap::sync]
+    pub fn training_sessions(&self, name: Option<&str>) -> Result<Vec<TrainingSession>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Experiment has no client reference. Use client.training_sessions(experiment.id) instead."
+                    .to_string(),
+            )
+        })?;
+        let client_arc = Arc::new((**client_ref).clone());
+        let sessions = client_ref.training_sessions(self.inner.id(), name).await?;
+        Ok(sessions
+            .into_iter()
+            .map(|s| TrainingSession::with_client(s, Arc::clone(&client_arc)))
+            .collect())
     }
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct TrainingSession(edgefirst_client::TrainingSession);
+pub struct TrainingSession {
+    inner: edgefirst_client::TrainingSession,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl TrainingSession {
+    /// Create a TrainingSession with a client reference (for new ergonomic API)
+    fn with_client(
+        inner: edgefirst_client::TrainingSession,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+
+    /// Create a TrainingSession without a client reference (legacy)
+    #[allow(dead_code)]
+    fn without_client(inner: edgefirst_client::TrainingSession) -> Self {
+        Self {
+            inner,
+            client: None,
+        }
+    }
+}
 
 impl Display for TrainingSession {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -2013,40 +2597,40 @@ impl Display for TrainingSession {
 impl TrainingSession {
     #[getter]
     pub fn id(&self) -> TrainingSessionID {
-        TrainingSessionID(self.0.id())
+        TrainingSessionID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "TrainingSession")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn experiment_id(&self) -> ExperimentID {
-        ExperimentID(self.0.experiment_id())
+        ExperimentID(self.inner.experiment_id())
     }
 
     #[getter]
     pub fn model(&self) -> &str {
-        self.0.model()
+        self.inner.model()
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
     #[getter]
     pub fn model_params<'py>(&self, py: Python<'py>) -> Result<Py<PyDict>, Error> {
         let params = PyDict::new(py);
 
-        for (key, value) in self.0.model_params() {
+        for (key, value) in self.inner.model_params() {
             let value = Parameter::from(value.clone());
             params.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2056,19 +2640,19 @@ impl TrainingSession {
 
     #[getter]
     pub fn dataset_params(&self) -> DatasetParams {
-        DatasetParams(self.0.dataset_params().clone())
+        DatasetParams(self.inner.dataset_params().clone())
     }
 
     #[getter]
     pub fn task(&self) -> Task {
-        Task(self.0.task())
+        Task(self.inner.task())
     }
 
     #[tokio_wrap::sync]
     pub fn metrics<'py>(&self, py: Python<'py>, client: &Client) -> Result<Py<PyDict>, Error> {
         let metrics = PyDict::new(py);
 
-        for (key, value) in self.0.metrics(&client.0).await? {
+        for (key, value) in self.inner.metrics(&client.0).await? {
             let value = Parameter::from(value.clone());
             metrics.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2087,7 +2671,7 @@ impl TrainingSession {
             let value: Parameter = value.try_into()?;
             map.insert(key, value.into());
         }
-        Ok(self.0.set_metrics(&client.0, map).await?)
+        Ok(self.inner.set_metrics(&client.0, map).await?)
     }
 
     pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
@@ -2097,7 +2681,7 @@ impl TrainingSession {
 
     #[tokio_wrap::sync]
     pub fn download_artifact(&self, client: &Client, filename: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.0.download_artifact(&client.0, filename).await?)
+        Ok(self.inner.download_artifact(&client.0, filename).await?)
     }
 
     #[tokio_wrap::sync]
@@ -2109,12 +2693,15 @@ impl TrainingSession {
         path: Option<PathBuf>,
     ) -> Result<(), Error> {
         let path = path.unwrap_or_else(|| PathBuf::from(filename));
-        Ok(self.0.upload_artifact(&client.0, filename, path).await?)
+        Ok(self
+            .inner
+            .upload_artifact(&client.0, filename, path)
+            .await?)
     }
 
     #[tokio_wrap::sync]
     pub fn download_checkpoint(&self, client: &Client, filename: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.0.download_checkpoint(&client.0, filename).await?)
+        Ok(self.inner.download_checkpoint(&client.0, filename).await?)
     }
 
     #[tokio_wrap::sync]
@@ -2126,71 +2713,100 @@ impl TrainingSession {
         path: Option<PathBuf>,
     ) -> Result<(), Error> {
         let path = path.unwrap_or_else(|| PathBuf::from(filename));
-        Ok(self.0.upload_checkpoint(&client.0, filename, path).await?)
+        Ok(self
+            .inner
+            .upload_checkpoint(&client.0, filename, path)
+            .await?)
     }
 
     #[tokio_wrap::sync]
     pub fn upload(&self, client: &Client, files: Vec<(String, PathBuf)>) -> Result<(), Error> {
-        Ok(self.0.upload(&client.0, &files).await?)
+        Ok(self.inner.upload(&client.0, &files).await?)
     }
 
     #[tokio_wrap::sync]
     pub fn download(&self, client: &Client, filename: &str) -> Result<String, Error> {
-        Ok(self.0.download(&client.0, filename).await?)
+        Ok(self.inner.download(&client.0, filename).await?)
     }
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct ValidationSession(edgefirst_client::ValidationSession);
+pub struct ValidationSession {
+    inner: edgefirst_client::ValidationSession,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl ValidationSession {
+    /// Create a ValidationSession with a client reference (for new ergonomic
+    /// API)
+    fn with_client(
+        inner: edgefirst_client::ValidationSession,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+
+    /// Create a ValidationSession without a client reference (legacy)
+    #[allow(dead_code)]
+    fn without_client(inner: edgefirst_client::ValidationSession) -> Self {
+        Self {
+            inner,
+            client: None,
+        }
+    }
+}
 
 #[pymethods]
 impl ValidationSession {
     #[getter]
     pub fn id(&self) -> ValidationSessionID {
-        ValidationSessionID(self.0.id())
+        ValidationSessionID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "ValidationSession")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn name(&self) -> &str {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
     #[getter]
     pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.0.dataset_id())
+        DatasetID(self.inner.dataset_id())
     }
 
     #[getter]
     pub fn experiment_id(&self) -> ExperimentID {
-        ExperimentID(self.0.experiment_id())
+        ExperimentID(self.inner.experiment_id())
     }
 
     #[getter]
     pub fn training_session_id(&self) -> TrainingSessionID {
-        TrainingSessionID(self.0.training_session_id())
+        TrainingSessionID(self.inner.training_session_id())
     }
 
     #[getter]
     pub fn annotation_set_id(&self) -> AnnotationSetID {
-        AnnotationSetID(self.0.annotation_set_id())
+        AnnotationSetID(self.inner.annotation_set_id())
     }
 
     #[getter]
     pub fn params<'py>(&self, py: Python<'py>) -> Result<Py<PyDict>, Error> {
         let params = PyDict::new(py);
 
-        for (key, value) in self.0.params() {
+        for (key, value) in self.inner.params() {
             let value = Parameter::from(value.clone());
             params.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2200,14 +2816,14 @@ impl ValidationSession {
 
     #[getter]
     pub fn task(&self) -> Task {
-        Task(self.0.task().clone())
+        Task(self.inner.task().clone())
     }
 
     #[tokio_wrap::sync]
     pub fn metrics<'py>(&self, py: Python<'py>, client: &Client) -> Result<Py<PyDict>, Error> {
         let metrics = PyDict::new(py);
 
-        for (key, value) in self.0.metrics(&client.0).await? {
+        for (key, value) in self.inner.metrics(&client.0).await? {
             let value = Parameter::from(value.clone());
             metrics.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2226,7 +2842,7 @@ impl ValidationSession {
             let value: Parameter = value.try_into()?;
             map.insert(key, value.into());
         }
-        Ok(self.0.set_metrics(&client.0, map).await?)
+        Ok(self.inner.set_metrics(&client.0, map).await?)
     }
 
     pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
@@ -2236,53 +2852,131 @@ impl ValidationSession {
 
     #[tokio_wrap::sync]
     pub fn upload(&self, client: &Client, files: Vec<(String, PathBuf)>) -> Result<(), Error> {
-        Ok(self.0.upload(&client.0, &files).await?)
+        Ok(self.inner.upload(&client.0, &files).await?)
     }
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Snapshot(edgefirst_client::Snapshot);
+pub struct Snapshot {
+    inner: edgefirst_client::Snapshot,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl Snapshot {
+    /// Create a Snapshot with a client reference (for new ergonomic API)
+    fn with_client(
+        inner: edgefirst_client::Snapshot,
+        client: Arc<edgefirst_client::Client>,
+    ) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+
+    /// Create a Snapshot without a client reference (legacy)
+    #[allow(dead_code)]
+    fn without_client(inner: edgefirst_client::Snapshot) -> Self {
+        Self {
+            inner,
+            client: None,
+        }
+    }
+}
 
 #[pymethods]
 impl Snapshot {
     #[getter]
     pub fn id(&self) -> SnapshotID {
-        SnapshotID(self.0.id())
+        SnapshotID(self.inner.id())
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<String> {
         warn_uid_deprecated(py, "Snapshot")?;
-        Ok(self.0.id().to_string())
+        Ok(self.inner.id().to_string())
     }
 
     #[getter]
     pub fn description(&self) -> &str {
-        self.0.description()
+        self.inner.description()
     }
 
     #[getter]
     pub fn status(&self) -> &str {
-        self.0.status()
+        self.inner.status()
     }
 
     #[getter]
     pub fn path(&self) -> &str {
-        self.0.path()
+        self.inner.path()
     }
 
     #[getter]
     pub fn created(&self) -> String {
-        self.0.created().to_string()
+        self.inner.created().to_string()
+    }
+
+    /// Download this snapshot to a local directory.
+    ///
+    /// New API (v2.6.0+): `snapshot.download(output_path)` - uses embedded
+    /// client reference Deprecated API: `snapshot.download(client,
+    /// output_path)` - passing client explicitly
+    ///
+    /// Args:
+    ///     output_or_client: Either the output path (str) or Client
+    /// (deprecated)     output: Output path when using deprecated API
+    ///
+    /// If the Snapshot was created without a client reference (legacy code),
+    /// use `client.download_snapshot(snapshot.id, output)` instead.
+    #[pyo3(signature = (output_or_client, output=None))]
+    #[tokio_wrap::sync]
+    pub fn download(
+        &self,
+        py: Python<'_>,
+        output_or_client: &Bound<'_, PyAny>,
+        output: Option<String>,
+    ) -> Result<(), Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = output_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "Snapshot", "download")?;
+            let output_path = output.ok_or_else(|| {
+                Error::TypeError("download(client, output) requires output parameter".to_string())
+            })?;
+            client
+                .0
+                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
+                .await?;
+            return Ok(());
+        }
+
+        // Try to extract as string (new API)
+        if let Ok(output_path) = output_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "Snapshot has no client reference. Use client.download_snapshot(snapshot.id, output) instead."
+                        .to_string(),
+                )
+            })?;
+            client_ref
+                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
+                .await?;
+            return Ok(());
+        }
+
+        Err(Error::TypeError(
+            "download() first argument must be a string (output path) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
     pub fn __repr__(&self) -> String {
         format!(
             "Snapshot(id={}, description='{}', status='{}', path='{}')",
-            self.0.id(),
-            self.0.description(),
-            self.0.status(),
-            self.0.path()
+            self.inner.id(),
+            self.inner.description(),
+            self.inner.status(),
+            self.inner.path()
         )
     }
 }
@@ -2672,19 +3366,21 @@ impl Client {
     #[pyo3(signature = (name = None))]
     #[tokio_wrap::sync]
     pub fn projects(&self, name: Option<&str>) -> Result<Vec<Project>, Error> {
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .projects(name)
             .await?
             .into_iter()
-            .map(Project)
+            .map(|p| Project::with_client(p, Arc::clone(&client_arc)))
             .collect())
     }
 
     #[tokio_wrap::sync]
     pub fn project<'py>(&self, project_id: Bound<'py, PyAny>) -> Result<Project, Error> {
         let project_id: ProjectID = project_id.try_into()?;
-        Ok(Project(self.0.project(project_id.0).await?))
+        let inner = self.0.project(project_id.0).await?;
+        Ok(Project::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[tokio_wrap::sync]
@@ -2794,12 +3490,13 @@ impl Client {
         dataset_id: Bound<'py, PyAny>,
     ) -> Result<Vec<AnnotationSet>, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .annotation_sets(dataset_id.0)
             .await?
             .into_iter()
-            .map(AnnotationSet)
+            .map(|s| AnnotationSet::with_client(s, Arc::clone(&client_arc)))
             .collect())
     }
 
@@ -2809,9 +3506,8 @@ impl Client {
         annotation_set_id: Bound<'py, PyAny>,
     ) -> Result<AnnotationSet, Error> {
         let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
-        Ok(AnnotationSet(
-            self.0.annotation_set(annotation_set_id.0).await?,
-        ))
+        let inner = self.0.annotation_set(annotation_set_id.0).await?;
+        Ok(AnnotationSet::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None))]
@@ -3120,7 +3816,11 @@ impl Client {
             ),
         }?;
 
-        Ok(samples.into_iter().map(Sample).collect::<Vec<_>>())
+        let client_arc = Arc::new(self.0.clone());
+        Ok(samples
+            .into_iter()
+            .map(|s| Sample::with_client(s, Arc::clone(&client_arc)))
+            .collect::<Vec<_>>())
     }
 
     /// Populate samples into a dataset with automatic file uploads.
@@ -3178,7 +3878,7 @@ impl Client {
 
         // Convert Python Sample objects to Rust Sample objects
         let samples: Vec<edgefirst_client::Sample> =
-            samples.iter().map(|s| s.borrow(py).0.clone()).collect();
+            samples.iter().map(|s| s.borrow(py).inner.clone()).collect();
 
         let results = match progress {
             Some(progress) => {
@@ -3264,12 +3964,6 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
-    pub fn experiment<'py>(&self, experiment_id: Bound<'py, PyAny>) -> Result<Experiment, Error> {
-        let experiment_id: ExperimentID = experiment_id.try_into()?;
-        Ok(Experiment(self.0.experiment(experiment_id.0).await?))
-    }
-
-    #[tokio_wrap::sync]
     #[pyo3(signature = (project_id, name = None))]
     pub fn experiments<'py>(
         &self,
@@ -3277,13 +3971,21 @@ impl Client {
         name: Option<&str>,
     ) -> Result<Vec<Experiment>, Error> {
         let project_id: ProjectID = project_id.try_into()?;
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .experiments(project_id.0, name)
             .await?
             .into_iter()
-            .map(Experiment)
+            .map(|e| Experiment::with_client(e, Arc::clone(&client_arc)))
             .collect())
+    }
+
+    #[tokio_wrap::sync]
+    pub fn experiment<'py>(&self, experiment_id: Bound<'py, PyAny>) -> Result<Experiment, Error> {
+        let experiment_id: ExperimentID = experiment_id.try_into()?;
+        let inner = self.0.experiment(experiment_id.0).await?;
+        Ok(Experiment::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[tokio_wrap::sync]
@@ -3292,8 +3994,10 @@ impl Client {
         training_session_id: Bound<'py, PyAny>,
     ) -> Result<TrainingSession, Error> {
         let training_session_id: TrainingSessionID = training_session_id.try_into()?;
-        Ok(TrainingSession(
-            self.0.training_session(training_session_id.0).await?,
+        let inner = self.0.training_session(training_session_id.0).await?;
+        Ok(TrainingSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
         ))
     }
 
@@ -3305,12 +4009,13 @@ impl Client {
         name: Option<&str>,
     ) -> Result<Vec<TrainingSession>, Error> {
         let experiment_id: ExperimentID = experiment_id.try_into()?;
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .training_sessions(experiment_id.0, name)
             .await?
             .into_iter()
-            .map(TrainingSession)
+            .map(|t| TrainingSession::with_client(t, Arc::clone(&client_arc)))
             .collect())
     }
 
@@ -3320,12 +4025,13 @@ impl Client {
         project_id: Bound<'py, PyAny>,
     ) -> Result<Vec<ValidationSession>, Error> {
         let project_id: ProjectID = project_id.try_into()?;
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .validation_sessions(project_id.0)
             .await?
             .into_iter()
-            .map(ValidationSession)
+            .map(|v| ValidationSession::with_client(v, Arc::clone(&client_arc)))
             .collect())
     }
 
@@ -3335,26 +4041,30 @@ impl Client {
         session_id: Bound<'py, PyAny>,
     ) -> Result<ValidationSession, Error> {
         let session_id: ValidationSessionID = session_id.try_into()?;
-        Ok(ValidationSession(
-            self.0.validation_session(session_id.0).await?,
+        let inner = self.0.validation_session(session_id.0).await?;
+        Ok(ValidationSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
         ))
     }
 
     #[tokio_wrap::sync]
     pub fn snapshots(&self) -> Result<Vec<Snapshot>, Error> {
+        let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
             .snapshots(None)
             .await?
             .into_iter()
-            .map(Snapshot)
+            .map(|s| Snapshot::with_client(s, Arc::clone(&client_arc)))
             .collect())
     }
 
     #[tokio_wrap::sync]
     pub fn snapshot<'py>(&self, snapshot_id: Bound<'py, PyAny>) -> Result<Snapshot, Error> {
         let snapshot_id: SnapshotID = snapshot_id.try_into()?;
-        Ok(Snapshot(self.0.snapshot(snapshot_id.0).await?))
+        let inner = self.0.snapshot(snapshot_id.0).await?;
+        Ok(Snapshot::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[tokio_wrap::sync]
@@ -3365,7 +4075,8 @@ impl Client {
 
     #[tokio_wrap::sync]
     pub fn create_snapshot(&self, path: &str) -> Result<Snapshot, Error> {
-        Ok(Snapshot(self.0.create_snapshot(path, None).await?))
+        let inner = self.0.create_snapshot(path, None).await?;
+        Ok(Snapshot::with_client(inner, Arc::new(self.0.clone())))
     }
 
     #[tokio_wrap::sync]
@@ -3936,135 +4647,156 @@ impl Annotation {
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Sample(edgefirst_client::Sample);
+pub struct Sample {
+    inner: edgefirst_client::Sample,
+    client: Option<Arc<edgefirst_client::Client>>,
+}
+
+impl Sample {
+    /// Create a Sample with a client reference (for new ergonomic API)
+    fn with_client(inner: edgefirst_client::Sample, client: Arc<edgefirst_client::Client>) -> Self {
+        Self {
+            inner,
+            client: Some(client),
+        }
+    }
+
+    /// Create a Sample without a client reference (legacy or new samples)
+    fn without_client(inner: edgefirst_client::Sample) -> Self {
+        Self {
+            inner,
+            client: None,
+        }
+    }
+}
 
 #[pymethods]
 impl Sample {
     /// Creates a new empty sample.
     #[new]
     pub fn new() -> Self {
-        Sample(edgefirst_client::Sample::new())
+        Sample::without_client(edgefirst_client::Sample::new())
     }
 
     /// Sets the image filename for this sample.
     pub fn set_image_name(&mut self, image_name: Option<String>) {
-        self.0.image_name = image_name;
+        self.inner.image_name = image_name;
     }
 
     /// Sets the group for this sample (e.g., "train", "val", "test").
     pub fn set_group(&mut self, group: Option<String>) {
-        self.0.group = group;
+        self.inner.group = group;
     }
 
     /// Sets the sequence name for this sample.
     pub fn set_sequence_name(&mut self, sequence_name: Option<String>) {
-        self.0.sequence_name = sequence_name;
+        self.inner.sequence_name = sequence_name;
     }
 
     /// Sets the sequence UUID for this sample.
     pub fn set_sequence_uuid(&mut self, sequence_uuid: Option<String>) {
-        self.0.sequence_uuid = sequence_uuid;
+        self.inner.sequence_uuid = sequence_uuid;
     }
 
     /// Sets the sequence description for this sample.
     pub fn set_sequence_description(&mut self, sequence_description: Option<String>) {
-        self.0.sequence_description = sequence_description;
+        self.inner.sequence_description = sequence_description;
     }
 
     /// Sets the frame number for this sample.
     pub fn set_frame_number(&mut self, frame_number: Option<u32>) {
-        self.0.frame_number = frame_number;
+        self.inner.frame_number = frame_number;
     }
 
     /// Adds a file to this sample.
     pub fn add_file(&mut self, file: &SampleFile) {
-        self.0.files.push(file.0.clone());
+        self.inner.files.push(file.0.clone());
     }
 
     /// Adds an annotation to this sample.
     pub fn add_annotation(&mut self, annotation: &Annotation) {
-        self.0.annotations.push(annotation.0.clone());
+        self.inner.annotations.push(annotation.0.clone());
     }
 
     #[getter]
     pub fn id(&self) -> Option<SampleID> {
-        self.0.id().map(SampleID)
+        self.inner.id().map(SampleID)
     }
 
     #[getter]
     pub fn uid(&self, py: Python<'_>) -> PyResult<Option<String>> {
         warn_uid_deprecated(py, "Sample")?;
-        Ok(self.0.id().map(|id| id.to_string()))
+        Ok(self.inner.id().map(|id| id.to_string()))
     }
 
     #[getter]
     pub fn name(&self) -> Option<String> {
-        self.0.name()
+        self.inner.name()
     }
 
     #[getter]
     pub fn group(&self) -> Option<String> {
-        self.0.group().cloned()
+        self.inner.group().cloned()
     }
 
     #[getter]
     pub fn sequence_name(&self) -> Option<String> {
-        self.0.sequence_name().cloned()
+        self.inner.sequence_name().cloned()
     }
 
     #[getter]
     pub fn sequence_uuid(&self) -> Option<String> {
-        self.0.sequence_uuid().cloned()
+        self.inner.sequence_uuid().cloned()
     }
 
     #[getter]
     pub fn sequence_description(&self) -> Option<String> {
-        self.0.sequence_description().cloned()
+        self.inner.sequence_description().cloned()
     }
 
     #[getter]
     pub fn frame_number(&self) -> Option<u32> {
-        self.0.frame_number()
+        self.inner.frame_number()
     }
 
     #[getter]
     pub fn uuid(&self) -> Option<String> {
-        self.0.uuid().cloned()
+        self.inner.uuid().cloned()
     }
 
     #[getter]
     pub fn image_name(&self) -> Option<String> {
-        self.0.image_name().map(str::to_string)
+        self.inner.image_name().map(str::to_string)
     }
 
     #[getter]
     pub fn image_url(&self) -> Option<String> {
-        self.0.image_url().map(str::to_string)
+        self.inner.image_url().map(str::to_string)
     }
 
     #[getter]
     pub fn width(&self) -> Option<u32> {
-        self.0.width()
+        self.inner.width()
     }
 
     #[getter]
     pub fn height(&self) -> Option<u32> {
-        self.0.height()
+        self.inner.height()
     }
 
     #[getter]
     pub fn date(&self) -> Option<String> {
-        self.0.date().map(|d| d.to_rfc3339())
+        self.inner.date().map(|d| d.to_rfc3339())
     }
 
     #[getter]
     pub fn source(&self) -> Option<String> {
-        self.0.source().cloned()
+        self.inner.source().cloned()
     }
 
     #[getter]
     pub fn files(&self) -> Vec<SampleFile> {
-        self.0
+        self.inner
             .files()
             .iter()
             .map(|f| SampleFile(f.clone()))
@@ -4073,26 +4805,88 @@ impl Sample {
 
     #[getter]
     pub fn annotations(&self) -> Vec<Annotation> {
-        self.0
+        self.inner
             .annotations()
             .iter()
             .map(|x| Annotation(x.clone()))
             .collect()
     }
 
+    /// Download sample file data.
+    ///
+    /// New API (v2.6.0+): `sample.download(file_type)` - uses embedded client
+    /// reference Deprecated API: `sample.download(client, file_type)` -
+    /// passing client explicitly
+    ///
+    /// Note: For downloading multiple samples, use `dataset.download()` which
+    /// is far higher performance due to batch downloading.
+    ///
+    /// Args:
+    ///     file_type_or_client: Either FileType (new API) or Client
+    /// (deprecated)     file_type: FileType when using deprecated API
+    ///
+    /// Returns:
+    ///     Optional bytes of the downloaded file content
+    ///
+    /// If the Sample was created without a client reference (e.g.,
+    /// Sample.new()), you must use the deprecated API with a client
+    /// parameter.
+    #[pyo3(signature = (file_type_or_client=None, file_type=None))]
     #[tokio_wrap::sync]
-    #[pyo3(signature = (client, file_type = FileType::Image))]
-    pub fn download(&self, client: &Client, file_type: FileType) -> Result<Option<Vec<u8>>, Error> {
-        let file_type = match file_type {
-            FileType::Image => edgefirst_client::FileType::Image,
-            FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
-            FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
-            FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
-            FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
-            FileType::RadarCube => edgefirst_client::FileType::RadarCube,
-        };
+    pub fn download(
+        &self,
+        py: Python<'_>,
+        file_type_or_client: Option<&Bound<'_, PyAny>>,
+        file_type: Option<FileType>,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        // Convert FileType enum to client type
+        fn convert_file_type(ft: FileType) -> edgefirst_client::FileType {
+            match ft {
+                FileType::Image => edgefirst_client::FileType::Image,
+                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
+                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
+                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
+                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
+                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+            }
+        }
 
-        Ok(self.0.download(&client.0, file_type).await?)
+        // No argument: use embedded client with default FileType::Image
+        if file_type_or_client.is_none() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "Sample has no client reference. Use sample.download(client) instead."
+                        .to_string(),
+                )
+            })?;
+            let ft = convert_file_type(FileType::Image);
+            return Ok(self.inner.download(client_ref.as_ref(), ft).await?);
+        }
+
+        let first_arg = file_type_or_client.unwrap();
+
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = first_arg.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "Sample", "download")?;
+            let ft = convert_file_type(file_type.unwrap_or(FileType::Image));
+            return Ok(self.inner.download(&client.0, ft).await?);
+        }
+
+        // Try to extract as FileType (new API)
+        if let Ok(ft_enum) = first_arg.extract::<FileType>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "Sample has no client reference. Use sample.download(client, file_type) instead."
+                        .to_string(),
+                )
+            })?;
+            let ft = convert_file_type(ft_enum);
+            return Ok(self.inner.download(client_ref.as_ref(), ft).await?);
+        }
+
+        Err(Error::TypeError(
+            "download() first argument must be a FileType or Client (deprecated)".to_string(),
+        ))
     }
 }
 

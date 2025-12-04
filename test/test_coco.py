@@ -212,10 +212,18 @@ class TestCOCO(unittest.TestCase):
         annotation_set_id = annotation_sets[0].id
 
         # Get samples as DataFrame with new API (13 columns)
-        df = client.samples_dataframe(dataset.id, annotation_set_id, ["val"], [], None)
+        df = client.samples_dataframe(
+            dataset.id,
+            annotation_set_id,
+            ["val"],
+            [],
+            None)
 
         # Verify new schema has 13 columns
-        self.assertEqual(df.shape[1], 13, "Should have 13 columns in 2025.10 schema")
+        self.assertEqual(
+            df.shape[1],
+            13,
+            "Should have 13 columns in 2025.10 schema")
 
         # Verify column names
         expected_columns = {
@@ -231,12 +239,12 @@ class TestCOCO(unittest.TestCase):
             "size",
             "location",
             "pose",
-            "degradation",
-        }
+            "degradation"}
         actual_columns = set(df.columns)
         self.assertEqual(
-            actual_columns, expected_columns, "Column names should match 2025.10 schema"
-        )
+            actual_columns,
+            expected_columns,
+            "Column names should match 2025.10 schema")
 
         # Get unique by name
         df = df.unique(subset=["name"], keep="first", maintain_order=True)

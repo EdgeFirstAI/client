@@ -32,6 +32,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tests ensure exact match determinism for name searches
   - Prevents flaky tests from similarly-named resources
 
+- **Python bindings: New ergonomic shortcut methods**
+  
+  Objects now include shortcut methods that internally delegate to the client,
+  eliminating the need to call `client.method(object.id, ...)` patterns:
+
+  **Dataset:**
+  - `dataset.download(groups, types, output, ...)` → shortcut for `client.download_dataset(dataset.id, ...)`
+  - `dataset.annotation_sets()` → shortcut for `client.annotation_sets(dataset.id)`
+  - `dataset.samples(...)` → shortcut for `client.samples(dataset.id, ...)`
+  - `dataset.samples_count(...)` → shortcut for `client.samples_count(dataset.id, ...)`
+
+  **AnnotationSet:**
+  - `annotation_set.annotations(groups, types, ...)` → shortcut for `client.annotations(annotation_set.id, ...)`
+
+  **Experiment:**
+  - `experiment.training_sessions(name)` → shortcut for `client.training_sessions(experiment.id, name)`
+
+  **Snapshot:**
+  - `snapshot.download(output)` → shortcut for `client.download_snapshot(snapshot.id, output)`
+
+  **Client:**
+  - `client.download_sample(sample, file_type)` → downloads a single sample's file data
+
+  **Sample:**
+  - `sample.download(file_type)` → now uses embedded client reference (new ergonomic API)
+
 ### Changed
 
 - **README.md documentation improvements**
@@ -42,13 +68,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
-- **Python bindings: `Dataset` class label methods with `client` parameter**
-  - `Dataset.labels(client)` → use `dataset.labels()` (new) or `client.labels(dataset.id)`
-  - `Dataset.add_label(client, name)` → use `dataset.add_label(name)` (new) or `client.add_label(dataset.id, name)`
-  - `Dataset.remove_label(client, name)` → use `dataset.remove_label(name)` (new) or `client.remove_label(label.id)`
-  - New methods without `client` parameter now available (Dataset stores client reference internally)
-  - Old methods emit `DeprecationWarning` when called
-  - Planned removal: v3.0.0
+- **Python bindings: Comprehensive ergonomic API with embedded client references**
+  
+  The following classes now store an internal client reference, enabling cleaner
+  method calls without passing `client` explicitly. Old API still works but emits
+  `DeprecationWarning`. Planned removal: v3.0.0.
+
+  **Project:**
+  - `project.datasets(client)` → `project.datasets()`
+  - `project.experiments(client)` → `project.experiments()`
+  - `project.validation_sessions(client)` → `project.validation_sessions()`
+
+  **Dataset:**
+  - `dataset.labels(client)` → `dataset.labels()`
+  - `dataset.add_label(client, name)` → `dataset.add_label(name)`
+  - `dataset.remove_label(client, name)` → `dataset.remove_label(name)`
+
+  **TrainingSession:**
+  - `session.metrics(client)` → `session.metrics()`
+  - `session.set_metrics(client, metrics)` → `session.set_metrics(metrics)`
+  - `session.artifacts(client)` → `session.artifacts()`
+  - `session.upload(client, files)` → `session.upload(files)`
+  - `session.download(client, filename)` → `session.download(filename)`
+  - `session.download_artifact(client, filename)` → `session.download_artifact(filename)`
+  - `session.upload_artifact(client, filename)` → `session.upload_artifact(filename)`
+  - `session.download_checkpoint(client, filename)` → `session.download_checkpoint(filename)`
+  - `session.upload_checkpoint(client, filename)` → `session.upload_checkpoint(filename)`
+
+  **ValidationSession:**
+  - `session.metrics(client)` → `session.metrics()`
+  - `session.set_metrics(client, metrics)` → `session.set_metrics(metrics)`
+  - `session.artifacts(client)` → `session.artifacts()`
+  - `session.upload(client, files)` → `session.upload(files)`
+
+  **Leaf objects (many instances, no embedded client):**
+  - `Label.remove(client)`, `Label.set_name(client, name)`, `Label.set_index(client, index)` - deprecated, use `client.remove_label()` / `client.update_label()`
+
+  **Sample (now has embedded client):**
+  - `sample.download(client)` → `sample.download()` - client parameter deprecated
+  - For bulk downloads, use `dataset.download()` or `client.download_dataset()` which is significantly faster
 
 - **Rust: Convenience methods on data objects**
   - `Dataset::labels(&self, client)` → use `client.labels(dataset.id())`
@@ -64,30 +122,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Complete type stub in `.pyi` file with docstrings
   - Properties: `id` (SnapshotID), `task_id` (TaskID | None)
 
-### Migration Guide: Dataset Label Methods
+### Migration Guide: Ergonomic Python API
 
-The `Dataset` class now stores an internal client reference, enabling cleaner
-method calls without passing `client` explicitly. The old API with `client`
-parameter is deprecated but still works.
+Objects obtained from `Client` methods now store an internal client reference,
+enabling cleaner method calls without passing `client` explicitly. The old API
+with `client` parameter is deprecated but still works.
 
 **Before (deprecated):**
 
 ```python
 # OLD: Passing client to every method (emits DeprecationWarning)
+project = client.project("p-123")
+datasets = project.datasets(client)
+
 dataset = client.dataset("ds-123")
 labels = dataset.labels(client)
 dataset.add_label(client, "person")
-dataset.remove_label(client, "car")
+
+session = client.training_session("t-456")
+session.upload(client, files)
+session.set_metrics(client, {"accuracy": 0.95})
 ```
 
 **After (recommended):**
 
 ```python
-# NEW: Clean API - Dataset stores client reference internally
+# NEW: Clean API - objects store client reference internally
+project = client.project("p-123")
+datasets = project.datasets()          # No client needed!
+
 dataset = client.dataset("ds-123")
-labels = dataset.labels()          # No client needed!
-dataset.add_label("person")        # Clean and simple
-dataset.remove_label("car")        # Intuitive
+labels = dataset.labels()
+dataset.add_label("person")            # Clean and simple
+
+session = client.training_session("t-456")
+session.upload(files)                  # Intuitive
+session.set_metrics({"accuracy": 0.95})
 
 # Alternative: Use Client methods directly (also valid)
 labels = client.labels(dataset.id)

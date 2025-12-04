@@ -19,7 +19,7 @@ from edgefirst_client import Annotation, Box2d, Sample, SampleFile
 
 def get_test_dataset() -> str:
     """Get the test dataset identifier from environment or default to 'Deer'.
-
+    
     Can be a dataset name (exact match) or dataset ID (ds-xxx format).
 
     Returns:

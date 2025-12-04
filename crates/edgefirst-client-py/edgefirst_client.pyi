@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
 
 from polars import DataFrame
 
@@ -733,17 +733,64 @@ class Project:
         ...
 
     def datasets(
-        self, client: Client, name: Optional[str] = None
+        self, client: Optional[Client] = None, name: Optional[str] = None
     ) -> List[Dataset]:
         """
         List the datasets in the project.
 
+        New API (v2.6.0+): Uses embedded client reference.
+
         Args:
-            client: The client to use for the request.
+            client: Deprecated. The client to use for the request.
             name: The name of the dataset to filter by.
 
         Returns:
             A list of datasets in the project.
+
+        .. deprecated::
+            Passing ``client`` parameter is deprecated.
+            Use ``project.datasets()`` directly instead.
+        """
+        ...
+
+    def experiments(
+        self, client: Optional[Client] = None, name: Optional[str] = None
+    ) -> List[Experiment]:
+        """
+        List the experiments in the project.
+
+        New API (v2.6.0+): Uses embedded client reference.
+
+        Args:
+            client: Deprecated. The client to use for the request.
+            name: The name of the experiment to filter by.
+
+        Returns:
+            A list of experiments in the project.
+
+        .. deprecated::
+            Passing ``client`` parameter is deprecated.
+            Use ``project.experiments()`` directly instead.
+        """
+        ...
+
+    def validation_sessions(
+        self, client: Optional[Client] = None
+    ) -> List[ValidationSession]:
+        """
+        List the validation sessions in the project.
+
+        New API (v2.6.0+): Uses embedded client reference.
+
+        Args:
+            client: Deprecated. The client to use for the request.
+
+        Returns:
+            A list of validation sessions in the project.
+
+        .. deprecated::
+            Passing ``client`` parameter is deprecated. Use
+            ``project.validation_sessions()`` directly instead.
         """
         ...
 
@@ -788,6 +835,31 @@ class AnnotationSet:
     @property
     def created(self) -> datetime:
         """The creation date of the annotation set."""
+        ...
+
+    def annotations(
+        self,
+        groups: List[str] = [],
+        annotation_types: List[AnnotationType] = [],
+        progress: Optional[Progress] = None,
+    ) -> List[Annotation]:
+        """
+        Get annotations for this annotation set.
+
+        Args:
+            groups: List of dataset groups (train, val, test).
+            annotation_types: List of annotation types to filter.
+            progress: Optional progress callback.
+
+        Returns:
+            List[Annotation]: Annotations in this set.
+
+        Raises:
+            TypeError: If annotation set has no client reference.
+
+        Example:
+            >>> annotations = annotation_set.annotations(groups=["train"])
+        """
         ...
 
 class Label:
@@ -910,83 +982,209 @@ class Dataset:
         """The creation date of the dataset."""
         ...
 
-    def labels(self, client: Optional[Client] = None) -> List[Label]:
+    @overload
+    def labels(self) -> List[Label]:
         """
-        Get the labels associated with the dataset.
-
-        New API (v2.6.0+):
-            >>> labels = dataset.labels()  # Uses embedded client reference
-
-        Deprecated API:
-            >>> labels = dataset.labels(client)  # Passing client explicitly
-
-        Args:
-            client: The client to use for the request. Deprecated in v2.6.0+.
-                    Use the new API without passing client.
+        Get labels for this dataset (new API).
 
         Returns:
-            A list of labels for the dataset.
+            List[Label]: Labels associated with this dataset.
 
         Raises:
-            TypeError: If dataset has no client reference and client is not
-                       provided.
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> labels = dataset.labels()
+        """
+        ...
+
+    @overload
+    def labels(self, client: Client) -> List[Label]:
+        """
+        Get labels for this dataset (deprecated API).
 
         .. deprecated::
-            Passing ``client`` parameter is deprecated since v2.6.0.
-            Use ``dataset.labels()`` instead.
+            Use ``dataset.labels()`` without the client parameter instead.
+            This signature will be removed in v3.0.0.
+
+        Args:
+            client: The EdgeFirst client instance.
+
+        Returns:
+            List[Label]: Labels associated with this dataset.
+        """
+        ...
+
+    def labels(self, client: Optional[Client] = None) -> List[Label]:
+        """Get labels for this dataset."""
+        ...
+
+    @overload
+    def add_label(self, name: str) -> None:
+        """
+        Add a label to the dataset (new API).
+
+        Args:
+            name: The name of the label to add.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> dataset.add_label("person")
+        """
+        ...
+
+    @overload
+    def add_label(self, client: Client, name: str) -> None:
+        """
+        Add a label to the dataset (deprecated API).
+
+        .. deprecated::
+            Use ``dataset.add_label(name)`` without the client parameter.
+            This signature will be removed in v3.0.0.
         """
         ...
 
     def add_label(
         self, name_or_client: Union[str, Client], name: Optional[str] = None
     ) -> None:
+        """Add a label to the dataset."""
+        ...
+
+    @overload
+    def remove_label(self, name: str) -> None:
         """
-        Add a label to the dataset.
-
-        New API (v2.6.0+):
-            >>> dataset.add_label("new_label")  # Embedded client
-
-        Deprecated API:
-            >>> dataset.add_label(client, "new_label")  # Passing client
+        Remove a label from the dataset (new API).
 
         Args:
-            name_or_client: Label name (new API) or Client (deprecated).
-            name: The label name when using deprecated API with client.
+            name: The name of the label to remove.
 
         Raises:
-            TypeError: If dataset has no client reference and first argument is
-                       not a Client.
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> dataset.remove_label("person")
+        """
+        ...
+
+    @overload
+    def remove_label(self, client: Client, name: str) -> None:
+        """
+        Remove a label from the dataset (deprecated API).
 
         .. deprecated::
-            Passing ``client`` as first parameter is deprecated since v2.6.0.
-            Use ``dataset.add_label("name")`` instead.
+            Use ``dataset.remove_label(name)`` without the client parameter.
+            This signature will be removed in v3.0.0.
         """
         ...
 
     def remove_label(
         self, name_or_client: Union[str, Client], name: Optional[str] = None
     ) -> None:
+        """Remove a label from the dataset."""
+        ...
+
+    def download(
+        self,
+        groups: List[str] = ...,
+        types: List[FileType] = ...,
+        output: str = ".",
+        flatten: bool = False,
+        progress: Optional[Progress] = None,
+    ) -> None:
         """
-        Remove a label from the dataset by name.
+        Download dataset files.
 
-        New API (v2.6.0+):
-            >>> dataset.remove_label("old_label")  # Embedded client
-
-        Deprecated API:
-            >>> dataset.remove_label(client, "old_label")  # Passing client
+        Downloads sample files matching the specified groups and file types.
+        This is the recommended method for bulk downloads as it's significantly
+        faster than downloading samples individually.
 
         Args:
-            name_or_client: Label name (new API) or Client (deprecated).
-            name: The label name when using deprecated API with client.
+            groups: List of dataset groups (train, val, test, etc.).
+            types: List of file types to download.
+                Defaults to [FileType.Image].
+            output: Output directory path. Defaults to current directory.
+            flatten: If True, download all files to output root without
+                     sequence subdirectories.
+            progress: Optional progress callback function.
 
         Raises:
-            TypeError: If dataset has no client reference and first argument is
-                       not a Client.
-            Error: If the label is not found.
+            TypeError: If dataset has no client reference.
 
-        .. deprecated::
-            Passing ``client`` as first parameter is deprecated since v2.6.0.
-            Use ``dataset.remove_label("name")`` instead.
+        Example:
+            >>> dataset.download(["train"], [FileType.Image], "./data")
+        """
+        ...
+
+    def annotation_sets(self) -> List[AnnotationSet]:
+        """
+        Get annotation sets for this dataset.
+
+        Returns:
+            List[AnnotationSet]: Annotation sets for this dataset.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> annotation_sets = dataset.annotation_sets()
+        """
+        ...
+
+    def samples(
+        self,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        annotation_types: List[AnnotationType] = ...,
+        groups: List[str] = ...,
+        types: List[FileType] = ...,
+        progress: Optional[Progress] = None,
+    ) -> List[Sample]:
+        """
+        Get samples for this dataset.
+
+        Args:
+            annotation_set_id: Optional annotation set filter.
+            annotation_types: List of annotation types to filter.
+            groups: List of dataset groups (train, val, test).
+            types: List of file types. Defaults to [FileType.Image].
+            progress: Optional progress callback.
+
+        Returns:
+            List[Sample]: Samples matching the criteria.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> samples = dataset.samples(groups=["train"])
+        """
+        ...
+
+    def samples_count(
+        self,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        annotation_types: List[AnnotationType] = ...,
+        groups: List[str] = ...,
+        types: List[FileType] = ...,
+    ) -> SamplesCountResult:
+        """
+        Get samples count for this dataset.
+
+        Args:
+            annotation_set_id: Optional annotation set filter.
+            annotation_types: List of annotation types.
+            groups: List of dataset groups.
+            types: List of file types.
+
+        Returns:
+            SamplesCountResult: Count information.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+
+        Example:
+            >>> count = dataset.samples_count(groups=["train"])
         """
         ...
 
@@ -1773,19 +1971,41 @@ class Sample:
         ...
 
     def download(
-        self, client: Client, file_type: FileType = FileType.Image
+        self,
+        client: Optional[Client] = None,
+        file_type: FileType = FileType.Image,
     ) -> Optional[bytes]:
         """
-        Downloads the data file for this sample using the given file type.
+        Download sample file data.
+
+        Downloads a file associated with this sample. For downloading many
+        samples, use ``dataset.download()`` or ``client.download_dataset()``
+        which downloads in bulk and is significantly faster.
+
+        New API (v2.6.0+):
+            >>> data = sample.download()  # Uses embedded client reference
+            >>> lidar = sample.download(file_type=FileType.LidarPcd)
+
+        Deprecated API:
+            >>> data = sample.download(client)  # Passing client explicitly
 
         Args:
-            client (Client): The client instance used to download the file.
-            file_type (FileType, optional): The type of file to download.
-                                            Defaults to FileType.Image.
+            client: Deprecated. The client to use for the request.
+            file_type: Type of file to download. Defaults to FileType.Image.
+                       Other options: LidarPcd, LidarDepth, LidarReflect,
+                       RadarPcd, RadarCube.
 
         Returns:
-            Optional[bytes]: The raw file data as bytes,
-                             or None if no file exists.
+            Optional[bytes]: The file data, or None if no file exists for the
+                             requested type.
+
+        Raises:
+            TypeError: If sample has no client reference and client is not
+                       provided.
+
+        .. deprecated::
+            Passing ``client`` parameter is deprecated since v2.6.0.
+            Use ``sample.download(file_type=...)`` instead.
         """
         ...
 
@@ -1833,6 +2053,26 @@ class Experiment:
 
         Returns:
             Optional[str]: The experiment description or None.
+        """
+        ...
+
+    def training_sessions(
+        self, name: Optional[str] = None
+    ) -> List[TrainingSession]:
+        """
+        Get training sessions for this experiment.
+
+        Args:
+            name: Optional filter by name.
+
+        Returns:
+            List[TrainingSession]: Training sessions in this experiment.
+
+        Raises:
+            TypeError: If experiment has no client reference.
+
+        Example:
+            >>> sessions = experiment.training_sessions()
         """
         ...
 
@@ -2652,6 +2892,41 @@ class Snapshot:
         """
         ...
 
+    @overload
+    def download(self, output: str) -> None:
+        """
+        Download this snapshot to a local directory (new API).
+
+        Args:
+            output: Output directory path.
+
+        Raises:
+            TypeError: If snapshot has no client reference.
+
+        Example:
+            >>> snapshot.download("./output")
+        """
+        ...
+
+    @overload
+    def download(self, client: Client, output: str) -> None:
+        """
+        Download this snapshot to a local directory (deprecated API).
+
+        .. deprecated::
+            Use ``snapshot.download(output)`` without the client parameter.
+            This signature will be removed in v3.0.0.
+        """
+        ...
+
+    def download(
+        self,
+        output_or_client: Union[str, Client],
+        output: Optional[str] = None,
+    ) -> None:
+        """Download this snapshot to a local directory."""
+        ...
+
 class SnapshotRestoreResult:
     """
     Result of a snapshot restore operation.
@@ -3305,6 +3580,35 @@ class Client:
 
         Returns:
             List[Sample]: A list of sample objects.
+        """
+        ...
+
+    def download_sample(
+        self,
+        sample: Sample,
+        file_type: FileType = FileType.Image,
+    ) -> Optional[bytes]:
+        """
+        Download a sample's file data.
+
+        This is the recommended replacement for ``sample.download(client)``.
+        For bulk downloads of many samples, use ``client.download_dataset()``
+        or ``dataset.download()`` which is significantly faster.
+
+        Args:
+            sample: The Sample object to download data from.
+            file_type: Type of file to download. Defaults to FileType.Image.
+
+        Returns:
+            Optional[bytes]: The file data, or None if no file exists.
+
+        Example:
+            >>> samples = client.samples(dataset_id)
+            >>> for sample in samples[:5]:  # Download first 5
+            ...     data = client.download_sample(sample)
+            ...     if data:
+            ...         with open(f"{sample.name}.jpg", "wb") as f:
+            ...             f.write(data)
         """
         ...
 

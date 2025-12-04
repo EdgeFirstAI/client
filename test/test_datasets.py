@@ -1059,8 +1059,8 @@ class TestLabels(TestCase):
         random_suffix = random.randint(0, 2**64 - 1)
         test_label = f"test_{random_suffix:x}"
 
-        # Get initial label count using NEW API (no client parameter)
-        initial_labels = dataset.labels()
+        # Get initial label count
+        initial_labels = dataset.labels(client)
         initial_count = len(initial_labels)
 
         # Verify random label doesn't exist
@@ -1069,9 +1069,9 @@ class TestLabels(TestCase):
             test_label, label_names, f"Random label '{test_label}' should not exist yet"
         )
 
-        # Add test label using NEW API (no client parameter)
-        dataset.add_label(test_label)
-        labels_after_add = dataset.labels()
+        # Add test label
+        dataset.add_label(client, test_label)
+        labels_after_add = dataset.labels(client)
         self.assertEqual(
             len(labels_after_add),
             initial_count + 1,
@@ -1084,9 +1084,9 @@ class TestLabels(TestCase):
             f"Label '{test_label}' should exist after adding",
         )
 
-        # Remove test label using NEW API (no client parameter)
-        dataset.remove_label(test_label)
-        labels_after_remove = dataset.labels()
+        # Remove test label
+        dataset.remove_label(client, test_label)
+        labels_after_remove = dataset.labels(client)
         self.assertEqual(
             len(labels_after_remove),
             initial_count,
@@ -1098,64 +1098,6 @@ class TestLabels(TestCase):
             label_names_final,
             f"Label '{test_label}' should not exist after removing",
         )
-
-    def test_labels_deprecated_api(self):
-        """Test deprecated API with client parameter still works."""
-        import warnings
-
-        client = get_client()
-
-        # Find Unit Testing project and Test Labels dataset
-        projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing project should exist")
-        project = projects[0]
-
-        datasets = client.datasets(project.id, "Test Labels")
-        self.assertGreater(len(datasets), 0, "Test Labels dataset should exist")
-        dataset = datasets[0]
-
-        # Generate random label name to avoid conflicts
-        random_suffix = random.randint(0, 2**64 - 1)
-        test_label = f"deprecated_test_{random_suffix:x}"
-
-        # Test deprecated API with client parameter - should emit warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            # Get labels using deprecated API
-            initial_labels = dataset.labels(client)
-            initial_count = len(initial_labels)
-            self.assertGreater(len(w), 0, "Should emit deprecation warning")
-            self.assertTrue(
-                issubclass(w[-1].category, DeprecationWarning),
-                "Warning should be DeprecationWarning",
-            )
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            # Add label using deprecated API
-            dataset.add_label(client, test_label)
-            self.assertGreater(len(w), 0, "Should emit deprecation warning")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            # Verify label was added using deprecated API
-            labels_after = dataset.labels(client)
-            self.assertEqual(len(labels_after), initial_count + 1)
-            self.assertGreater(len(w), 0, "Should emit deprecation warning")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-
-            # Remove label using deprecated API
-            dataset.remove_label(client, test_label)
-            self.assertGreater(len(w), 0, "Should emit deprecation warning")
-
-        # Verify label was removed using new API (no warning)
-        labels_final = dataset.labels()
-        self.assertEqual(len(labels_final), initial_count)
 
     def test_update_label(self):
         """Test updating a label's properties."""
