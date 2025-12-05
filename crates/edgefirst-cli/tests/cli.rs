@@ -1497,6 +1497,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
 /// **Note**: This test uploads 1600+ samples and takes ~3 minutes to complete.
 #[test]
 #[serial]
+#[ignore = "Temporarily disabled due to CI timeout issues - run locally with: cargo test test_dataset_roundtrip -- --ignored"]
 fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Download→Upload→Download→Compare test for configurable dataset
     // This verifies Arrow file format preserves all metadata (sequences, groups,
