@@ -53,10 +53,9 @@ sbom-temp.json
 # Generated man page
 *.1
 
-env.sh
-
-# Local notes
 NOTES.md
+
+env.sh
 
 # Server reference clone (excluded from version control)
 server/
