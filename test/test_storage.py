@@ -190,7 +190,7 @@ class TestCustomPythonStorage(unittest.TestCase):
         storage = TracingStorage()
 
         # with_storage should call load() to check for existing token
-        client = ec.Client().with_storage(storage)
+        ec.Client().with_storage(storage)
         self.assertIn(("load",), calls)
 
 
