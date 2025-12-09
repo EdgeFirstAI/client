@@ -26,7 +26,7 @@ class TestFileTokenStorage(unittest.TestCase):
         storage = ec.FileTokenStorage()
         path = storage.path
         self.assertIsNotNone(path)
-        self.assertTrue(len(str(path)) > 0)
+        self.assertGreater(len(str(path)), 0)
         # Should contain EdgeFirst in path
         self.assertIn("EdgeFirst", str(path))
 
