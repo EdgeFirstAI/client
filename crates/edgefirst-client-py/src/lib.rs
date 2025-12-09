@@ -4486,10 +4486,10 @@ impl Client {
     ///
     /// Args:
     ///     dataset_id: The dataset ID to create snapshot from (DatasetID or
-    /// string like "ds-xxx").     description: Description for the created
-    /// snapshot.
+    ///         string like "ds-xxx").
+    ///     description: Description for the created snapshot.
     ///     annotation_set_id: Optional annotation set ID. If not provided,
-    /// uses the "annotations" set or first available.
+    ///         uses the "annotations" set or first available.
     ///
     /// Returns:
     ///     SnapshotFromDatasetResult containing the snapshot ID and task ID.
