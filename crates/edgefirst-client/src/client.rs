@@ -489,6 +489,17 @@ impl Client {
             name => format!("https://{}.edgefirst.studio", name),
         };
 
+        // Clear token from storage when changing servers to prevent
+        // authentication issues with stale tokens from different instances
+        if let Some(ref storage) = self.storage
+            && let Err(e) = storage.clear()
+        {
+            warn!(
+                "Failed to clear token from storage when changing servers: {}",
+                e
+            );
+        }
+
         Ok(Client {
             url,
             token: Arc::new(tokio::sync::RwLock::new(String::new())),
@@ -3772,5 +3783,27 @@ mod tests {
                 result.first()
             );
         }
+    }
+
+    #[test]
+    fn test_with_server_clears_storage() {
+        use crate::storage::MemoryTokenStorage;
+
+        // Create client with memory storage and a token
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store("test-token").unwrap();
+
+        let client = Client::new()
+            .unwrap()
+            .with_storage(storage.clone());
+
+        // Verify token is loaded
+        assert_eq!(storage.load().unwrap(), Some("test-token".to_string()));
+
+        // Change server - should clear storage
+        let _new_client = client.with_server("test").unwrap();
+
+        // Verify storage was cleared
+        assert_eq!(storage.load().unwrap(), None);
     }
 }
