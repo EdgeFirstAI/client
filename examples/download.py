@@ -76,7 +76,7 @@ def process_group_samples(samples, output, group):
             save_yolo_annotation(annotation_path, sample.annotations)
 
 
-def download_dataset_yolo(dataset_id: str, output: str, groups: str):
+def download_dataset_yolo(dataset_id: str, output: str, groups: str, client=None):
     """
     Download dataset and save in YOLO format.
 
@@ -84,8 +84,23 @@ def download_dataset_yolo(dataset_id: str, output: str, groups: str):
         dataset_id: Dataset ID (e.g., "ds-xxx")
         output: Output directory path
         groups: Comma-separated list of groups (e.g., "train,val")
+        client: Optional Client instance. If not provided, creates one using
+                STUDIO_TOKEN, STUDIO_USERNAME/STUDIO_PASSWORD, or stored token.
     """
-    client = Client(token=environ.get("STUDIO_TOKEN"))
+    if client is None:
+        token = environ.get("STUDIO_TOKEN")
+        username = environ.get("STUDIO_USERNAME")
+        password = environ.get("STUDIO_PASSWORD")
+        server = environ.get("STUDIO_SERVER", "")
+
+        if token:
+            client = Client().with_server(server).with_token(token)
+        elif username and password:
+            client = Client().with_server(server).with_login(username, password)
+        else:
+            # Use default client with stored token
+            client = Client().with_server(server)
+
     dataset = client.dataset(dataset_id)
     annotation_set = client.annotation_sets(dataset.id)[0]
 

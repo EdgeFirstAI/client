@@ -48,7 +48,8 @@ class ExamplesTest(TestCase):
 
         try:
             # Call the download function directly (covered by slipcover)
-            download_dataset_yolo(str(dataset.id), str(output_dir), "val")
+            # Pass the authenticated client to avoid re-authentication issues
+            download_dataset_yolo(str(dataset.id), str(output_dir), "val", client=client)
 
             # Verify output directory structure
             val_dir = output_dir / "val"
