@@ -54,6 +54,7 @@ sbom-temp.json
 *.1
 
 NOTES.md
+TODO.md
 
 env.sh
 
