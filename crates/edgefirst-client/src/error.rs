@@ -73,6 +73,8 @@ pub enum Error {
     Unauthorized,
     /// Invalid or missing ETag header in HTTP response.
     InvalidEtag(String),
+    /// Token storage operation error.
+    StorageError(String),
     /// Polars dataframe operation error (only with "polars" feature).
     #[cfg(feature = "polars")]
     PolarsError(polars::error::PolarsError),
@@ -150,6 +152,12 @@ impl From<std::num::ParseIntError> for Error {
     }
 }
 
+impl From<crate::storage::StorageError> for Error {
+    fn from(err: crate::storage::StorageError) -> Self {
+        Error::StorageError(err.to_string())
+    }
+}
+
 #[cfg(feature = "polars")]
 impl From<polars::error::PolarsError> for Error {
     fn from(err: polars::error::PolarsError) -> Self {
@@ -191,6 +199,7 @@ impl std::fmt::Display for Error {
             Error::TokenExpired => write!(f, "Authentication token has expired"),
             Error::Unauthorized => write!(f, "Unauthorized access"),
             Error::InvalidEtag(s) => write!(f, "Invalid ETag header: {}", s),
+            Error::StorageError(s) => write!(f, "Token storage error: {}", s),
             #[cfg(feature = "polars")]
             Error::PolarsError(e) => write!(f, "Polars error: {}", e),
         }

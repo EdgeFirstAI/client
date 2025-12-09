@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Token Storage Abstraction for Platform Portability**
+
+  New trait-based token storage delegate API enables custom storage backends for
+  different platforms (iOS Keychain, Android EncryptedSharedPreferences, etc.):
+
+  **Rust API:**
+  - `TokenStorage` trait with `store()`, `load()`, `clear()` methods
+  - `FileTokenStorage` - file-based persistence (default on desktop)
+  - `MemoryTokenStorage` - in-memory storage (no persistence)
+  - `StorageError` - dedicated error type for storage operations
+
+  **Python API:**
+  - `FileTokenStorage` class with `store()`, `load()`, `clear()`, `path` property
+  - `MemoryTokenStorage` class with `store()`, `load()`, `clear()`
+  - Custom Python storage via duck typing (any object with the 3 methods)
+
+  **Client Builder Methods (both Rust and Python):**
+  - `with_server(name)` - configure server instance ("test", "stage", "saas", etc.)
+  - `with_storage(storage)` - configure custom token storage backend
+  - `with_memory_storage()` - use in-memory storage (no persistence)
+  - `with_no_storage()` - disable token storage entirely
+  - `with_login(username, password)` - authenticate with credentials (builder-style)
+  - `with_token(token)` - authenticate with existing token (builder-style)
+  - `logout()` - clear stored token from memory and storage
+
+  **Use Cases:**
+  - Desktop: Use default `FileTokenStorage` for persistent login sessions
+  - iOS: Implement `TokenStorage` using Keychain Services
+  - Android: Implement `TokenStorage` using EncryptedSharedPreferences
+  - Testing: Use `MemoryTokenStorage` for isolated test environments
+  - Serverless: Use `with_no_storage()` when tokens are managed externally
+
 - **New `create_snapshot_from_dataset` API method**
   - Python: `client.create_snapshot_from_dataset(dataset_id, description, annotation_set_id=None)`
   - Rust: `client.create_snapshot_from_dataset(dataset_id, description, annotation_set_id).await`
@@ -68,6 +100,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+- **Python Client Constructor Parameters**
+
+  The `Client()` constructor parameters are deprecated in favor of builder methods.
+  Old API still works but emits `DeprecationWarning`. Planned removal: v3.0.0.
+
+  - `Client(server="test")` → `Client().with_server("test")`
+  - `Client(use_token_file=False)` → `Client().with_memory_storage()`
+  - `Client(username="...", password="...")` → `Client().with_login("...", "...")`
+  - `Client(token="...")` → `Client().with_token("...")`
+
 - **Python bindings: Comprehensive ergonomic API with embedded client references**
   
   The following classes now store an internal client reference, enabling cleaner
@@ -121,6 +163,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Python bindings: Added `SnapshotFromDatasetResult` class**
   - Complete type stub in `.pyi` file with docstrings
   - Properties: `id` (SnapshotID), `task_id` (TaskID | None)
+
+### Migration Guide: Token Storage API
+
+The new builder-style API for Client configuration provides better platform
+portability and cleaner code. The old constructor parameters still work but
+emit deprecation warnings.
+
+**Python Migration:**
+
+```python
+# OLD: Constructor parameters (deprecated, emits DeprecationWarning)
+client = Client(server="test")
+client = Client(username="user", password="pass", server="test")
+client = Client(token="eyJ...", use_token_file=False)
+
+# NEW: Builder methods (recommended)
+client = Client().with_server("test")
+client = Client().with_server("test").with_login("user", "pass")
+client = Client().with_memory_storage().with_token("eyJ...")
+
+# Custom storage for mobile platforms
+class KeychainStorage:
+    def store(self, token): ...
+    def load(self): return self._token
+    def clear(self): ...
+
+client = Client().with_storage(KeychainStorage()).with_server("test")
+```
+
+**Rust Migration:**
+
+```rust
+// OLD: Direct token file handling
+let client = Client::new()?;
+client.login("user", "pass").await?;
+
+// NEW: Builder pattern with explicit storage
+let client = Client::new()?
+    .with_server("test")?
+    .with_login("user", "pass")
+    .await?;
+
+// Custom storage (implement TokenStorage trait)
+let storage = Arc::new(MySecureStorage::new());
+let client = Client::new()?
+    .with_storage(storage)
+    .with_server("test")?;
+```
 
 ### Migration Guide: Ergonomic Python API
 

@@ -13,6 +13,7 @@ use crate::{
     },
     dataset::{AnnotationSet, AnnotationType, Dataset, FileType, Label, NewLabel, NewLabelObject},
     retry::{create_retry_policy, log_retry_configuration},
+    storage::{FileTokenStorage, MemoryTokenStorage, TokenStorage},
 };
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -337,12 +338,27 @@ struct ImagesFilter {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone, Debug)]
+/// Client is Clone but cannot derive Debug due to dyn TokenStorage
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     url: String,
     token: Arc<RwLock<String>>,
+    /// Token storage backend. When set, tokens are automatically persisted.
+    storage: Option<Arc<dyn TokenStorage>>,
+    /// Legacy token path field for backwards compatibility with
+    /// with_token_path(). Deprecated: Use with_storage() instead.
     token_path: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("url", &self.url)
+            .field("has_storage", &self.storage.is_some())
+            .field("token_path", &self.token_path)
+            .finish()
+    }
 }
 
 /// Private context struct for pagination operations
@@ -355,14 +371,35 @@ struct FetchContext<'a> {
 }
 
 impl Client {
-    /// Create a new unauthenticated client with the default saas server.  To
-    /// connect to a different server use the `with_server` method or with the
-    /// `with_token` method to create a client with a token which includes the
-    /// server instance name (test, stage, saas).
+    /// Create a new unauthenticated client with the default saas server.
     ///
-    /// This client is created without a token and will need to login before
-    /// using any methods that require authentication.  Use the `with_token`
-    /// method to create a client with a token.
+    /// By default, the client uses [`FileTokenStorage`] for token persistence.
+    /// Use [`with_storage`][Self::with_storage],
+    /// [`with_memory_storage`][Self::with_memory_storage],
+    /// or [`with_no_storage`][Self::with_no_storage] to configure storage
+    /// behavior.
+    ///
+    /// To connect to a different server, use [`with_server`][Self::with_server]
+    /// or [`with_token`][Self::with_token] (tokens include the server
+    /// instance).
+    ///
+    /// This client is created without a token and will need to authenticate
+    /// before using methods that require authentication.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// // Create client with default file storage
+    /// let client = Client::new()?;
+    ///
+    /// // Create client without token persistence
+    /// let client = Client::new()?.with_memory_storage();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new() -> Result<Self, Error> {
         log_retry_configuration();
 
@@ -389,26 +426,182 @@ impl Client {
             .retry(create_retry_policy())
             .build()?;
 
+        // Default to file storage, loading any existing token
+        let storage: Arc<dyn TokenStorage> = match FileTokenStorage::new() {
+            Ok(file_storage) => Arc::new(file_storage),
+            Err(e) => {
+                warn!(
+                    "Could not initialize file token storage: {}. Using memory storage.",
+                    e
+                );
+                Arc::new(MemoryTokenStorage::new())
+            }
+        };
+
+        // Try to load existing token from storage
+        let token = match storage.load() {
+            Ok(Some(t)) => t,
+            Ok(None) => String::new(),
+            Err(e) => {
+                warn!(
+                    "Failed to load token from storage: {}. Starting with empty token.",
+                    e
+                );
+                String::new()
+            }
+        };
+
         Ok(Client {
             http,
             url: "https://edgefirst.studio".to_string(),
-            token: Arc::new(tokio::sync::RwLock::new("".to_string())),
+            token: Arc::new(tokio::sync::RwLock::new(token)),
+            storage: Some(storage),
             token_path: None,
         })
     }
 
-    /// Returns a new client connected to the specified server instance.  If a
-    /// token is already set in the client then it will be dropped as the token
-    /// is specific to the server instance.
+    /// Returns a new client connected to the specified server instance.
+    ///
+    /// The server parameter is an instance name that maps to a URL:
+    /// - `""` or `"saas"` → `https://edgefirst.studio`
+    /// - `"test"` → `https://test.edgefirst.studio`
+    /// - `"stage"` → `https://stage.edgefirst.studio`
+    /// - `"dev"` → `https://dev.edgefirst.studio`
+    /// - `"{name}"` → `https://{name}.edgefirst.studio`
+    ///
+    /// If a token is already set in the client, it will be dropped as tokens
+    /// are specific to the server instance.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?.with_server("test")?;
+    /// assert_eq!(client.url(), "https://test.edgefirst.studio");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
+        let url = match server {
+            "" | "saas" => "https://edgefirst.studio".to_string(),
+            name => format!("https://{}.edgefirst.studio", name),
+        };
+
         Ok(Client {
-            url: format!("https://{}.edgefirst.studio", server),
+            url,
+            token: Arc::new(tokio::sync::RwLock::new(String::new())),
             ..self.clone()
         })
     }
 
+    /// Returns a new client with the specified token storage backend.
+    ///
+    /// Use this to configure custom token storage, such as platform-specific
+    /// secure storage (iOS Keychain, Android EncryptedSharedPreferences).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::{Client, FileTokenStorage};
+    /// use std::{path::PathBuf, sync::Arc};
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// // Use a custom file path for token storage
+    /// let storage = FileTokenStorage::with_path(PathBuf::from("/custom/path/token"));
+    /// let client = Client::new()?.with_storage(Arc::new(storage));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_storage(self, storage: Arc<dyn TokenStorage>) -> Self {
+        // Try to load existing token from the new storage
+        let token = match storage.load() {
+            Ok(Some(t)) => t,
+            Ok(None) => String::new(),
+            Err(e) => {
+                warn!(
+                    "Failed to load token from storage: {}. Starting with empty token.",
+                    e
+                );
+                String::new()
+            }
+        };
+
+        Client {
+            token: Arc::new(tokio::sync::RwLock::new(token)),
+            storage: Some(storage),
+            token_path: None,
+            ..self
+        }
+    }
+
+    /// Returns a new client with in-memory token storage (no persistence).
+    ///
+    /// Tokens are stored in memory only and lost when the application exits.
+    /// This is useful for testing or when you want to manage token persistence
+    /// externally.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?.with_memory_storage();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_memory_storage(self) -> Self {
+        Client {
+            token: Arc::new(tokio::sync::RwLock::new(String::new())),
+            storage: Some(Arc::new(MemoryTokenStorage::new())),
+            token_path: None,
+            ..self
+        }
+    }
+
+    /// Returns a new client with no token storage.
+    ///
+    /// Tokens are not persisted. Use this when you want to manage tokens
+    /// entirely manually.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?.with_no_storage();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_no_storage(self) -> Self {
+        Client {
+            storage: None,
+            token_path: None,
+            ..self
+        }
+    }
+
     /// Returns a new client authenticated with the provided username and
     /// password.
+    ///
+    /// The token is automatically persisted to storage (if configured).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?
+    ///     .with_server("test")?
+    ///     .with_login("user@example.com", "password")
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_login(&self, username: &str, password: &str) -> Result<Self, Error> {
         let params = HashMap::from([("username", username), ("password", password)]);
         let login: LoginResult = self
@@ -420,6 +613,13 @@ impl Client {
             return Err(Error::EmptyToken);
         }
 
+        // Persist token to storage if configured
+        if let Some(ref storage) = self.storage
+            && let Err(e) = storage.store(&login.token)
+        {
+            warn!("Failed to persist token to storage: {}", e);
+        }
+
         Ok(Client {
             token: Arc::new(tokio::sync::RwLock::new(login.token)),
             ..self.clone()
@@ -428,6 +628,13 @@ impl Client {
 
     /// Returns a new client which will load and save the token to the specified
     /// path.
+    ///
+    /// **Deprecated**: Use [`with_storage`][Self::with_storage] with
+    /// [`FileTokenStorage`] instead for more flexible token management.
+    ///
+    /// This method is maintained for backwards compatibility with existing
+    /// code. It disables the default storage and uses file-based storage at
+    /// the specified path.
     pub fn with_token_path(&self, token_path: Option<&Path>) -> Result<Self, Error> {
         let token_path = match token_path {
             Some(path) => path.to_path_buf(),
@@ -442,7 +649,7 @@ impl Client {
                 .join("token"),
         };
 
-        debug!("Using token path: {:?}", token_path);
+        debug!("Using token path (legacy): {:?}", token_path);
 
         let token = match token_path.exists() {
             true => std::fs::read_to_string(&token_path)?,
@@ -453,6 +660,7 @@ impl Client {
             match self.with_token(&token) {
                 Ok(client) => Ok(Client {
                     token_path: Some(token_path),
+                    storage: None, // Disable new storage when using legacy token_path
                     ..client
                 }),
                 Err(e) => {
@@ -466,6 +674,7 @@ impl Client {
                     }
                     Ok(Client {
                         token_path: Some(token_path),
+                        storage: None,
                         ..self.clone()
                     })
                 }
@@ -473,12 +682,27 @@ impl Client {
         } else {
             Ok(Client {
                 token_path: Some(token_path),
+                storage: None,
                 ..self.clone()
             })
         }
     }
 
     /// Returns a new client authenticated with the provided token.
+    ///
+    /// The token is automatically persisted to storage (if configured).
+    /// The server URL is extracted from the token payload.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?.with_token("your-jwt-token")?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_token(&self, token: &str) -> Result<Self, Error> {
         if token.is_empty() {
             return Ok(self.clone());
@@ -498,6 +722,13 @@ impl Client {
             None => return Err(Error::InvalidToken),
         };
 
+        // Persist token to storage if configured
+        if let Some(ref storage) = self.storage
+            && let Err(e) = storage.store(token)
+        {
+            warn!("Failed to persist token to storage: {}", e);
+        }
+
         Ok(Client {
             url: format!("https://{}.edgefirst.studio", server),
             token: Arc::new(tokio::sync::RwLock::new(token.to_string())),
@@ -505,7 +736,25 @@ impl Client {
         })
     }
 
+    /// Persist the current token to storage.
+    ///
+    /// This is automatically called when using [`with_login`][Self::with_login]
+    /// or [`with_token`][Self::with_token], so you typically don't need to call
+    /// this directly.
+    ///
+    /// If using the legacy `token_path` configuration, saves to the file path.
+    /// If using the new storage abstraction, saves to the configured storage.
     pub async fn save_token(&self) -> Result<(), Error> {
+        let token = self.token.read().await;
+
+        // Try new storage first
+        if let Some(ref storage) = self.storage {
+            storage.store(&token)?;
+            debug!("Token saved to storage");
+            return Ok(());
+        }
+
+        // Fall back to legacy token_path behavior
         let path = self.token_path.clone().unwrap_or_else(|| {
             ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
                 .map(|dirs| dirs.config_dir().join("token"))
@@ -519,7 +768,7 @@ impl Client {
             ))
         })?)?;
         let mut file = std::fs::File::create(&path)?;
-        file.write_all(self.token.read().await.as_bytes())?;
+        file.write_all(token.as_bytes())?;
 
         debug!("Saved token to {:?}", path);
 
@@ -536,15 +785,24 @@ impl Client {
         Ok(version.to_owned())
     }
 
-    /// Clear the token used to authenticate the client with the server.  If an
-    /// optional path was provided when creating the client, the token file
-    /// will also be cleared.
+    /// Clear the token used to authenticate the client with the server.
+    ///
+    /// Clears the token from memory and from storage (if configured).
+    /// If using the legacy `token_path` configuration, removes the token file.
     pub async fn logout(&self) -> Result<(), Error> {
         {
             let mut token = self.token.write().await;
             *token = "".to_string();
         }
 
+        // Clear from new storage if configured
+        if let Some(ref storage) = self.storage
+            && let Err(e) = storage.clear()
+        {
+            warn!("Failed to clear token from storage: {}", e);
+        }
+
+        // Also clear legacy token_path if configured
         if let Some(path) = &self.token_path
             && path.exists()
         {
@@ -571,10 +829,12 @@ impl Client {
         Ok::<(), Error>(())
     }
 
-    /// Renew the token used to authenticate the client with the server.  This
-    /// method is used to refresh the token before it expires.  If the token
-    /// has already expired, the server will return an error and the client
-    /// will need to login again.
+    /// Renew the token used to authenticate the client with the server.
+    ///
+    /// Refreshes the token before it expires. If the token has already expired,
+    /// the server will return an error and you will need to login again.
+    ///
+    /// The new token is automatically persisted to storage (if configured).
     pub async fn renew_token(&self) -> Result<(), Error> {
         let params = HashMap::from([("username".to_string(), self.username().await?)]);
         let result: LoginResult = self
@@ -583,9 +843,17 @@ impl Client {
 
         {
             let mut token = self.token.write().await;
-            *token = result.token;
+            *token = result.token.clone();
         }
 
+        // Persist to new storage if configured
+        if let Some(ref storage) = self.storage
+            && let Err(e) = storage.store(&result.token)
+        {
+            warn!("Failed to persist renewed token to storage: {}", e);
+        }
+
+        // Also persist to legacy token_path if configured
         if self.token_path.is_some() {
             self.save_token().await?;
         }

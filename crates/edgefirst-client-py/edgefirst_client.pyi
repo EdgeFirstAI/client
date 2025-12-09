@@ -3034,6 +3034,162 @@ class SnapshotFromDatasetResult:
         """
         ...
 
+
+class FileTokenStorage:
+    """
+    File-based token storage for desktop platforms.
+
+    Stores the authentication token in a file on the local filesystem. By
+    default, uses the platform-specific config directory:
+
+    - Linux: ``~/.config/EdgeFirst Studio/token``
+    - macOS: ``~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token``
+    - Windows: ``C:\\Users\\<User>\\AppData\\Roaming\\EdgeFirst\\EdgeFirst Studio\\token``
+
+    Examples:
+        Using default path:
+
+        >>> storage = FileTokenStorage()
+        >>> print(storage.path)  # Platform-specific default path
+
+        Using custom path:
+
+        >>> storage = FileTokenStorage.with_path("/custom/path/token")
+        >>> storage.store("my-token")
+        >>> token = storage.load()  # Returns "my-token"
+        >>> storage.clear()  # Removes the token file
+    """
+
+    def __init__(self) -> None:
+        """
+        Create a new FileTokenStorage using the default platform config directory.
+
+        Raises:
+            RuntimeError: If the config directory cannot be determined.
+        """
+        ...
+
+    @staticmethod
+    def with_path(path: str) -> "FileTokenStorage":
+        """
+        Create a new FileTokenStorage with a custom file path.
+
+        Args:
+            path: The file path where the token will be stored.
+
+        Returns:
+            A new FileTokenStorage instance using the specified path.
+
+        Examples:
+            >>> storage = FileTokenStorage.with_path("/tmp/my_token")
+            >>> storage.store("test-token")
+        """
+        ...
+
+    @property
+    def path(self) -> Path:
+        """
+        Returns the path where the token is stored.
+
+        Returns:
+            The file path used for token storage.
+        """
+        ...
+
+    def store(self, token: str) -> None:
+        """
+        Store the authentication token to the file.
+
+        Creates parent directories if they don't exist.
+
+        Args:
+            token: The token string to store.
+
+        Raises:
+            RuntimeError: If the token cannot be written.
+        """
+        ...
+
+    def load(self) -> Optional[str]:
+        """
+        Load the stored authentication token from the file.
+
+        Returns:
+            The stored token string, or None if no token is stored.
+
+        Raises:
+            RuntimeError: If the token file exists but cannot be read.
+        """
+        ...
+
+    def clear(self) -> None:
+        """
+        Clear the stored authentication token by removing the file.
+
+        Does not raise an error if the file doesn't exist.
+
+        Raises:
+            RuntimeError: If the file exists but cannot be removed.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        """Return a string representation of the storage."""
+        ...
+
+
+class MemoryTokenStorage:
+    """
+    In-memory token storage (no persistence).
+
+    Stores the authentication token in memory only. The token is lost when
+    the application exits. This is useful for:
+
+    - Testing
+    - Mobile platforms that use custom secure storage
+    - Applications that don't need token persistence
+
+    Examples:
+        >>> storage = MemoryTokenStorage()
+        >>> storage.store("my-token")
+        >>> token = storage.load()  # Returns "my-token"
+        >>> storage.clear()
+        >>> token = storage.load()  # Returns None
+    """
+
+    def __init__(self) -> None:
+        """Create a new MemoryTokenStorage."""
+        ...
+
+    def store(self, token: str) -> None:
+        """
+        Store the authentication token in memory.
+
+        Args:
+            token: The token string to store.
+        """
+        ...
+
+    def load(self) -> Optional[str]:
+        """
+        Load the stored authentication token from memory.
+
+        Returns:
+            The stored token string, or None if no token is stored.
+        """
+        ...
+
+    def clear(self) -> None:
+        """
+        Clear the stored authentication token from memory.
+        """
+        ...
+
+    def __repr__(self) -> str:
+        """Return a string representation of the storage."""
+        ...
+
+
 class Client:
     """
     Main client for interacting with EdgeFirst Studio Server.
@@ -3184,6 +3340,160 @@ class Client:
 
         Raises:
             Error: If authentication fails.
+        """
+        ...
+
+    def logout(self) -> None:
+        """
+        Logout from the server and clear the stored token.
+
+        Clears both the in-memory token and any persisted token in storage.
+        After calling this method, the client will need to authenticate again
+        before making API calls that require authentication.
+
+        Examples:
+            >>> client = Client().with_login("user@example.com", "password")
+            >>> client.logout()  # Token is cleared from memory and storage
+        """
+        ...
+
+    def with_server(self, server: str) -> "Client":
+        """
+        Returns a new client connected to the specified server instance.
+
+        The server parameter is an instance name that maps to a URL:
+
+        - ``""`` or ``"saas"`` → ``https://edgefirst.studio``
+        - ``"test"`` → ``https://test.edgefirst.studio``
+        - ``"stage"`` → ``https://stage.edgefirst.studio``
+        - ``"dev"`` → ``https://dev.edgefirst.studio``
+        - ``"{name}"`` → ``https://{name}.edgefirst.studio``
+
+        If a token is already set in the client, it will be dropped as tokens
+        are specific to the server instance.
+
+        Args:
+            server: The server instance name.
+
+        Returns:
+            A new Client configured for the specified server.
+
+        Examples:
+            >>> client = Client().with_server("test")
+            >>> print(client.url)  # https://test.edgefirst.studio
+        """
+        ...
+
+    def with_storage(self, storage: Union[FileTokenStorage, MemoryTokenStorage, Any]) -> "Client":
+        """
+        Returns a new client with the specified token storage backend.
+
+        Use this to configure custom token storage, such as platform-specific
+        secure storage (iOS Keychain, Android EncryptedSharedPreferences).
+
+        The storage can be a built-in storage class (FileTokenStorage,
+        MemoryTokenStorage) or any Python object that implements the storage
+        protocol with ``store(token: str)``, ``load() -> Optional[str]``, and
+        ``clear()`` methods.
+
+        Args:
+            storage: The token storage backend to use.
+
+        Returns:
+            A new Client configured with the specified storage.
+
+        Examples:
+            Using built-in storage:
+
+            >>> storage = FileTokenStorage.with_path("/custom/path/token")
+            >>> client = Client().with_storage(storage)
+
+            Using custom Python storage:
+
+            >>> class MyStorage:
+            ...     def __init__(self):
+            ...         self._token = None
+            ...     def store(self, token):
+            ...         self._token = token
+            ...     def load(self):
+            ...         return self._token
+            ...     def clear(self):
+            ...         self._token = None
+            >>> client = Client().with_storage(MyStorage())
+        """
+        ...
+
+    def with_memory_storage(self) -> "Client":
+        """
+        Returns a new client with in-memory token storage (no persistence).
+
+        Tokens stored in memory are lost when the application exits. This is
+        useful for testing or when persistence is handled externally.
+
+        Returns:
+            A new Client with memory-only token storage.
+
+        Examples:
+            >>> client = Client().with_memory_storage()
+            >>> client.login("user@example.com", "password")
+            >>> # Token is stored in memory only, not persisted to disk
+        """
+        ...
+
+    def with_no_storage(self) -> "Client":
+        """
+        Returns a new client with no token storage.
+
+        Tokens are not persisted and the client starts without any stored token.
+        Use this when you want full control over token management.
+
+        Returns:
+            A new Client with no token storage.
+
+        Examples:
+            >>> client = Client().with_no_storage()
+        """
+        ...
+
+    def with_login(self, username: str, password: str) -> "Client":
+        """
+        Returns a new client authenticated with the specified credentials.
+
+        This is a builder-style alternative to calling ``login()`` after
+        creating the client. The token is stored in the configured storage.
+
+        Args:
+            username: The username to log in to EdgeFirst Studio.
+            password: The password to log in to EdgeFirst Studio.
+
+        Returns:
+            A new Client authenticated with the specified credentials.
+
+        Raises:
+            RuntimeError: If authentication fails.
+
+        Examples:
+            >>> client = (Client()
+            ...     .with_server("test")
+            ...     .with_login("user@example.com", "password"))
+        """
+        ...
+
+    def with_token(self, token: str) -> "Client":
+        """
+        Returns a new client authenticated with the specified token.
+
+        This is a builder-style way to provide an existing authentication token.
+        The token is stored in the configured storage.
+
+        Args:
+            token: The authentication token.
+
+        Returns:
+            A new Client authenticated with the specified token.
+
+        Examples:
+            >>> client = Client().with_token("eyJ...")
         """
         ...
 
