@@ -27,8 +27,11 @@ class TestFileTokenStorage(unittest.TestCase):
         path = storage.path
         self.assertIsNotNone(path)
         self.assertGreater(len(str(path)), 0)
-        # Should contain EdgeFirst in path
-        self.assertIn("EdgeFirst", str(path))
+        # Should contain EdgeFirst in path (case-insensitive due to platform differences)
+        # macOS: ~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token
+        # Linux: ~/.config/edgefirststudio/token
+        # Windows: C:\Users\<User>\AppData\Roaming\EdgeFirst\EdgeFirst Studio\token
+        self.assertIn("edgefirst", str(path).lower())
 
     def test_with_path_constructor(self):
         """Test FileTokenStorage.with_path() uses custom path."""
