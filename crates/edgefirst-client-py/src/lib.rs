@@ -3592,6 +3592,12 @@ impl Client {
         }
 
         // Assume it's a Python object with store/load/clear methods
+        // Validate that the object has required methods before proceeding
+        for method in ["store", "load", "clear"] {
+            if !storage.hasattr(method)? {
+                return Err(Error::Error(edgefirst_client::Error::InvalidToken)); // or a more appropriate error
+            }
+        }
         let bridge = PyTokenStorageBridge::new(storage.unbind());
         let new_client = self.0.clone().with_storage(Arc::new(bridge));
         Ok(Client(new_client))
