@@ -3275,26 +3275,277 @@ impl Artifact {
     }
 }
 
+// =============================================================================
+// Token Storage Classes
+// =============================================================================
+
+/// File-based token storage for desktop platforms.
+///
+/// Stores the authentication token in a file on the local filesystem.
+/// By default, uses the platform-specific config directory.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct FileTokenStorage(Arc<edgefirst_client::FileTokenStorage>);
+
+#[pymethods]
+impl FileTokenStorage {
+    /// Create a new FileTokenStorage using the default platform config
+    /// directory.
+    #[new]
+    #[pyo3(signature = ())]
+    pub fn new() -> Result<Self, Error> {
+        let storage = edgefirst_client::FileTokenStorage::new()
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))?;
+        Ok(FileTokenStorage(Arc::new(storage)))
+    }
+
+    /// Create a new FileTokenStorage with a custom file path.
+    #[staticmethod]
+    pub fn with_path(path: PathBuf) -> Self {
+        FileTokenStorage(Arc::new(edgefirst_client::FileTokenStorage::with_path(
+            path,
+        )))
+    }
+
+    /// Returns the path where the token is stored.
+    #[getter]
+    pub fn path(&self) -> PathBuf {
+        self.0.path().clone()
+    }
+
+    /// Store a token.
+    pub fn store(&self, token: &str) -> Result<(), Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .store(token)
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))?;
+        Ok(())
+    }
+
+    /// Load the stored token.
+    pub fn load(&self) -> Result<Option<String>, Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .load()
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))
+    }
+
+    /// Clear the stored token.
+    pub fn clear(&self) -> Result<(), Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .clear()
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))?;
+        Ok(())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FileTokenStorage(path={:?})", self.0.path())
+    }
+}
+
+/// In-memory token storage (no persistence).
+///
+/// Stores the authentication token in memory only. The token is lost when
+/// the application exits.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct MemoryTokenStorage(Arc<edgefirst_client::MemoryTokenStorage>);
+
+#[pymethods]
+impl MemoryTokenStorage {
+    /// Create a new MemoryTokenStorage.
+    #[new]
+    pub fn new() -> Self {
+        MemoryTokenStorage(Arc::new(edgefirst_client::MemoryTokenStorage::new()))
+    }
+
+    /// Store a token.
+    pub fn store(&self, token: &str) -> Result<(), Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .store(token)
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))?;
+        Ok(())
+    }
+
+    /// Load the stored token.
+    pub fn load(&self) -> Result<Option<String>, Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .load()
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))
+    }
+
+    /// Clear the stored token.
+    pub fn clear(&self) -> Result<(), Error> {
+        use edgefirst_client::TokenStorage;
+        self.0
+            .clear()
+            .map_err(|e| Error::Error(edgefirst_client::Error::StorageError(e.to_string())))?;
+        Ok(())
+    }
+
+    fn __repr__(&self) -> String {
+        "MemoryTokenStorage()".to_string()
+    }
+}
+
+/// Bridge for Python custom token storage implementations.
+///
+/// Allows Python objects implementing store/load/clear methods to be used
+/// as token storage backends.
+struct PyTokenStorageBridge {
+    py_storage: Py<PyAny>,
+}
+
+impl std::fmt::Debug for PyTokenStorageBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyTokenStorageBridge").finish()
+    }
+}
+
+impl PyTokenStorageBridge {
+    fn new(py_storage: Py<PyAny>) -> Self {
+        Self { py_storage }
+    }
+}
+
+impl edgefirst_client::TokenStorage for PyTokenStorageBridge {
+    fn store(&self, token: &str) -> Result<(), edgefirst_client::StorageError> {
+        Python::attach(|py| {
+            self.py_storage
+                .call_method1(py, "store", (token,))
+                .map_err(|e| {
+                    edgefirst_client::StorageError::WriteError(format!("Python error: {}", e))
+                })?;
+            Ok(())
+        })
+    }
+
+    fn load(&self) -> Result<Option<String>, edgefirst_client::StorageError> {
+        Python::attach(|py| {
+            let result = self.py_storage.call_method0(py, "load").map_err(|e| {
+                edgefirst_client::StorageError::ReadError(format!("Python error: {}", e))
+            })?;
+
+            if result.is_none(py) {
+                return Ok(None);
+            }
+
+            let token: String = result.extract(py).map_err(|e| {
+                edgefirst_client::StorageError::ReadError(format!("Failed to extract token: {}", e))
+            })?;
+
+            if token.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(token))
+            }
+        })
+    }
+
+    fn clear(&self) -> Result<(), edgefirst_client::StorageError> {
+        Python::attach(|py| {
+            self.py_storage.call_method0(py, "clear").map_err(|e| {
+                edgefirst_client::StorageError::ClearError(format!("Python error: {}", e))
+            })?;
+            Ok(())
+        })
+    }
+}
+
+// Make PyTokenStorageBridge Send + Sync (required for TokenStorage trait)
+// This is safe because Python's GIL ensures thread-safe access to Python
+// objects
+unsafe impl Send for PyTokenStorageBridge {}
+unsafe impl Sync for PyTokenStorageBridge {}
+
+// =============================================================================
+// Client
+// =============================================================================
+
 #[pyclass(module = "edgefirst_client")]
 pub struct Client(edgefirst_client::Client);
 
+/// Emit a deprecation warning for constructor parameters.
+fn warn_constructor_deprecated(py: Python<'_>, param_name: &str, new_method: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let message = format!(
+        "Client({}) is deprecated and will be removed in v3.0.0. \
+         Use Client().{}() instead.",
+        param_name, new_method
+    );
+    warnings.call_method1(
+        "warn",
+        (
+            message,
+            py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
+    Ok(())
+}
+
 #[pymethods]
 impl Client {
+    /// Create a new EdgeFirst Client.
+    ///
+    /// By default, creates a client with file-based token storage that
+    /// automatically loads any existing token.
+    ///
+    /// # Deprecated Parameters
+    ///
+    /// The following constructor parameters are deprecated:
+    /// - `token` - Use `.with_token()` instead
+    /// - `username`/`password` - Use `.with_login()` instead
+    /// - `server` - Use `.with_server()` instead
+    /// - `use_token_file` - Use `.with_storage()` or `.with_memory_storage()`
+    ///   instead
+    ///
+    /// # Examples
+    ///
+    /// ```python
+    /// # New recommended API
+    /// client = Client().with_server("test").with_login("user", "pass")
+    ///
+    /// # With custom storage
+    /// client = Client().with_storage(FileTokenStorage.with_path("/custom/path"))
+    ///
+    /// # Without token persistence
+    /// client = Client().with_memory_storage().with_login("user", "pass")
+    /// ```
     #[tokio_wrap::sync]
     #[new]
     #[pyo3(signature = (token=None, username=None, password=None, server=None, use_token_file=true))]
     pub fn new(
+        py: Python<'_>,
         token: Option<String>,
         username: Option<String>,
         password: Option<String>,
         server: Option<String>,
         use_token_file: bool,
     ) -> Result<Self, Error> {
+        // Emit deprecation warnings for deprecated parameters
+        if token.is_some() {
+            let _ = warn_constructor_deprecated(py, "token=...", "with_token");
+        }
+        if username.is_some() || password.is_some() {
+            let _ = warn_constructor_deprecated(py, "username=..., password=...", "with_login");
+        }
+        if server.is_some() {
+            let _ = warn_constructor_deprecated(py, "server=...", "with_server");
+        }
+        if !use_token_file {
+            let _ = warn_constructor_deprecated(py, "use_token_file=False", "with_memory_storage");
+        }
+
         let client = edgefirst_client::Client::new()?;
 
-        let client = match use_token_file {
-            true => client.with_token_path(None)?,
-            false => client,
+        // For backwards compatibility with use_token_file=False, use memory storage
+        let client = if !use_token_file {
+            client.with_memory_storage()
+        } else {
+            client
         };
 
         let client = match token {
@@ -3313,6 +3564,114 @@ impl Client {
         };
 
         Ok(Client(client))
+    }
+
+    /// Configure custom token storage.
+    ///
+    /// Args:
+    ///     storage: A storage object (FileTokenStorage, MemoryTokenStorage,
+    ///              or any object with store/load/clear methods)
+    ///
+    /// Returns:
+    ///     Client: A new client with the specified storage
+    ///
+    /// Example:
+    ///     >>> storage = FileTokenStorage.with_path("/custom/path")
+    ///     >>> client = Client().with_storage(storage)
+    pub fn with_storage(&self, _py: Python<'_>, storage: Bound<'_, PyAny>) -> Result<Self, Error> {
+        // Check if it's a FileTokenStorage
+        if let Ok(file_storage) = storage.extract::<FileTokenStorage>() {
+            let new_client = self.0.clone().with_storage(file_storage.0.clone());
+            return Ok(Client(new_client));
+        }
+
+        // Check if it's a MemoryTokenStorage
+        if let Ok(memory_storage) = storage.extract::<MemoryTokenStorage>() {
+            let new_client = self.0.clone().with_storage(memory_storage.0.clone());
+            return Ok(Client(new_client));
+        }
+
+        // Assume it's a Python object with store/load/clear methods
+        // Validate that the object has required methods before proceeding
+        for method in ["store", "load", "clear"] {
+            if !storage.hasattr(method)? {
+                return Err(Error::Error(edgefirst_client::Error::InvalidToken)); // or a more appropriate error
+            }
+        }
+        let bridge = PyTokenStorageBridge::new(storage.unbind());
+        let new_client = self.0.clone().with_storage(Arc::new(bridge));
+        Ok(Client(new_client))
+    }
+
+    /// Configure in-memory token storage (no persistence).
+    ///
+    /// Tokens are stored in memory only and lost when the application exits.
+    ///
+    /// Returns:
+    ///     Client: A new client with memory storage
+    ///
+    /// Example:
+    ///     >>> client = Client().with_memory_storage()
+    ///     >>> client = client.with_login("user", "pass")
+    pub fn with_memory_storage(&self) -> Self {
+        Client(self.0.clone().with_memory_storage())
+    }
+
+    /// Disable token storage entirely.
+    ///
+    /// Tokens are not persisted. Use this when you want to manage tokens
+    /// entirely manually.
+    ///
+    /// Returns:
+    ///     Client: A new client without storage
+    pub fn with_no_storage(&self) -> Self {
+        Client(self.0.clone().with_no_storage())
+    }
+
+    /// Configure the server instance.
+    ///
+    /// Args:
+    ///     server: Server instance name ("test", "stage", "dev", etc.)
+    ///             Empty string or "saas" uses https://edgefirst.studio
+    ///
+    /// Returns:
+    ///     Client: A new client connected to the specified server
+    ///
+    /// Example:
+    ///     >>> client = Client().with_server("test")
+    pub fn with_server(&self, server: &str) -> Result<Self, Error> {
+        Ok(Client(self.0.with_server(server)?))
+    }
+
+    /// Authenticate with a token.
+    ///
+    /// Args:
+    ///     token: JWT authentication token
+    ///
+    /// Returns:
+    ///     Client: A new authenticated client
+    ///
+    /// Example:
+    ///     >>> client = Client().with_token("eyJ...")
+    pub fn with_token(&self, token: &str) -> Result<Self, Error> {
+        Ok(Client(self.0.with_token(token)?))
+    }
+
+    /// Authenticate with username and password.
+    ///
+    /// Args:
+    ///     username: User email or username
+    ///     password: User password
+    ///
+    /// Returns:
+    ///     Client: A new authenticated client
+    ///
+    /// Example:
+    ///     >>> client = Client().with_server("test")
+    ///     >>> client = client.with_login("user@example.com", "password")
+    #[tokio_wrap::sync]
+    pub fn with_login(&self, username: &str, password: &str) -> Result<Self, Error> {
+        Ok(Client(self.0.with_login(username, password).await?))
     }
 
     #[tokio_wrap::sync]
@@ -4127,17 +4486,19 @@ impl Client {
     ///
     /// Args:
     ///     dataset_id: The dataset ID to create snapshot from (DatasetID or
-    /// string like "ds-xxx").     description: Description for the created
-    /// snapshot.
+    ///         string like "ds-xxx").
+    ///     description: Description for the created snapshot.
     ///     annotation_set_id: Optional annotation set ID. If not provided,
-    /// uses the "annotations" set or first available.
+    ///         uses the "annotations" set or first available.
     ///
     /// Returns:
     ///     SnapshotFromDatasetResult containing the snapshot ID and task ID.
     ///
     /// Example:
-    ///     >>> result = client.create_snapshot_from_dataset("ds-12345", "My
-    /// Dataset Backup")     >>> print(f"Created snapshot: {result.id}")
+    ///     >>> result = client.create_snapshot_from_dataset(
+    ///     ...     "ds-12345", "My Dataset Backup"
+    ///     ... )
+    ///     >>> print(f"Created snapshot: {result.id}")
     ///     >>> if result.task_id:
     ///     ...     client.task(result.task_id, monitor=True)
     #[pyo3(signature = (dataset_id, description, annotation_set_id = None))]
@@ -4909,6 +5270,7 @@ impl Sample {
 fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // ID types
     m.add_class::<ProjectID>()?;
     m.add_class::<DatasetID>()?;
     m.add_class::<ExperimentID>()?;
@@ -4922,6 +5284,12 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ImageId>()?;
     m.add_class::<SequenceId>()?;
     m.add_class::<AppId>()?;
+
+    // Storage classes
+    m.add_class::<FileTokenStorage>()?;
+    m.add_class::<MemoryTokenStorage>()?;
+
+    // Client
     m.add_class::<Client>()?;
     m.add_class::<Project>()?;
     m.add_class::<Experiment>()?;

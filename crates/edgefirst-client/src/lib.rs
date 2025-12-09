@@ -59,6 +59,7 @@ mod dataset;
 mod error;
 pub mod format;
 mod retry;
+mod storage;
 
 pub use crate::{
     api::{
@@ -76,6 +77,7 @@ pub use crate::{
     },
     error::Error,
     retry::{RetryScope, classify_url},
+    storage::{FileTokenStorage, MemoryTokenStorage, StorageError, TokenStorage},
 };
 
 #[cfg(feature = "polars")]
