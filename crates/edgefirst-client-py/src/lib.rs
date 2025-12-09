@@ -3576,8 +3576,8 @@ impl Client {
     ///     Client: A new client with the specified storage
     ///
     /// Example:
-    ///     >>> client =
-    /// Client().with_storage(FileTokenStorage.with_path("/custom/path"))
+    ///     >>> storage = FileTokenStorage.with_path("/custom/path")
+    ///     >>> client = Client().with_storage(storage)
     pub fn with_storage(&self, _py: Python<'_>, storage: Bound<'_, PyAny>) -> Result<Self, Error> {
         // Check if it's a FileTokenStorage
         if let Ok(file_storage) = storage.extract::<FileTokenStorage>() {
@@ -3611,8 +3611,8 @@ impl Client {
     ///     Client: A new client with memory storage
     ///
     /// Example:
-    ///     >>> client = Client().with_memory_storage().with_login("user",
-    /// "pass")
+    ///     >>> client = Client().with_memory_storage()
+    ///     >>> client = client.with_login("user", "pass")
     pub fn with_memory_storage(&self) -> Self {
         Client(self.0.clone().with_memory_storage())
     }
@@ -3667,8 +3667,8 @@ impl Client {
     ///     Client: A new authenticated client
     ///
     /// Example:
-    ///     >>> client =
-    /// Client().with_server("test").with_login("user@example.com", "password")
+    ///     >>> client = Client().with_server("test")
+    ///     >>> client = client.with_login("user@example.com", "password")
     #[tokio_wrap::sync]
     pub fn with_login(&self, username: &str, password: &str) -> Result<Self, Error> {
         Ok(Client(self.0.with_login(username, password).await?))
@@ -4486,17 +4486,19 @@ impl Client {
     ///
     /// Args:
     ///     dataset_id: The dataset ID to create snapshot from (DatasetID or
-    /// string like "ds-xxx").     description: Description for the created
-    /// snapshot.
+    ///         string like "ds-xxx").
+    ///     description: Description for the created snapshot.
     ///     annotation_set_id: Optional annotation set ID. If not provided,
-    /// uses the "annotations" set or first available.
+    ///         uses the "annotations" set or first available.
     ///
     /// Returns:
     ///     SnapshotFromDatasetResult containing the snapshot ID and task ID.
     ///
     /// Example:
-    ///     >>> result = client.create_snapshot_from_dataset("ds-12345", "My
-    /// Dataset Backup")     >>> print(f"Created snapshot: {result.id}")
+    ///     >>> result = client.create_snapshot_from_dataset(
+    ///     ...     "ds-12345", "My Dataset Backup"
+    ///     ... )
+    ///     >>> print(f"Created snapshot: {result.id}")
     ///     >>> if result.task_id:
     ///     ...     client.task(result.task_id, monitor=True)
     #[pyo3(signature = (dataset_id, description, annotation_set_id = None))]
