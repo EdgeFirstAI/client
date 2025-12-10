@@ -1,0 +1,10 @@
+[bindings.kotlin]
+package_name = "ai.edgefirst.client"
+cdylib_name = "edgefirst_client_ffi"
+generate_immutable_records = true
+android = true
+
+[bindings.swift]
+module_name = "EdgeFirstClient"
+cdylib_name = "edgefirst_client_ffi"
+generate_immutable_records = true

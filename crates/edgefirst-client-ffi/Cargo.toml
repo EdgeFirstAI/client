@@ -1,0 +1,24 @@
+[package]
+name = "edgefirst-client-ffi"
+description = "UniFFI bindings for EdgeFirst Client (Kotlin/Swift)"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "edgefirst_client_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+edgefirst-client = { workspace = true }
+uniffi = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+thiserror = "1.0"
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }

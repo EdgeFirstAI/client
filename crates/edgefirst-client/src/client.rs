@@ -3793,9 +3793,7 @@ mod tests {
         let storage = Arc::new(MemoryTokenStorage::new());
         storage.store("test-token").unwrap();
 
-        let client = Client::new()
-            .unwrap()
-            .with_storage(storage.clone());
+        let client = Client::new().unwrap().with_storage(storage.clone());
 
         // Verify token is loaded
         assert_eq!(storage.load().unwrap(), Some("test-token".to_string()));
