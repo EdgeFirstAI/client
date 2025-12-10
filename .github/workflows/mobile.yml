@@ -349,32 +349,26 @@ jobs:
             artifacts/apple-libs/apple-macos-x86_64/libedgefirst_client_ffi.a \
             -output artifacts/apple-libs/macos-fat/libedgefirst_client_ffi.a
 
-      - name: Create Module Map
-        run: |
-          cat > artifacts/swift/module.modulemap << 'EOF'
-          framework module EdgeFirstClientFFI {
-              umbrella header "edgefirst_client_ffiFFI.h"
-              export *
-              module * { export * }
-          }
-          EOF
-
       - name: Create XCFramework
         run: |
           mkdir -p artifacts/xcframework
-          
+
+          # List generated Swift artifacts for debugging
+          echo "=== Generated Swift artifacts ==="
+          find artifacts/swift -type f
+
           # Create framework directories for each platform
           for platform in ios ios-simulator macos; do
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Headers"
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Modules"
-            
-            # Copy headers
-            cp artifacts/swift/edgefirst_client_ffiFFI.h \
+
+            # Copy headers (UniFFI generates EdgeFirstClientFFI.h)
+            cp artifacts/swift/EdgeFirstClientFFI.h \
                "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Headers/"
-            
-            # Copy module map
-            cp artifacts/swift/module.modulemap \
-               "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Modules/"
+
+            # Copy module map (UniFFI generates EdgeFirstClientFFI.modulemap)
+            cp artifacts/swift/EdgeFirstClientFFI.modulemap \
+               "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Modules/module.modulemap"
           done
           
           # Copy static libraries
@@ -397,12 +391,12 @@ jobs:
       - name: Package Swift SDK
         run: |
           mkdir -p artifacts/swift-sdk
-          
+
           # Copy XCFramework
           cp -r artifacts/xcframework/EdgeFirstClientFFI.xcframework artifacts/swift-sdk/
-          
-          # Copy Swift bindings
-          cp artifacts/swift/edgefirst_client_ffi.swift artifacts/swift-sdk/EdgeFirstClient.swift
+
+          # Copy Swift bindings (UniFFI generates EdgeFirstClient.swift)
+          cp artifacts/swift/EdgeFirstClient.swift artifacts/swift-sdk/EdgeFirstClient.swift
           
           # Create Package.swift for SPM
           cat > artifacts/swift-sdk/Package.swift << 'EOF'
