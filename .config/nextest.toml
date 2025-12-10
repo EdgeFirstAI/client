@@ -1,5 +1,10 @@
 # Nextest configuration file
 
+# Test groups for serializing tests that cannot run concurrently
+# Auth tests manipulate the same token file and must run one at a time
+[test-groups.auth-tests]
+max-threads = 1
+
 # CI profile - used in GitHub Actions and other CI environments
 [profile.ci]
 # Number of retries for failing tests
@@ -7,3 +12,15 @@ retries = 0
 # Generate JUnit XML report for test results
 # The JUnit report includes all test results (pass/fail/skip) regardless of output settings
 junit = { path = "junit.xml", store-success-output = true, store-failure-output = true }
+
+# Serialize auth tests that manipulate the token file
+[[profile.ci.overrides]]
+filter = "test(test_auth_workflow) | test(test_corrupted_token_handling)"
+test-group = "auth-tests"
+
+# Default profile inherits auth test serialization
+[profile.default]
+
+[[profile.default.overrides]]
+filter = "test(test_auth_workflow) | test(test_corrupted_token_handling)"
+test-group = "auth-tests"

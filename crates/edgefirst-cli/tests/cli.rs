@@ -1321,7 +1321,6 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[file_serial]
 fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = get_test_dataset();
     let dataset_name_lower = dataset.to_lowercase().replace("ds-", "dataset-");
@@ -1379,7 +1378,6 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[file_serial]
 fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = get_test_dataset();
     let (source_dataset_id, source_annotation_set_id) =
