@@ -199,11 +199,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-        with:
-          shared-key: uniffi-bindgen
-          cache-targets: true
+      # NOTE: Caching disabled for debugging - re-enable once binding generation is fixed
+      # - name: Cache Cargo
+      #   uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      #   with:
+      #     shared-key: uniffi-bindgen
+      #     cache-targets: true
 
       - name: Build uniffi-bindgen
         run: cargo build --release -p uniffi-bindgen
@@ -215,30 +216,46 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p artifacts/kotlin
-          
+
           # Verify the library was built
           echo "=== Library files ==="
           ls -la target/release/libedgefirst_client_ffi.*
-          
+
           # Check library dependencies
           echo "=== Library dependencies (ldd) ==="
           ldd target/release/libedgefirst_client_ffi.so || echo "ldd failed or not available"
-          
+
           # Check for UniFFI metadata symbols
           echo "=== UniFFI symbols in library ==="
           nm -D target/release/libedgefirst_client_ffi.so 2>/dev/null | grep -i uniffi | head -20 || echo "No uniffi symbols found"
-          
+
           # Generate bindings
           echo "=== Running uniffi-bindgen ==="
           ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.so \
             --language kotlin \
             --out-dir artifacts/kotlin
-          
+
+          # Debug: Search for any generated header files
+          echo "=== Searching for .h files in project ==="
+          find . -name "*.h" -type f 2>/dev/null | head -50 || echo "No .h files found"
+
+          # Debug: Search for any generated Kotlin files anywhere
+          echo "=== Searching for .kt files in project ==="
+          find . -name "*.kt" -type f 2>/dev/null | head -50 || echo "No .kt files found"
+
+          # Debug: List artifacts directory structure
+          echo "=== Artifacts directory structure ==="
+          find artifacts -type f 2>/dev/null || echo "artifacts directory empty or not found"
+
+          # Debug: Check target directory for any uniffi output
+          echo "=== Target directory uniffi files ==="
+          find target -name "*uniffi*" -type f 2>/dev/null | head -20 || echo "No uniffi files in target"
+
           # Verify output was generated
           echo "=== Generated files ==="
           find artifacts/kotlin -type f || echo "No files generated!"
-          
+
           # Check if any Kotlin files exist
           if ! find artifacts/kotlin -name "*.kt" -type f | grep -q .; then
             echo "ERROR: No Kotlin files were generated!"
@@ -302,11 +319,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-        with:
-          shared-key: uniffi-bindgen-macos
-          cache-targets: true
+      # NOTE: Caching disabled for debugging - re-enable once binding generation is fixed
+      # - name: Cache Cargo
+      #   uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      #   with:
+      #     shared-key: uniffi-bindgen-macos
+      #     cache-targets: true
 
       - name: Build uniffi-bindgen
         run: cargo build --release -p uniffi-bindgen
@@ -318,30 +336,46 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p artifacts/swift
-          
+
           # Verify the library was built
           echo "=== Library files ==="
           ls -la target/release/libedgefirst_client_ffi.*
-          
+
           # Check library dependencies (otool on macOS)
           echo "=== Library dependencies (otool) ==="
           otool -L target/release/libedgefirst_client_ffi.dylib || echo "otool failed"
-          
+
           # Check for UniFFI symbols
           echo "=== UniFFI symbols in library ==="
           nm target/release/libedgefirst_client_ffi.dylib 2>/dev/null | grep -i uniffi | head -20 || echo "No uniffi symbols found"
-          
+
           # Generate bindings
           echo "=== Running uniffi-bindgen ==="
           ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.dylib \
             --language swift \
             --out-dir artifacts/swift
-          
+
+          # Debug: Search for any generated header files
+          echo "=== Searching for .h files in project ==="
+          find . -name "*.h" -type f 2>/dev/null | head -50 || echo "No .h files found"
+
+          # Debug: Search for any generated Swift files anywhere
+          echo "=== Searching for .swift files in project ==="
+          find . -name "*.swift" -type f 2>/dev/null | head -50 || echo "No .swift files found"
+
+          # Debug: List artifacts directory structure
+          echo "=== Artifacts directory structure ==="
+          find artifacts -type f 2>/dev/null || echo "artifacts directory empty or not found"
+
+          # Debug: Check target directory for any uniffi output
+          echo "=== Target directory uniffi files ==="
+          find target -name "*uniffi*" -type f 2>/dev/null | head -20 || echo "No uniffi files in target"
+
           # Verify output was generated
           echo "=== Generated files ==="
           find artifacts/swift -type f || echo "No files generated!"
-          
+
           # Check if Swift files exist
           if ! find artifacts/swift -name "*.swift" -type f | grep -q .; then
             echo "ERROR: No Swift files were generated!"
