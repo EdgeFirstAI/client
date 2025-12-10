@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **UniFFI Bindings for Kotlin and Swift**
+
+  New FFI crate enables native mobile app development with EdgeFirst Client:
+
+  **Kotlin (Android):**
+  - Full API coverage with coroutine-based async methods
+  - JNI native libraries for arm64-v8a, armeabi-v7a, x86_64
+  - `TokenStorageCallback` interface for custom storage (EncryptedSharedPreferences)
+  - All data types: `Sample`, `Annotation`, `Mask`, `Project`, `Dataset`, etc.
+
+  **Swift (iOS/macOS):**
+  - Full API coverage with async/await pattern
+  - XCFramework supporting iOS, iOS Simulator, and macOS
+  - `TokenStorageCallback` protocol for custom storage (Keychain Services)
+  - Swift Package Manager compatible distribution
+
+  **CI/CD Integration:**
+  - New `.github/workflows/mobile.yml` workflow
+  - Automated builds for Android NDK and Apple platforms
+  - Automated binding generation and SDK packaging
+  - Release artifact upload (zip files for each SDK)
+
 - **Token Storage Abstraction for Platform Portability**
 
   New trait-based token storage delegate API enables custom storage backends for
