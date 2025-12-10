@@ -241,15 +241,30 @@ jobs:
           file target/release/libedgefirst_client_ffi.so
 
           echo "=== uniffi-bindgen generate output ==="
+          # Try with explicit crate name
           RUST_BACKTRACE=full ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.so \
+            --crate edgefirst_client_ffi \
             --language kotlin \
             --out-dir artifacts/kotlin \
             --no-format 2>&1
           UNIFFI_EXIT=$?
           echo "uniffi-bindgen exit code: $UNIFFI_EXIT"
-          if [ $UNIFFI_EXIT -ne 0 ]; then
-            echo "uniffi-bindgen failed!"
+
+          # If that didn't work, show library metadata
+          if [ $UNIFFI_EXIT -ne 0 ] || [ ! "$(find artifacts/kotlin -name '*.kt' -type f 2>/dev/null)" ]; then
+            echo "=== Trying to inspect library metadata ==="
+            # Show all symbols containing uniffi
+            nm -D target/release/libedgefirst_client_ffi.so 2>/dev/null | grep -i uniffi | wc -l
+            echo "Total UNIFFI symbols found"
+
+            # Check library sections
+            echo "=== Library sections ==="
+            objdump -h target/release/libedgefirst_client_ffi.so | head -40
+
+            # Try reading raw strings for uniffi metadata
+            echo "=== Raw strings containing uniffi (first 20) ==="
+            strings target/release/libedgefirst_client_ffi.so | grep -i uniffi | head -20
           fi
 
           # Debug: Search for any generated header files
@@ -377,15 +392,30 @@ jobs:
           file target/release/libedgefirst_client_ffi.dylib
 
           echo "=== uniffi-bindgen generate output ==="
+          # Try with explicit crate name
           RUST_BACKTRACE=full ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.dylib \
+            --crate edgefirst_client_ffi \
             --language swift \
             --out-dir artifacts/swift \
             --no-format 2>&1
           UNIFFI_EXIT=$?
           echo "uniffi-bindgen exit code: $UNIFFI_EXIT"
-          if [ $UNIFFI_EXIT -ne 0 ]; then
-            echo "uniffi-bindgen failed!"
+
+          # If that didn't work, show library metadata
+          if [ $UNIFFI_EXIT -ne 0 ] || [ ! "$(find artifacts/swift -name '*.swift' -type f 2>/dev/null)" ]; then
+            echo "=== Trying to inspect library metadata ==="
+            # Show all symbols containing uniffi
+            nm target/release/libedgefirst_client_ffi.dylib 2>/dev/null | grep -i uniffi | wc -l
+            echo "Total UNIFFI symbols found"
+
+            # Check library sections
+            echo "=== Library segments ==="
+            otool -l target/release/libedgefirst_client_ffi.dylib | head -60
+
+            # Try reading raw strings for uniffi metadata
+            echo "=== Raw strings containing uniffi (first 20) ==="
+            strings target/release/libedgefirst_client_ffi.dylib | grep -i uniffi | head -20
           fi
 
           # Debug: Search for any generated header files
