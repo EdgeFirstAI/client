@@ -213,11 +213,37 @@ jobs:
 
       - name: Generate Kotlin Bindings
         run: |
+          set -euxo pipefail
           mkdir -p artifacts/kotlin
+          
+          # Verify the library was built
+          echo "=== Library files ==="
+          ls -la target/release/libedgefirst_client_ffi.*
+          
+          # Check library dependencies
+          echo "=== Library dependencies (ldd) ==="
+          ldd target/release/libedgefirst_client_ffi.so || echo "ldd failed or not available"
+          
+          # Check for UniFFI metadata symbols
+          echo "=== UniFFI symbols in library ==="
+          nm -D target/release/libedgefirst_client_ffi.so 2>/dev/null | grep -i uniffi | head -20 || echo "No uniffi symbols found"
+          
+          # Generate bindings
+          echo "=== Running uniffi-bindgen ==="
           ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.so \
             --language kotlin \
             --out-dir artifacts/kotlin
+          
+          # Verify output was generated
+          echo "=== Generated files ==="
+          find artifacts/kotlin -type f || echo "No files generated!"
+          
+          # Check if any Kotlin files exist
+          if ! find artifacts/kotlin -name "*.kt" -type f | grep -q .; then
+            echo "ERROR: No Kotlin files were generated!"
+            exit 1
+          fi
 
       - name: Download Android Libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -228,6 +254,8 @@ jobs:
 
       - name: Organize JNI Libraries
         run: |
+          set -euxo pipefail
+          
           # Rename directories to match Android JNI conventions
           mkdir -p artifacts/android-sdk/jniLibs
           for abi in arm64-v8a armeabi-v7a x86_64; do
@@ -235,11 +263,20 @@ jobs:
               mkdir -p "artifacts/android-sdk/jniLibs/${abi}"
               cp "artifacts/jniLibs/android-${abi}/libedgefirst_client_ffi.so" \
                  "artifacts/android-sdk/jniLibs/${abi}/"
+              echo "Copied ${abi} library"
+            else
+              echo "Warning: android-${abi} not found, skipping"
             fi
           done
           
-          # Copy Kotlin sources
-          cp -r artifacts/kotlin/* artifacts/android-sdk/
+          # Verify Kotlin sources exist before copying
+          if [ -d "artifacts/kotlin" ] && [ -n "$(ls -A artifacts/kotlin 2>/dev/null)" ]; then
+            cp -r artifacts/kotlin/* artifacts/android-sdk/
+            echo "Copied Kotlin sources to android-sdk"
+          else
+            echo "ERROR: artifacts/kotlin is empty or missing"
+            exit 1
+          fi
 
       - name: Upload Kotlin SDK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -279,11 +316,37 @@ jobs:
 
       - name: Generate Swift Bindings
         run: |
+          set -euxo pipefail
           mkdir -p artifacts/swift
+          
+          # Verify the library was built
+          echo "=== Library files ==="
+          ls -la target/release/libedgefirst_client_ffi.*
+          
+          # Check library dependencies (otool on macOS)
+          echo "=== Library dependencies (otool) ==="
+          otool -L target/release/libedgefirst_client_ffi.dylib || echo "otool failed"
+          
+          # Check for UniFFI symbols
+          echo "=== UniFFI symbols in library ==="
+          nm target/release/libedgefirst_client_ffi.dylib 2>/dev/null | grep -i uniffi | head -20 || echo "No uniffi symbols found"
+          
+          # Generate bindings
+          echo "=== Running uniffi-bindgen ==="
           ./target/release/uniffi-bindgen generate \
             --library target/release/libedgefirst_client_ffi.dylib \
             --language swift \
             --out-dir artifacts/swift
+          
+          # Verify output was generated
+          echo "=== Generated files ==="
+          find artifacts/swift -type f || echo "No files generated!"
+          
+          # Check if Swift files exist
+          if ! find artifacts/swift -name "*.swift" -type f | grep -q .; then
+            echo "ERROR: No Swift files were generated!"
+            exit 1
+          fi
 
       - name: Download Apple Libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

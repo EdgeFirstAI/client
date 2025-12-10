@@ -8,7 +8,7 @@ use assert_cmd::Command;
 use base64::Engine as _;
 use chrono::Utc;
 use directories::ProjectDirs;
-use serial_test::serial;
+use serial_test::file_serial;
 use std::{
     collections::{BTreeSet, HashMap},
     env, fs,
@@ -896,7 +896,7 @@ fn test_organization_details() -> Result<(), Box<dyn std::error::Error>> {
 /// Tests: login -> token validation -> logout -> re-login -> new token issued
 /// This consolidates multiple auth tests into one efficient workflow.
 #[test]
-#[serial]
+#[file_serial]
 fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs, time::SystemTime};
 
@@ -911,16 +911,20 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
         .map(|d| d.config_dir().join("token"))
         .ok_or("ProjectDirs::from returned None - cannot determine token path")?;
 
+    // Clean up any existing token file to ensure a clean test state
+    // This prevents interference from other tests or previous runs
+    if token_path.exists() {
+        println!(
+            "Removing existing token file ({} bytes) to ensure clean state",
+            fs::metadata(&token_path).map(|m| m.len()).unwrap_or(0)
+        );
+        fs::remove_file(&token_path)?;
+    }
+
     // Debug: Show environment info to help diagnose path issues
     println!("HOME: {:?}", env::var("HOME"));
     println!("XDG_CONFIG_HOME: {:?}", env::var("XDG_CONFIG_HOME"));
     println!("Token path: {:?}", token_path);
-    if token_path.exists() {
-        println!(
-            "Token file already exists with {} bytes",
-            fs::metadata(&token_path).map(|m| m.len()).unwrap_or(0)
-        );
-    }
     println!("=== STEP 1: First Login ===");
     let time_before = SystemTime::now();
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1062,7 +1066,7 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
     let _username =
         env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
@@ -1317,7 +1321,7 @@ fn test_dataset_by_id() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = get_test_dataset();
     let dataset_name_lower = dataset.to_lowercase().replace("ds-", "dataset-");
@@ -1375,7 +1379,7 @@ fn test_download_annotations() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = get_test_dataset();
     let (source_dataset_id, source_annotation_set_id) =
@@ -1496,7 +1500,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
 ///
 /// **Note**: This test uploads 1600+ samples and takes ~3 minutes to complete.
 #[test]
-#[serial]
+#[file_serial]
 #[ignore = "Temporarily disabled due to CI timeout issues - run locally with: cargo test test_dataset_roundtrip -- --ignored"]
 fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Download→Upload→Download→Compare test for configurable dataset
@@ -2237,7 +2241,7 @@ fn extract_artifact_name(output: &str) -> Option<String> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
 
@@ -2307,7 +2311,7 @@ fn test_download_artifact() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_artifact() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs::File, io::Write};
 
@@ -2614,7 +2618,7 @@ fn get_test_labels_dataset() -> Result<(String, String), Box<dyn std::error::Err
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset for write operations
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
@@ -2659,7 +2663,7 @@ fn test_upload_dataset_full_mode() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
@@ -2707,7 +2711,7 @@ fn test_upload_dataset_auto_discovery() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_images_only() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
@@ -2747,7 +2751,7 @@ fn test_upload_dataset_images_only() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_warning_no_annotation_set_id() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
@@ -2806,7 +2810,7 @@ fn test_upload_dataset_warning_no_annotation_set_id() -> Result<(), Box<dyn std:
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_batching() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, annotation_set_id) = get_test_labels_dataset()?;
@@ -2856,7 +2860,7 @@ fn test_upload_dataset_batching() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_missing_parameters() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
@@ -2886,7 +2890,7 @@ fn test_upload_dataset_missing_parameters() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_upload_dataset_invalid_path() -> Result<(), Box<dyn std::error::Error>> {
     // Get Test Labels dataset
     let (dataset_id, _annotation_set_id) = get_test_labels_dataset()?;
@@ -2912,7 +2916,7 @@ fn test_upload_dataset_invalid_path() -> Result<(), Box<dyn std::error::Error>> 
 // ===== Dataset Management Tests =====
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     // Get Unit Testing project
     let mut cmd = edgefirst_cmd();
@@ -3025,7 +3029,7 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
     // Test the --flatten option to download sequences without subdirectories
     let dataset = get_test_dataset();
@@ -3166,7 +3170,7 @@ fn test_download_dataset_flatten() -> Result<(), Box<dyn std::error::Error>> {
 // ============================================================================
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_snapshots_list() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = edgefirst_cmd();
     cmd.arg("snapshots");
@@ -3185,7 +3189,7 @@ fn test_snapshots_list() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
     // First, list snapshots to get a valid ID
     let mut cmd = edgefirst_cmd();
@@ -3240,7 +3244,7 @@ fn test_snapshot_get() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::error::Error>> {
     // This test covers create, download, and delete in a single workflow
 
@@ -3382,7 +3386,7 @@ fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Erro
 }
 
 #[test]
-#[serial]
+#[file_serial]
 fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // SNAPSHOT RESTORE TEST
@@ -3978,7 +3982,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
 /// This validates that server-side snapshot creation from a dataset produces
 /// an Arrow file that matches the dataset's annotations, including groups.
 #[test]
-#[serial]
+#[file_serial]
 fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════════╗");
     println!("║  CREATE SNAPSHOT FROM DATASET TEST                             ║");
@@ -4368,7 +4372,7 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-#[serial]
+#[file_serial]
 #[ignore = "Requires MCAP test data (4GB+). Set TEST_MCAP_SNAPSHOT_ID to run."]
 fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error::Error>> {
     // This test requires an MCAP file to test autodepth and autolabel features.
@@ -4509,7 +4513,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
 /// MUST reject this during restore as it violates the data integrity
 /// constraint that all rows for a given image must have identical group values.
 #[test]
-#[serial]
+#[file_serial]
 #[ignore = "Server-side validation for inconsistent groups not yet implemented. This test verifies the expected behavior when it is."]
 fn test_server_rejects_inconsistent_group_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     use polars::prelude::*;
