@@ -76,6 +76,11 @@ lto = true
 strip = true
 debug = false
 
+# Disable stripping for the FFI crate to preserve UniFFI metadata
+# This is required for uniffi-bindgen to extract bindings from the library
+[profile.release.package.edgefirst-client-ffi]
+strip = false
+
 [profile.profiling]
 inherits = "release"
 strip = false
