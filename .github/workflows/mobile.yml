@@ -8,9 +8,6 @@ name: Mobile SDK
 on:
   push:
     branches: [main]
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+rc[0-9]+'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -440,58 +437,3 @@ jobs:
           path: artifacts/swift-sdk/
           retention-days: 7
 
-  # ============================================================================
-  # Release Mobile SDKs (only on version tags)
-  # ============================================================================
-  release-mobile:
-    name: Release Mobile SDKs
-    runs-on: ubuntu-24.04
-    needs: [generate-kotlin, generate-swift]
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout (for README files)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Download Android SDK
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: edgefirst-client-android
-          path: android-sdk/
-
-      - name: Download Swift SDK
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: edgefirst-client-swift
-          path: swift-sdk/
-
-      - name: Get Version
-        id: version
-        run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Package Android SDK
-        run: |
-          # Include README in the SDK package
-          cp ANDROID.md android-sdk/README.md
-          cd android-sdk
-          zip -r "../edgefirst-client-android-${{ steps.version.outputs.version }}.zip" .
-
-      - name: Package Swift SDK
-        run: |
-          # Include README in the SDK package
-          cp APPLE.md swift-sdk/README.md
-          cd swift-sdk
-          zip -r "../edgefirst-client-swift-${{ steps.version.outputs.version }}.zip" .
-
-      - name: Upload to Release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.1
-        with:
-          files: |
-            edgefirst-client-android-${{ steps.version.outputs.version }}.zip
-            edgefirst-client-swift-${{ steps.version.outputs.version }}.zip
-          fail_on_unmatched_files: true

@@ -5,6 +5,18 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2025-12-11
+
+### Changed
+
+- **CI/CD workflow optimization**
+  - Refactored release workflow to download pre-built artifacts instead of rebuilding
+  - Removed redundant tag triggers from `build.yml`, `mobile.yml`, and `sbom.yml`
+  - Release workflow now waits for CI workflows to complete on the commit, then downloads artifacts
+  - Reduces CI time and ensures release artifacts are identical to what was tested
+  - Uses `lewagon/wait-on-check-action` to wait for dependent workflows
+  - Uses `dawidd6/action-download-artifact` to download cross-workflow artifacts
+
 ## [2.6.1] - 2025-12-11
 
 ### Fixed

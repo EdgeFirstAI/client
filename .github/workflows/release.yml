@@ -1,3 +1,15 @@
+# Release Workflow
+#
+# This workflow orchestrates the release process by:
+# 1. Creating the GitHub release
+# 2. Downloading pre-built artifacts from build.yml, mobile.yml, and sbom.yml
+# 3. Uploading artifacts to the GitHub release
+# 4. Publishing to PyPI and crates.io
+#
+# NOTE: This workflow does NOT rebuild artifacts. It downloads them from the
+# workflows that ran when the commit was pushed to main. This saves CI time
+# and ensures release artifacts are identical to what was tested.
+
 name: Release
 
 on:
@@ -13,7 +25,9 @@ env:
   RUST_STABLE_VERSION: "1.90"
 
 jobs:
-  # Create GitHub release
+  # ==========================================================================
+  # Create GitHub Release
+  # ==========================================================================
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -73,13 +87,31 @@ jobs:
             Download `edgefirst-client-swift-${{ steps.get_version.outputs.version }}.zip` from the assets below.
             See the included README.md for integration instructions.
 
-  # Upload SBOM from sbom.yml workflow (same tag commit)
-  upload-sbom:
-    name: Upload Software Bill of Materials
+  # ==========================================================================
+  # Wait for CI Workflows to Complete
+  # ==========================================================================
+  wait-for-ci:
+    name: Wait for CI Workflows
     needs: [create-release]
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for SBOM workflow to complete
+      - name: Wait for Build workflow
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'Verify Builds'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+      - name: Wait for Mobile SDK workflow
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'Generate Swift Bindings'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+      - name: Wait for SBOM workflow
         uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
         with:
           ref: ${{ github.sha }}
@@ -87,7 +119,15 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
 
-      - name: Download SBOM artifact from tag commit
+  # ==========================================================================
+  # Download and Upload SBOM
+  # ==========================================================================
+  upload-sbom:
+    name: Upload SBOM
+    needs: [create-release, wait-for-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SBOM artifact
         uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: sbom.yml
@@ -110,10 +150,12 @@ jobs:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: sbom.json
 
-  # Generate man page
+  # ==========================================================================
+  # Generate and Upload Man Page
+  # ==========================================================================
   generate-manpage:
     name: Generate Man Page
-    needs: [create-release, upload-sbom]
+    needs: [create-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -133,316 +175,156 @@ jobs:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: edgefirst-client.1
 
-  # Build CLI binaries
-  build-cli:
-    name: Build CLI ${{ matrix.target }}
-    needs: [create-release, upload-sbom]
-    runs-on: ${{ matrix.os }}
+  # ==========================================================================
+  # Download and Upload CLI Binaries
+  # ==========================================================================
+  upload-cli:
+    name: Upload CLI Binaries
+    needs: [create-release, wait-for-ci]
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: edgefirst-client
-            asset_name: edgefirst-client-linux-amd64
-
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: edgefirst-client
-            asset_name: edgefirst-client-linux-arm64
-
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: edgefirst-client
-            asset_name: edgefirst-client-macos-amd64
-
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: edgefirst-client
-            asset_name: edgefirst-client-macos-arm64
-
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: edgefirst-client.exe
-            asset_name: edgefirst-client-windows-amd64.exe
-
+          - artifact: edgefirst-client-linux-amd64
+            extension: tar.gz
+          - artifact: edgefirst-client-linux-arm64
+            extension: tar.gz
+          - artifact: edgefirst-client-macos-amd64
+            extension: tar.gz
+          - artifact: edgefirst-client-macos-arm64
+            extension: tar.gz
+          - artifact: edgefirst-client-windows-amd64.exe
+            extension: zip
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - name: Download CLI artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-          targets: ${{ matrix.target }}
+          workflow: build.yml
+          commit: ${{ github.sha }}
+          name: ${{ matrix.artifact }}
+          path: cli/
 
-      # Use same cache configuration as build.yml to benefit from shared cache
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
-        with:
-          key: ${{ matrix.target }}-build
-          shared-key: "build"
-          save-if: "false"  # Don't save cache on release builds
-
-      # Install zig and cargo-zigbuild for Linux targets (manylinux2014 compatibility)
-      - name: Install zig and cargo-zigbuild (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          pip install ziglang
-          cargo install cargo-zigbuild
-
-      - name: Build CLI (Linux with zig)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17 -p edgefirst-cli
-
-      - name: Build CLI (macOS/Windows)
-        if: matrix.os != 'ubuntu-latest'
-        run: cargo build --release --locked --target ${{ matrix.target }} -p edgefirst-cli
-
-      # Verify GLIBC requirements for Linux binaries (manylinux2014 = glibc 2.17)
-      - name: Verify GLIBC requirements (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          echo "Checking GLIBC requirements for ${{ matrix.target }}..."
-          GLIBC_MAX=$(objdump -T "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
-          echo "Maximum GLIBC version required: $GLIBC_MAX"
-          
-          # Extract version numbers for comparison
-          GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-          GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-          
-          # Check if version is <= 2.17 (manylinux2014)
-          if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
-            echo "❌ ERROR: Binary requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
-            exit 1
-          fi
-          echo "✅ GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
-
-      - name: Create release asset
-        shell: bash
+      - name: Package CLI binary
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
-          mkdir -p release
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "release/${{ matrix.asset_name }}"
-          cd release
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a "${{ matrix.asset_name }}-$VERSION.zip" "${{ matrix.asset_name }}"
+          cd cli
+          if [ "${{ matrix.extension }}" = "zip" ]; then
+            zip "../${{ matrix.artifact }}-${VERSION}.zip" *
           else
-            tar czf "${{ matrix.asset_name }}-$VERSION.tar.gz" "${{ matrix.asset_name }}"
+            tar czf "../${{ matrix.artifact }}-${VERSION}.tar.gz" *
           fi
 
-      - name: Upload Release Asset
+      - name: Upload CLI to release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
-          files: release/${{ matrix.asset_name }}-${{ needs.create-release.outputs.version }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+          files: ${{ matrix.artifact }}-${{ needs.create-release.outputs.version }}.${{ matrix.extension }}
 
-  # Build Python wheels
-  build-wheels:
-    name: Build wheels ${{ matrix.platform }}-${{ matrix.arch }}
-    needs: [create-release, upload-sbom]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            platform: linux
-            arch: x86_64
+  # ==========================================================================
+  # Download and Upload Python Wheels
+  # ==========================================================================
+  upload-wheels:
+    name: Upload Wheels
+    needs: [create-release, wait-for-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheel artifacts
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: build.yml
+          commit: ${{ github.sha }}
+          name: wheels-*
+          name_is_regexp: true
+          path: wheels/
+          merge_multiple: true
 
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            platform: linux
-            arch: aarch64
+      - name: List downloaded wheels
+        run: |
+          echo "Downloaded wheels:"
+          find wheels -name "*.whl" -type f
+          ls -lh wheels/
 
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            platform: macos
-            arch: x86_64
+      - name: Upload wheels to release
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        with:
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: wheels/**/*.whl
 
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            platform: macos
-            arch: aarch64
-
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform: windows
-            arch: x86_64
-
+  # ==========================================================================
+  # Download and Upload Mobile SDKs
+  # ==========================================================================
+  upload-mobile:
+    name: Upload Mobile SDKs
+    needs: [create-release, wait-for-ci]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - name: Download Android SDK artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-          targets: ${{ matrix.target }}
+          workflow: mobile.yml
+          commit: ${{ github.sha }}
+          name: edgefirst-client-android
+          path: android-sdk/
 
-      - name: Set up Python
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+      - name: Download Swift SDK artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
-          python-version: '3.11'
+          workflow: mobile.yml
+          commit: ${{ github.sha }}
+          name: edgefirst-client-swift
+          path: swift-sdk/
 
-      # Use same cache configuration as build.yml to benefit from shared cache
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Package Mobile SDKs
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Package Android SDK with README
+          cp ANDROID.md android-sdk/README.md
+          cd android-sdk
+          zip -r "../edgefirst-client-android-${VERSION}.zip" .
+          cd ..
+
+          # Package Swift SDK with README
+          cp APPLE.md swift-sdk/README.md
+          cd swift-sdk
+          zip -r "../edgefirst-client-swift-${VERSION}.zip" .
+
+      - name: Upload Mobile SDKs to release
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
-          key: ${{ matrix.target }}-build
-          shared-key: "build"
-          save-if: "false"  # Don't save cache on release builds
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: |
+            edgefirst-client-android-${{ needs.create-release.outputs.version }}.zip
+            edgefirst-client-swift-${{ needs.create-release.outputs.version }}.zip
 
-      - name: Install maturin
-        run: pip install maturin[zig]
-
-      # Install zig and cargo-zigbuild for Linux targets
-      - name: Install zig and cargo-zigbuild (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          pip install ziglang
-          cargo install cargo-zigbuild
-
-      # Install cross-compilation tools for Linux aarch64
-      - name: Install cross-compilation tools (Linux aarch64)
-        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build CLI for bundling (Linux with zig)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17 -p edgefirst-cli
-
-      - name: Build CLI for bundling (macOS/Windows)
-        if: matrix.os != 'ubuntu-latest'
-        run: cargo build --release --locked --target ${{ matrix.target }} -p edgefirst-cli
-
-      - name: Bundle CLI with wheel
-        shell: bash
-        run: |
-          mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
-          
-          # When --target is specified, cargo uses target/<triple>/release/
-          # This applies to all builds since we always specify --target
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.target }}/release/edgefirst-client.exe" "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client.exe"
-          else
-            cp "target/${{ matrix.target }}/release/edgefirst-client" "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client"
-          fi
-
-      # Verify GLIBC requirements for bundled CLI (Linux only, manylinux2014 = glibc 2.17)
-      - name: Verify bundled CLI GLIBC requirements (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          echo "Checking GLIBC requirements for bundled CLI binary (${{ matrix.target }})..."
-          GLIBC_MAX=$(objdump -T "crates/edgefirst-client-py/edgefirst_client.data/scripts/edgefirst-client" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
-          echo "Maximum GLIBC version required: $GLIBC_MAX"
-          
-          # Extract version numbers for comparison
-          GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-          GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-          
-          # Check if version is <= 2.17 (manylinux2014)
-          if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
-            echo "❌ ERROR: Bundled CLI requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
-            exit 1
-          fi
-          echo "✅ Bundled CLI GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
-
-      - name: Build wheels (Linux with zig)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          maturin build --release --locked --zig --compatibility manylinux2014 \
-            --target ${{ matrix.target }} \
-            -m crates/edgefirst-client-py/Cargo.toml
-
-      - name: Build wheels (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          maturin build --release --locked \
-            --target ${{ matrix.target }} \
-            -m crates/edgefirst-client-py/Cargo.toml
-
-      - name: Build wheels (Windows)
-        if: matrix.os == 'windows-latest'
-        run: maturin build --release --locked -m crates/edgefirst-client-py/Cargo.toml
-
-      # Final verification of wheel contents (Linux only)
-      - name: Verify wheel contents GLIBC requirements (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          echo "Extracting and verifying final wheel contents for ${{ matrix.target }}..."
-          WHEEL_FILE=$(ls target/wheels/*.whl)
-          TEMP_DIR=$(mktemp -d)
-          unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
-          
-          # Check the Python extension module (.so)
-          SO_FILE=$(find "$TEMP_DIR" -name "*.so" | head -1)
-          if [ -n "$SO_FILE" ]; then
-            echo "Checking Python extension: $SO_FILE"
-            GLIBC_MAX=$(objdump -T "$SO_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
-            echo "  Max GLIBC: $GLIBC_MAX"
-            
-            GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-            GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-            
-            if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
-              echo "❌ ERROR: Python extension requires $GLIBC_MAX"
-              rm -rf "$TEMP_DIR"
-              exit 1
-            fi
-            echo "  ✅ Python extension OK"
-          fi
-          
-          # Check bundled CLI binary
-          CLI_FILE=$(find "$TEMP_DIR" -path "*.data/scripts/edgefirst-client" -type f | head -1)
-          if [ -n "$CLI_FILE" ]; then
-            echo "Checking bundled CLI: $CLI_FILE"
-            GLIBC_MAX=$(objdump -T "$CLI_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
-            echo "  Max GLIBC: $GLIBC_MAX"
-            
-            GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-            GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-            
-            if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
-              echo "❌ ERROR: Bundled CLI requires $GLIBC_MAX"
-              rm -rf "$TEMP_DIR"
-              exit 1
-            fi
-            echo "  ✅ Bundled CLI OK"
-          fi
-          
-          rm -rf "$TEMP_DIR"
-          echo "✅ All binaries in wheel verified: compliant with manylinux2014 (GLIBC_2.17)"
-
-      - name: Upload wheels as artifacts
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
-          path: target/wheels/*.whl
-
+  # ==========================================================================
   # Publish to PyPI
+  # ==========================================================================
   publish-pypi:
     name: Publish to PyPI
-    needs: [create-release, build-wheels]
+    needs: [create-release, wait-for-ci]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+      - name: Download all wheel artifacts
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
-          path: wheels
-          pattern: wheels-*
-          merge-multiple: true
+          workflow: build.yml
+          commit: ${{ github.sha }}
+          name: wheels-*
+          name_is_regexp: true
+          path: wheels/
+          merge_multiple: true
 
       - name: List wheels
-        run: ls -lh wheels/
+        run: |
+          echo "Wheels to publish:"
+          find wheels -name "*.whl" -type f
+          ls -lh wheels/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
@@ -450,7 +332,9 @@ jobs:
           packages-dir: wheels/
           skip-existing: true
 
+  # ==========================================================================
   # Publish to crates.io
+  # ==========================================================================
   publish-crates-io:
     name: Publish to crates.io
     needs: [create-release]
@@ -477,24 +361,3 @@ jobs:
         run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  # Update release with wheel assets
-  upload-wheels-to-release:
-    name: Upload Wheels to Release
-    needs: [create-release, build-wheels]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: wheels
-          pattern: wheels-*
-          merge-multiple: true
-
-      - name: Upload wheels to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
-        with:
-          files: wheels/*.whl
-          tag_name: v${{ needs.create-release.outputs.version }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
