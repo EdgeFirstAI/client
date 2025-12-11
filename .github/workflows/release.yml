@@ -320,10 +320,13 @@ jobs:
           path: wheels/
           merge_multiple: true
 
-      - name: List wheels
+      - name: Flatten wheel directory structure
         run: |
+          # Move all .whl files to the root wheels/ directory
+          find wheels -name "*.whl" -type f -exec mv {} wheels/ \;
+          # Remove now-empty subdirectories
+          find wheels -mindepth 1 -type d -delete
           echo "Wheels to publish:"
-          find wheels -name "*.whl" -type f
           ls -lh wheels/
 
       - name: Publish to PyPI
