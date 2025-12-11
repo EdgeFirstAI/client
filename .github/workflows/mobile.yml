@@ -324,6 +324,12 @@ jobs:
             exit 1
           fi
 
+      - name: Format Swift Bindings
+        run: |
+          # Format the generated Swift file using swift format (Swift 6+)
+          swift format --in-place artifacts/swift/*.swift
+          echo "Swift bindings formatted"
+
       - name: Download Apple Libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -362,11 +368,11 @@ jobs:
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers"
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules"
 
-            # Copy headers (UniFFI generates header based on cdylib_name: edgefirst_clientFFI.h)
+            # Copy headers (rename to consistent naming)
             cp artifacts/swift/edgefirst_clientFFI.h \
                "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/EdgeFirstClient.h"
 
-            # Copy module map (UniFFI generates modulemap based on cdylib_name)
+            # Copy module map (must be named module.modulemap for XCFramework)
             cp artifacts/swift/edgefirst_clientFFI.modulemap \
                "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules/module.modulemap"
           done
@@ -390,45 +396,55 @@ jobs:
 
       - name: Package Swift SDK
         run: |
-          mkdir -p artifacts/swift-sdk
+          mkdir -p artifacts/swift-sdk/swift
 
-          # Copy XCFramework
+          # Copy XCFramework at root level
           cp -r artifacts/xcframework/EdgeFirstClient.xcframework artifacts/swift-sdk/
 
-          # Copy Swift bindings (UniFFI generates edgefirst_client.swift based on cdylib_name)
-          cp artifacts/swift/edgefirst_client.swift artifacts/swift-sdk/EdgeFirstClient.swift
+          # Copy Swift bindings to swift/ directory
+          cp artifacts/swift/edgefirst_client.swift artifacts/swift-sdk/swift/EdgeFirstClient.swift
 
-          # Create Package.swift for SPM
+          # Copy LICENSE
+          cp LICENSE artifacts/swift-sdk/
+
+          # Create Package.swift for local SPM installation (Add Local...)
+          # This is for developers who download the ZIP manually
+          # For remote SPM via GitHub URL, use: https://github.com/EdgeFirstAI/client.git
           cat > artifacts/swift-sdk/Package.swift << 'EOF'
-          // swift-tools-version:5.5
-          import PackageDescription
+// swift-tools-version:5.9
+import PackageDescription
 
-          let package = Package(
-              name: "EdgeFirstClient",
-              platforms: [
-                  .iOS(.v13),
-                  .macOS(.v10_15)
-              ],
-              products: [
-                  .library(
-                      name: "EdgeFirstClient",
-                      targets: ["EdgeFirstClientSwift", "EdgeFirstClient"]
-                  ),
-              ],
-              targets: [
-                  .target(
-                      name: "EdgeFirstClientSwift",
-                      dependencies: ["EdgeFirstClient"],
-                      path: ".",
-                      sources: ["EdgeFirstClient.swift"]
-                  ),
-                  .binaryTarget(
-                      name: "EdgeFirstClient",
-                      path: "EdgeFirstClient.xcframework"
-                  ),
-              ]
-          )
-          EOF
+// Local Package.swift for manual installation via "Add Local..."
+// For remote installation via GitHub URL, use:
+// https://github.com/EdgeFirstAI/client.git
+
+let package = Package(
+    name: "EdgeFirstClient",
+    platforms: [
+        .iOS(.v13),
+        .macOS(.v10_15)
+    ],
+    products: [
+        .library(
+            name: "EdgeFirstClient",
+            targets: ["EdgeFirstClient", "EdgeFirstClientFFI"]
+        ),
+    ],
+    targets: [
+        // Swift wrapper target containing UniFFI-generated bindings
+        .target(
+            name: "EdgeFirstClient",
+            dependencies: ["EdgeFirstClientFFI"],
+            path: "swift"
+        ),
+        // Binary target for the local XCFramework
+        .binaryTarget(
+            name: "EdgeFirstClientFFI",
+            path: "EdgeFirstClient.xcframework"
+        ),
+    ]
+)
+EOF
 
       - name: Upload Swift SDK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

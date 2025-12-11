@@ -1,7 +1,8 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
-.PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check
+.PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check \
+        swift swift-format kotlin xcframework
 
 # Default target
 help:
@@ -28,9 +29,15 @@ help:
 	@echo "  make py-format   - Format Python code only"
 	@echo "  make py-test     - Run Python tests only"
 	@echo "  make py-dev      - Install Python bindings in development mode"
+	@echo ""
+	@echo "Mobile SDK development:"
+	@echo "  make swift        - Generate Swift bindings to swift/"
+	@echo "  make swift-format - Format Swift code (requires Swift 6+ / Xcode 16+)"
+	@echo "  make kotlin       - Generate Kotlin bindings to artifacts/kotlin/"
+	@echo "  make xcframework  - Build XCFramework for local Swift development"
 
 # Format all code
-format: rust-format py-format
+format: rust-format py-format swift-format
 	@echo "✅ All code formatted"
 
 # Format Rust code
@@ -48,6 +55,12 @@ py-format:
 		ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi; \
 		ruff check --fix --exit-zero *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi; \
 	fi
+
+# Format Swift code (requires Swift 6+ / Xcode 16+)
+swift-format:
+	@echo "Formatting Swift code..."
+	@swift format --in-place --recursive swift/ Package.swift 2>/dev/null || \
+		echo "⚠️  swift format not available (requires Swift 6+ / Xcode 16+)"
 
 # Lint all code
 lint: rust-lint
@@ -218,6 +231,115 @@ check-license:
 		python3 .github/scripts/check_license_policy.py sbom.json; \
 	fi
 	@echo "✅ All dependencies pass license policy"
+
+# =============================================================================
+# Mobile SDK Development
+# =============================================================================
+
+# Generate Swift bindings to swift/ directory
+# Note: The swift/ directory is managed by CI in production, but can be
+# regenerated locally for development and testing
+swift:
+	@echo "Generating Swift bindings..."
+	@echo "Building uniffi-bindgen..."
+	@cargo build --release -p uniffi-bindgen
+	@echo "Building FFI library..."
+	@cargo build --release -p edgefirst-client-ffi
+	@echo "Generating Swift code..."
+	@mkdir -p swift
+	@./target/release/uniffi-bindgen generate \
+		--library target/release/libedgefirst_client.dylib \
+		--language swift \
+		--out-dir swift
+	@mv swift/edgefirst_client.swift swift/EdgeFirstClient.swift
+	@mv swift/edgefirst_clientFFI.h swift/EdgeFirstClient.h
+	@mv swift/edgefirst_clientFFI.modulemap swift/EdgeFirstClient.modulemap
+	@echo "✅ Swift bindings generated in swift/"
+	@echo "   - EdgeFirstClient.swift"
+	@echo "   - EdgeFirstClient.h"
+	@echo "   - EdgeFirstClient.modulemap"
+
+# Generate Kotlin bindings to artifacts/kotlin/ directory
+kotlin:
+	@echo "Generating Kotlin bindings..."
+	@echo "Building uniffi-bindgen..."
+	@cargo build --release -p uniffi-bindgen
+	@echo "Building FFI library..."
+	@cargo build --release -p edgefirst-client-ffi
+	@echo "Generating Kotlin code..."
+	@mkdir -p artifacts/kotlin
+	@./target/release/uniffi-bindgen generate \
+		--library target/release/libedgefirst_client.dylib \
+		--language kotlin \
+		--out-dir artifacts/kotlin
+	@echo "✅ Kotlin bindings generated: artifacts/kotlin/"
+
+# Build XCFramework for local Swift development (macOS only)
+# This builds for: iOS device, iOS simulator (ARM64 + x86_64), macOS (ARM64 + x86_64)
+xcframework: swift
+	@echo "Building XCFramework for local development..."
+	@echo ""
+	@echo "Installing Rust targets (if needed)..."
+	@rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+		aarch64-apple-darwin x86_64-apple-darwin 2>/dev/null || true
+	@echo ""
+	@echo "Building for iOS device (arm64)..."
+	@cargo build --release -p edgefirst-client-ffi --target aarch64-apple-ios
+	@echo "Building for iOS simulator (arm64)..."
+	@cargo build --release -p edgefirst-client-ffi --target aarch64-apple-ios-sim
+	@echo "Building for iOS simulator (x86_64)..."
+	@cargo build --release -p edgefirst-client-ffi --target x86_64-apple-ios
+	@echo "Building for macOS (arm64)..."
+	@cargo build --release -p edgefirst-client-ffi --target aarch64-apple-darwin
+	@echo "Building for macOS (x86_64)..."
+	@cargo build --release -p edgefirst-client-ffi --target x86_64-apple-darwin
+	@echo ""
+	@echo "Creating fat libraries..."
+	@mkdir -p target/universal-ios-sim/release target/universal-macos/release
+	@lipo -create \
+		target/aarch64-apple-ios-sim/release/libedgefirst_client.a \
+		target/x86_64-apple-ios/release/libedgefirst_client.a \
+		-output target/universal-ios-sim/release/libedgefirst_client.a
+	@lipo -create \
+		target/aarch64-apple-darwin/release/libedgefirst_client.a \
+		target/x86_64-apple-darwin/release/libedgefirst_client.a \
+		-output target/universal-macos/release/libedgefirst_client.a
+	@echo ""
+	@echo "Creating framework bundles..."
+	@for platform in ios ios-simulator macos; do \
+		mkdir -p "target/frameworks/$${platform}/EdgeFirstClient.framework/Headers"; \
+		mkdir -p "target/frameworks/$${platform}/EdgeFirstClient.framework/Modules"; \
+		cp swift/EdgeFirstClient.h \
+			"target/frameworks/$${platform}/EdgeFirstClient.framework/Headers/EdgeFirstClient.h"; \
+		cp swift/EdgeFirstClient.modulemap \
+			"target/frameworks/$${platform}/EdgeFirstClient.framework/Modules/module.modulemap"; \
+	done
+	@cp target/aarch64-apple-ios/release/libedgefirst_client.a \
+		target/frameworks/ios/EdgeFirstClient.framework/EdgeFirstClient
+	@cp target/universal-ios-sim/release/libedgefirst_client.a \
+		target/frameworks/ios-simulator/EdgeFirstClient.framework/EdgeFirstClient
+	@cp target/universal-macos/release/libedgefirst_client.a \
+		target/frameworks/macos/EdgeFirstClient.framework/EdgeFirstClient
+	@echo ""
+	@echo "Creating XCFramework..."
+	@rm -rf EdgeFirstClient.xcframework
+	@xcodebuild -create-xcframework \
+		-framework target/frameworks/ios/EdgeFirstClient.framework \
+		-framework target/frameworks/ios-simulator/EdgeFirstClient.framework \
+		-framework target/frameworks/macos/EdgeFirstClient.framework \
+		-output EdgeFirstClient.xcframework
+	@echo ""
+	@echo "✅ XCFramework created: EdgeFirstClient.xcframework"
+	@echo ""
+	@echo "To test locally in Xcode:"
+	@echo "  1. Edit Package.swift: set useLocalFramework = true"
+	@echo "  2. Open Package.swift in Xcode"
+	@echo "  3. Build and test your changes"
+	@echo "  4. Remember to set useLocalFramework = false before committing"
+
+# =============================================================================
+# Version Management
+# =============================================================================
 
 # Check version consistency across all files
 version-check:
