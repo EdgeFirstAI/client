@@ -1,7 +1,7 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
-.PHONY: help format lint test build clean pre-commit pre-release sbom check-license
+.PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check
 
 # Default target
 help:
@@ -15,6 +15,7 @@ help:
 	@echo "  make clean       - Clean build artifacts"
 	@echo "  make pre-commit  - Run pre-commit checks (format + lint + build + test)"
 	@echo "  make pre-release - Full pre-release validation"
+	@echo "  make version-check - Check version consistency across all files"
 	@echo "  make sbom        - Generate Software Bill of Materials"
 	@echo "  make check-license - Check dependency license compliance"
 	@echo ""
@@ -127,18 +128,9 @@ pre-commit: format lint build
 	@echo ""
 
 # Pre-release validation (comprehensive checks before release)
-pre-release: clean format lint build test sbom check-license
+pre-release: clean format lint build test sbom check-license version-check
 	@echo ""
 	@echo "Running pre-release validation..."
-	@echo ""
-	@echo "Checking version consistency..."
-	@cargo_version=$$(grep -m 1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/'); \
-	cli_version=$$(grep -m 1 "^\*\*Version:\*\*" CLI.md | sed 's/\*\*Version:\*\* //'); \
-	if [ "$$cargo_version" != "$$cli_version" ]; then \
-		echo "❌ Version mismatch: Cargo.toml ($$cargo_version) != CLI.md ($$cli_version)"; \
-		exit 1; \
-	fi; \
-	echo "✅ Version consistent: $$cargo_version"
 	@echo ""
 	@echo "Checking CHANGELOG.md..."
 	@if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then \
@@ -226,4 +218,60 @@ check-license:
 		python3 .github/scripts/check_license_policy.py sbom.json; \
 	fi
 	@echo "✅ All dependencies pass license policy"
+
+# Check version consistency across all files
+version-check:
+	@echo "Checking version consistency across all files..."
+	@echo ""
+	@cargo_version=$$(grep -m 1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/'); \
+	cli_md_version=$$(grep '^footer:' CLI.md | sed 's/footer: edgefirst-client //'); \
+	lock_cli=$$(grep -A1 'name = "edgefirst-cli"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
+	lock_client=$$(grep -A1 'name = "edgefirst-client"' Cargo.lock | grep version | head -1 | sed 's/version = "\(.*\)"/\1/'); \
+	lock_ffi=$$(grep -A1 'name = "edgefirst-client-ffi"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
+	lock_py=$$(grep -A1 'name = "edgefirst-client-py"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
+	changelog_version=$$(grep -m 1 '## \[' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/'); \
+	errors=0; \
+	echo "Version sources:"; \
+	echo "  Cargo.toml:                $$cargo_version"; \
+	echo "  CLI.md:                    $$cli_md_version"; \
+	echo "  Cargo.lock (cli):          $$lock_cli"; \
+	echo "  Cargo.lock (client):       $$lock_client"; \
+	echo "  Cargo.lock (client-ffi):   $$lock_ffi"; \
+	echo "  Cargo.lock (client-py):    $$lock_py"; \
+	echo "  CHANGELOG.md (latest):     $$changelog_version"; \
+	echo ""; \
+	if [ "$$cargo_version" != "$$cli_md_version" ]; then \
+		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != CLI.md ($$cli_md_version)"; \
+		errors=1; \
+	fi; \
+	if [ "$$cargo_version" != "$$lock_cli" ]; then \
+		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-cli ($$lock_cli)"; \
+		errors=1; \
+	fi; \
+	if [ "$$cargo_version" != "$$lock_client" ]; then \
+		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-client ($$lock_client)"; \
+		errors=1; \
+	fi; \
+	if [ "$$cargo_version" != "$$lock_ffi" ]; then \
+		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-client-ffi ($$lock_ffi)"; \
+		errors=1; \
+	fi; \
+	if [ "$$cargo_version" != "$$lock_py" ]; then \
+		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-client-py ($$lock_py)"; \
+		errors=1; \
+	fi; \
+	if [ "$$cargo_version" != "$$changelog_version" ] && [ "$$changelog_version" != "Unreleased" ]; then \
+		echo "⚠️  Warning: Cargo.toml ($$cargo_version) != CHANGELOG.md latest ($$changelog_version)"; \
+	fi; \
+	if [ $$errors -eq 0 ]; then \
+		echo "✅ All version sources are consistent: $$cargo_version"; \
+	else \
+		echo ""; \
+		echo "To fix version mismatches:"; \
+		echo "  1. Update Cargo.toml: version = \"X.Y.Z\""; \
+		echo "  2. Update CLI.md: footer: edgefirst-client X.Y.Z"; \
+		echo "  3. Run: cargo check --workspace (updates Cargo.lock)"; \
+		echo "  4. Update CHANGELOG.md with [X.Y.Z] entry"; \
+		exit 1; \
+	fi
 
