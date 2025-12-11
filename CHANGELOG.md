@@ -5,6 +5,21 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2025-12-11
+
+### Fixed
+
+- **CI/CD release workflow fixes**
+  - Fixed duplicate GitHub release bug: release workflow jobs now correctly use `v` prefix for tag names
+  - Fixed CHANGELOG link in release notes to use correct `v{version}` tag URL
+  - Prevents creation of separate releases for `v2.6.0` and `2.6.0` tags
+
+- **Mobile SDK naming consistency**
+  - Renamed SDK zip files for consistency: `edgefirst-android-sdk` → `edgefirst-client-android`
+  - Renamed SDK zip files for consistency: `edgefirst-swift-sdk` → `edgefirst-client-swift`
+  - Renamed Swift header file: `EdgeFirstClientFFI.h` → `EdgeFirstClient.h`
+  - Updated all documentation references in README.md, ANDROID.md, APPLE.md
+
 ## [2.6.0] - 2025-12-11
 
 ### Added
@@ -31,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New `.github/workflows/mobile.yml` workflow
   - Automated builds for Android NDK and Apple platforms
   - Automated binding generation and SDK packaging
-  - Release artifacts: `edgefirst-android-sdk-{version}.zip`, `edgefirst-swift-sdk-{version}.zip`
+  - Release artifacts: `edgefirst-client-android-{version}.zip`, `edgefirst-client-swift-{version}.zip`
 
 - **Token Storage Abstraction for Platform Portability**
 

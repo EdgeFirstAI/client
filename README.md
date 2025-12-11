@@ -103,8 +103,8 @@ pip install edgefirst-client
 
 Download the SDK packages from [GitHub Releases](https://github.com/EdgeFirstAI/client/releases):
 
-- **Android**: `edgefirst-android-sdk-{version}.zip` - Kotlin bindings with JNI libraries
-- **iOS/macOS**: `edgefirst-swift-sdk-{version}.zip` - Swift bindings with XCFramework
+- **Android**: `edgefirst-client-android-{version}.zip` - Kotlin bindings with JNI libraries
+- **iOS/macOS**: `edgefirst-client-swift-{version}.zip` - Swift bindings with XCFramework
 
 See platform-specific documentation for integration instructions:
 - [Android SDK Documentation](ANDROID.md)

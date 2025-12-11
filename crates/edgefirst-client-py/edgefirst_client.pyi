@@ -3042,8 +3042,10 @@ class FileTokenStorage:
     default, uses the platform-specific config directory:
 
     - Linux: ``~/.config/EdgeFirst Studio/token``
-    - macOS: ``~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token``
-    - Windows: ``C:\\Users\\<User>\\AppData\\Roaming\\EdgeFirst\\EdgeFirst Studio\\token``
+    - macOS: ``~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/
+      token``
+    - Windows: ``C:\\Users\\<User>\\AppData\\Roaming\\EdgeFirst\\
+      EdgeFirst Studio\\token``
 
     Examples:
         Using default path:
@@ -3061,7 +3063,8 @@ class FileTokenStorage:
 
     def __init__(self) -> None:
         """
-        Create a new FileTokenStorage using the default platform config directory.
+        Create a new FileTokenStorage using the default platform
+        config directory.
 
         Raises:
             RuntimeError: If the config directory cannot be determined.
@@ -3443,8 +3446,9 @@ class Client:
         """
         Returns a new client with no token storage.
 
-        Tokens are not persisted and the client starts without any stored token.
-        Use this when you want full control over token management.
+        Tokens are not persisted and the client starts without any
+        stored token. Use this when you want full control over token
+        management.
 
         Returns:
             A new Client with no token storage.
@@ -3482,8 +3486,8 @@ class Client:
         """
         Returns a new client authenticated with the specified token.
 
-        This is a builder-style way to provide an existing authentication token.
-        The token is stored in the configured storage.
+        This is a builder-style way to provide an existing authentication
+        token. The token is stored in the configured storage.
 
         Args:
             token: The authentication token.

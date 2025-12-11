@@ -12,7 +12,7 @@ The EdgeFirst Client SDK provides native Android bindings for interacting with E
 
 ### Manual Installation
 
-1. Download `edgefirst-android-sdk-{version}.zip` from the [GitHub Releases](https://github.com/EdgeFirstAI/client/releases) page.
+1. Download `edgefirst-client-android-{version}.zip` from the [GitHub Releases](https://github.com/EdgeFirstAI/client/releases) page.
 
 2. Extract the archive to your project's `libs` directory:
 

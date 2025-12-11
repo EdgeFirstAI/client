@@ -12,7 +12,7 @@ The EdgeFirst Client SDK provides native Swift bindings for interacting with Edg
 
 ### Swift Package Manager
 
-1. Download `edgefirst-swift-sdk-{version}.zip` from the [GitHub Releases](https://github.com/EdgeFirstAI/client/releases) page.
+1. Download `edgefirst-client-swift-{version}.zip` from the [GitHub Releases](https://github.com/EdgeFirstAI/client/releases) page.
 
 2. Extract the archive to a location accessible to your Xcode project.
 
@@ -24,7 +24,7 @@ The EdgeFirst Client SDK provides native Swift bindings for interacting with Edg
 
 ### Manual Installation
 
-1. Download and extract `edgefirst-swift-sdk-{version}.zip`.
+1. Download and extract `edgefirst-client-swift-{version}.zip`.
 
 2. Drag `EdgeFirstClient.xcframework` into your Xcode project.
 

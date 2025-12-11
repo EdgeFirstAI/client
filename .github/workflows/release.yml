@@ -45,7 +45,7 @@ jobs:
           body: |
             ## What's Changed
 
-            See [CHANGELOG.md](https://github.com/EdgeFirstAI/client/blob/${{ steps.get_version.outputs.version }}/CHANGELOG.md) for details.
+            See [CHANGELOG.md](https://github.com/EdgeFirstAI/client/blob/v${{ steps.get_version.outputs.version }}/CHANGELOG.md) for details.
 
             ## Installation
 
@@ -66,11 +66,11 @@ jobs:
             ```
 
             ### Android SDK
-            Download `edgefirst-android-sdk-${{ steps.get_version.outputs.version }}.zip` from the assets below.
+            Download `edgefirst-client-android-${{ steps.get_version.outputs.version }}.zip` from the assets below.
             See the included README.md for integration instructions.
 
             ### iOS/macOS SDK (Swift)
-            Download `edgefirst-swift-sdk-${{ steps.get_version.outputs.version }}.zip` from the assets below.
+            Download `edgefirst-client-swift-${{ steps.get_version.outputs.version }}.zip` from the assets below.
             See the included README.md for integration instructions.
 
   # Upload SBOM from sbom.yml workflow (same tag commit)
@@ -130,7 +130,7 @@ jobs:
       - name: Upload man page to release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
-          tag_name: ${{ needs.create-release.outputs.version }}
+          tag_name: v${{ needs.create-release.outputs.version }}
           files: edgefirst-client.1
 
   # Build CLI binaries
@@ -235,7 +235,7 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
-          tag_name: ${{ needs.create-release.outputs.version }}
+          tag_name: v${{ needs.create-release.outputs.version }}
           files: release/${{ matrix.asset_name }}-${{ needs.create-release.outputs.version }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
 
   # Build Python wheels
@@ -495,6 +495,6 @@ jobs:
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
           files: wheels/*.whl
-          tag_name: ${{ needs.create-release.outputs.version }}
+          tag_name: v${{ needs.create-release.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -272,7 +272,7 @@ jobs:
       - name: Upload Kotlin SDK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: edgefirst-android-sdk
+          name: edgefirst-client-android
           path: artifacts/android-sdk/
           retention-days: 7
 
@@ -367,7 +367,7 @@ jobs:
 
             # Copy headers (UniFFI generates header based on cdylib_name: edgefirst_clientFFI.h)
             cp artifacts/swift/edgefirst_clientFFI.h \
-               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/EdgeFirstClientFFI.h"
+               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/EdgeFirstClient.h"
 
             # Copy module map (UniFFI generates modulemap based on cdylib_name)
             cp artifacts/swift/edgefirst_clientFFI.modulemap \
@@ -436,7 +436,7 @@ jobs:
       - name: Upload Swift SDK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: edgefirst-swift-sdk
+          name: edgefirst-client-swift
           path: artifacts/swift-sdk/
           retention-days: 7
 
@@ -458,13 +458,13 @@ jobs:
       - name: Download Android SDK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: edgefirst-android-sdk
+          name: edgefirst-client-android
           path: android-sdk/
 
       - name: Download Swift SDK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: edgefirst-swift-sdk
+          name: edgefirst-client-swift
           path: swift-sdk/
 
       - name: Get Version
@@ -479,19 +479,19 @@ jobs:
           # Include README in the SDK package
           cp ANDROID.md android-sdk/README.md
           cd android-sdk
-          zip -r "../edgefirst-android-sdk-${{ steps.version.outputs.version }}.zip" .
+          zip -r "../edgefirst-client-android-${{ steps.version.outputs.version }}.zip" .
 
       - name: Package Swift SDK
         run: |
           # Include README in the SDK package
           cp APPLE.md swift-sdk/README.md
           cd swift-sdk
-          zip -r "../edgefirst-swift-sdk-${{ steps.version.outputs.version }}.zip" .
+          zip -r "../edgefirst-client-swift-${{ steps.version.outputs.version }}.zip" .
 
       - name: Upload to Release
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.1
         with:
           files: |
-            edgefirst-android-sdk-${{ steps.version.outputs.version }}.zip
-            edgefirst-swift-sdk-${{ steps.version.outputs.version }}.zip
+            edgefirst-client-android-${{ steps.version.outputs.version }}.zip
+            edgefirst-client-swift-${{ steps.version.outputs.version }}.zip
           fail_on_unmatched_files: true
