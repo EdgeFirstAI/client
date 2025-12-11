@@ -463,14 +463,33 @@ impl Client {
     /// Returns a new client connected to the specified server instance.
     ///
     /// The server parameter is an instance name that maps to a URL:
-    /// - `""` or `"saas"` → `https://edgefirst.studio`
+    /// - `""` or `"saas"` → `https://edgefirst.studio` (default production
+    ///   server)
     /// - `"test"` → `https://test.edgefirst.studio`
     /// - `"stage"` → `https://stage.edgefirst.studio`
     /// - `"dev"` → `https://dev.edgefirst.studio`
     /// - `"{name}"` → `https://{name}.edgefirst.studio`
     ///
-    /// If a token is already set in the client, it will be dropped as tokens
-    /// are specific to the server instance.
+    /// # Server Selection Priority
+    ///
+    /// When using the CLI or Python API, server selection follows this
+    /// priority:
+    ///
+    /// 1. **Token's server** (highest priority) - JWT tokens encode the server
+    ///    they were issued for. If you have a valid token, its server is used.
+    /// 2. **`with_server()` / `--server`** - Used when logging in or when no
+    ///    token is available. If a token exists with a different server, a
+    ///    warning is emitted and the token's server takes priority.
+    /// 3. **Default `"saas"`** - If no token and no server specified, the
+    ///    production server (`https://edgefirst.studio`) is used.
+    ///
+    /// # Important Notes
+    ///
+    /// - If a token is already set in the client, calling this method will
+    ///   **drop the token** as tokens are specific to the server instance.
+    /// - Use [`parse_token_server`][Self::parse_token_server] to check a
+    ///   token's server before calling this method.
+    /// - For login operations, call `with_server()` first, then authenticate.
     ///
     /// # Examples
     ///
@@ -896,6 +915,37 @@ impl Client {
     /// Returns the URL of the EdgeFirst Studio server for the current client.
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Returns the server name for the current client.
+    ///
+    /// This extracts the server name from the client's URL:
+    /// - `https://edgefirst.studio` → `"saas"`
+    /// - `https://test.edgefirst.studio` → `"test"`
+    /// - `https://{name}.edgefirst.studio` → `"{name}"`
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use edgefirst_client::Client;
+    ///
+    /// # fn main() -> Result<(), edgefirst_client::Error> {
+    /// let client = Client::new()?.with_server("test")?;
+    /// assert_eq!(client.server(), "test");
+    ///
+    /// let client = Client::new()?; // default
+    /// assert_eq!(client.server(), "saas");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn server(&self) -> &str {
+        if self.url == "https://edgefirst.studio" {
+            "saas"
+        } else if let Some(name) = self.url.strip_prefix("https://") {
+            name.strip_suffix(".edgefirst.studio").unwrap_or("saas")
+        } else {
+            "saas"
+        }
     }
 
     /// Returns the username associated with the current token.

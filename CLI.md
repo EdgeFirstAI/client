@@ -23,7 +23,13 @@ The client supports various authentication methods including environment variabl
 # GLOBAL OPTIONS
 
 **\--server** *SERVER*
-:   EdgeFirst Studio server name (test, stage, or saas). Can be set via **STUDIO_SERVER** environment variable.
+:   EdgeFirst Studio server name. Maps to `https://{SERVER}.edgefirst.studio`, except "saas" or empty which maps to `https://edgefirst.studio`. Can be set via **STUDIO_SERVER** environment variable.
+
+    **Server Selection Priority:**
+
+    1. **Token's server** (highest) - JWT tokens encode their server. If you have a valid stored or provided token, its server is used regardless of **\--server**.
+    2. **\--server** option - Used when logging in with username/password, or when no token is available. If a token exists with a different server, a warning is displayed.
+    3. **Default "saas"** - If no token and no server specified, the production server is used.
 
 **\--username** *USERNAME*
 :   EdgeFirst Studio username for authentication. Can be set via **STUDIO_USERNAME** environment variable.
@@ -32,7 +38,7 @@ The client supports various authentication methods including environment variabl
 :   EdgeFirst Studio password for authentication. Can be set via **STUDIO_PASSWORD** environment variable.
 
 **\--token** *TOKEN*
-:   EdgeFirst Studio authentication token. Can be set via **STUDIO_TOKEN** environment variable. Overrides username/password authentication.
+:   EdgeFirst Studio authentication token. Can be set via **STUDIO_TOKEN** environment variable. The server is extracted from the token and takes priority over **\--server**.
 
 **-h**, **\--help**
 :   Print help information.
@@ -857,7 +863,7 @@ Retrieve validation session information for the provided session ID.
 # ENVIRONMENT VARIABLES
 
 **STUDIO_SERVER**
-:   EdgeFirst Studio server name. Overridden by **\--server** option.
+:   EdgeFirst Studio server name. Used when logging in or when no token is available. If a token exists with a different server, **STUDIO_SERVER** is ignored and a warning is displayed.
 
 **STUDIO_USERNAME**
 :   Username for authentication. Overridden by **\--username** option.
@@ -866,7 +872,7 @@ Retrieve validation session information for the provided session ID.
 :   Password for authentication. Overridden by **\--password** option.
 
 **STUDIO_TOKEN**
-:   Authentication token. Overridden by **\--token** option. Takes precedence over username/password.
+:   Authentication token. The server is extracted from the token and takes priority over **STUDIO_SERVER**. Overridden by **\--token** option.
 
 **RUST_LOG**
 :   Logging level (error, warn, info, debug, trace). Default: info.

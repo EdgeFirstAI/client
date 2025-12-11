@@ -2648,11 +2648,31 @@ impl TrainingSession {
         Task(self.inner.task())
     }
 
+    /// Get metrics for this training session.
+    ///
+    /// New API (v2.6.0+): `session.metrics()` - uses embedded client reference
+    /// Deprecated API: `session.metrics(client)` - passing client explicitly
+    #[pyo3(signature = (client=None))]
     #[tokio_wrap::sync]
-    pub fn metrics<'py>(&self, py: Python<'py>, client: &Client) -> Result<Py<PyDict>, Error> {
-        let metrics = PyDict::new(py);
+    pub fn metrics<'py>(
+        &self,
+        py: Python<'py>,
+        client: Option<&Client>,
+    ) -> Result<Py<PyDict>, Error> {
+        let client_ref = if let Some(c) = client {
+            warn_method_deprecated(py, "TrainingSession", "metrics")?;
+            &c.0
+        } else {
+            self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.metrics(client) instead."
+                        .to_string(),
+                )
+            })?
+        };
 
-        for (key, value) in self.inner.metrics(&client.0).await? {
+        let metrics = PyDict::new(py);
+        for (key, value) in self.inner.metrics(client_ref).await? {
             let value = Parameter::from(value.clone());
             metrics.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2660,73 +2680,388 @@ impl TrainingSession {
         Ok(metrics.into())
     }
 
+    /// Set metrics for this training session.
+    ///
+    /// New API (v2.6.0+): `session.set_metrics(metrics)` - uses embedded client
+    /// reference Deprecated API: `session.set_metrics(client, metrics)` -
+    /// passing client explicitly
+    #[pyo3(signature = (metrics_or_client, metrics=None))]
     #[tokio_wrap::sync]
     pub fn set_metrics<'py>(
         &self,
-        client: &Client,
-        metrics: HashMap<String, Bound<'py, PyAny>>,
+        py: Python<'py>,
+        metrics_or_client: &Bound<'py, PyAny>,
+        metrics: Option<HashMap<String, Bound<'py, PyAny>>>,
     ) -> Result<(), Error> {
-        let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
-        for (key, value) in metrics {
-            let value: Parameter = value.try_into()?;
-            map.insert(key, value.into());
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = metrics_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "set_metrics")?;
+            let metrics = metrics.ok_or_else(|| {
+                Error::TypeError(
+                    "set_metrics() requires 'metrics' argument when using deprecated API"
+                        .to_string(),
+                )
+            })?;
+            let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
+            for (key, value) in metrics {
+                let value: Parameter = value.try_into()?;
+                map.insert(key, value.into());
+            }
+            return Ok(self.inner.set_metrics(&client.0, map).await?);
         }
-        Ok(self.inner.set_metrics(&client.0, map).await?)
+
+        // Try to extract as dict (new API)
+        if let Ok(metrics_dict) = metrics_or_client.extract::<HashMap<String, Bound<'py, PyAny>>>()
+        {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.set_metrics(client, metrics) instead."
+                        .to_string(),
+                )
+            })?;
+            let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
+            for (key, value) in metrics_dict {
+                let value: Parameter = value.try_into()?;
+                map.insert(key, value.into());
+            }
+            return Ok(self.inner.set_metrics(client_ref.as_ref(), map).await?);
+        }
+
+        Err(Error::TypeError(
+            "set_metrics() first argument must be a dict (metrics) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
-    pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
-        let session_id = Bound::new(py, self.id())?.into_any();
-        client.artifacts(session_id)
-    }
-
+    /// Get artifacts for this training session.
+    ///
+    /// New API (v2.6.0+): `session.artifacts()` - uses embedded client
+    /// reference Deprecated API: `session.artifacts(client)` - passing
+    /// client explicitly
+    #[pyo3(signature = (client=None))]
     #[tokio_wrap::sync]
-    pub fn download_artifact(&self, client: &Client, filename: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.inner.download_artifact(&client.0, filename).await?)
+    pub fn artifacts(
+        &self,
+        py: Python<'_>,
+        client: Option<&Client>,
+    ) -> Result<Vec<Artifact>, Error> {
+        let client_ref = if let Some(c) = client {
+            warn_method_deprecated(py, "TrainingSession", "artifacts")?;
+            &c.0
+        } else {
+            self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.artifacts(client) instead."
+                        .to_string(),
+                )
+            })?
+        };
+
+        let artifacts = client_ref
+            .artifacts(self.inner.id())
+            .await?
+            .into_iter()
+            .map(Artifact)
+            .collect();
+        Ok(artifacts)
     }
 
+    /// Download an artifact file from the training session.
+    ///
+    /// New API (v2.6.0+): `session.download_artifact(filename)` - uses embedded
+    /// client reference Deprecated API: `session.download_artifact(client,
+    /// filename)` - passing client explicitly
+    #[pyo3(signature = (filename_or_client, filename=None))]
     #[tokio_wrap::sync]
-    #[pyo3(signature = (client, filename, path = None))]
+    pub fn download_artifact(
+        &self,
+        py: Python<'_>,
+        filename_or_client: &Bound<'_, PyAny>,
+        filename: Option<String>,
+    ) -> Result<Vec<u8>, Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = filename_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "download_artifact")?;
+            let filename = filename.ok_or_else(|| {
+                Error::TypeError(
+                    "download_artifact() requires 'filename' argument when using deprecated API"
+                        .to_string(),
+                )
+            })?;
+            return Ok(self.inner.download_artifact(&client.0, &filename).await?);
+        }
+
+        // Try to extract as filename string (new API)
+        if let Ok(fname) = filename_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.download_artifact(client, filename) instead."
+                        .to_string(),
+                )
+            })?;
+            return Ok(self
+                .inner
+                .download_artifact(client_ref.as_ref(), &fname)
+                .await?);
+        }
+
+        Err(Error::TypeError(
+            "download_artifact() first argument must be a string (filename) or Client (deprecated)"
+                .to_string(),
+        ))
+    }
+
+    /// Upload an artifact file to the training session.
+    ///
+    /// New API (v2.6.0+): `session.upload_artifact(filename, path)` - uses
+    /// embedded client reference Deprecated API:
+    /// `session.upload_artifact(client, filename, path)` - passing client
+    /// explicitly
+    #[pyo3(signature = (filename_or_client, filename_or_path=None, path=None))]
+    #[tokio_wrap::sync]
     pub fn upload_artifact(
         &self,
-        client: &Client,
-        filename: &str,
+        py: Python<'_>,
+        filename_or_client: &Bound<'_, PyAny>,
+        filename_or_path: Option<&Bound<'_, PyAny>>,
         path: Option<PathBuf>,
     ) -> Result<(), Error> {
-        let path = path.unwrap_or_else(|| PathBuf::from(filename));
-        Ok(self
-            .inner
-            .upload_artifact(&client.0, filename, path)
-            .await?)
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = filename_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "upload_artifact")?;
+            let filename = filename_or_path
+                .ok_or_else(|| {
+                    Error::TypeError(
+                        "upload_artifact() requires 'filename' argument when using deprecated API"
+                            .to_string(),
+                    )
+                })?
+                .extract::<String>()?;
+            let path = path.unwrap_or_else(|| PathBuf::from(&filename));
+            return Ok(self
+                .inner
+                .upload_artifact(&client.0, &filename, path)
+                .await?);
+        }
+
+        // Try to extract as filename string (new API)
+        if let Ok(fname) = filename_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.upload_artifact(client, filename, path) instead."
+                        .to_string(),
+                )
+            })?;
+            // In new API: filename_or_path is the path, and path is unused
+            let file_path = filename_or_path
+                .map(|p| p.extract::<PathBuf>())
+                .transpose()?
+                .unwrap_or_else(|| PathBuf::from(&fname));
+            return Ok(self
+                .inner
+                .upload_artifact(client_ref.as_ref(), &fname, file_path)
+                .await?);
+        }
+
+        Err(Error::TypeError(
+            "upload_artifact() first argument must be a string (filename) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
+    /// Download a checkpoint file from the training session.
+    ///
+    /// New API (v2.6.0+): `session.download_checkpoint(filename)` - uses
+    /// embedded client reference Deprecated API:
+    /// `session.download_checkpoint(client, filename)` - passing client
+    /// explicitly
+    #[pyo3(signature = (filename_or_client, filename=None))]
     #[tokio_wrap::sync]
-    pub fn download_checkpoint(&self, client: &Client, filename: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.inner.download_checkpoint(&client.0, filename).await?)
+    pub fn download_checkpoint(
+        &self,
+        py: Python<'_>,
+        filename_or_client: &Bound<'_, PyAny>,
+        filename: Option<String>,
+    ) -> Result<Vec<u8>, Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = filename_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "download_checkpoint")?;
+            let filename = filename.ok_or_else(|| {
+                Error::TypeError(
+                    "download_checkpoint() requires 'filename' argument when using deprecated API"
+                        .to_string(),
+                )
+            })?;
+            return Ok(self.inner.download_checkpoint(&client.0, &filename).await?);
+        }
+
+        // Try to extract as filename string (new API)
+        if let Ok(fname) = filename_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.download_checkpoint(client, filename) instead."
+                        .to_string(),
+                )
+            })?;
+            return Ok(self
+                .inner
+                .download_checkpoint(client_ref.as_ref(), &fname)
+                .await?);
+        }
+
+        Err(Error::TypeError(
+            "download_checkpoint() first argument must be a string (filename) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
+    /// Upload a checkpoint file to the training session.
+    ///
+    /// New API (v2.6.0+): `session.upload_checkpoint(filename, path)` - uses
+    /// embedded client reference Deprecated API:
+    /// `session.upload_checkpoint(client, filename, path)` - passing client
+    /// explicitly
+    #[pyo3(signature = (filename_or_client, filename_or_path=None, path=None))]
     #[tokio_wrap::sync]
-    #[pyo3(signature = (client, filename, path = None))]
     pub fn upload_checkpoint(
         &self,
-        client: &Client,
-        filename: &str,
+        py: Python<'_>,
+        filename_or_client: &Bound<'_, PyAny>,
+        filename_or_path: Option<&Bound<'_, PyAny>>,
         path: Option<PathBuf>,
     ) -> Result<(), Error> {
-        let path = path.unwrap_or_else(|| PathBuf::from(filename));
-        Ok(self
-            .inner
-            .upload_checkpoint(&client.0, filename, path)
-            .await?)
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = filename_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "upload_checkpoint")?;
+            let filename = filename_or_path
+                .ok_or_else(|| {
+                    Error::TypeError(
+                        "upload_checkpoint() requires 'filename' argument when using deprecated API"
+                            .to_string(),
+                    )
+                })?
+                .extract::<String>()?;
+            let path = path.unwrap_or_else(|| PathBuf::from(&filename));
+            return Ok(self
+                .inner
+                .upload_checkpoint(&client.0, &filename, path)
+                .await?);
+        }
+
+        // Try to extract as filename string (new API)
+        if let Ok(fname) = filename_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.upload_checkpoint(client, filename, path) instead."
+                        .to_string(),
+                )
+            })?;
+            // In new API: filename_or_path is the path, and path is unused
+            let file_path = filename_or_path
+                .map(|p| p.extract::<PathBuf>())
+                .transpose()?
+                .unwrap_or_else(|| PathBuf::from(&fname));
+            return Ok(self
+                .inner
+                .upload_checkpoint(client_ref.as_ref(), &fname, file_path)
+                .await?);
+        }
+
+        Err(Error::TypeError(
+            "upload_checkpoint() first argument must be a string (filename) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
+    /// Upload files to the training session.
+    ///
+    /// New API (v2.6.0+): `session.upload(files)` - uses embedded client
+    /// reference Deprecated API: `session.upload(client, files)` - passing
+    /// client explicitly
+    ///
+    /// Args:
+    ///     files_or_client: Either List[Tuple[str, Path]] (new API) or Client
+    /// (deprecated)     files: List[Tuple[str, Path]] when using deprecated
+    /// API
+    #[pyo3(signature = (files_or_client, files=None))]
     #[tokio_wrap::sync]
-    pub fn upload(&self, client: &Client, files: Vec<(String, PathBuf)>) -> Result<(), Error> {
-        Ok(self.inner.upload(&client.0, &files).await?)
+    pub fn upload(
+        &self,
+        py: Python<'_>,
+        files_or_client: &Bound<'_, PyAny>,
+        files: Option<Vec<(String, PathBuf)>>,
+    ) -> Result<(), Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = files_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "upload")?;
+            let files = files.ok_or_else(|| {
+                Error::TypeError(
+                    "upload() requires 'files' argument when using deprecated API".to_string(),
+                )
+            })?;
+            return Ok(self.inner.upload(&client.0, &files).await?);
+        }
+
+        // Try to extract as files list (new API)
+        if let Ok(files_list) = files_or_client.extract::<Vec<(String, PathBuf)>>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.upload(client, files) instead."
+                        .to_string(),
+                )
+            })?;
+            return Ok(self.inner.upload(client_ref.as_ref(), &files_list).await?);
+        }
+
+        Err(Error::TypeError(
+            "upload() first argument must be a list of (str, Path) tuples or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
+    /// Download a file from the training session.
+    ///
+    /// New API (v2.6.0+): `session.download(filename)` - uses embedded client
+    /// reference Deprecated API: `session.download(client, filename)` -
+    /// passing client explicitly
+    ///
+    /// Args:
+    ///     filename_or_client: Either str filename (new API) or Client
+    /// (deprecated)     filename: str filename when using deprecated API
+    #[pyo3(signature = (filename_or_client, filename=None))]
     #[tokio_wrap::sync]
-    pub fn download(&self, client: &Client, filename: &str) -> Result<String, Error> {
-        Ok(self.inner.download(&client.0, filename).await?)
+    pub fn download(
+        &self,
+        py: Python<'_>,
+        filename_or_client: &Bound<'_, PyAny>,
+        filename: Option<String>,
+    ) -> Result<String, Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = filename_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "TrainingSession", "download")?;
+            let filename = filename.ok_or_else(|| {
+                Error::TypeError(
+                    "download() requires 'filename' argument when using deprecated API".to_string(),
+                )
+            })?;
+            return Ok(self.inner.download(&client.0, &filename).await?);
+        }
+
+        // Try to extract as filename string (new API)
+        if let Ok(fname) = filename_or_client.extract::<String>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "TrainingSession has no client reference. Use session.download(client, filename) instead."
+                        .to_string(),
+                )
+            })?;
+            return Ok(self.inner.download(client_ref.as_ref(), &fname).await?);
+        }
+
+        Err(Error::TypeError(
+            "download() first argument must be a string (filename) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 }
 
@@ -2819,11 +3154,31 @@ impl ValidationSession {
         Task(self.inner.task().clone())
     }
 
+    /// Get metrics for this validation session.
+    ///
+    /// New API (v2.6.0+): `session.metrics()` - uses embedded client reference
+    /// Deprecated API: `session.metrics(client)` - passing client explicitly
+    #[pyo3(signature = (client=None))]
     #[tokio_wrap::sync]
-    pub fn metrics<'py>(&self, py: Python<'py>, client: &Client) -> Result<Py<PyDict>, Error> {
-        let metrics = PyDict::new(py);
+    pub fn metrics<'py>(
+        &self,
+        py: Python<'py>,
+        client: Option<&Client>,
+    ) -> Result<Py<PyDict>, Error> {
+        let client_ref = if let Some(c) = client {
+            warn_method_deprecated(py, "ValidationSession", "metrics")?;
+            &c.0
+        } else {
+            self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "ValidationSession has no client reference. Use session.metrics(client) instead."
+                        .to_string(),
+                )
+            })?
+        };
 
-        for (key, value) in self.inner.metrics(&client.0).await? {
+        let metrics = PyDict::new(py);
+        for (key, value) in self.inner.metrics(client_ref).await? {
             let value = Parameter::from(value.clone());
             metrics.set_item(key, value.into_pyobject(py)?)?;
         }
@@ -2831,28 +3186,134 @@ impl ValidationSession {
         Ok(metrics.into())
     }
 
+    /// Set metrics for this validation session.
+    ///
+    /// New API (v2.6.0+): `session.set_metrics(metrics)` - uses embedded client
+    /// reference Deprecated API: `session.set_metrics(client, metrics)` -
+    /// passing client explicitly
+    #[pyo3(signature = (metrics_or_client, metrics=None))]
     #[tokio_wrap::sync]
     pub fn set_metrics<'py>(
         &self,
-        client: &Client,
-        metrics: HashMap<String, Bound<'py, PyAny>>,
+        py: Python<'py>,
+        metrics_or_client: &Bound<'py, PyAny>,
+        metrics: Option<HashMap<String, Bound<'py, PyAny>>>,
     ) -> Result<(), Error> {
-        let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
-        for (key, value) in metrics {
-            let value: Parameter = value.try_into()?;
-            map.insert(key, value.into());
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = metrics_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "ValidationSession", "set_metrics")?;
+            let metrics = metrics.ok_or_else(|| {
+                Error::TypeError(
+                    "set_metrics() requires 'metrics' argument when using deprecated API"
+                        .to_string(),
+                )
+            })?;
+            let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
+            for (key, value) in metrics {
+                let value: Parameter = value.try_into()?;
+                map.insert(key, value.into());
+            }
+            return Ok(self.inner.set_metrics(&client.0, map).await?);
         }
-        Ok(self.inner.set_metrics(&client.0, map).await?)
+
+        // Try to extract as dict (new API)
+        if let Ok(metrics_dict) = metrics_or_client.extract::<HashMap<String, Bound<'py, PyAny>>>()
+        {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "ValidationSession has no client reference. Use session.set_metrics(client, metrics) instead."
+                        .to_string(),
+                )
+            })?;
+            let mut map = HashMap::<String, edgefirst_client::Parameter>::new();
+            for (key, value) in metrics_dict {
+                let value: Parameter = value.try_into()?;
+                map.insert(key, value.into());
+            }
+            return Ok(self.inner.set_metrics(client_ref.as_ref(), map).await?);
+        }
+
+        Err(Error::TypeError(
+            "set_metrics() first argument must be a dict (metrics) or Client (deprecated)"
+                .to_string(),
+        ))
     }
 
-    pub fn artifacts(&self, py: Python<'_>, client: &Client) -> Result<Vec<Artifact>, Error> {
-        let session_id = Bound::new(py, self.id())?.into_any();
-        client.artifacts(session_id)
-    }
-
+    /// Get artifacts for this validation session.
+    ///
+    /// New API (v2.6.0+): `session.artifacts()` - uses embedded client
+    /// reference Deprecated API: `session.artifacts(client)` - passing
+    /// client explicitly
+    ///
+    /// Note: Returns artifacts from the associated training session.
+    #[pyo3(signature = (client=None))]
     #[tokio_wrap::sync]
-    pub fn upload(&self, client: &Client, files: Vec<(String, PathBuf)>) -> Result<(), Error> {
-        Ok(self.inner.upload(&client.0, &files).await?)
+    pub fn artifacts(
+        &self,
+        py: Python<'_>,
+        client: Option<&Client>,
+    ) -> Result<Vec<Artifact>, Error> {
+        let client_ref = if let Some(c) = client {
+            warn_method_deprecated(py, "ValidationSession", "artifacts")?;
+            &c.0
+        } else {
+            self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "ValidationSession has no client reference. Use session.artifacts(client) instead."
+                        .to_string(),
+                )
+            })?
+        };
+
+        // ValidationSession uses its associated training_session_id for artifacts
+        let artifacts = client_ref
+            .artifacts(self.inner.training_session_id())
+            .await?
+            .into_iter()
+            .map(Artifact)
+            .collect();
+        Ok(artifacts)
+    }
+
+    /// Upload files to the validation session.
+    ///
+    /// New API (v2.6.0+): `session.upload(files)` - uses embedded client
+    /// reference Deprecated API: `session.upload(client, files)` - passing
+    /// client explicitly
+    #[pyo3(signature = (files_or_client, files=None))]
+    #[tokio_wrap::sync]
+    pub fn upload(
+        &self,
+        py: Python<'_>,
+        files_or_client: &Bound<'_, PyAny>,
+        files: Option<Vec<(String, PathBuf)>>,
+    ) -> Result<(), Error> {
+        // Try to extract as Client first (deprecated API)
+        if let Ok(client) = files_or_client.extract::<PyRef<Client>>() {
+            warn_method_deprecated(py, "ValidationSession", "upload")?;
+            let files = files.ok_or_else(|| {
+                Error::TypeError(
+                    "upload() requires 'files' argument when using deprecated API".to_string(),
+                )
+            })?;
+            return Ok(self.inner.upload(&client.0, &files).await?);
+        }
+
+        // Try to extract as files list (new API)
+        if let Ok(files_list) = files_or_client.extract::<Vec<(String, PathBuf)>>() {
+            let client_ref = self.client.as_ref().ok_or_else(|| {
+                Error::TypeError(
+                    "ValidationSession has no client reference. Use session.upload(client, files) instead."
+                        .to_string(),
+                )
+            })?;
+            return Ok(self.inner.upload(client_ref.as_ref(), &files_list).await?);
+        }
+
+        Err(Error::TypeError(
+            "upload() first argument must be a list of (str, Path) tuples or Client (deprecated)"
+                .to_string(),
+        ))
     }
 }
 
@@ -3630,9 +4091,26 @@ impl Client {
 
     /// Configure the server instance.
     ///
+    /// The server parameter is an instance name that maps to a URL:
+    ///
+    /// - ``""`` or ``"saas"`` → ``https://edgefirst.studio`` (default)
+    /// - ``"test"`` → ``https://test.edgefirst.studio``
+    /// - ``"stage"`` → ``https://stage.edgefirst.studio``
+    /// - ``"dev"`` → ``https://dev.edgefirst.studio``
+    /// - ``"{name}"`` → ``https://{name}.edgefirst.studio``
+    ///
+    /// Server Selection Priority:
+    ///     1. **Token's server** (highest) - JWT tokens encode their server.
+    ///     2. **with_server()** - Used when logging in or no token exists.
+    ///     3. **Default "saas"** - If no token and no server specified.
+    ///
+    /// Important:
+    ///     If a token is already set, calling this method will **drop it**
+    ///     as tokens are server-specific. Use ``parse_token_server()`` to
+    ///     check a token's server before calling this method.
+    ///
     /// Args:
-    ///     server: Server instance name ("test", "stage", "dev", etc.)
-    ///             Empty string or "saas" uses https://edgefirst.studio
+    ///     server: Server instance name
     ///
     /// Returns:
     ///     Client: A new client connected to the specified server
@@ -3715,6 +4193,12 @@ impl Client {
     #[getter]
     pub fn url(&self) -> &str {
         self.0.url()
+    }
+
+    /// Returns the server name for the current client (e.g., "saas", "test").
+    #[getter]
+    pub fn server(&self) -> &str {
+        self.0.server()
     }
 
     #[tokio_wrap::sync]

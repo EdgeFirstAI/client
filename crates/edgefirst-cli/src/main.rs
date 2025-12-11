@@ -2803,29 +2803,101 @@ async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+
+    // Handle version command early - no authentication needed
+    if args.cmd == Command::Version {
+        let client = Client::new()?.with_token_path(None)?;
+        let client = match args.server {
+            Some(server) => client.with_server(&server)?,
+            None => client,
+        };
+        return handle_version(&client).await;
+    }
+
+    // Handle sleep command - no authentication needed
+    if let Command::Sleep { seconds } = args.cmd {
+        return handle_sleep(seconds).await;
+    }
+
+    // Handle login command specially - ignore existing token, use --server or
+    // default saas
+    if args.cmd == Command::Login {
+        let client = Client::new()?.with_token_path(None)?;
+        // For login, use --server if provided, otherwise default to saas
+        let server = args.server.as_deref().unwrap_or("");
+        let client = client.with_server(server)?;
+        return handle_login(client, args.username, args.password).await;
+    }
+
+    // For all other commands, implement server selection priority:
+    // 1. Token's server (from --token or stored token) - highest priority
+    // 2. --server override (used with username/password or when no token)
+    // 3. Default saas
     let client = Client::new()?.with_token_path(None)?;
-    let client = match args.server {
-        Some(server) => client.with_server(&server)?,
+
+    // Check if using username/password authentication (will get new token)
+    let using_credentials = args.username.is_some() && args.password.is_some();
+
+    // Check if there's a stored token (client.server() returns the server from
+    // the URL, which was set from the stored token if one exists)
+    let has_stored_token = !client.token().await.is_empty();
+
+    // If --token is provided, apply it first to get its server
+    let client = match &args.token {
+        Some(token) => client.with_token(token)?,
         None => client,
     };
-
-    let client = match (&args.username, &args.password) {
-        (Some(username), Some(password)) => client.with_login(username, password).await?,
-        _ => match &args.token {
-            Some(token) => client.with_token(token)?,
-            _ => client,
-        },
+    let effective_token_server = if args.token.is_some() || has_stored_token {
+        Some(client.server().to_string())
+    } else {
+        None
     };
 
-    // Handle commands that don't need token renewal
-    match &args.cmd {
-        Command::Version => return handle_version(&client).await,
-        Command::Login => {
-            return handle_login(client, args.username, args.password).await;
+    // Build the client with appropriate server selection
+    let client = if using_credentials {
+        // Using username/password - honor --server (will get new token for that server)
+        let client = match args.server {
+            Some(server) => client.with_server(&server)?,
+            None => client,
+        };
+        client
+            .with_login(
+                args.username.as_ref().unwrap(),
+                args.password.as_ref().unwrap(),
+            )
+            .await?
+    } else if let Some(ref token_server) = effective_token_server {
+        // Using token - its server takes priority
+        if let Some(ref requested_server) = args.server {
+            // Normalize: "" and "saas" are equivalent
+            let requested_normalized = match requested_server.as_str() {
+                "" | "saas" => "saas",
+                s => s,
+            };
+            if requested_normalized != token_server {
+                eprintln!(
+                    "Warning: --server '{}' will be ignored because your token is for server '{}'.",
+                    requested_server, token_server
+                );
+                eprintln!(
+                    "To switch servers, use: edgefirst-client login --server {}",
+                    requested_server
+                );
+            }
         }
-        Command::Logout => return handle_logout(&client).await,
-        Command::Sleep { seconds } => return handle_sleep(*seconds).await,
-        _ => {}
+        // Token already applied above
+        client
+    } else {
+        // No token available - use --server or default
+        match args.server {
+            Some(server) => client.with_server(&server)?,
+            None => client,
+        }
+    };
+
+    // Handle logout command
+    if args.cmd == Command::Logout {
+        return handle_logout(&client).await;
     }
 
     // Renew token for all other commands

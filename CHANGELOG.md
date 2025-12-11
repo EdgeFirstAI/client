@@ -5,6 +5,27 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Clarified server selection priority for `--server` and `with_server()`**
+
+  Server selection now follows a clear priority order:
+
+  1. **Token's server** (highest) - JWT tokens encode their server; if a valid token exists, its server is used
+  2. **`--server` / `with_server()`** - Used when logging in or when no token is available
+  3. **Default "saas"** - Production server (`https://edgefirst.studio`) when no token and no server specified
+
+  **Behavior changes:**
+  - `login` command ignores existing tokens and uses `--server` (or defaults to saas)
+  - Other commands warn if `--server` conflicts with token's server: the token's server takes priority
+  - Username/password authentication honors `--server` (obtains new token for that server)
+
+### Added
+
+- **`Client.server` property** - Returns the server name for the current client (e.g., "saas", "test", "stage"). Extracts the name from the client's URL regardless of how the server was selected.
+
 ## [2.6.2] - 2025-12-11
 
 ### Changed

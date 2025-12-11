@@ -2531,102 +2531,171 @@ class TrainingSession:
         """
         ...
 
-    def metrics(self, client: Client) -> Dict[str, Parameter]:
+    def metrics(self, client: Optional[Client] = None) -> Dict[str, Parameter]:
         """
         Returns the metrics associated with the training session.
 
+        New API (v2.6.0+): Uses embedded client reference.
+        Deprecated API: Pass client explicitly.
+
         Args:
-            client (Client): The EdgeFirst client.
+            client (Optional[Client]): The EdgeFirst client. Deprecated - omit
+                                       to use the embedded client reference.
 
         Returns:
             Dict[str, Parameter]: The training session metrics.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.metrics()`` instead.
         """
         ...
 
     def set_metrics(
-        self, client: Client, metrics: Dict[str, Parameter]
+        self,
+        metrics_or_client: Union[Dict[str, Parameter], Client],
+        metrics: Optional[Dict[str, Parameter]] = None,
     ) -> None:
         """
         Sets the metrics for the training session.
 
+        New API (v2.6.0+): ``session.set_metrics(metrics)``
+        Deprecated API: ``session.set_metrics(client, metrics)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            metrics (Dict[str, Parameter]): The training session metrics.
+            metrics_or_client: Either a metrics dict (new API) or Client
+                (deprecated).
+            metrics: The metrics dict when using deprecated API.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.set_metrics(metrics)`` instead.
         """
         ...
 
-    def artifacts(self, client: Client) -> List[Artifact]:
+    def artifacts(self, client: Optional[Client] = None) -> List[Artifact]:
         """
         Returns a list of artifacts produced by the training session.
 
+        New API (v2.6.0+): Uses embedded client reference.
+        Deprecated API: Pass client explicitly.
+
         Args:
-            client (Client): The EdgeFirst client.
+            client (Optional[Client]): The EdgeFirst client. Deprecated - omit
+                                       to use the embedded client reference.
 
         Returns:
             List[Artifact]: A list of artifacts.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.artifacts()`` instead.
         """
         ...
 
     def upload_artifact(
-        self, client: Client, filename: str, path: Optional[Path] = None
+        self,
+        filename_or_client: Union[str, Client],
+        filename_or_path: Optional[Union[str, Path]] = None,
+        path: Optional[Path] = None,
     ) -> None:
         """
         Uploads an artifact file to the training session.
 
+        New API (v2.6.0+): ``session.upload_artifact(filename, path)``
+        Deprecated API: ``session.upload_artifact(client, filename, path)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            filename (str): The name of the artifact file.
-            path (Optional[Path]): The local path to the artifact file.  If not
-                                   specified the filename is used as the path.
+            filename_or_client: Either filename (new API) or Client
+                (deprecated).
+            filename_or_path: Either path (new API) or filename (deprecated).
+            path: Local path to the artifact file (deprecated API only).
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.upload_artifact(filename, path)`` instead.
         """
         ...
 
-    def download_artifact(self, client: Client, filename: str) -> bytes:
+    def download_artifact(
+        self,
+        filename_or_client: Union[str, Client],
+        filename: Optional[str] = None,
+    ) -> bytes:
         """
-        Downloads the specified artifact file from the training session.  Note
-        that to download with progress to an output file you can use the
-        `client.download_artifact` method instead.
+        Downloads the specified artifact file from the training session.
+
+        New API (v2.6.0+): ``session.download_artifact(filename)``
+        Deprecated API: ``session.download_artifact(client, filename)``
 
         Args:
-            client (Client): The EdgeFirst client.
-            filename (str): The name of the artifact file to download.
+            filename_or_client: Either filename (new API) or Client
+                (deprecated).
+            filename: The filename when using deprecated API.
 
         Returns:
             bytes: The raw file data as bytes.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.download_artifact(filename)`` instead.
         """
         ...
 
     def upload_checkpoint(
-        self, client: Client, filename: str, path: Optional[Path] = None
+        self,
+        filename_or_client: Union[str, Client],
+        filename_or_path: Optional[Union[str, Path]] = None,
+        path: Optional[Path] = None,
     ) -> None:
         """
         Uploads a checkpoint file to the training session.
 
+        New API (v2.6.0+): ``session.upload_checkpoint(filename, path)``
+        Deprecated API: ``session.upload_checkpoint(client, filename, path)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            filename (str): The name of the checkpoint file.
-            path (Optional[Path]): The local path to the checkpoint file. If
-                                   not specified the filename is used as the
-                                   path.
+            filename_or_client: Either filename (new API) or Client
+                (deprecated).
+            filename_or_path: Either path (new API) or filename (deprecated).
+            path: Local path to the checkpoint file (deprecated API only).
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.upload_checkpoint(filename, path)`` instead.
         """
         ...
 
-    def download_checkpoint(self, client: Client, filename: str) -> bytes:
+    def download_checkpoint(
+        self,
+        filename_or_client: Union[str, Client],
+        filename: Optional[str] = None,
+    ) -> bytes:
         """
         Downloads the specified checkpoint file from the training session.
-        Note that to download with progress to an output file you can use the
-        `client.download_artifact` method instead.
+
+        New API (v2.6.0+): ``session.download_checkpoint(filename)``
+        Deprecated API: ``session.download_checkpoint(client, filename)``
 
         Args:
-            client (Client): The EdgeFirst client.
-            filename (str): The filename for the checkpoint file to download.
+            filename_or_client: Either filename (new API) or Client
+                (deprecated).
+            filename: The filename when using deprecated API.
 
         Returns:
             bytes: The raw file data as bytes.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.download_checkpoint(filename)`` instead.
         """
         ...
 
-    def upload(self, client: Client, files: List[Tuple[str, Path]]) -> None:
+    def upload(
+        self,
+        files_or_client: Union[List[Tuple[str, Path]], Client],
+        files: Optional[List[Tuple[str, Path]]] = None,
+    ) -> None:
         """
         Uploads files to the training session.  This can be used to upload
         model weights or other files that are needed for the training session.
@@ -2638,27 +2707,45 @@ class TrainingSession:
         Artifacts must be uploaded to `artifacts/*`, checkpoints to
         `checkpoints/*`,  while metrics should be uploaded to `metrics/*`.
 
+        New API (v2.6.0+): ``session.upload(files)``
+        Deprecated API: ``session.upload(client, files)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            files (List[Tuple[str, Path]]): A list of tuples containing the
-                                            target filename and the path to the
-                                            file to upload.
+            files_or_client: Either files list (new API) or Client
+                (deprecated).
+            files: The files list when using deprecated API.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.upload(files)`` instead.
         """
         ...
 
-    def download(self, client: Client, filename: str) -> str:
+    def download(
+        self,
+        filename_or_client: Union[str, Client],
+        filename: Optional[str] = None,
+    ) -> str:
         """
         Downloads the specified file from the training session.  This function
         requires the target file to only contain valid utf-8 as it is returned
         through a JSON response.  To retrieve binary files use the
         `client.download_artifact` method instead.
 
+        New API (v2.6.0+): ``session.download(filename)``
+        Deprecated API: ``session.download(client, filename)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            filename (str): The name of the file to download.
+            filename_or_client: Either filename (new API) or Client
+                (deprecated).
+            filename: The filename when using deprecated API.
 
         Returns:
             str: The raw file data as a string.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.download(filename)`` instead.
         """
         ...
 
@@ -2774,49 +2861,89 @@ class ValidationSession:
         """
         ...
 
-    def metrics(self, client: Client) -> Dict[str, Parameter]:
+    def metrics(self, client: Optional[Client] = None) -> Dict[str, Parameter]:
         """
         Returns the metrics associated with the validation session.
 
+        New API (v2.6.0+): Uses embedded client reference.
+        Deprecated API: Pass client explicitly.
+
         Args:
-            client (Client): The EdgeFirst client.
+            client (Optional[Client]): The EdgeFirst client. Deprecated - omit
+                                       to use the embedded client reference.
 
         Returns:
             Dict[str, Parameter]: The validation session metrics.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.metrics()`` instead.
         """
         ...
 
-    def set_metrics(self, client: Client, metrics: Dict[str, Parameter]):
+    def set_metrics(
+        self,
+        metrics_or_client: Union[Dict[str, Parameter], Client],
+        metrics: Optional[Dict[str, Parameter]] = None,
+    ) -> None:
         """
         Sets the metrics for the validation session.
 
+        New API (v2.6.0+): ``session.set_metrics(metrics)``
+        Deprecated API: ``session.set_metrics(client, metrics)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            metrics (Dict[str, Parameter]): The metrics to set.
+            metrics_or_client: Either a metrics dict (new API) or Client
+                (deprecated).
+            metrics: The metrics dict when using deprecated API.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.set_metrics(metrics)`` instead.
         """
         ...
 
-    def artifacts(self, client: Client) -> List[Artifact]:
+    def artifacts(self, client: Optional[Client] = None) -> List[Artifact]:
         """
         Returns a list of artifacts produced by the validation session.
 
+        New API (v2.6.0+): Uses embedded client reference.
+        Deprecated API: Pass client explicitly.
+
+        Note: Returns artifacts from the associated training session.
+
         Args:
-            client (Client): The EdgeFirst client.
+            client (Optional[Client]): The EdgeFirst client. Deprecated - omit
+                                       to use the embedded client reference.
 
         Returns:
             List[Artifact]: A list of artifacts.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.artifacts()`` instead.
         """
         ...
 
-    def upload(self, client: Client, files: List[Tuple[str, Path]]):
+    def upload(
+        self,
+        files_or_client: Union[List[Tuple[str, Path]], Client],
+        files: Optional[List[Tuple[str, Path]]] = None,
+    ) -> None:
         """
         Uploads the specified files to the validation session.
 
+        New API (v2.6.0+): ``session.upload(files)``
+        Deprecated API: ``session.upload(client, files)``
+
         Args:
-            client (Client): The EdgeFirst client.
-            files (List[Tuple[str, Path]]): A list of tuples containing the
-                                              target filename and the path to
-                                              the file to upload.
+            files_or_client: Either files list (new API) or Client
+                (deprecated).
+            files: The files list when using deprecated API.
+
+        .. deprecated::
+            Passing ``client`` is deprecated and will be removed in v3.0.0.
+            Use ``session.upload(files)`` instead.
         """
         ...
 
@@ -3363,14 +3490,21 @@ class Client:
 
         The server parameter is an instance name that maps to a URL:
 
-        - ``""`` or ``"saas"`` → ``https://edgefirst.studio``
+        - ``""`` or ``"saas"`` → ``https://edgefirst.studio`` (default)
         - ``"test"`` → ``https://test.edgefirst.studio``
         - ``"stage"`` → ``https://stage.edgefirst.studio``
         - ``"dev"`` → ``https://dev.edgefirst.studio``
         - ``"{name}"`` → ``https://{name}.edgefirst.studio``
 
-        If a token is already set in the client, it will be dropped as tokens
-        are specific to the server instance.
+        Server Selection Priority:
+            1. **Token's server** (highest) - JWT tokens encode their server.
+            2. **with_server()** - Used when logging in or no token exists.
+            3. **Default "saas"** - If no token and no server specified.
+
+        Important:
+            If a token is already set, calling this method will **drop it**
+            as tokens are server-specific. Use ``parse_token_server()`` to
+            check a token's server before calling this method.
 
         Args:
             server: The server instance name.
@@ -3520,6 +3654,21 @@ class Client:
 
         Returns:
             str: The server URL associated with the current client.
+        """
+        ...
+
+    @property
+    def server(self) -> str:
+        """
+        Return the server name for the current client.
+
+        Extracts the server name from the client's URL:
+        - ``https://edgefirst.studio`` → ``"saas"``
+        - ``https://test.edgefirst.studio`` → ``"test"``
+        - ``https://{name}.edgefirst.studio`` → ``"{name}"``
+
+        Returns:
+            str: The server name (e.g., "saas", "test", "stage").
         """
         ...
 
