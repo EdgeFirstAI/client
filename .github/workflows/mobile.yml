@@ -365,12 +365,12 @@ jobs:
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers"
             mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules"
 
-            # Copy headers (UniFFI generates EdgeFirstClientFFI.h based on ffi_module_name)
-            cp artifacts/swift/EdgeFirstClientFFI.h \
-               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/"
+            # Copy headers (UniFFI generates header based on cdylib_name: edgefirst_clientFFI.h)
+            cp artifacts/swift/edgefirst_clientFFI.h \
+               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/EdgeFirstClientFFI.h"
 
-            # Copy module map (UniFFI generates EdgeFirstClientFFI.modulemap)
-            cp artifacts/swift/EdgeFirstClientFFI.modulemap \
+            # Copy module map (UniFFI generates modulemap based on cdylib_name)
+            cp artifacts/swift/edgefirst_clientFFI.modulemap \
                "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules/module.modulemap"
           done
 
@@ -398,8 +398,8 @@ jobs:
           # Copy XCFramework
           cp -r artifacts/xcframework/EdgeFirstClient.xcframework artifacts/swift-sdk/
 
-          # Copy Swift bindings (UniFFI generates EdgeFirstClient.swift)
-          cp artifacts/swift/EdgeFirstClient.swift artifacts/swift-sdk/EdgeFirstClient.swift
+          # Copy Swift bindings (UniFFI generates edgefirst_client.swift based on cdylib_name)
+          cp artifacts/swift/edgefirst_client.swift artifacts/swift-sdk/EdgeFirstClient.swift
 
           # Create Package.swift for SPM
           cat > artifacts/swift-sdk/Package.swift << 'EOF'

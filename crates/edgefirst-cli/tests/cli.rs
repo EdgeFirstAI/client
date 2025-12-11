@@ -3364,6 +3364,7 @@ fn test_snapshot_create_download_delete_workflow() -> Result<(), Box<dyn std::er
 }
 
 /// Compute SHA256 checksum of a file
+#[allow(dead_code)]
 fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -3817,13 +3818,11 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     let mut lost_groups: Vec<((String, Option<i32>), String)> = Vec::new();
     let mut changed_groups: Vec<((String, Option<i32>), String, String)> = Vec::new();
     let mut missing_images: Vec<((String, Option<i32>), String)> = Vec::new();
-    let mut matched_count = 0;
 
     for (img, snap_group) in &snap_image_groups {
         // Convert i32 frame to u32 for API lookup
         let api_key = (img.0.clone(), img.1.map(|f| f as u32));
         if let Some(api_group) = api_image_groups.get(&api_key) {
-            matched_count += 1;
             match api_group {
                 None => lost_groups.push((img.clone(), snap_group.clone())),
                 Some(rg) if rg != snap_group => {
@@ -4191,6 +4190,7 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
         println!("Snapshot columns: {:?}", snapshot_df.get_column_names());
 
         // Build (name, frame) -> group mapping for both
+        #[allow(clippy::type_complexity)]
         fn build_image_groups(
             df: &DataFrame,
         ) -> Result<HashMap<(String, Option<i32>), Option<String>>, Box<dyn std::error::Error>>
@@ -4256,8 +4256,12 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
 
         // Compare: All original images should be in snapshot with same group
         let mut missing_in_snapshot: Vec<(String, Option<i32>)> = Vec::new();
-        let mut group_mismatches: Vec<((String, Option<i32>), Option<String>, Option<String>)> =
-            Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut group_mismatches: Vec<(
+            (String, Option<i32>),
+            Option<String>,
+            Option<String>,
+        )> = Vec::new();
 
         for (key, orig_group) in &original_groups {
             if let Some(snap_group) = snapshot_groups.get(key) {

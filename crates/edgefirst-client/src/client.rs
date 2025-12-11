@@ -1981,6 +1981,7 @@ impl Client {
         types: &[AnnotationType],
         progress: Option<Sender<Progress>>,
     ) -> Result<DataFrame, Error> {
+        #[allow(deprecated)]
         use crate::dataset::annotations_dataframe;
 
         let annotations = self

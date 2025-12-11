@@ -81,6 +81,7 @@ pub use crate::{
 };
 
 #[cfg(feature = "polars")]
+#[allow(deprecated)] // Re-exported for backwards compatibility
 pub use crate::dataset::annotations_dataframe;
 
 #[cfg(feature = "polars")]

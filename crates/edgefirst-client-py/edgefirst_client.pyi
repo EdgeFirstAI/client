@@ -3034,7 +3034,6 @@ class SnapshotFromDatasetResult:
         """
         ...
 
-
 class FileTokenStorage:
     """
     File-based token storage for desktop platforms.
@@ -3137,7 +3136,6 @@ class FileTokenStorage:
         """Return a string representation of the storage."""
         ...
 
-
 class MemoryTokenStorage:
     """
     In-memory token storage (no persistence).
@@ -3188,7 +3186,6 @@ class MemoryTokenStorage:
     def __repr__(self) -> str:
         """Return a string representation of the storage."""
         ...
-
 
 class Client:
     """
@@ -3384,7 +3381,9 @@ class Client:
         """
         ...
 
-    def with_storage(self, storage: Union[FileTokenStorage, MemoryTokenStorage, Any]) -> "Client":
+    def with_storage(
+        self, storage: Union[FileTokenStorage, MemoryTokenStorage, Any]
+    ) -> "Client":
         """
         Returns a new client with the specified token storage backend.
 

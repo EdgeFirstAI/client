@@ -5,31 +5,33 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.6.0] - 2025-12-11
 
 ### Added
 
-- **UniFFI Bindings for Kotlin and Swift**
+- **Mobile SDKs for Android and iOS/macOS**
 
-  New FFI crate enables native mobile app development with EdgeFirst Client:
+  New UniFFI-based mobile bindings enable native app development with EdgeFirst Client:
 
   **Kotlin (Android):**
   - Full API coverage with coroutine-based async methods
   - JNI native libraries for arm64-v8a, armeabi-v7a, x86_64
-  - `TokenStorageCallback` interface for custom storage (EncryptedSharedPreferences)
+  - `TokenStorage` callback interface for custom storage (EncryptedSharedPreferences)
   - All data types: `Sample`, `Annotation`, `Mask`, `Project`, `Dataset`, etc.
+  - See [ANDROID.md](ANDROID.md) for complete documentation
 
   **Swift (iOS/macOS):**
   - Full API coverage with async/await pattern
   - XCFramework supporting iOS, iOS Simulator, and macOS
-  - `TokenStorageCallback` protocol for custom storage (Keychain Services)
+  - `TokenStorage` protocol for custom storage (Keychain Services)
   - Swift Package Manager compatible distribution
+  - See [APPLE.md](APPLE.md) for complete documentation
 
   **CI/CD Integration:**
   - New `.github/workflows/mobile.yml` workflow
   - Automated builds for Android NDK and Apple platforms
   - Automated binding generation and SDK packaging
-  - Release artifact upload (zip files for each SDK)
+  - Release artifacts: `edgefirst-android-sdk-{version}.zip`, `edgefirst-swift-sdk-{version}.zip`
 
 - **Token Storage Abstraction for Platform Portability**
 
