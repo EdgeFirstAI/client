@@ -122,7 +122,7 @@ jobs:
   build-wheels:
     name: Build Python Wheel - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    needs: [build-cli]  # Run after CLI builds to benefit from shared cache
+    needs: [build-cli]  # Run after CLI builds to bundle CLI binary in wheel
     strategy:
       fail-fast: false
       matrix:
@@ -132,30 +132,40 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux
             arch: x86_64
+            cli_artifact: edgefirst-client-linux-amd64
+            cli_binary: edgefirst-client
 
           # Linux aarch64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             platform: linux
             arch: aarch64
+            cli_artifact: edgefirst-client-linux-arm64
+            cli_binary: edgefirst-client
 
           # macOS x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos
             arch: x86_64
+            cli_artifact: edgefirst-client-macos-amd64
+            cli_binary: edgefirst-client
 
           # macOS aarch64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos
             arch: aarch64
+            cli_artifact: edgefirst-client-macos-arm64
+            cli_binary: edgefirst-client
 
           # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows
             arch: x86_64
+            cli_artifact: edgefirst-client-windows-amd64.exe
+            cli_binary: edgefirst-client.exe
 
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -178,6 +188,33 @@ jobs:
           key: ${{ matrix.target }}-build
           shared-key: "build"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Download CLI binary to bundle in the wheel
+      - name: Download CLI binary
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ${{ matrix.cli_artifact }}
+          path: cli-binary
+
+      # Set up maturin data directory with CLI binary as a script
+      # Files in .data/scripts/ are installed as executables on the PATH
+      - name: Bundle CLI binary in wheel (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
+          cp cli-binary/${{ matrix.cli_artifact }} crates/edgefirst-client-py/edgefirst_client.data/scripts/${{ matrix.cli_binary }}
+          chmod +x crates/edgefirst-client-py/edgefirst_client.data/scripts/${{ matrix.cli_binary }}
+          echo "Bundled CLI binary:"
+          ls -la crates/edgefirst-client-py/edgefirst_client.data/scripts/
+
+      - name: Bundle CLI binary in wheel (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
+          cp cli-binary/${{ matrix.cli_artifact }} crates/edgefirst-client-py/edgefirst_client.data/scripts/${{ matrix.cli_binary }}
+          echo "Bundled CLI binary:"
+          ls -la crates/edgefirst-client-py/edgefirst_client.data/scripts/
 
       - name: Install maturin
         run: pip install maturin[zig]
@@ -204,8 +241,8 @@ jobs:
             --target ${{ matrix.target }} \
             -m crates/edgefirst-client-py/Cargo.toml
 
-      # Verify GLIBC requirements for Linux wheels (manylinux2014 = glibc 2.17)
-      - name: Verify GLIBC requirements in wheel (Linux)
+      # Verify wheel contents for Linux (GLIBC + CLI binary)
+      - name: Verify wheel contents (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -213,17 +250,29 @@ jobs:
           WHEEL_FILE=$(ls target/wheels/*.whl)
           TEMP_DIR=$(mktemp -d)
           unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
-          
+
+          echo "Wheel contents:"
+          find "$TEMP_DIR" -type f | head -20
+
+          # Verify CLI binary is included in wheel
+          CLI_IN_WHEEL=$(find "$TEMP_DIR" -name "${{ matrix.cli_binary }}" | head -1)
+          if [ -z "$CLI_IN_WHEEL" ]; then
+            echo "❌ ERROR: CLI binary '${{ matrix.cli_binary }}' not found in wheel!"
+            rm -rf "$TEMP_DIR"
+            exit 1
+          fi
+          echo "✅ CLI binary found in wheel: $CLI_IN_WHEEL"
+
           # Check the Python extension module (.so)
           SO_FILE=$(find "$TEMP_DIR" -name "*.so" | head -1)
           if [ -n "$SO_FILE" ]; then
             echo "Checking $SO_FILE..."
             GLIBC_MAX=$(objdump -T "$SO_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
             echo "Python extension max GLIBC: $GLIBC_MAX"
-            
+
             GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
             GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-            
+
             if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
               echo "❌ ERROR: Python extension requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
               rm -rf "$TEMP_DIR"
@@ -231,7 +280,7 @@ jobs:
             fi
             echo "✅ Python extension GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
           fi
-          
+
           rm -rf "$TEMP_DIR"
 
       # Build wheels for macOS
@@ -242,10 +291,48 @@ jobs:
             --target ${{ matrix.target }} \
             -m crates/edgefirst-client-py/Cargo.toml
 
+      # Verify wheel contents for macOS
+      - name: Verify wheel contents (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "Verifying wheel contents for ${{ matrix.target }}..."
+          WHEEL_FILE=$(ls target/wheels/*.whl)
+          TEMP_DIR=$(mktemp -d)
+          unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
+
+          CLI_IN_WHEEL=$(find "$TEMP_DIR" -name "${{ matrix.cli_binary }}" | head -1)
+          if [ -z "$CLI_IN_WHEEL" ]; then
+            echo "❌ ERROR: CLI binary '${{ matrix.cli_binary }}' not found in wheel!"
+            rm -rf "$TEMP_DIR"
+            exit 1
+          fi
+          echo "✅ CLI binary found in wheel: $CLI_IN_WHEEL"
+          rm -rf "$TEMP_DIR"
+
       # Build wheels for Windows
       - name: Build wheels (Windows)
         if: matrix.os == 'windows-latest'
         run: maturin build --release --locked -m crates/edgefirst-client-py/Cargo.toml
+
+      # Verify wheel contents for Windows
+      - name: Verify wheel contents (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          echo "Verifying wheel contents for ${{ matrix.target }}..."
+          WHEEL_FILE=$(ls target/wheels/*.whl)
+          TEMP_DIR=$(mktemp -d)
+          unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
+
+          CLI_IN_WHEEL=$(find "$TEMP_DIR" -name "${{ matrix.cli_binary }}" | head -1)
+          if [ -z "$CLI_IN_WHEEL" ]; then
+            echo "❌ ERROR: CLI binary '${{ matrix.cli_binary }}' not found in wheel!"
+            rm -rf "$TEMP_DIR"
+            exit 1
+          fi
+          echo "✅ CLI binary found in wheel: $CLI_IN_WHEEL"
+          rm -rf "$TEMP_DIR"
 
       - name: Upload wheels
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0

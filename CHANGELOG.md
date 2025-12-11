@@ -5,7 +5,7 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.3] - 2025-12-11
+## [2.6.4] - 2025-12-11
 
 ### Changed
 
@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`Client.server` property** - Returns the server name for the current client (e.g., "saas", "test", "stage"). Extracts the name from the client's URL regardless of how the server was selected.
+
+### Fixed
+
+- **CLI binary now bundled in Python wheel** - The `edgefirst-client` CLI binary is now properly included in the Python wheel and installed to the PATH when using `pip install edgefirst-client`. Previously, only the Python library was included.
 
 ## [2.6.2] - 2025-12-11
 
