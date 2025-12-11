@@ -65,6 +65,14 @@ jobs:
             edgefirst-client = "${{ steps.get_version.outputs.version }}"
             ```
 
+            ### Android SDK
+            Download `edgefirst-android-sdk-${{ steps.get_version.outputs.version }}.zip` from the assets below.
+            See the included README.md for integration instructions.
+
+            ### iOS/macOS SDK (Swift)
+            Download `edgefirst-swift-sdk-${{ steps.get_version.outputs.version }}.zip` from the assets below.
+            See the included README.md for integration instructions.
+
   # Upload SBOM from sbom.yml workflow (same tag commit)
   upload-sbom:
     name: Upload Software Bill of Materials

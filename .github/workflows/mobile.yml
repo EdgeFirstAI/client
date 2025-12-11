@@ -8,6 +8,9 @@ name: Mobile SDK
 on:
   push:
     branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+rc[0-9]+'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -101,7 +104,7 @@ jobs:
       - name: Prepare Artifacts
         run: |
           mkdir -p artifacts/android/${{ matrix.abi }}
-          cp target/${{ matrix.target }}/release/libedgefirst_client_ffi.so \
+          cp target/${{ matrix.target }}/release/libedgefirst_client.so \
              artifacts/android/${{ matrix.abi }}/
 
       - name: Upload Artifact
@@ -167,11 +170,11 @@ jobs:
       - name: Prepare Artifacts
         run: |
           mkdir -p artifacts/apple/${{ matrix.platform }}
-          cp target/${{ matrix.target }}/release/libedgefirst_client_ffi.a \
+          cp target/${{ matrix.target }}/release/libedgefirst_client.a \
              artifacts/apple/${{ matrix.platform }}/
           # Also copy dylib for macOS if available
-          if [ -f "target/${{ matrix.target }}/release/libedgefirst_client_ffi.dylib" ]; then
-            cp target/${{ matrix.target }}/release/libedgefirst_client_ffi.dylib \
+          if [ -f "target/${{ matrix.target }}/release/libedgefirst_client.dylib" ]; then
+            cp target/${{ matrix.target }}/release/libedgefirst_client.dylib \
                artifacts/apple/${{ matrix.platform }}/
           fi
 
@@ -219,7 +222,7 @@ jobs:
 
           # Generate Kotlin bindings using uniffi-bindgen
           ./target/release/uniffi-bindgen generate \
-            --library target/release/libedgefirst_client_ffi.so \
+            --library target/release/libedgefirst_client.so \
             --language kotlin \
             --out-dir artifacts/kotlin
 
@@ -243,20 +246,20 @@ jobs:
       - name: Organize JNI Libraries
         run: |
           set -euxo pipefail
-          
+
           # Rename directories to match Android JNI conventions
           mkdir -p artifacts/android-sdk/jniLibs
           for abi in arm64-v8a armeabi-v7a x86_64; do
             if [ -d "artifacts/jniLibs/android-${abi}" ]; then
               mkdir -p "artifacts/android-sdk/jniLibs/${abi}"
-              cp "artifacts/jniLibs/android-${abi}/libedgefirst_client_ffi.so" \
+              cp "artifacts/jniLibs/android-${abi}/libedgefirst_client.so" \
                  "artifacts/android-sdk/jniLibs/${abi}/"
               echo "Copied ${abi} library"
             else
               echo "Warning: android-${abi} not found, skipping"
             fi
           done
-          
+
           # Verify Kotlin sources exist before copying
           if [ -d "artifacts/kotlin" ] && [ -n "$(ls -A artifacts/kotlin 2>/dev/null)" ]; then
             cp -r artifacts/kotlin/* artifacts/android-sdk/
@@ -310,7 +313,7 @@ jobs:
 
           # Generate Swift bindings using uniffi-bindgen
           ./target/release/uniffi-bindgen generate \
-            --library target/release/libedgefirst_client_ffi.dylib \
+            --library target/release/libedgefirst_client.dylib \
             --language swift \
             --out-dir artifacts/swift
 
@@ -336,18 +339,18 @@ jobs:
           mkdir -p artifacts/apple-libs/ios-sim-fat
           # Combine ARM64 and x86_64 simulator libraries
           lipo -create \
-            artifacts/apple-libs/apple-ios-sim-arm64/libedgefirst_client_ffi.a \
-            artifacts/apple-libs/apple-ios-sim-x86_64/libedgefirst_client_ffi.a \
-            -output artifacts/apple-libs/ios-sim-fat/libedgefirst_client_ffi.a
+            artifacts/apple-libs/apple-ios-sim-arm64/libedgefirst_client.a \
+            artifacts/apple-libs/apple-ios-sim-x86_64/libedgefirst_client.a \
+            -output artifacts/apple-libs/ios-sim-fat/libedgefirst_client.a
 
       - name: Create macOS Fat Library
         run: |
           mkdir -p artifacts/apple-libs/macos-fat
           # Combine ARM64 and x86_64 macOS libraries
           lipo -create \
-            artifacts/apple-libs/apple-macos-arm64/libedgefirst_client_ffi.a \
-            artifacts/apple-libs/apple-macos-x86_64/libedgefirst_client_ffi.a \
-            -output artifacts/apple-libs/macos-fat/libedgefirst_client_ffi.a
+            artifacts/apple-libs/apple-macos-arm64/libedgefirst_client.a \
+            artifacts/apple-libs/apple-macos-x86_64/libedgefirst_client.a \
+            -output artifacts/apple-libs/macos-fat/libedgefirst_client.a
 
       - name: Create XCFramework
         run: |
@@ -359,50 +362,50 @@ jobs:
 
           # Create framework directories for each platform
           for platform in ios ios-simulator macos; do
-            mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Headers"
-            mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Modules"
+            mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers"
+            mkdir -p "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules"
 
-            # Copy headers (UniFFI generates EdgeFirstClientFFI.h)
+            # Copy headers (UniFFI generates EdgeFirstClientFFI.h based on ffi_module_name)
             cp artifacts/swift/EdgeFirstClientFFI.h \
-               "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Headers/"
+               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Headers/"
 
             # Copy module map (UniFFI generates EdgeFirstClientFFI.modulemap)
             cp artifacts/swift/EdgeFirstClientFFI.modulemap \
-               "artifacts/frameworks/${platform}/EdgeFirstClientFFI.framework/Modules/module.modulemap"
+               "artifacts/frameworks/${platform}/EdgeFirstClient.framework/Modules/module.modulemap"
           done
-          
+
           # Copy static libraries
-          cp artifacts/apple-libs/apple-ios/libedgefirst_client_ffi.a \
-             artifacts/frameworks/ios/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-          
-          cp artifacts/apple-libs/ios-sim-fat/libedgefirst_client_ffi.a \
-             artifacts/frameworks/ios-simulator/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-          
-          cp artifacts/apple-libs/macos-fat/libedgefirst_client_ffi.a \
-             artifacts/frameworks/macos/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-          
+          cp artifacts/apple-libs/apple-ios/libedgefirst_client.a \
+             artifacts/frameworks/ios/EdgeFirstClient.framework/EdgeFirstClient
+
+          cp artifacts/apple-libs/ios-sim-fat/libedgefirst_client.a \
+             artifacts/frameworks/ios-simulator/EdgeFirstClient.framework/EdgeFirstClient
+
+          cp artifacts/apple-libs/macos-fat/libedgefirst_client.a \
+             artifacts/frameworks/macos/EdgeFirstClient.framework/EdgeFirstClient
+
           # Create XCFramework
           xcodebuild -create-xcframework \
-            -framework artifacts/frameworks/ios/EdgeFirstClientFFI.framework \
-            -framework artifacts/frameworks/ios-simulator/EdgeFirstClientFFI.framework \
-            -framework artifacts/frameworks/macos/EdgeFirstClientFFI.framework \
-            -output artifacts/xcframework/EdgeFirstClientFFI.xcframework
+            -framework artifacts/frameworks/ios/EdgeFirstClient.framework \
+            -framework artifacts/frameworks/ios-simulator/EdgeFirstClient.framework \
+            -framework artifacts/frameworks/macos/EdgeFirstClient.framework \
+            -output artifacts/xcframework/EdgeFirstClient.xcframework
 
       - name: Package Swift SDK
         run: |
           mkdir -p artifacts/swift-sdk
 
           # Copy XCFramework
-          cp -r artifacts/xcframework/EdgeFirstClientFFI.xcframework artifacts/swift-sdk/
+          cp -r artifacts/xcframework/EdgeFirstClient.xcframework artifacts/swift-sdk/
 
           # Copy Swift bindings (UniFFI generates EdgeFirstClient.swift)
           cp artifacts/swift/EdgeFirstClient.swift artifacts/swift-sdk/EdgeFirstClient.swift
-          
+
           # Create Package.swift for SPM
           cat > artifacts/swift-sdk/Package.swift << 'EOF'
           // swift-tools-version:5.5
           import PackageDescription
-          
+
           let package = Package(
               name: "EdgeFirstClient",
               platforms: [
@@ -412,19 +415,19 @@ jobs:
               products: [
                   .library(
                       name: "EdgeFirstClient",
-                      targets: ["EdgeFirstClient", "EdgeFirstClientFFI"]
+                      targets: ["EdgeFirstClientSwift", "EdgeFirstClient"]
                   ),
               ],
               targets: [
                   .target(
-                      name: "EdgeFirstClient",
-                      dependencies: ["EdgeFirstClientFFI"],
+                      name: "EdgeFirstClientSwift",
+                      dependencies: ["EdgeFirstClient"],
                       path: ".",
                       sources: ["EdgeFirstClient.swift"]
                   ),
                   .binaryTarget(
-                      name: "EdgeFirstClientFFI",
-                      path: "EdgeFirstClientFFI.xcframework"
+                      name: "EdgeFirstClient",
+                      path: "EdgeFirstClient.xcframework"
                   ),
               ]
           )
@@ -438,17 +441,20 @@ jobs:
           retention-days: 7
 
   # ============================================================================
-  # Release Mobile SDKs
+  # Release Mobile SDKs (only on version tags)
   # ============================================================================
   release-mobile:
     name: Release Mobile SDKs
     runs-on: ubuntu-24.04
     needs: [generate-kotlin, generate-swift]
-    if: github.event_name == 'release'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
     steps:
+      - name: Checkout (for README files)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
       - name: Download Android SDK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -470,11 +476,15 @@ jobs:
 
       - name: Package Android SDK
         run: |
+          # Include README in the SDK package
+          cp ANDROID.md android-sdk/README.md
           cd android-sdk
           zip -r "../edgefirst-android-sdk-${{ steps.version.outputs.version }}.zip" .
 
       - name: Package Swift SDK
         run: |
+          # Include README in the SDK package
+          cp APPLE.md swift-sdk/README.md
           cd swift-sdk
           zip -r "../edgefirst-swift-sdk-${{ steps.version.outputs.version }}.zip" .
 

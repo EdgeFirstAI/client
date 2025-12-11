@@ -10,7 +10,7 @@ edition.workspace = true
 publish = false
 
 [lib]
-name = "edgefirst_client_ffi"
+name = "edgefirst_client"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
