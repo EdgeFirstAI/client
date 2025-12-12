@@ -75,3 +75,4 @@ server/
 # Generated Swift FFI headers/modulemap (used by make xcframework, not needed in repo)
 swift/*.h
 swift/*.modulemap
+.build/

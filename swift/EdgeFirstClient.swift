@@ -7,8 +7,8 @@ import Foundation
 // Depending on the consumer's build setup, the low-level FFI code
 // might be in a separate module, or it might be compiled inline into
 // this module. This is a bit of light hackery to work with both.
-#if canImport(edgefirst_clientFFI)
-import edgefirst_clientFFI
+#if canImport(EdgeFirstClientFFI)
+import EdgeFirstClientFFI
 #endif
 
 fileprivate extension RustBuffer {
@@ -764,6 +764,9 @@ public protocol ClientProtocol: AnyObject, Sendable {
     
     /**
      * Authenticate with username and password (async).
+     *
+     * Uses `async-compat` to enter Tokio context for reqwest compatibility
+     * while allowing UniFFI to drive the future from Swift/Kotlin.
      */
     func withLoginAsync(username: String, password: String) async throws  -> Client
     
@@ -1436,6 +1439,9 @@ open func withLogin(username: String, password: String)throws  -> Client  {
     
     /**
      * Authenticate with username and password (async).
+     *
+     * Uses `async-compat` to enter Tokio context for reqwest compatibility
+     * while allowing UniFFI to drive the future from Swift/Kotlin.
      */
 open func withLoginAsync(username: String, password: String)async throws  -> Client  {
     return
@@ -1542,47 +1548,47 @@ public struct Annotation {
     /**
      * Sample this annotation belongs to.
      */
-    public var sampleId: SampleId?
+    public let sampleId: SampleId?
     /**
      * Image/sample name.
      */
-    public var name: String?
+    public let name: String?
     /**
      * Sequence this annotation belongs to.
      */
-    public var sequenceName: String?
+    public let sequenceName: String?
     /**
      * Frame number within the sequence.
      */
-    public var frameNumber: UInt32?
+    public let frameNumber: UInt32?
     /**
      * Dataset split (train, val, test).
      */
-    public var group: String?
+    public let group: String?
     /**
      * Object tracking identifier across frames.
      */
-    public var objectId: String?
+    public let objectId: String?
     /**
      * Label/class name.
      */
-    public var labelName: String?
+    public let labelName: String?
     /**
      * Label/class index.
      */
-    public var labelIndex: UInt64?
+    public let labelIndex: UInt64?
     /**
      * 2D bounding box.
      */
-    public var box2d: Box2d?
+    public let box2d: Box2d?
     /**
      * 3D bounding box.
      */
-    public var box3d: Box3d?
+    public let box3d: Box3d?
     /**
      * Segmentation mask.
      */
-    public var mask: Mask?
+    public let mask: Mask?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1750,11 +1756,11 @@ public func FfiConverterTypeAnnotation_lower(_ value: Annotation) -> RustBuffer 
  * An annotation set in a dataset.
  */
 public struct AnnotationSet {
-    public var id: AnnotationSetId
-    public var datasetId: DatasetId
-    public var name: String
-    public var description: String
-    public var created: String
+    public let id: AnnotationSetId
+    public let datasetId: DatasetId
+    public let name: String
+    public let description: String
+    public let created: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1847,7 +1853,7 @@ public func FfiConverterTypeAnnotationSet_lower(_ value: AnnotationSet) -> RustB
  * Unique identifier for an annotation set.
  */
 public struct AnnotationSetId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1912,7 +1918,7 @@ public func FfiConverterTypeAnnotationSetId_lower(_ value: AnnotationSetId) -> R
  * Unique identifier for an application.
  */
 public struct AppId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1977,8 +1983,8 @@ public func FfiConverterTypeAppId_lower(_ value: AppId) -> RustBuffer {
  * A model artifact from a training session.
  */
 public struct Artifact {
-    public var name: String
-    public var modelType: String
+    public let name: String
+    public let modelType: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2050,10 +2056,10 @@ public func FfiConverterTypeArtifact_lower(_ value: Artifact) -> RustBuffer {
  * 2D bounding box annotation.
  */
 public struct Box2d {
-    public var left: Float
-    public var top: Float
-    public var width: Float
-    public var height: Float
+    public let left: Float
+    public let top: Float
+    public let width: Float
+    public let height: Float
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2139,12 +2145,12 @@ public func FfiConverterTypeBox2d_lower(_ value: Box2d) -> RustBuffer {
  * 3D bounding box annotation.
  */
 public struct Box3d {
-    public var cx: Float
-    public var cy: Float
-    public var cz: Float
-    public var width: Float
-    public var height: Float
-    public var length: Float
+    public let cx: Float
+    public let cy: Float
+    public let cz: Float
+    public let width: Float
+    public let height: Float
+    public let length: Float
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2244,11 +2250,11 @@ public func FfiConverterTypeBox3d_lower(_ value: Box3d) -> RustBuffer {
  * A dataset in EdgeFirst Studio.
  */
 public struct Dataset {
-    public var id: DatasetId
-    public var projectId: ProjectId
-    public var name: String
-    public var description: String
-    public var created: String
+    public let id: DatasetId
+    public let projectId: ProjectId
+    public let name: String
+    public let description: String
+    public let created: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2341,7 +2347,7 @@ public func FfiConverterTypeDataset_lower(_ value: Dataset) -> RustBuffer {
  * Unique identifier for a dataset.
  */
 public struct DatasetId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2406,10 +2412,10 @@ public func FfiConverterTypeDatasetId_lower(_ value: DatasetId) -> RustBuffer {
  * An experiment in EdgeFirst Studio.
  */
 public struct Experiment {
-    public var id: ExperimentId
-    public var projectId: ProjectId
-    public var name: String
-    public var description: String
+    public let id: ExperimentId
+    public let projectId: ProjectId
+    public let name: String
+    public let description: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2495,7 +2501,7 @@ public func FfiConverterTypeExperiment_lower(_ value: Experiment) -> RustBuffer 
  * Unique identifier for an experiment.
  */
 public struct ExperimentId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2560,8 +2566,8 @@ public func FfiConverterTypeExperimentId_lower(_ value: ExperimentId) -> RustBuf
  * GPS location data.
  */
 public struct GpsData {
-    public var lat: Double
-    public var lon: Double
+    public let lat: Double
+    public let lon: Double
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2633,7 +2639,7 @@ public func FfiConverterTypeGpsData_lower(_ value: GpsData) -> RustBuffer {
  * Unique identifier for an image.
  */
 public struct ImageId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2698,9 +2704,9 @@ public func FfiConverterTypeImageId_lower(_ value: ImageId) -> RustBuffer {
  * IMU orientation data (roll, pitch, yaw in degrees).
  */
 public struct ImuData {
-    public var roll: Double
-    public var pitch: Double
-    public var yaw: Double
+    public let roll: Double
+    public let pitch: Double
+    public let yaw: Double
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2779,8 +2785,8 @@ public func FfiConverterTypeImuData_lower(_ value: ImuData) -> RustBuffer {
  * A label for annotations.
  */
 public struct Label {
-    public var id: UInt64
-    public var name: String
+    public let id: UInt64
+    public let name: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2855,11 +2861,11 @@ public struct Location {
     /**
      * GPS coordinates (latitude, longitude).
      */
-    public var gps: GpsData?
+    public let gps: GpsData?
     /**
      * IMU orientation (roll, pitch, yaw).
      */
-    public var imu: ImuData?
+    public let imu: ImuData?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2940,7 +2946,7 @@ public func FfiConverterTypeLocation_lower(_ value: Location) -> RustBuffer {
  * Multiple rings allow for complex shapes with holes.
  */
 public struct Mask {
-    public var polygon: [PolygonRing]
+    public let polygon: [PolygonRing]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3005,9 +3011,9 @@ public func FfiConverterTypeMask_lower(_ value: Mask) -> RustBuffer {
  * Organization information and metadata.
  */
 public struct Organization {
-    public var id: OrganizationId
-    public var name: String
-    public var credits: Int64
+    public let id: OrganizationId
+    public let name: String
+    public let credits: Int64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3086,7 +3092,7 @@ public func FfiConverterTypeOrganization_lower(_ value: Organization) -> RustBuf
  * Unique identifier for an organization.
  */
 public struct OrganizationId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3151,8 +3157,8 @@ public func FfiConverterTypeOrganizationId_lower(_ value: OrganizationId) -> Rus
  * A 2D point (x, y coordinates).
  */
 public struct Point2d {
-    public var x: Float
-    public var y: Float
+    public let x: Float
+    public let y: Float
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3224,7 +3230,7 @@ public func FfiConverterTypePoint2d_lower(_ value: Point2d) -> RustBuffer {
  * A polygon ring as a list of 2D points.
  */
 public struct PolygonRing {
-    public var points: [Point2d]
+    public let points: [Point2d]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3289,9 +3295,9 @@ public func FfiConverterTypePolygonRing_lower(_ value: PolygonRing) -> RustBuffe
  * A project in EdgeFirst Studio.
  */
 public struct Project {
-    public var id: ProjectId
-    public var name: String
-    public var description: String
+    public let id: ProjectId
+    public let name: String
+    public let description: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3370,7 +3376,7 @@ public func FfiConverterTypeProject_lower(_ value: Project) -> RustBuffer {
  * Unique identifier for a project.
  */
 public struct ProjectId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3438,71 +3444,71 @@ public struct Sample {
     /**
      * Unique sample identifier.
      */
-    public var id: SampleId?
+    public let id: SampleId?
     /**
      * Dataset split (train, val, test).
      */
-    public var group: String?
+    public let group: String?
     /**
      * Sequence name for video/temporal data.
      */
-    public var sequenceName: String?
+    public let sequenceName: String?
     /**
      * Sequence UUID.
      */
-    public var sequenceUuid: String?
+    public let sequenceUuid: String?
     /**
      * Sequence description.
      */
-    public var sequenceDescription: String?
+    public let sequenceDescription: String?
     /**
      * Frame number within the sequence.
      */
-    public var frameNumber: UInt32?
+    public let frameNumber: UInt32?
     /**
      * Sample UUID.
      */
-    public var uuid: String?
+    public let uuid: String?
     /**
      * Primary image filename.
      */
-    public var imageName: String?
+    public let imageName: String?
     /**
      * URL to download the primary image.
      */
-    public var imageUrl: String?
+    public let imageUrl: String?
     /**
      * Image width in pixels.
      */
-    public var width: UInt32?
+    public let width: UInt32?
     /**
      * Image height in pixels.
      */
-    public var height: UInt32?
+    public let height: UInt32?
     /**
      * Capture date/time (ISO 8601 format).
      */
-    public var date: String?
+    public let date: String?
     /**
      * Data source identifier.
      */
-    public var source: String?
+    public let source: String?
     /**
      * Camera location and pose.
      */
-    public var location: Location?
+    public let location: Location?
     /**
      * Image degradation type (blur, occlusion, weather, etc.).
      */
-    public var degradation: String?
+    public let degradation: String?
     /**
      * Additional sensor files (LiDAR, radar, etc.).
      */
-    public var files: [SampleFile]
+    public let files: [SampleFile]
     /**
      * Annotations on this sample.
      */
-    public var annotations: [Annotation]
+    public let annotations: [Annotation]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3733,15 +3739,15 @@ public struct SampleFile {
     /**
      * File type identifier (e.g., "lidar_pcd", "radar_cube").
      */
-    public var fileType: String
+    public let fileType: String
     /**
      * URL to download the file (present for retrieved samples).
      */
-    public var url: String?
+    public let url: String?
     /**
      * Local filename (used when populating samples).
      */
-    public var filename: String?
+    public let filename: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3829,7 +3835,7 @@ public func FfiConverterTypeSampleFile_lower(_ value: SampleFile) -> RustBuffer 
  * Unique identifier for a sample.
  */
 public struct SampleId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3894,7 +3900,7 @@ public func FfiConverterTypeSampleId_lower(_ value: SampleId) -> RustBuffer {
  * Unique identifier for a sequence.
  */
 public struct SequenceId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3959,11 +3965,11 @@ public func FfiConverterTypeSequenceId_lower(_ value: SequenceId) -> RustBuffer 
  * A snapshot in EdgeFirst Studio.
  */
 public struct Snapshot {
-    public var id: SnapshotId
-    public var description: String
-    public var status: String
-    public var path: String
-    public var created: String
+    public let id: SnapshotId
+    public let description: String
+    public let status: String
+    public let path: String
+    public let created: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4056,7 +4062,7 @@ public func FfiConverterTypeSnapshot_lower(_ value: Snapshot) -> RustBuffer {
  * Unique identifier for a snapshot.
  */
 public struct SnapshotId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4121,10 +4127,10 @@ public func FfiConverterTypeSnapshotId_lower(_ value: SnapshotId) -> RustBuffer 
  * A stage in a task's progress.
  */
 public struct Stage {
-    public var stage: String
-    public var status: String?
-    public var message: String?
-    public var percentage: UInt8
+    public let stage: String
+    public let status: String?
+    public let message: String?
+    public let percentage: UInt8
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4210,13 +4216,13 @@ public func FfiConverterTypeStage_lower(_ value: Stage) -> RustBuffer {
  * A task in EdgeFirst Studio.
  */
 public struct Task {
-    public var id: TaskId
-    public var name: String
-    public var workflow: String
-    public var status: String
-    public var manager: String?
-    public var instance: String
-    public var created: String
+    public let id: TaskId
+    public let name: String
+    public let workflow: String
+    public let status: String
+    public let manager: String?
+    public let instance: String
+    public let created: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4323,7 +4329,7 @@ public func FfiConverterTypeTask_lower(_ value: Task) -> RustBuffer {
  * Unique identifier for a task.
  */
 public struct TaskId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4388,13 +4394,13 @@ public func FfiConverterTypeTaskId_lower(_ value: TaskId) -> RustBuffer {
  * Detailed task information.
  */
 public struct TaskInfo {
-    public var id: TaskId
-    public var projectId: ProjectId?
-    public var description: String
-    public var workflow: String
-    public var status: String?
-    public var created: String
-    public var completed: String
+    public let id: TaskId
+    public let projectId: ProjectId?
+    public let description: String
+    public let workflow: String
+    public let status: String?
+    public let created: String
+    public let completed: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4501,11 +4507,11 @@ public func FfiConverterTypeTaskInfo_lower(_ value: TaskInfo) -> RustBuffer {
  * A training session in an experiment.
  */
 public struct TrainingSession {
-    public var id: TrainingSessionId
-    public var experimentId: ExperimentId
-    public var name: String
-    public var description: String
-    public var model: String
+    public let id: TrainingSessionId
+    public let experimentId: ExperimentId
+    public let name: String
+    public let description: String
+    public let model: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4598,7 +4604,7 @@ public func FfiConverterTypeTrainingSession_lower(_ value: TrainingSession) -> R
  * Unique identifier for a training session.
  */
 public struct TrainingSessionId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4663,12 +4669,12 @@ public func FfiConverterTypeTrainingSessionId_lower(_ value: TrainingSessionId) 
  * A validation session in an experiment.
  */
 public struct ValidationSession {
-    public var id: ValidationSessionId
-    public var experimentId: ExperimentId
-    public var trainingSessionId: TrainingSessionId
-    public var datasetId: DatasetId
-    public var annotationSetId: AnnotationSetId
-    public var description: String
+    public let id: ValidationSessionId
+    public let experimentId: ExperimentId
+    public let trainingSessionId: TrainingSessionId
+    public let datasetId: DatasetId
+    public let annotationSetId: AnnotationSetId
+    public let description: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4768,7 +4774,7 @@ public func FfiConverterTypeValidationSession_lower(_ value: ValidationSession) 
  * Unique identifier for a validation session.
  */
 public struct ValidationSessionId {
-    public var value: UInt64
+    public let value: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -6466,7 +6472,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_edgefirst_client_checksum_method_client_with_login() != 31228) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_edgefirst_client_checksum_method_client_with_login_async() != 35885) {
+    if (uniffi_edgefirst_client_checksum_method_client_with_login_async() != 791) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_edgefirst_client_checksum_method_client_with_server() != 23777) {

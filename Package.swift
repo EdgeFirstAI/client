@@ -1,6 +1,7 @@
 // swift-tools-version:5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
+import Foundation
 import PackageDescription
 
 // =============================================================================
@@ -10,9 +11,10 @@ let version = "2.6.4"
 let checksum = "CHECKSUM_PLACEHOLDER"
 
 // Toggle for local development vs release distribution
-// Set to true when developing locally with a built XCFramework
-// Set to false (default) for published releases
-let useLocalFramework = false
+// Set USE_LOCAL_FRAMEWORK=true environment variable for local XCFramework
+// Default (unset or false) uses remote URL for published releases
+let useLocalFramework =
+  ProcessInfo.processInfo.environment["USE_LOCAL_FRAMEWORK"] == "true"
 
 // =============================================================================
 // Package Definition
@@ -30,7 +32,7 @@ let package = Package(
     )
   ],
   targets: [
-    // Binary target: switches between local path and remote URL
+    // Binary target: XCFramework containing the Rust FFI library
     // - Local: Used during development with locally-built XCFramework
     // - Remote: Used by consumers downloading from GitHub releases
     useLocalFramework
@@ -46,11 +48,20 @@ let package = Package(
       ),
 
     // Swift wrapper target containing UniFFI-generated bindings
-    // Note: The swift/ directory is managed by GitHub Actions and updated on each release
+    // Depends on the binary FFI target for the native Rust implementation
     .target(
       name: "EdgeFirstClient",
       dependencies: ["EdgeFirstClientFFI"],
-      path: "swift"
+      path: "swift",
+      exclude: ["EdgeFirstClientTests"]
+    ),
+
+    // Test target for Swift SDK smoke tests
+    // Requires credentials via STUDIO_TOKEN or STUDIO_USERNAME/STUDIO_PASSWORD
+    .testTarget(
+      name: "EdgeFirstClientTests",
+      dependencies: ["EdgeFirstClient"],
+      path: "swift/EdgeFirstClientTests"
     ),
   ]
 )
