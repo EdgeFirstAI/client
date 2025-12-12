@@ -1484,8 +1484,10 @@ impl Client {
             let inner = self.inner.with_login(&username, &password).await?;
             Ok(Arc::new(Self {
                 inner,
-                runtime: tokio::runtime::Runtime::new().map_err(|e| ClientError::InternalError {
-                    message: e.to_string(),
+                runtime: tokio::runtime::Runtime::new().map_err(|e| {
+                    ClientError::InternalError {
+                        message: e.to_string(),
+                    }
                 })?,
             }))
         }
