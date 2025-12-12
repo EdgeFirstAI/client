@@ -401,45 +401,6 @@ jobs:
           # Copy LICENSE
           cp LICENSE artifacts/swift-sdk/
 
-          # Create Package.swift for local SPM installation (Add Local...)
-          # This is for developers who download the ZIP manually
-          # For remote SPM via GitHub URL, use: https://github.com/EdgeFirstAI/client.git
-          cat > artifacts/swift-sdk/Package.swift << 'EOF'
-// swift-tools-version:5.9
-import PackageDescription
-
-// Local Package.swift for manual installation via "Add Local..."
-// For remote installation via GitHub URL, use:
-// https://github.com/EdgeFirstAI/client.git
-
-let package = Package(
-    name: "EdgeFirstClient",
-    platforms: [
-        .iOS(.v13),
-        .macOS(.v10_15)
-    ],
-    products: [
-        .library(
-            name: "EdgeFirstClient",
-            targets: ["EdgeFirstClient", "EdgeFirstClientFFI"]
-        ),
-    ],
-    targets: [
-        // Swift wrapper target containing UniFFI-generated bindings
-        .target(
-            name: "EdgeFirstClient",
-            dependencies: ["EdgeFirstClientFFI"],
-            path: "swift"
-        ),
-        // Binary target for the local XCFramework
-        .binaryTarget(
-            name: "EdgeFirstClientFFI",
-            path: "EdgeFirstClient.xcframework"
-        ),
-    ]
-)
-EOF
-
       - name: Upload Swift SDK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
