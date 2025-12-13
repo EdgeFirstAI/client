@@ -309,6 +309,9 @@ jobs:
           commit: ${{ github.event.pull_request.head.sha || github.sha }}
           name: swift-bindings
           path: artifacts/swift/
+          # Allow download even if workflow is still running or failed other jobs
+          # We already waited for the specific Generate Swift Bindings job to succeed
+          workflow_conclusion: ''
 
       - name: Verify Swift bindings
         run: |
