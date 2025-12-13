@@ -478,7 +478,8 @@ jobs:
       - name: Set up Rust FFI coverage environment
         run: |
           # Set up coverage environment variables (same pattern as Python)
-          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
+          # Use eval instead of source <(...) for better macOS compatibility
+          eval "$(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)"
           echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
           echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
           echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV

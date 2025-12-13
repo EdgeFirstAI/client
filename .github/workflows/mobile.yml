@@ -324,8 +324,10 @@ jobs:
 
       - name: Format Swift Bindings
         run: |
-          # Format the generated Swift file using swift format (Swift 6+)
-          swift format --in-place artifacts/swift/*.swift
+          # Install swift-format (not bundled with Xcode)
+          brew install swift-format
+          # Format the generated Swift file
+          swift-format --in-place artifacts/swift/*.swift
           echo "Swift bindings formatted"
 
       - name: Download Apple Libraries
