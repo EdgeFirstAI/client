@@ -84,6 +84,15 @@ jobs:
             See the included README.md for integration instructions.
 
             ### iOS/macOS SDK (Swift)
+
+            **Swift Package Manager (Recommended)**
+            ```swift
+            // In Xcode: File > Add Package Dependencies...
+            // Enter: https://github.com/EdgeFirstAI/client.git
+            // Select version: ${{ steps.get_version.outputs.version }}
+            ```
+
+            **Manual Installation**
             Download `edgefirst-client-swift-${{ steps.get_version.outputs.version }}.zip` from the assets below.
             See the included README.md for integration instructions.
 
@@ -256,7 +265,9 @@ jobs:
   upload-mobile:
     name: Upload Mobile SDKs
     needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-latest
+    runs-on: macos-14  # Use macOS for swift package compute-checksum
+    outputs:
+      xcframework_checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
@@ -286,10 +297,26 @@ jobs:
           zip -r "../edgefirst-client-android-${VERSION}.zip" .
           cd ..
 
-          # Package Swift SDK with README
+          # Package Swift SDK for manual download (includes local Package.swift)
           cp APPLE.md swift-sdk/README.md
           cd swift-sdk
           zip -r "../edgefirst-client-swift-${VERSION}.zip" .
+          cd ..
+
+          # Create XCFramework ZIP for SPM binary distribution
+          # Structure: XCFramework must be at root level of the archive
+          # SPM will download this and extract the XCFramework for linking
+          cd swift-sdk
+          zip -r -X "../EdgeFirstClient-${VERSION}.xcframework.zip" EdgeFirstClient.xcframework
+          cd ..
+
+      - name: Compute SPM checksum
+        id: checksum
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          CHECKSUM=$(swift package compute-checksum "EdgeFirstClient-${VERSION}.xcframework.zip")
+          echo "checksum=${CHECKSUM}" >> $GITHUB_OUTPUT
+          echo "XCFramework checksum: ${CHECKSUM}"
 
       - name: Upload Mobile SDKs to release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
@@ -298,6 +325,62 @@ jobs:
           files: |
             edgefirst-client-android-${{ needs.create-release.outputs.version }}.zip
             edgefirst-client-swift-${{ needs.create-release.outputs.version }}.zip
+            EdgeFirstClient-${{ needs.create-release.outputs.version }}.xcframework.zip
+
+  # ==========================================================================
+  # Update Swift Package Manifest
+  # ==========================================================================
+  update-swift-package:
+    name: Update Swift Package
+    needs: [create-release, upload-mobile]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Swift SDK artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: mobile.yml
+          commit: ${{ github.sha }}
+          name: edgefirst-client-swift
+          path: swift-sdk-temp/
+
+      - name: Update Package.swift with version and checksum
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          CHECKSUM="${{ needs.upload-mobile.outputs.xcframework_checksum }}"
+
+          # Update version and checksum variables at top of Package.swift
+          sed -i "s|let version = \".*\"|let version = \"${VERSION}\"|" Package.swift
+          sed -i "s|let checksum = \".*\"|let checksum = \"${CHECKSUM}\"|" Package.swift
+
+          echo "Updated Package.swift:"
+          cat Package.swift
+
+      - name: Update Swift bindings source
+        run: |
+          # Copy the generated Swift bindings to the repo
+          # The swift/ directory is managed by this workflow - do not edit manually
+          cp swift-sdk-temp/swift/EdgeFirstClient.swift swift/EdgeFirstClient.swift
+
+          echo "Updated Swift bindings:"
+          head -50 swift/EdgeFirstClient.swift
+
+      - name: Commit and push updates
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Package.swift swift/EdgeFirstClient.swift
+          git commit -m "chore: update Swift package for v${VERSION} release [skip ci]" || echo "No changes to commit"
+          git push origin main
 
   # ==========================================================================
   # Publish to PyPI
