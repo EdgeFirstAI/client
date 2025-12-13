@@ -295,7 +295,8 @@ jobs:
       - name: Wait for Swift bindings from test.yml
         uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
         with:
-          ref: ${{ github.sha }}
+          # For PRs, checks are registered against the head commit, not the merge commit
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           check-name: 'Generate Swift Bindings'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
@@ -304,7 +305,8 @@ jobs:
         uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
         with:
           workflow: test.yml
-          commit: ${{ github.sha }}
+          # For PRs, artifacts are associated with the head commit
+          commit: ${{ github.event.pull_request.head.sha || github.sha }}
           name: swift-bindings
           path: artifacts/swift/
 
