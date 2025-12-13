@@ -559,56 +559,64 @@ jobs:
 
       - name: Generate Swift coverage report (lcov format)
         run: |
-          # Debug: Show coverage-related files
+          # Find profraw files and xctest bundle
           echo "=== Searching for coverage data ==="
-          find .build -name "*.profdata" -o -name "*.profraw" 2>/dev/null | head -20 || true
-          echo "=== Checking codecov directory ==="
-          ls -la .build/debug/codecov/ 2>/dev/null || echo "codecov directory not found"
-
-          # Find the profdata file - Swift PM puts it in codecov directory
-          PROFDATA=$(find .build -name "default.profdata" -type f 2>/dev/null | head -1)
-          if [ -z "$PROFDATA" ]; then
-            # Try alternative location
-            PROFDATA=$(find .build -path "*/codecov/*.profdata" -type f 2>/dev/null | head -1)
-          fi
-
+          PROFRAW_DIR=$(find .build -type d -name "codecov" 2>/dev/null | head -1)
           XCTEST=$(find .build -name "EdgeFirstClientPackageTests.xctest" -type d 2>/dev/null | head -1)
 
-          echo "PROFDATA: $PROFDATA"
+          echo "PROFRAW_DIR: $PROFRAW_DIR"
           echo "XCTEST: $XCTEST"
 
-          if [ -z "$PROFDATA" ] || [ -z "$XCTEST" ]; then
+          if [ -z "$PROFRAW_DIR" ] || [ -z "$XCTEST" ]; then
             echo "Swift coverage files not found"
-            echo "This may be expected if code coverage data wasn't generated"
-            # Create empty file to avoid upload failure
             touch swift-coverage.lcov
             exit 0
           fi
 
-          echo "Found profdata: $PROFDATA"
-          echo "Found xctest: $XCTEST"
+          # List profraw files
+          echo "=== Profraw files ==="
+          ls -la "$PROFRAW_DIR"/*.profraw 2>/dev/null || echo "No profraw files"
+
+          # Merge profraw files into profdata
+          echo "=== Merging profraw into profdata ==="
+          xcrun llvm-profdata merge \
+            -sparse \
+            "$PROFRAW_DIR"/*.profraw \
+            -o "$PROFRAW_DIR/merged.profdata"
+
+          PROFDATA="$PROFRAW_DIR/merged.profdata"
+
+          if [ ! -f "$PROFDATA" ]; then
+            echo "Failed to create merged profdata"
+            touch swift-coverage.lcov
+            exit 0
+          fi
+
+          echo "Created profdata: $PROFDATA"
 
           # Get the binary path inside the xctest bundle
           BINARY="$XCTEST/Contents/MacOS/EdgeFirstClientPackageTests"
 
           if [ ! -f "$BINARY" ]; then
             echo "Binary not found at expected path: $BINARY"
-            # Try finding the binary
-            find "$XCTEST" -type f -perm +111 2>/dev/null || true
             touch swift-coverage.lcov
             exit 0
           fi
 
-          # Export Swift coverage in lcov format, filtering out test files and .build
+          # Export Swift coverage in lcov format
+          # Filter out .build directory and test files, keep swift/EdgeFirstClient.swift
+          echo "=== Generating lcov report ==="
           xcrun llvm-cov export \
             -format=lcov \
             -instr-profile="$PROFDATA" \
-            -ignore-filename-regex=".build|Tests|test" \
+            -ignore-filename-regex="\.build|Tests/" \
             "$BINARY" \
-            > swift-coverage.lcov || touch swift-coverage.lcov
+            > swift-coverage.lcov
 
           echo "Swift coverage report generated:"
           wc -l swift-coverage.lcov
+          echo "=== Coverage file preview ==="
+          head -50 swift-coverage.lcov
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
