@@ -559,14 +559,27 @@ jobs:
 
       - name: Generate Swift coverage report (lcov format)
         run: |
-          # Find the profdata file and xctest binary for Swift coverage
-          PROFDATA=$(find .build -name "default.profdata" -type f | head -1)
-          XCTEST=$(find .build -name "EdgeFirstClientPackageTests.xctest" -type d | head -1)
+          # Debug: Show coverage-related files
+          echo "=== Searching for coverage data ==="
+          find .build -name "*.profdata" -o -name "*.profraw" 2>/dev/null | head -20 || true
+          echo "=== Checking codecov directory ==="
+          ls -la .build/debug/codecov/ 2>/dev/null || echo "codecov directory not found"
+
+          # Find the profdata file - Swift PM puts it in codecov directory
+          PROFDATA=$(find .build -name "default.profdata" -type f 2>/dev/null | head -1)
+          if [ -z "$PROFDATA" ]; then
+            # Try alternative location
+            PROFDATA=$(find .build -path "*/codecov/*.profdata" -type f 2>/dev/null | head -1)
+          fi
+
+          XCTEST=$(find .build -name "EdgeFirstClientPackageTests.xctest" -type d 2>/dev/null | head -1)
+
+          echo "PROFDATA: $PROFDATA"
+          echo "XCTEST: $XCTEST"
 
           if [ -z "$PROFDATA" ] || [ -z "$XCTEST" ]; then
-            echo "Swift coverage files not found (may be expected if Swift coverage disabled)"
-            echo "PROFDATA: $PROFDATA"
-            echo "XCTEST: $XCTEST"
+            echo "Swift coverage files not found"
+            echo "This may be expected if code coverage data wasn't generated"
             # Create empty file to avoid upload failure
             touch swift-coverage.lcov
             exit 0
@@ -577,6 +590,14 @@ jobs:
 
           # Get the binary path inside the xctest bundle
           BINARY="$XCTEST/Contents/MacOS/EdgeFirstClientPackageTests"
+
+          if [ ! -f "$BINARY" ]; then
+            echo "Binary not found at expected path: $BINARY"
+            # Try finding the binary
+            find "$XCTEST" -type f -perm +111 2>/dev/null || true
+            touch swift-coverage.lcov
+            exit 0
+          fi
 
           # Export Swift coverage in lcov format, filtering out test files and .build
           xcrun llvm-cov export \
