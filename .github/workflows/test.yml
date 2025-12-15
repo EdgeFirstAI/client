@@ -645,7 +645,13 @@ jobs:
             -instr-profile="$PROFDATA" \
             -ignore-filename-regex="\.build|Tests/" \
             "$BINARY" \
-            > swift-coverage.lcov
+            > swift-coverage-raw.lcov
+
+          # Convert absolute paths to relative paths for SonarCloud
+          # /Users/runner/work/client/client/swift/... -> swift/...
+          WORKSPACE_PREFIX="${GITHUB_WORKSPACE}/"
+          echo "Stripping prefix: $WORKSPACE_PREFIX"
+          sed "s|${WORKSPACE_PREFIX}||g" swift-coverage-raw.lcov > swift-coverage.lcov
 
           echo "Swift coverage report generated:"
           wc -l swift-coverage.lcov
