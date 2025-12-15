@@ -537,16 +537,17 @@ jobs:
           </plist>
           EOF
 
-      - name: Run Swift tests with coverage
+      - name: Run Swift tests (for Rust FFI coverage)
         env:
           USE_LOCAL_FRAMEWORK: "true"
           STUDIO_SERVER: test
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
         run: |
-          # Swift tests exercise the Rust FFI code, generating profiling data
-          swift test --enable-code-coverage --parallel 2>&1 | tee swift-test-output.txt
-          echo "Swift tests completed"
+          # Run Swift tests to exercise Rust FFI code (generates Rust profiling data)
+          # Don't enable Swift coverage here - we'll do that in a separate run
+          swift test --parallel 2>&1 | tee swift-test-output.txt
+          echo "Swift tests completed (Rust FFI coverage)"
 
       - name: Generate Rust FFI coverage report (lcov format)
         run: |
@@ -556,6 +557,39 @@ jobs:
           echo "Rust FFI coverage report generated:"
           wc -l rust-ffi-coverage.lcov
           head -30 rust-ffi-coverage.lcov
+
+      - name: Rebuild FFI Library without coverage for Swift coverage
+        run: |
+          # Rebuild without Rust coverage instrumentation to avoid conflicts with Swift coverage
+          # Unset coverage environment variables
+          unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR
+
+          # Clean and rebuild
+          cargo clean -p edgefirst-client-ffi
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build -p edgefirst-client-ffi
+
+          # Update framework with non-instrumented library
+          cp target/debug/libedgefirst_client.a \
+             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
+
+          echo "Rebuilt FFI library without coverage instrumentation"
+
+      - name: Run Swift tests with Swift coverage
+        env:
+          USE_LOCAL_FRAMEWORK: "true"
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          # Explicitly unset Rust coverage variables to prevent interference
+          RUSTFLAGS: ""
+          LLVM_PROFILE_FILE: ""
+        run: |
+          # Clean Swift build to ensure fresh compilation with coverage
+          rm -rf .build
+
+          # Run Swift tests with Swift coverage enabled
+          swift test --enable-code-coverage --parallel 2>&1 | tee swift-test-coverage.txt
+          echo "Swift tests completed (Swift coverage)"
 
       - name: Generate Swift coverage report (lcov format)
         run: |
