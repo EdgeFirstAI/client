@@ -250,4 +250,187 @@ final class DatasetTests: XCTestCase {
       print("First label: \(first.name)")
     }
   }
+
+  // MARK: - Offline Struct Tests
+
+  /// Test DatasetId construction.
+  func testDatasetIdConstruction() {
+    let id = DatasetId(value: 12345)
+    XCTAssertEqual(id.value, 12345)
+  }
+
+  /// Test DatasetId equality.
+  func testDatasetIdEquality() {
+    let id1 = DatasetId(value: 100)
+    let id2 = DatasetId(value: 100)
+    let id3 = DatasetId(value: 200)
+
+    XCTAssertEqual(id1, id2)
+    XCTAssertNotEqual(id1, id3)
+  }
+
+  /// Test DatasetId hashability.
+  func testDatasetIdHashability() {
+    var idSet: Set<DatasetId> = []
+
+    idSet.insert(DatasetId(value: 100))
+    idSet.insert(DatasetId(value: 200))
+    idSet.insert(DatasetId(value: 100))  // Duplicate
+
+    XCTAssertEqual(idSet.count, 2)
+  }
+
+  /// Test AnnotationSetId construction.
+  func testAnnotationSetIdConstruction() {
+    let id = AnnotationSetId(value: 67890)
+    XCTAssertEqual(id.value, 67890)
+  }
+
+  /// Test AnnotationSetId equality.
+  func testAnnotationSetIdEquality() {
+    let id1 = AnnotationSetId(value: 100)
+    let id2 = AnnotationSetId(value: 100)
+    let id3 = AnnotationSetId(value: 200)
+
+    XCTAssertEqual(id1, id2)
+    XCTAssertNotEqual(id1, id3)
+  }
+
+  /// Test Label struct construction.
+  func testLabelConstruction() {
+    let label = Label(id: 1, name: "person")
+
+    XCTAssertEqual(label.id, 1)
+    XCTAssertEqual(label.name, "person")
+  }
+
+  /// Test Label equality.
+  func testLabelEquality() {
+    let label1 = Label(id: 1, name: "car")
+    let label2 = Label(id: 1, name: "car")
+    let label3 = Label(id: 2, name: "truck")
+
+    XCTAssertEqual(label1, label2)
+    XCTAssertNotEqual(label1, label3)
+  }
+
+  /// Test Label hashability.
+  func testLabelHashability() {
+    var labelSet: Set<Label> = []
+
+    let label1 = Label(id: 1, name: "person")
+    let label2 = Label(id: 2, name: "car")
+    let label3 = Label(id: 1, name: "person")  // Duplicate
+
+    labelSet.insert(label1)
+    labelSet.insert(label2)
+    labelSet.insert(label3)
+
+    XCTAssertEqual(labelSet.count, 2)
+  }
+
+  /// Test Label with empty name.
+  func testLabelWithEmptyName() {
+    let label = Label(id: 1, name: "")
+    XCTAssertTrue(label.name.isEmpty)
+  }
+
+  /// Test Label with unicode name.
+  func testLabelWithUnicodeName() {
+    let label = Label(id: 1, name: "行人 - Pedestrian")
+    XCTAssertTrue(label.name.contains("行人"))
+    XCTAssertTrue(label.name.contains("Pedestrian"))
+  }
+
+  /// Test AnnotationSet struct construction.
+  func testAnnotationSetConstruction() {
+    let annotationSet = AnnotationSet(
+      id: AnnotationSetId(value: 500),
+      datasetId: DatasetId(value: 100),
+      name: "Ground Truth",
+      description: "Main annotation set for ground truth labels",
+      created: "2024-02-01T08:00:00Z"
+    )
+
+    XCTAssertEqual(annotationSet.id.value, 500)
+    XCTAssertEqual(annotationSet.datasetId.value, 100)
+    XCTAssertEqual(annotationSet.name, "Ground Truth")
+    XCTAssertEqual(annotationSet.description, "Main annotation set for ground truth labels")
+    XCTAssertEqual(annotationSet.created, "2024-02-01T08:00:00Z")
+  }
+
+  /// Test AnnotationSet equality.
+  func testAnnotationSetEquality() {
+    let set1 = AnnotationSet(
+      id: AnnotationSetId(value: 100),
+      datasetId: DatasetId(value: 50),
+      name: "Test",
+      description: "Test description",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let set2 = AnnotationSet(
+      id: AnnotationSetId(value: 100),
+      datasetId: DatasetId(value: 50),
+      name: "Test",
+      description: "Test description",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let set3 = AnnotationSet(
+      id: AnnotationSetId(value: 101),
+      datasetId: DatasetId(value: 51),
+      name: "Different",
+      description: "Different description",
+      created: "2024-01-02T00:00:00Z"
+    )
+
+    XCTAssertEqual(set1, set2)
+    XCTAssertNotEqual(set1, set3)
+  }
+
+  /// Test AnnotationSet hashability.
+  func testAnnotationSetHashability() {
+    var setCollection: Set<AnnotationSet> = []
+
+    let set1 = AnnotationSet(
+      id: AnnotationSetId(value: 100),
+      datasetId: DatasetId(value: 50),
+      name: "Set1",
+      description: "First set",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let set2 = AnnotationSet(
+      id: AnnotationSetId(value: 101),
+      datasetId: DatasetId(value: 51),
+      name: "Set2",
+      description: "Second set",
+      created: "2024-01-02T00:00:00Z"
+    )
+
+    setCollection.insert(set1)
+    setCollection.insert(set2)
+    setCollection.insert(set1)  // Duplicate
+
+    XCTAssertEqual(setCollection.count, 2)
+  }
+
+  /// Test DatasetId with zero value.
+  func testDatasetIdZero() {
+    let id = DatasetId(value: 0)
+    XCTAssertEqual(id.value, 0)
+  }
+
+  /// Test DatasetId with max UInt64 value.
+  func testDatasetIdMaxValue() {
+    let id = DatasetId(value: UInt64.max)
+    XCTAssertEqual(id.value, UInt64.max)
+  }
+
+  /// Test Label ID max value.
+  func testLabelIdMaxValue() {
+    let label = Label(id: UInt64.max, name: "test")
+    XCTAssertEqual(label.id, UInt64.max)
+  }
 }

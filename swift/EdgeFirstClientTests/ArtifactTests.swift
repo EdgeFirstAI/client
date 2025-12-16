@@ -224,4 +224,266 @@ final class ArtifactTests: XCTestCase {
 
     print("No training sessions found (async)")
   }
+
+  // MARK: - Artifact Offline Tests
+
+  /// Test Artifact struct construction.
+  func testArtifactConstruction() {
+    let artifact = Artifact(name: "yolov8n.onnx", modelType: "onnx")
+
+    XCTAssertEqual(artifact.name, "yolov8n.onnx")
+    XCTAssertEqual(artifact.modelType, "onnx")
+  }
+
+  /// Test Artifact with various model types.
+  func testArtifactModelTypes() {
+    let modelTypes = ["onnx", "pytorch", "tensorflow", "tflite", "coreml", "openvino"]
+
+    for modelType in modelTypes {
+      let artifact = Artifact(name: "model.\(modelType)", modelType: modelType)
+      XCTAssertEqual(artifact.modelType, modelType)
+    }
+  }
+
+  /// Test Artifact with empty name.
+  func testArtifactWithEmptyName() {
+    let artifact = Artifact(name: "", modelType: "onnx")
+    XCTAssertTrue(artifact.name.isEmpty)
+  }
+
+  /// Test Artifact with empty model type.
+  func testArtifactWithEmptyModelType() {
+    let artifact = Artifact(name: "model.bin", modelType: "")
+    XCTAssertTrue(artifact.modelType.isEmpty)
+  }
+
+  /// Test Artifact with special characters in name.
+  func testArtifactWithSpecialCharactersInName() {
+    let artifact = Artifact(name: "model_v1.0_2024-03-15.onnx", modelType: "onnx")
+    XCTAssertTrue(artifact.name.contains("_"))
+    XCTAssertTrue(artifact.name.contains("-"))
+    XCTAssertTrue(artifact.name.contains("."))
+  }
+
+  /// Test Artifact with unicode name.
+  func testArtifactWithUnicodeName() {
+    let artifact = Artifact(name: "模型_v1.onnx", modelType: "onnx")
+    XCTAssertTrue(artifact.name.contains("模型"))
+  }
+
+  /// Test Artifact as dictionary key.
+  func testArtifactAsDictionaryKey() {
+    var artifactSizes: [Artifact: Int] = [:]
+
+    let artifact1 = Artifact(name: "model1.onnx", modelType: "onnx")
+    let artifact2 = Artifact(name: "model2.pt", modelType: "pytorch")
+
+    artifactSizes[artifact1] = 1024000
+    artifactSizes[artifact2] = 2048000
+
+    XCTAssertEqual(artifactSizes[artifact1], 1024000)
+    XCTAssertEqual(artifactSizes[artifact2], 2048000)
+  }
+
+  // MARK: - TrainingSession Offline Tests
+
+  /// Test TrainingSession struct construction.
+  func testTrainingSessionConstruction() {
+    let session = TrainingSession(
+      id: TrainingSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      name: "YOLOv8 Training",
+      description: "Training YOLOv8 on custom dataset",
+      model: "yolov8n"
+    )
+
+    XCTAssertEqual(session.id.value, 100)
+    XCTAssertEqual(session.experimentId.value, 50)
+    XCTAssertEqual(session.name, "YOLOv8 Training")
+    XCTAssertEqual(session.description, "Training YOLOv8 on custom dataset")
+    XCTAssertEqual(session.model, "yolov8n")
+  }
+
+  /// Test TrainingSession equality.
+  func testTrainingSessionEquality() {
+    let session1 = TrainingSession(
+      id: TrainingSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      name: "Training",
+      description: "Description",
+      model: "model"
+    )
+
+    let session2 = TrainingSession(
+      id: TrainingSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      name: "Training",
+      description: "Description",
+      model: "model"
+    )
+
+    let session3 = TrainingSession(
+      id: TrainingSessionId(value: 101),
+      experimentId: ExperimentId(value: 51),
+      name: "Different",
+      description: "Other",
+      model: "other"
+    )
+
+    XCTAssertEqual(session1, session2)
+    XCTAssertNotEqual(session1, session3)
+  }
+
+  /// Test TrainingSession hashability.
+  func testTrainingSessionHashability() {
+    var sessionSet: Set<TrainingSession> = []
+
+    let session1 = TrainingSession(
+      id: TrainingSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      name: "Session1",
+      description: "Desc1",
+      model: "model1"
+    )
+
+    let session2 = TrainingSession(
+      id: TrainingSessionId(value: 101),
+      experimentId: ExperimentId(value: 51),
+      name: "Session2",
+      description: "Desc2",
+      model: "model2"
+    )
+
+    sessionSet.insert(session1)
+    sessionSet.insert(session2)
+    sessionSet.insert(session1)  // Duplicate
+
+    XCTAssertEqual(sessionSet.count, 2)
+  }
+
+  /// Test TrainingSessionId construction.
+  func testTrainingSessionIdConstruction() {
+    let id = TrainingSessionId(value: 12345)
+    XCTAssertEqual(id.value, 12345)
+  }
+
+  /// Test TrainingSessionId equality.
+  func testTrainingSessionIdEquality() {
+    let id1 = TrainingSessionId(value: 100)
+    let id2 = TrainingSessionId(value: 100)
+    let id3 = TrainingSessionId(value: 200)
+
+    XCTAssertEqual(id1, id2)
+    XCTAssertNotEqual(id1, id3)
+  }
+
+  /// Test TrainingSessionId hashability.
+  func testTrainingSessionIdHashability() {
+    var idSet: Set<TrainingSessionId> = []
+
+    idSet.insert(TrainingSessionId(value: 100))
+    idSet.insert(TrainingSessionId(value: 200))
+    idSet.insert(TrainingSessionId(value: 100))  // Duplicate
+
+    XCTAssertEqual(idSet.count, 2)
+  }
+
+  // MARK: - ValidationSession Offline Tests
+
+  /// Test ValidationSession struct construction.
+  func testValidationSessionConstruction() {
+    let session = ValidationSession(
+      id: ValidationSessionId(value: 200),
+      experimentId: ExperimentId(value: 50),
+      trainingSessionId: TrainingSessionId(value: 100),
+      datasetId: DatasetId(value: 75),
+      annotationSetId: AnnotationSetId(value: 25),
+      description: "Validation on test dataset"
+    )
+
+    XCTAssertEqual(session.id.value, 200)
+    XCTAssertEqual(session.experimentId.value, 50)
+    XCTAssertEqual(session.trainingSessionId.value, 100)
+    XCTAssertEqual(session.datasetId.value, 75)
+    XCTAssertEqual(session.annotationSetId.value, 25)
+    XCTAssertEqual(session.description, "Validation on test dataset")
+  }
+
+  /// Test ValidationSession equality.
+  func testValidationSessionEquality() {
+    let session1 = ValidationSession(
+      id: ValidationSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      trainingSessionId: TrainingSessionId(value: 25),
+      datasetId: DatasetId(value: 30),
+      annotationSetId: AnnotationSetId(value: 10),
+      description: "Test"
+    )
+
+    let session2 = ValidationSession(
+      id: ValidationSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      trainingSessionId: TrainingSessionId(value: 25),
+      datasetId: DatasetId(value: 30),
+      annotationSetId: AnnotationSetId(value: 10),
+      description: "Test"
+    )
+
+    let session3 = ValidationSession(
+      id: ValidationSessionId(value: 101),
+      experimentId: ExperimentId(value: 51),
+      trainingSessionId: TrainingSessionId(value: 26),
+      datasetId: DatasetId(value: 31),
+      annotationSetId: AnnotationSetId(value: 11),
+      description: "Different"
+    )
+
+    XCTAssertEqual(session1, session2)
+    XCTAssertNotEqual(session1, session3)
+  }
+
+  /// Test ValidationSession hashability.
+  func testValidationSessionHashability() {
+    var sessionSet: Set<ValidationSession> = []
+
+    let session1 = ValidationSession(
+      id: ValidationSessionId(value: 100),
+      experimentId: ExperimentId(value: 50),
+      trainingSessionId: TrainingSessionId(value: 25),
+      datasetId: DatasetId(value: 30),
+      annotationSetId: AnnotationSetId(value: 10),
+      description: "Session1"
+    )
+
+    let session2 = ValidationSession(
+      id: ValidationSessionId(value: 101),
+      experimentId: ExperimentId(value: 51),
+      trainingSessionId: TrainingSessionId(value: 26),
+      datasetId: DatasetId(value: 31),
+      annotationSetId: AnnotationSetId(value: 11),
+      description: "Session2"
+    )
+
+    sessionSet.insert(session1)
+    sessionSet.insert(session2)
+    sessionSet.insert(session1)  // Duplicate
+
+    XCTAssertEqual(sessionSet.count, 2)
+  }
+
+  /// Test ValidationSessionId construction.
+  func testValidationSessionIdConstruction() {
+    let id = ValidationSessionId(value: 12345)
+    XCTAssertEqual(id.value, 12345)
+  }
+
+  /// Test ValidationSessionId equality.
+  func testValidationSessionIdEquality() {
+    let id1 = ValidationSessionId(value: 100)
+    let id2 = ValidationSessionId(value: 100)
+    let id3 = ValidationSessionId(value: 200)
+
+    XCTAssertEqual(id1, id2)
+    XCTAssertNotEqual(id1, id3)
+  }
 }

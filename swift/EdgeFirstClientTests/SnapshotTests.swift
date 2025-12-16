@@ -190,4 +190,203 @@ final class SnapshotTests: XCTestCase {
     XCTAssertEqual(snapshot.id.value, first.id.value)
     XCTAssertEqual(snapshot.status, first.status)
   }
+
+  // MARK: - Offline Struct Tests
+
+  /// Test Snapshot struct construction.
+  func testSnapshotConstruction() {
+    let snapshot = Snapshot(
+      id: SnapshotId(value: 100),
+      description: "Model v1.0 Release",
+      status: "ready",
+      path: "/snapshots/v1.0",
+      created: "2024-03-15T10:30:00Z"
+    )
+
+    XCTAssertEqual(snapshot.id.value, 100)
+    XCTAssertEqual(snapshot.description, "Model v1.0 Release")
+    XCTAssertEqual(snapshot.status, "ready")
+    XCTAssertEqual(snapshot.path, "/snapshots/v1.0")
+    XCTAssertEqual(snapshot.created, "2024-03-15T10:30:00Z")
+  }
+
+  /// Test Snapshot equality.
+  func testSnapshotEquality() {
+    let snapshot1 = Snapshot(
+      id: SnapshotId(value: 100),
+      description: "Test Snapshot",
+      status: "ready",
+      path: "/path/to/snapshot",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let snapshot2 = Snapshot(
+      id: SnapshotId(value: 100),
+      description: "Test Snapshot",
+      status: "ready",
+      path: "/path/to/snapshot",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let snapshot3 = Snapshot(
+      id: SnapshotId(value: 101),
+      description: "Different Snapshot",
+      status: "pending",
+      path: "/other/path",
+      created: "2024-01-02T00:00:00Z"
+    )
+
+    XCTAssertEqual(snapshot1, snapshot2)
+    XCTAssertNotEqual(snapshot1, snapshot3)
+  }
+
+  /// Test Snapshot hashability.
+  func testSnapshotHashability() {
+    var snapshotSet: Set<Snapshot> = []
+
+    let snapshot1 = Snapshot(
+      id: SnapshotId(value: 100),
+      description: "Snapshot 1",
+      status: "ready",
+      path: "/path1",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    let snapshot2 = Snapshot(
+      id: SnapshotId(value: 101),
+      description: "Snapshot 2",
+      status: "pending",
+      path: "/path2",
+      created: "2024-01-02T00:00:00Z"
+    )
+
+    let duplicateSnapshot = Snapshot(
+      id: SnapshotId(value: 100),
+      description: "Snapshot 1",
+      status: "ready",
+      path: "/path1",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    snapshotSet.insert(snapshot1)
+    snapshotSet.insert(snapshot2)
+    snapshotSet.insert(duplicateSnapshot)  // Duplicate should not increase count
+
+    XCTAssertEqual(snapshotSet.count, 2)
+  }
+
+  // MARK: - SnapshotId Tests
+
+  /// Test SnapshotId construction.
+  func testSnapshotIdConstruction() {
+    let id = SnapshotId(value: 12345)
+    XCTAssertEqual(id.value, 12345)
+  }
+
+  /// Test SnapshotId equality.
+  func testSnapshotIdEquality() {
+    let id1 = SnapshotId(value: 100)
+    let id2 = SnapshotId(value: 100)
+    let id3 = SnapshotId(value: 200)
+
+    XCTAssertEqual(id1, id2)
+    XCTAssertNotEqual(id1, id3)
+  }
+
+  /// Test SnapshotId hashability.
+  func testSnapshotIdHashability() {
+    var idSet: Set<SnapshotId> = []
+
+    idSet.insert(SnapshotId(value: 100))
+    idSet.insert(SnapshotId(value: 200))
+    idSet.insert(SnapshotId(value: 100))  // Duplicate
+
+    XCTAssertEqual(idSet.count, 2)
+  }
+
+  /// Test SnapshotId as dictionary key.
+  func testSnapshotIdAsDictionaryKey() {
+    var snapshotNames: [SnapshotId: String] = [:]
+
+    let id1 = SnapshotId(value: 100)
+    let id2 = SnapshotId(value: 200)
+
+    snapshotNames[id1] = "Model v1.0"
+    snapshotNames[id2] = "Model v2.0"
+
+    XCTAssertEqual(snapshotNames[id1], "Model v1.0")
+    XCTAssertEqual(snapshotNames[id2], "Model v2.0")
+  }
+
+  // MARK: - Snapshot Edge Case Tests
+
+  /// Test Snapshot with various status values.
+  func testSnapshotStatusValues() {
+    let statuses = ["ready", "pending", "processing", "failed", "cancelled"]
+
+    for status in statuses {
+      let snapshot = Snapshot(
+        id: SnapshotId(value: 1),
+        description: "Test",
+        status: status,
+        path: "/path",
+        created: "2024-01-01T00:00:00Z"
+      )
+
+      XCTAssertEqual(snapshot.status, status)
+    }
+  }
+
+  /// Test Snapshot with empty description.
+  func testSnapshotWithEmptyDescription() {
+    let snapshot = Snapshot(
+      id: SnapshotId(value: 1),
+      description: "",
+      status: "ready",
+      path: "/path",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    XCTAssertTrue(snapshot.description.isEmpty)
+  }
+
+  /// Test Snapshot with empty path.
+  func testSnapshotWithEmptyPath() {
+    let snapshot = Snapshot(
+      id: SnapshotId(value: 1),
+      description: "Test",
+      status: "ready",
+      path: "",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    XCTAssertTrue(snapshot.path.isEmpty)
+  }
+
+  /// Test Snapshot with unicode characters.
+  func testSnapshotWithUnicode() {
+    let snapshot = Snapshot(
+      id: SnapshotId(value: 1),
+      description: "模型快照 v1.0 - 日本語テスト",
+      status: "ready",
+      path: "/snapshots/模型/v1.0",
+      created: "2024-01-01T00:00:00Z"
+    )
+
+    XCTAssertTrue(snapshot.description.contains("模型快照"))
+    XCTAssertTrue(snapshot.description.contains("日本語"))
+    XCTAssertTrue(snapshot.path.contains("模型"))
+  }
+
+  /// Test SnapshotId with zero value.
+  func testSnapshotIdZero() {
+    let id = SnapshotId(value: 0)
+    XCTAssertEqual(id.value, 0)
+  }
+
+  /// Test SnapshotId with max UInt64 value.
+  func testSnapshotIdMaxValue() {
+    let id = SnapshotId(value: UInt64.max)
+    XCTAssertEqual(id.value, UInt64.max)
+  }
 }

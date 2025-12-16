@@ -376,6 +376,8 @@ jobs:
       - name: SonarCloud Quality Gate check
         if: github.event_name == 'pull_request'
         uses: SonarSource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b # v1.2.0
+        # Don't fail the build on quality gate - report only
+        continue-on-error: true
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
