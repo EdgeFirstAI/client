@@ -340,16 +340,22 @@ jobs:
           fi
 
           echo ""
-          echo "=== Swift/FFI coverage (from swift-test, push to main only) ==="
+          echo "=== Swift/FFI coverage (from swift-test) ==="
           if [ -f rust-ffi-coverage.lcov ]; then
             echo "Rust FFI coverage: $(wc -l < rust-ffi-coverage.lcov) lines"
           else
-            echo "Rust FFI coverage: not available (only on push to main)"
+            echo "Rust FFI coverage: not available"
           fi
           if [ -f swift-coverage.lcov ]; then
-            echo "Swift coverage: $(wc -l < swift-coverage.lcov) lines"
+            echo "Swift coverage (lcov): $(wc -l < swift-coverage.lcov) lines"
           else
-            echo "Swift coverage: not available (only on push to main)"
+            echo "Swift coverage (lcov): not available"
+          fi
+          if [ -f swift-coverage.xml ]; then
+            echo "Swift coverage (generic XML): $(wc -l < swift-coverage.xml) lines"
+            echo "  Sample: $(head -5 swift-coverage.xml | tail -3)"
+          else
+            echo "Swift coverage (generic XML): not available"
           fi
 
           echo ""
@@ -658,6 +664,61 @@ jobs:
           echo "=== Coverage file preview ==="
           head -50 swift-coverage.lcov
 
+      - name: Convert lcov to SonarCloud generic XML format
+        run: |
+          # SonarCloud's sonar.swift.coverage.reportPaths expects llvm-cov show format,
+          # not lcov format. Convert lcov to generic XML format for sonar.coverageReportPaths.
+          python3 << 'PYEOF'
+          import re
+          import sys
+
+          def lcov_to_generic_xml(lcov_path, xml_path):
+              """Convert lcov format to SonarCloud generic test coverage XML format."""
+              files = {}
+              current_file = None
+
+              with open(lcov_path, 'r') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line.startswith('SF:'):
+                          current_file = line[3:]
+                          files[current_file] = {}
+                      elif line.startswith('DA:') and current_file:
+                          # DA:line_number,hit_count
+                          parts = line[3:].split(',')
+                          if len(parts) >= 2:
+                              line_num = int(parts[0])
+                              hits = int(parts[1])
+                              files[current_file][line_num] = hits > 0
+                      elif line == 'end_of_record':
+                          current_file = None
+
+              # Generate XML
+              xml_lines = ['<coverage version="1">']
+              for filepath, lines in sorted(files.items()):
+                  xml_lines.append(f'  <file path="{filepath}">')
+                  for line_num, covered in sorted(lines.items()):
+                      covered_str = 'true' if covered else 'false'
+                      xml_lines.append(f'    <lineToCover lineNumber="{line_num}" covered="{covered_str}"/>')
+                  xml_lines.append('  </file>')
+              xml_lines.append('</coverage>')
+
+              with open(xml_path, 'w') as f:
+                  f.write('\n'.join(xml_lines))
+
+              # Print summary
+              total_lines = sum(len(lines) for lines in files.values())
+              covered_lines = sum(sum(1 for c in lines.values() if c) for lines in files.values())
+              print(f"Converted {len(files)} file(s) with {total_lines} lines ({covered_lines} covered)")
+
+          lcov_to_generic_xml('swift-coverage.lcov', 'swift-coverage.xml')
+          PYEOF
+
+          echo "=== Generated SonarCloud generic XML ==="
+          head -30 swift-coverage.xml
+          echo "..."
+          tail -10 swift-coverage.xml
+
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
@@ -665,6 +726,7 @@ jobs:
           path: |
             rust-ffi-coverage.lcov
             swift-coverage.lcov
+            swift-coverage.xml
             swift/EdgeFirstClient.swift
           retention-days: 7
 
