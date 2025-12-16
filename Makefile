@@ -63,12 +63,36 @@ swift-format:
 	@swift format --in-place --recursive swift/ Package.swift 2>/dev/null || \
 		echo "⚠️  swift format not available (requires Swift 6+ / Xcode 16+)"
 
-# Run Swift SDK tests (requires local XCFramework and credentials)
+# Run Swift SDK tests with coverage (requires local XCFramework and credentials)
 # Credentials: STUDIO_TOKEN or STUDIO_USERNAME/STUDIO_PASSWORD
 # Server: STUDIO_SERVER (default: "test")
 swift-test: xcframework
 	@echo "Running Swift SDK tests..."
-	USE_LOCAL_FRAMEWORK=true swift test --parallel
+	@export USE_LOCAL_FRAMEWORK=true && swift test --enable-code-coverage
+	@echo ""
+	@echo "Swift Coverage Summary"
+	@echo "======================"
+	@PROFDATA=$$(find .build -name 'default.profdata' -type f 2>/dev/null | head -1); \
+	if [ -n "$$PROFDATA" ]; then \
+		BINARY=$$(find .build -name 'EdgeFirstClientPackageTests' -type f -perm +111 2>/dev/null | head -1); \
+		if [ -n "$$BINARY" ]; then \
+			REPORT=$$(xcrun llvm-cov report "$$BINARY" -instr-profile="$$PROFDATA" \
+				-ignore-filename-regex='\.build|Tests' 2>/dev/null); \
+			if [ -n "$$REPORT" ]; then \
+				TOTAL=$$(echo "$$REPORT" | grep "^TOTAL"); \
+				LINES_COV=$$(echo "$$TOTAL" | awk '{print $$(NF-3)}'); \
+				FUNCS_COV=$$(echo "$$TOTAL" | awk '{print $$(NF-6)}'); \
+				echo "Lines:     $$LINES_COV"; \
+				echo "Functions: $$FUNCS_COV"; \
+			else \
+				echo "Coverage report generation failed"; \
+			fi; \
+		else \
+			echo "Test binary not found for coverage report"; \
+		fi; \
+	else \
+		echo "Coverage data not found"; \
+	fi
 
 # Lint all code
 lint: rust-lint

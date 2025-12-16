@@ -35,6 +35,57 @@ final class ClientTests: XCTestCase {
     XCTAssertFalse(url.isEmpty, "Test server URL should not be empty")
   }
 
+  // MARK: - Server Configuration Tests
+
+  /// Test with_server('test') maps to test.edgefirst.studio.
+  func testWithServerTest() throws {
+    let client = try Client.withMemoryStorage()
+    let testClient = try client.withServer(name: "test")
+    XCTAssertEqual(testClient.url(), "https://test.edgefirst.studio")
+  }
+
+  /// Test with_server('stage') maps to stage.edgefirst.studio.
+  func testWithServerStage() throws {
+    let client = try Client.withMemoryStorage()
+    let stageClient = try client.withServer(name: "stage")
+    XCTAssertEqual(stageClient.url(), "https://stage.edgefirst.studio")
+  }
+
+  /// Test with_server('dev') maps to dev.edgefirst.studio.
+  func testWithServerDev() throws {
+    let client = try Client.withMemoryStorage()
+    let devClient = try client.withServer(name: "dev")
+    XCTAssertEqual(devClient.url(), "https://dev.edgefirst.studio")
+  }
+
+  /// Test with_server('saas') maps to edgefirst.studio.
+  func testWithServerSaas() throws {
+    let client = try Client.withMemoryStorage()
+    let saasClient = try client.withServer(name: "saas")
+    XCTAssertEqual(saasClient.url(), "https://edgefirst.studio")
+  }
+
+  /// Test with_server('') maps to edgefirst.studio.
+  func testWithServerEmpty() throws {
+    let client = try Client.withMemoryStorage()
+    let defaultClient = try client.withServer(name: "")
+    XCTAssertEqual(defaultClient.url(), "https://edgefirst.studio")
+  }
+
+  /// Test with_server('custom') maps to custom.edgefirst.studio.
+  func testWithServerCustom() throws {
+    let client = try Client.withMemoryStorage()
+    let customClient = try client.withServer(name: "custom")
+    XCTAssertEqual(customClient.url(), "https://custom.edgefirst.studio")
+  }
+
+  /// Test that builder methods can be chained.
+  func testBuilderChaining() throws {
+    let client = try Client.withMemoryStorage()
+    let chainedClient = try client.withServer(name: "test")
+    XCTAssertEqual(chainedClient.url(), "https://test.edgefirst.studio")
+  }
+
   // MARK: - Online Tests (Require Credentials)
 
   /// Test login with memory storage using environment credentials.
