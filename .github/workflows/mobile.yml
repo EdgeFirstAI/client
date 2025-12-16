@@ -422,8 +422,6 @@ jobs:
     name: Test Swift SDK
     runs-on: macos-14
     needs: [generate-swift]
-    # Only run tests on push to main (not on PRs) to avoid credential exposure
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout
