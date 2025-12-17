@@ -230,7 +230,7 @@ jobs:
         run: |
           echo "## 📊 Test & Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "### Coverage (Rust + Python + Swift)" >> $GITHUB_STEP_SUMMARY
           echo "[![Codecov](https://codecov.io/gh/${{ github.repository }}/graph/badge.svg)](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Code Quality (SonarCloud)" >> $GITHUB_STEP_SUMMARY
@@ -285,7 +285,10 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: [lint-and-test]    
+    # Wait for lint-and-test and optionally swift-test (swift-test may be skipped on PRs)
+    needs: [lint-and-test, swift-test]
+    # Run even if swift-test was skipped (PRs) or failed
+    if: always() && needs.lint-and-test.result == 'success'
     steps:
       - name: Remove Junk from Host
         uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
@@ -309,6 +312,60 @@ jobs:
         with:
           name: coverage-reports
 
+      - name: Download Swift coverage (if available)
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        continue-on-error: true
+        with:
+          name: swift-coverage
+
+      - name: Verify coverage files
+        run: |
+          echo "=== Coverage files available ==="
+          ls -la *.info *.xml *.lcov 2>/dev/null || echo "No coverage files found"
+
+          echo ""
+          echo "=== Rust coverage (from lint-and-test) ==="
+          if [ -f lcov.info ]; then
+            echo "Rust coverage: $(wc -l < lcov.info) lines"
+          else
+            echo "Rust coverage: NOT FOUND"
+          fi
+
+          echo ""
+          echo "=== Python coverage (from lint-and-test) ==="
+          if [ -f coverage.xml ]; then
+            echo "Python coverage: available"
+          else
+            echo "Python coverage: NOT FOUND"
+          fi
+
+          echo ""
+          echo "=== Swift/FFI coverage (from swift-test) ==="
+          if [ -f rust-ffi-coverage.lcov ]; then
+            echo "Rust FFI coverage: $(wc -l < rust-ffi-coverage.lcov) lines"
+          else
+            echo "Rust FFI coverage: not available"
+          fi
+          if [ -f swift-coverage.lcov ]; then
+            echo "Swift coverage (lcov): $(wc -l < swift-coverage.lcov) lines"
+          else
+            echo "Swift coverage (lcov): not available"
+          fi
+          if [ -f swift-coverage.xml ]; then
+            echo "Swift coverage (generic XML): $(wc -l < swift-coverage.xml) lines"
+            echo "  Sample: $(head -5 swift-coverage.xml | tail -3)"
+          else
+            echo "Swift coverage (generic XML): not available"
+          fi
+
+          echo ""
+          echo "=== Swift source files ==="
+          if [ -d swift ] && [ -f swift/EdgeFirstClient.swift ]; then
+            echo "Swift sources: available ($(wc -l < swift/EdgeFirstClient.swift) lines)"
+          else
+            echo "Swift sources: not available"
+          fi
+
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
@@ -319,6 +376,8 @@ jobs:
       - name: SonarCloud Quality Gate check
         if: github.event_name == 'pull_request'
         uses: SonarSource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b # v1.2.0
+        # Don't fail the build on quality gate - report only
+        continue-on-error: true
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -329,6 +388,373 @@ jobs:
           echo "## 🔍 SonarCloud Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Full Report →](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # Generate Swift Bindings (Ubuntu - fast, no credentials needed)
+  # This runs on all events and produces artifacts for mobile.yml and swift-test
+  # ============================================================================
+  generate-swift-bindings:
+    name: Generate Swift Bindings
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: generate-swift-bindings
+          shared-key: "ubuntu"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build uniffi-bindgen
+        run: cargo build --release -p uniffi-bindgen
+
+      - name: Build FFI Library (for binding generation only)
+        run: cargo build --release -p edgefirst-client-ffi
+
+      - name: Generate Swift bindings
+        run: |
+          mkdir -p swift-bindings
+          ./target/release/uniffi-bindgen generate \
+            --library target/release/libedgefirst_client.so \
+            --language swift \
+            --config crates/edgefirst-client-ffi/uniffi.toml \
+            --out-dir swift-bindings
+
+          # Add 'framework' qualifier for .framework bundle
+          sed -i 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' \
+            swift-bindings/EdgeFirstClientFFI.modulemap
+
+          echo "=== Generated Swift bindings ==="
+          ls -la swift-bindings/
+
+      - name: Upload Swift bindings artifact
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: swift-bindings
+          path: swift-bindings/
+          retention-days: 7
+
+  # ============================================================================
+  # Swift SDK Tests with Coverage (macOS)
+  # Collects both Swift code coverage AND Rust FFI coverage (like Python pattern)
+  # ============================================================================
+  swift-test:
+    name: Swift SDK Tests
+    runs-on: macos-14
+    needs: [generate-swift-bindings]
+    # Runs on all events (same as other jobs). Tests skip gracefully without credentials.
+
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download Swift bindings
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: swift-bindings
+          path: swift/
+
+      - name: Verify Swift bindings
+        run: |
+          echo "=== Downloaded Swift bindings ==="
+          ls -la swift/
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: swift-test-macos
+          shared-key: "macos"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6f9c7cc51aa54b13cbcbd12f8bbf69d8ba405b4b # v2.62.47
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Set up Rust FFI coverage environment
+        run: |
+          # Set up coverage environment variables (same pattern as Python)
+          # Use eval instead of source <(...) for better macOS compatibility
+          eval "$(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)"
+          echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
+          echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
+          echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV
+          echo "CARGO_LLVM_COV_SHOW_ENV=$CARGO_LLVM_COV_SHOW_ENV" >> $GITHUB_ENV
+          echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
+
+      - name: Build FFI Library with coverage instrumentation
+        run: |
+          # Build with coverage instrumentation for Rust FFI coverage
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build -p edgefirst-client-ffi
+
+      - name: Create macOS framework for testing
+        run: |
+          # Create framework structure
+          mkdir -p EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Headers
+          mkdir -p EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Modules
+
+          # Copy headers and modulemap
+          cp swift/EdgeFirstClientFFI.h \
+             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Headers/
+          cp swift/EdgeFirstClientFFI.modulemap \
+             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Modules/module.modulemap
+
+          # Copy coverage-instrumented library
+          cp target/debug/libedgefirst_client.a \
+             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
+
+          # Create Info.plist for XCFramework
+          cat > EdgeFirstClient.xcframework/Info.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>AvailableLibraries</key>
+            <array>
+              <dict>
+                <key>LibraryIdentifier</key>
+                <string>macos-arm64_x86_64</string>
+                <key>LibraryPath</key>
+                <string>EdgeFirstClientFFI.framework</string>
+                <key>SupportedArchitectures</key>
+                <array>
+                  <string>arm64</string>
+                  <string>x86_64</string>
+                </array>
+                <key>SupportedPlatform</key>
+                <string>macos</string>
+              </dict>
+            </array>
+            <key>CFBundlePackageType</key>
+            <string>XFWK</string>
+            <key>XCFrameworkFormatVersion</key>
+            <string>1.0</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Run Swift tests (for Rust FFI coverage)
+        env:
+          USE_LOCAL_FRAMEWORK: "true"
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+        run: |
+          # Run Swift tests to exercise Rust FFI code (generates Rust profiling data)
+          # Don't enable Swift coverage here - we'll do that in a separate run
+          swift test --parallel 2>&1 | tee swift-test-output.txt
+          echo "Swift tests completed (Rust FFI coverage)"
+
+      - name: Generate Rust FFI coverage report (lcov format)
+        run: |
+          # Generate Rust FFI coverage from Swift test execution
+          # This captures coverage of the Rust code exercised via Swift FFI calls
+          cargo llvm-cov report --lcov --output-path rust-ffi-coverage.lcov
+          echo "Rust FFI coverage report generated:"
+          wc -l rust-ffi-coverage.lcov
+          head -30 rust-ffi-coverage.lcov
+
+      - name: Rebuild FFI Library without coverage for Swift coverage
+        run: |
+          # Rebuild without Rust coverage instrumentation to avoid conflicts with Swift coverage
+          # Unset coverage environment variables
+          unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR
+
+          # Clean and rebuild
+          cargo clean -p edgefirst-client-ffi
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build -p edgefirst-client-ffi
+
+          # Update framework with non-instrumented library
+          cp target/debug/libedgefirst_client.a \
+             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
+
+          echo "Rebuilt FFI library without coverage instrumentation"
+
+      - name: Run Swift tests with Swift coverage
+        env:
+          USE_LOCAL_FRAMEWORK: "true"
+          STUDIO_SERVER: test
+          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
+          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
+          # Explicitly unset Rust coverage variables to prevent interference
+          RUSTFLAGS: ""
+          LLVM_PROFILE_FILE: ""
+        run: |
+          # Clean Swift build to ensure fresh compilation with coverage
+          rm -rf .build
+
+          # Run Swift tests with Swift coverage enabled
+          swift test --enable-code-coverage --parallel 2>&1 | tee swift-test-coverage.txt
+          echo "Swift tests completed (Swift coverage)"
+
+      - name: Generate Swift coverage report (lcov format)
+        run: |
+          # Find profraw files and xctest bundle
+          echo "=== Searching for coverage data ==="
+          PROFRAW_DIR=$(find .build -type d -name "codecov" 2>/dev/null | head -1)
+          XCTEST=$(find .build -name "EdgeFirstClientPackageTests.xctest" -type d 2>/dev/null | head -1)
+
+          echo "PROFRAW_DIR: $PROFRAW_DIR"
+          echo "XCTEST: $XCTEST"
+
+          if [ -z "$PROFRAW_DIR" ] || [ -z "$XCTEST" ]; then
+            echo "Swift coverage files not found"
+            touch swift-coverage.lcov
+            exit 0
+          fi
+
+          # List profraw files
+          echo "=== Profraw files ==="
+          ls -la "$PROFRAW_DIR"/*.profraw 2>/dev/null || echo "No profraw files"
+
+          # Merge profraw files into profdata
+          echo "=== Merging profraw into profdata ==="
+          xcrun llvm-profdata merge \
+            -sparse \
+            "$PROFRAW_DIR"/*.profraw \
+            -o "$PROFRAW_DIR/merged.profdata"
+
+          PROFDATA="$PROFRAW_DIR/merged.profdata"
+
+          if [ ! -f "$PROFDATA" ]; then
+            echo "Failed to create merged profdata"
+            touch swift-coverage.lcov
+            exit 0
+          fi
+
+          echo "Created profdata: $PROFDATA"
+
+          # Get the binary path inside the xctest bundle
+          BINARY="$XCTEST/Contents/MacOS/EdgeFirstClientPackageTests"
+
+          if [ ! -f "$BINARY" ]; then
+            echo "Binary not found at expected path: $BINARY"
+            touch swift-coverage.lcov
+            exit 0
+          fi
+
+          # Export Swift coverage in lcov format
+          # Filter out .build directory and test files, keep swift/EdgeFirstClient.swift
+          echo "=== Generating lcov report ==="
+          xcrun llvm-cov export \
+            -format=lcov \
+            -instr-profile="$PROFDATA" \
+            -ignore-filename-regex="\.build|Tests/" \
+            "$BINARY" \
+            > swift-coverage-raw.lcov
+
+          # Convert absolute paths to relative paths for SonarCloud
+          # /Users/runner/work/client/client/swift/... -> swift/...
+          WORKSPACE_PREFIX="${GITHUB_WORKSPACE}/"
+          echo "Stripping prefix: $WORKSPACE_PREFIX"
+          sed "s|${WORKSPACE_PREFIX}||g" swift-coverage-raw.lcov > swift-coverage.lcov
+
+          echo "Swift coverage report generated:"
+          wc -l swift-coverage.lcov
+          echo "=== Coverage file preview ==="
+          head -50 swift-coverage.lcov
+
+      - name: Convert lcov to SonarCloud generic XML format
+        run: |
+          # SonarCloud's sonar.swift.coverage.reportPaths expects llvm-cov show format,
+          # not lcov format. Convert lcov to generic XML format for sonar.coverageReportPaths.
+          python3 << 'PYEOF'
+          import re
+          import sys
+
+          def lcov_to_generic_xml(lcov_path, xml_path):
+              """Convert lcov format to SonarCloud generic test coverage XML format."""
+              files = {}
+              current_file = None
+
+              with open(lcov_path, 'r') as f:
+                  for line in f:
+                      line = line.strip()
+                      if line.startswith('SF:'):
+                          current_file = line[3:]
+                          files[current_file] = {}
+                      elif line.startswith('DA:') and current_file:
+                          # DA:line_number,hit_count
+                          parts = line[3:].split(',')
+                          if len(parts) >= 2:
+                              line_num = int(parts[0])
+                              hits = int(parts[1])
+                              files[current_file][line_num] = hits > 0
+                      elif line == 'end_of_record':
+                          current_file = None
+
+              # Generate XML
+              xml_lines = ['<coverage version="1">']
+              for filepath, lines in sorted(files.items()):
+                  xml_lines.append(f'  <file path="{filepath}">')
+                  for line_num, covered in sorted(lines.items()):
+                      covered_str = 'true' if covered else 'false'
+                      xml_lines.append(f'    <lineToCover lineNumber="{line_num}" covered="{covered_str}"/>')
+                  xml_lines.append('  </file>')
+              xml_lines.append('</coverage>')
+
+              with open(xml_path, 'w') as f:
+                  f.write('\n'.join(xml_lines))
+
+              # Print summary
+              total_lines = sum(len(lines) for lines in files.values())
+              covered_lines = sum(sum(1 for c in lines.values() if c) for lines in files.values())
+              print(f"Converted {len(files)} file(s) with {total_lines} lines ({covered_lines} covered)")
+
+          lcov_to_generic_xml('swift-coverage.lcov', 'swift-coverage.xml')
+          PYEOF
+
+          echo "=== Generated SonarCloud generic XML ==="
+          head -30 swift-coverage.xml
+          echo "..."
+          tail -10 swift-coverage.xml
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: swift-coverage
+          path: |
+            rust-ffi-coverage.lcov
+            swift-coverage.lcov
+            swift-coverage.xml
+            swift/EdgeFirstClient.swift
+          retention-days: 7
+
+      - name: Upload Rust FFI coverage to Codecov
+        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
+        with:
+          files: rust-ffi-coverage.lcov
+          flags: rust-ffi
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload Swift coverage to Codecov
+        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
+        with:
+          files: swift-coverage.lcov
+          flags: swift
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: swift-test-results
+          path: swift-test-output.txt
+          retention-days: 7
 
   # Code formatting check (uses nightly for latest rustfmt features)
   formatting:

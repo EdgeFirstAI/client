@@ -5,32 +5,66 @@ The EdgeFirst Client SDK provides native Swift bindings for interacting with Edg
 ## Requirements
 
 - iOS 13.0+ / macOS 10.15+
-- Swift 5.5+
-- Xcode 14.0+
+- Swift 5.9+
+- Xcode 15.0+
 
 ## Installation
 
-### Swift Package Manager
+### Swift Package Manager (Xcode)
+
+Add the EdgeFirst Client SDK to your project using Swift Package Manager:
+
+1. In Xcode, select **File > Add Package Dependencies...**
+
+2. Enter the repository URL:
+   ```
+   https://github.com/EdgeFirstAI/client.git
+   ```
+
+3. Select your version requirements (e.g., "Up to Next Major Version" from `2.6.0`)
+
+4. Click **Add Package** and select your target.
+
+The package will automatically download the pre-compiled XCFramework and Swift bindings.
+
+### Swift Package Manager (Package.swift)
+
+For Swift packages or command-line tools, add the dependency to your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/EdgeFirstAI/client.git", from: "2.6.0")
+]
+```
+
+Then add `"EdgeFirstClient"` to your target's dependencies:
+
+```swift
+.target(
+    name: "YourTarget",
+    dependencies: [
+        .product(name: "EdgeFirstClient", package: "client")
+    ]
+)
+```
+
+### Manual Installation
+
+For projects that cannot use Swift Package Manager:
 
 1. Download `edgefirst-client-swift-{version}.zip` from the [GitHub Releases](https://github.com/EdgeFirstAI/client/releases) page.
 
 2. Extract the archive to a location accessible to your Xcode project.
 
-3. In Xcode, go to **File > Add Package Dependencies...**
+3. **Option A: Local Swift Package**
+   - In Xcode, go to **File > Add Package Dependencies...**
+   - Click **Add Local...** and select the extracted directory.
+   - Select your target and click **Add Package**.
 
-4. Click **Add Local...** and select the extracted `EdgeFirstClient` directory.
-
-5. Select your target and click **Add Package**.
-
-### Manual Installation
-
-1. Download and extract `edgefirst-client-swift-{version}.zip`.
-
-2. Drag `EdgeFirstClient.xcframework` into your Xcode project.
-
-3. Ensure the framework is set to **Embed & Sign** in your target's **Frameworks, Libraries, and Embedded Content**.
-
-4. Add `EdgeFirstClient.swift` to your project sources.
+4. **Option B: Direct Framework Integration**
+   - Drag `EdgeFirstClient.xcframework` into your Xcode project.
+   - Ensure the framework is set to **Embed & Sign** in your target's **Frameworks, Libraries, and Embedded Content**.
+   - Add `swift/EdgeFirstClient.swift` to your project sources.
 
 ## Quick Start
 

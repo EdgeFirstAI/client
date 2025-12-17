@@ -41,6 +41,7 @@ uniffi::setup_scaffolding!();
 
 use std::{collections::HashMap, sync::Arc};
 
+use async_compat::CompatExt;
 use edgefirst_client as core;
 
 // =============================================================================
@@ -1471,36 +1472,57 @@ impl Client {
 #[uniffi::export]
 impl Client {
     /// Authenticate with username and password (async).
+    ///
+    /// Uses `async-compat` to enter Tokio context for reqwest compatibility
+    /// while allowing UniFFI to drive the future from Swift/Kotlin.
     pub async fn with_login_async(
         self: Arc<Self>,
         username: String,
         password: String,
     ) -> Result<Arc<Self>, ClientError> {
-        let inner = self.inner.with_login(&username, &password).await?;
-        Ok(Arc::new(Self {
-            inner,
-            runtime: tokio::runtime::Runtime::new().map_err(|e| ClientError::InternalError {
-                message: e.to_string(),
-            })?,
-        }))
+        async {
+            let inner = self.inner.with_login(&username, &password).await?;
+            Ok(Arc::new(Self {
+                inner,
+                runtime: tokio::runtime::Runtime::new().map_err(|e| {
+                    ClientError::InternalError {
+                        message: e.to_string(),
+                    }
+                })?,
+            }))
+        }
+        .compat()
+        .await
     }
 
     /// Get the current user's organization (async).
     pub async fn organization_async(&self) -> Result<Organization, ClientError> {
-        let org = self.inner.organization().await?;
-        Ok(org.into())
+        async {
+            let org = self.inner.organization().await?;
+            Ok(org.into())
+        }
+        .compat()
+        .await
     }
 
     /// List projects, optionally filtered by name (async).
     pub async fn projects_async(&self, name: Option<String>) -> Result<Vec<Project>, ClientError> {
-        let projects = self.inner.projects(name.as_deref()).await?;
-        Ok(projects.into_iter().map(Project::from).collect())
+        async {
+            let projects = self.inner.projects(name.as_deref()).await?;
+            Ok(projects.into_iter().map(Project::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get a project by ID (async).
     pub async fn project_async(&self, id: ProjectId) -> Result<Project, ClientError> {
-        let project = self.inner.project(id.into()).await?;
-        Ok(project.into())
+        async {
+            let project = self.inner.project(id.into()).await?;
+            Ok(project.into())
+        }
+        .compat()
+        .await
     }
 
     /// List datasets in a project (async).
@@ -1509,17 +1531,25 @@ impl Client {
         project_id: ProjectId,
         name: Option<String>,
     ) -> Result<Vec<Dataset>, ClientError> {
-        let datasets = self
-            .inner
-            .datasets(project_id.into(), name.as_deref())
-            .await?;
-        Ok(datasets.into_iter().map(Dataset::from).collect())
+        async {
+            let datasets = self
+                .inner
+                .datasets(project_id.into(), name.as_deref())
+                .await?;
+            Ok(datasets.into_iter().map(Dataset::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get a dataset by ID (async).
     pub async fn dataset_async(&self, id: DatasetId) -> Result<Dataset, ClientError> {
-        let dataset = self.inner.dataset(id.into()).await?;
-        Ok(dataset.into())
+        async {
+            let dataset = self.inner.dataset(id.into()).await?;
+            Ok(dataset.into())
+        }
+        .compat()
+        .await
     }
 
     /// Get annotation sets for a dataset (async).
@@ -1527,14 +1557,22 @@ impl Client {
         &self,
         dataset_id: DatasetId,
     ) -> Result<Vec<AnnotationSet>, ClientError> {
-        let sets = self.inner.annotation_sets(dataset_id.into()).await?;
-        Ok(sets.into_iter().map(AnnotationSet::from).collect())
+        async {
+            let sets = self.inner.annotation_sets(dataset_id.into()).await?;
+            Ok(sets.into_iter().map(AnnotationSet::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get labels for a dataset (async).
     pub async fn labels_async(&self, dataset_id: DatasetId) -> Result<Vec<Label>, ClientError> {
-        let labels = self.inner.labels(dataset_id.into()).await?;
-        Ok(labels.into_iter().map(Label::from).collect())
+        async {
+            let labels = self.inner.labels(dataset_id.into()).await?;
+            Ok(labels.into_iter().map(Label::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// List experiments in a project (async).
@@ -1543,17 +1581,25 @@ impl Client {
         project_id: ProjectId,
         name: Option<String>,
     ) -> Result<Vec<Experiment>, ClientError> {
-        let experiments = self
-            .inner
-            .experiments(project_id.into(), name.as_deref())
-            .await?;
-        Ok(experiments.into_iter().map(Experiment::from).collect())
+        async {
+            let experiments = self
+                .inner
+                .experiments(project_id.into(), name.as_deref())
+                .await?;
+            Ok(experiments.into_iter().map(Experiment::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get an experiment by ID (async).
     pub async fn experiment_async(&self, id: ExperimentId) -> Result<Experiment, ClientError> {
-        let experiment = self.inner.experiment(id.into()).await?;
-        Ok(experiment.into())
+        async {
+            let experiment = self.inner.experiment(id.into()).await?;
+            Ok(experiment.into())
+        }
+        .compat()
+        .await
     }
 
     /// List training sessions in an experiment (async).
@@ -1562,11 +1608,15 @@ impl Client {
         experiment_id: ExperimentId,
         name: Option<String>,
     ) -> Result<Vec<TrainingSession>, ClientError> {
-        let sessions = self
-            .inner
-            .training_sessions(experiment_id.into(), name.as_deref())
-            .await?;
-        Ok(sessions.into_iter().map(TrainingSession::from).collect())
+        async {
+            let sessions = self
+                .inner
+                .training_sessions(experiment_id.into(), name.as_deref())
+                .await?;
+            Ok(sessions.into_iter().map(TrainingSession::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get a training session by ID (async).
@@ -1574,8 +1624,12 @@ impl Client {
         &self,
         id: TrainingSessionId,
     ) -> Result<TrainingSession, ClientError> {
-        let session = self.inner.training_session(id.into()).await?;
-        Ok(session.into())
+        async {
+            let session = self.inner.training_session(id.into()).await?;
+            Ok(session.into())
+        }
+        .compat()
+        .await
     }
 
     /// Get artifacts for a training session (async).
@@ -1583,8 +1637,12 @@ impl Client {
         &self,
         training_session_id: TrainingSessionId,
     ) -> Result<Vec<Artifact>, ClientError> {
-        let artifacts = self.inner.artifacts(training_session_id.into()).await?;
-        Ok(artifacts.into_iter().map(Artifact::from).collect())
+        async {
+            let artifacts = self.inner.artifacts(training_session_id.into()).await?;
+            Ok(artifacts.into_iter().map(Artifact::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// List validation sessions for a project (async).
@@ -1592,8 +1650,12 @@ impl Client {
         &self,
         project_id: ProjectId,
     ) -> Result<Vec<ValidationSession>, ClientError> {
-        let sessions = self.inner.validation_sessions(project_id.into()).await?;
-        Ok(sessions.into_iter().map(ValidationSession::from).collect())
+        async {
+            let sessions = self.inner.validation_sessions(project_id.into()).await?;
+            Ok(sessions.into_iter().map(ValidationSession::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// List snapshots, optionally filtered by name (async).
@@ -1601,31 +1663,51 @@ impl Client {
         &self,
         name: Option<String>,
     ) -> Result<Vec<Snapshot>, ClientError> {
-        let snapshots = self.inner.snapshots(name.as_deref()).await?;
-        Ok(snapshots.into_iter().map(Snapshot::from).collect())
+        async {
+            let snapshots = self.inner.snapshots(name.as_deref()).await?;
+            Ok(snapshots.into_iter().map(Snapshot::from).collect())
+        }
+        .compat()
+        .await
     }
 
     /// Get a snapshot by ID (async).
     pub async fn snapshot_async(&self, id: SnapshotId) -> Result<Snapshot, ClientError> {
-        let snapshot = self.inner.snapshot(id.into()).await?;
-        Ok(snapshot.into())
+        async {
+            let snapshot = self.inner.snapshot(id.into()).await?;
+            Ok(snapshot.into())
+        }
+        .compat()
+        .await
     }
 
     /// Get task information by ID (async).
     pub async fn task_info_async(&self, id: TaskId) -> Result<TaskInfo, ClientError> {
-        let info = self.inner.task_info(id.into()).await?;
-        Ok(info.into())
+        async {
+            let info = self.inner.task_info(id.into()).await?;
+            Ok(info.into())
+        }
+        .compat()
+        .await
     }
 
     /// Verify that the current token is valid (async).
     pub async fn verify_token_async(&self) -> Result<(), ClientError> {
-        self.inner.verify_token().await?;
-        Ok(())
+        async {
+            self.inner.verify_token().await?;
+            Ok(())
+        }
+        .compat()
+        .await
     }
 
     /// Clear authentication token and log out (async).
     pub async fn logout_async(&self) -> Result<(), ClientError> {
-        self.inner.logout().await?;
-        Ok(())
+        async {
+            self.inner.logout().await?;
+            Ok(())
+        }
+        .compat()
+        .await
     }
 }
