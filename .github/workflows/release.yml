@@ -378,7 +378,7 @@ jobs:
           commit-message: "automation: update Swift package for v${{ needs.create-release.outputs.version }} release [skip ci]"
           branch: release/update-swift-${{ needs.create-release.outputs.version }}
           delete-branch: true
-          title: "automation: Update Swift Package for v${{ needs.create-release.outputs.version }}"
+          title: "automation: Update Swift Package for v${{ needs.create-release.outputs.version }} [skip ci]"
           body: |
             Automated update of Swift Package Manager manifest and bindings for release v${{ needs.create-release.outputs.version }}.
 
