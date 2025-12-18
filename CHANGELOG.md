@@ -5,6 +5,13 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2] - 2025-12-17
+
+### Changed
+
+- **Optimized release workflow** - Automated Package.swift update PRs now skip CI (saves ~30 minutes per release)
+- **Simplified PR creation** - Use default GITHUB_TOKEN with repository setting instead of PAT
+
 ## [2.7.1] - 2025-12-17
 
 ### Fixed
