@@ -5,6 +5,30 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2025-12-17
+
+### Added
+
+- **Swift Package Manager (SPM) support for iOS/macOS SDK**
+  - Distributed as `edgefirst-client-swift-{version}.zip` containing source files
+  - Fully compatible with Xcode projects and SPM-based workflows
+  - Enables seamless integration with modern Swift development tools
+
+- **Comprehensive Swift SDK test coverage**
+  - Swift tests now run on all PR changes via `swift-tests.yml` workflow
+  - Test coverage reporting integrated with SonarCloud
+  - Expanded test scenarios: `createClientWithStorage`, dataset operations, error handling
+  - Coverage collection and reporting for iOS/macOS SDK
+
+### Changed
+
+- **Swift test execution on pull requests** - Swift SDK tests automatically run on all PRs to catch regressions early
+
+### Fixed
+
+- **Swift coverage collection and reporting** - Fixed Swift code coverage generation for SonarCloud integration
+- **CI/CD workflow reliability** - Improved cross-workflow artifact handling and test execution
+
 ## [2.6.4] - 2025-12-11
 
 ### Changed
