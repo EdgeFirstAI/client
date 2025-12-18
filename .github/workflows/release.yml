@@ -336,11 +336,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download Swift SDK artifact
         uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
@@ -371,16 +371,29 @@ jobs:
           echo "Updated Swift bindings:"
           head -50 swift/EdgeFirstClient.swift
 
-      - name: Commit and push updates
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Swift package for v${{ needs.create-release.outputs.version }} release"
+          branch: release/update-swift-${{ needs.create-release.outputs.version }}
+          delete-branch: true
+          title: "chore: Update Swift Package for v${{ needs.create-release.outputs.version }}"
+          body: |
+            Automated update of Swift Package Manager manifest and bindings for release v${{ needs.create-release.outputs.version }}.
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+            This PR updates:
+            - `Package.swift` with the new version and XCFramework checksum
+            - `swift/EdgeFirstClient.swift` with the latest generated bindings
 
-          git add Package.swift swift/EdgeFirstClient.swift
-          git commit -m "chore: update Swift package for v${VERSION} release [skip ci]" || echo "No changes to commit"
-          git push origin main
+            **XCFramework checksum:** `${{ needs.upload-mobile.outputs.xcframework_checksum }}`
+
+            Created automatically by the release workflow.
+          labels: |
+            automated
+            release
+          assignees: ${{ github.actor }}
+          signoff: true
 
   # ==========================================================================
   # Publish to PyPI
