@@ -5,6 +5,12 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2025-12-17
+
+### Fixed
+
+- **Release workflow Swift package update** - Changed from direct push to creating pull request to respect branch protection rules
+
 ## [2.7.0] - 2025-12-17
 
 ### Added
