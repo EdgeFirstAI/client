@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] - 2025-12-18
+
 ### Fixed
 
 - **Client() now uses correct server from stored token** - Fixed issue where `Client()` would always connect to production server even when token was issued for a different server (test, stage, etc.). The client now extracts and uses the server from the JWT token payload.
