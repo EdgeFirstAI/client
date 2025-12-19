@@ -115,10 +115,18 @@ class TestValidate(unittest.TestCase):
         # Get validation sessions
         sessions = client.validation_sessions(project.id)
 
-        # Verify we can fetch each session
+        # Verify we can fetch each session using ID object
         for sess in sessions:
             s = client.validation_session(sess.id)
             self.assertEqual(s.id, sess.id)
+            self.assertEqual(s.description, sess.description)
+        
+        # Verify we can fetch sessions using string ID (user's use case)
+        if sessions:
+            sess = sessions[0]
+            session_id_str = str(sess.id)
+            s = client.validation_session(session_id_str)
+            self.assertEqual(str(s.id), session_id_str)
             self.assertEqual(s.description, sess.description)
 
         # Find modelpack-usermanaged session

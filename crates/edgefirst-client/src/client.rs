@@ -451,9 +451,22 @@ impl Client {
             }
         };
 
+        // Extract server from token if available
+        let url = if !token.is_empty() {
+            match Self::extract_server_from_token(&token) {
+                Ok(server) => format!("https://{}.edgefirst.studio", server),
+                Err(e) => {
+                    warn!("Failed to extract server from token: {}. Using default server.", e);
+                    "https://edgefirst.studio".to_string()
+                }
+            }
+        } else {
+            "https://edgefirst.studio".to_string()
+        };
+
         Ok(Client {
             http,
-            url: "https://edgefirst.studio".to_string(),
+            url,
             token: Arc::new(tokio::sync::RwLock::new(token)),
             storage: Some(storage),
             token_path: None,
@@ -733,11 +746,12 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_token(&self, token: &str) -> Result<Self, Error> {
-        if token.is_empty() {
-            return Ok(self.clone());
-        }
-
+    /// Extract server name from JWT token payload.
+    ///
+    /// Helper method to parse the JWT token and extract the "server" field
+    /// from the payload. Returns the server name (e.g., "test", "stage", "")
+    /// or an error if the token is invalid.
+    fn extract_server_from_token(token: &str) -> Result<String, Error> {
         let token_parts: Vec<&str> = token.split('.').collect();
         if token_parts.len() != 3 {
             return Err(Error::InvalidToken);
@@ -751,6 +765,16 @@ impl Client {
             Some(value) => value.as_str().ok_or(Error::InvalidToken)?.to_string(),
             None => return Err(Error::InvalidToken),
         };
+
+        Ok(server)
+    }
+
+    pub fn with_token(&self, token: &str) -> Result<Self, Error> {
+        if token.is_empty() {
+            return Ok(self.clone());
+        }
+
+        let server = Self::extract_server_from_token(token)?;
 
         // Persist token to storage if configured
         if let Some(ref storage) = self.storage

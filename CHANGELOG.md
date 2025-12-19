@@ -5,6 +5,12 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Client() now uses correct server from stored token** - Fixed issue where `Client()` would always connect to production server even when token was issued for a different server (test, stage, etc.). The client now extracts and uses the server from the JWT token payload.
+
 ## [2.7.2] - 2025-12-17
 
 ### Changed
