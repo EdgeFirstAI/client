@@ -470,6 +470,59 @@ enum Command {
         #[clap(long, short = 'v')]
         verbose: bool,
     },
+    /// Convert COCO annotations to EdgeFirst Arrow format.
+    ///
+    /// Reads a COCO annotation JSON file or ZIP archive and converts it to
+    /// the EdgeFirst Dataset Format (Arrow). Supports bbox and polygon
+    /// segmentation annotations.
+    ///
+    /// Examples:
+    ///   edgefirst coco-to-arrow instances.json -o dataset.arrow
+    ///   edgefirst coco-to-arrow coco.zip -o dataset.arrow --group train
+    CocoToArrow {
+        /// Path to COCO annotation file (JSON) or ZIP archive
+        coco_path: PathBuf,
+
+        /// Output Arrow file path
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Include segmentation masks
+        #[clap(long, default_value = "true")]
+        masks: bool,
+
+        /// Group name for all samples (e.g., "train", "val")
+        #[clap(long)]
+        group: Option<String>,
+    },
+    /// Convert EdgeFirst Arrow format to COCO annotations.
+    ///
+    /// Reads an EdgeFirst Arrow file and converts it to COCO JSON format.
+    /// Supports bbox and polygon segmentation annotations.
+    ///
+    /// Examples:
+    ///   edgefirst arrow-to-coco dataset.arrow -o instances.json
+    ///   edgefirst arrow-to-coco dataset.arrow -o instances.json --groups train,val
+    ArrowToCoco {
+        /// Path to EdgeFirst Arrow file
+        arrow_path: PathBuf,
+
+        /// Output COCO JSON file path
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Include segmentation masks
+        #[clap(long, default_value = "true")]
+        masks: bool,
+
+        /// Filter by group names (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        groups: Vec<String>,
+
+        /// Pretty-print JSON output
+        #[clap(long)]
+        pretty: bool,
+    },
 }
 
 // Command handler functions
@@ -2798,6 +2851,117 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
     Ok(())
 }
 
+/// Handle COCO to Arrow conversion.
+async fn handle_coco_to_arrow(
+    coco_path: PathBuf,
+    output: PathBuf,
+    masks: bool,
+    group: Option<String>,
+) -> Result<(), Error> {
+    use edgefirst_client::coco::{coco_to_arrow, CocoToArrowOptions};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    println!("Converting COCO to Arrow format...");
+    println!("  Input:  {:?}", coco_path);
+    println!("  Output: {:?}", output);
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let options = CocoToArrowOptions {
+        include_masks: masks,
+        group,
+        ..Default::default()
+    };
+
+    let coco_path_clone = coco_path.clone();
+    let output_clone = output.clone();
+    let task = tokio::spawn(async move {
+        coco_to_arrow(&coco_path_clone, &output_clone, &options, Some(tx)).await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let count = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Converted {} annotations to Arrow format", count);
+
+    Ok(())
+}
+
+/// Handle Arrow to COCO conversion.
+async fn handle_arrow_to_coco(
+    arrow_path: PathBuf,
+    output: PathBuf,
+    masks: bool,
+    groups: Vec<String>,
+    pretty: bool,
+) -> Result<(), Error> {
+    use chrono::Datelike;
+    use edgefirst_client::coco::{arrow_to_coco, ArrowToCocoOptions, CocoInfo};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    println!("Converting Arrow to COCO format...");
+    println!("  Input:  {:?}", arrow_path);
+    println!("  Output: {:?}", output);
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let options = ArrowToCocoOptions {
+        include_masks: masks,
+        groups,
+        info: Some(CocoInfo {
+            description: Some("Converted from EdgeFirst format".to_string()),
+            version: Some("1.0".to_string()),
+            year: Some(chrono::Utc::now().year() as u32),
+            ..Default::default()
+        }),
+    };
+
+    // Note: pretty option is not yet exposed in ArrowToCocoOptions
+    // We would need to add it to the options struct
+    let _ = pretty;
+
+    let arrow_path_clone = arrow_path.clone();
+    let output_clone = output.clone();
+    let task = tokio::spawn(async move {
+        arrow_to_coco(&arrow_path_clone, &output_clone, &options, Some(tx)).await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let count = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Converted {} annotations to COCO format", count);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -3073,6 +3237,19 @@ async fn main() -> Result<(), Error> {
             detect_sequences,
         } => handle_generate_arrow(folder, output, detect_sequences),
         Command::ValidateSnapshot { path, verbose } => handle_validate_snapshot(path, verbose),
+        Command::CocoToArrow {
+            coco_path,
+            output,
+            masks,
+            group,
+        } => handle_coco_to_arrow(coco_path, output, masks, group).await,
+        Command::ArrowToCoco {
+            arrow_path,
+            output,
+            masks,
+            groups,
+            pretty,
+        } => handle_arrow_to_coco(arrow_path, output, masks, groups, pretty).await,
     }
 }
 

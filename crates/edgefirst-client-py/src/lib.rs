@@ -5804,6 +5804,13 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;
 
+    // COCO conversion functions (polars feature only)
+    #[cfg(feature = "polars")]
+    {
+        m.add_function(wrap_pyfunction!(coco_to_arrow, m)?)?;
+        m.add_function(wrap_pyfunction!(arrow_to_coco, m)?)?;
+    }
+
     Ok(())
 }
 
@@ -5822,4 +5829,132 @@ pub fn is_polars_enabled() -> bool {
     {
         false
     }
+}
+
+// =============================================================================
+// COCO Format Conversion Functions
+// =============================================================================
+
+/// Convert COCO dataset to EdgeFirst Arrow format.
+///
+/// # Arguments
+/// * `coco_path` - Path to COCO annotation JSON file or ZIP archive
+/// * `output_path` - Output Arrow file path
+/// * `include_masks` - Include segmentation masks (default: True)
+/// * `group` - Optional group name for all samples (e.g., "train")
+/// * `progress` - Optional callback function(current, total) for progress
+///
+/// # Returns
+/// Number of annotations converted
+#[cfg(feature = "polars")]
+#[pyfunction]
+#[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, progress = None))]
+pub fn coco_to_arrow(
+    coco_path: PathBuf,
+    output_path: PathBuf,
+    include_masks: bool,
+    group: Option<String>,
+    progress: Option<Py<PyAny>>,
+) -> Result<usize, Error> {
+    use edgefirst_client::coco::CocoToArrowOptions;
+
+    let options = CocoToArrowOptions {
+        include_masks,
+        group,
+        ..Default::default()
+    };
+
+    match progress {
+        Some(progress) => {
+            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+
+            let task = std::thread::spawn(move || {
+                coco_to_arrow_sync(&coco_path, &output_path, &options, Some(tx))
+            });
+
+            while let Some(status) = rx.blocking_recv() {
+                Python::attach(|py| {
+                    progress
+                        .call1(py, (status.current, status.total))
+                        .expect("Progress callback should be callable");
+                });
+            }
+
+            task.join().unwrap()
+        }
+        None => coco_to_arrow_sync(&coco_path, &output_path, &options, None),
+    }
+}
+
+#[cfg(feature = "polars")]
+#[tokio_wrap::sync]
+fn coco_to_arrow_sync(
+    coco_path: &PathBuf,
+    output_path: &PathBuf,
+    options: &edgefirst_client::coco::CocoToArrowOptions,
+    progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+) -> Result<usize, Error> {
+    Ok(edgefirst_client::coco::coco_to_arrow(coco_path, output_path, options, progress).await?)
+}
+
+/// Convert EdgeFirst Arrow format to COCO dataset.
+///
+/// # Arguments
+/// * `arrow_path` - Path to EdgeFirst Arrow file
+/// * `output_path` - Output COCO JSON file path
+/// * `include_masks` - Include segmentation masks (default: True)
+/// * `groups` - Filter by group names (empty list = all)
+/// * `progress` - Optional callback function(current, total) for progress
+///
+/// # Returns
+/// Number of annotations converted
+#[cfg(feature = "polars")]
+#[pyfunction]
+#[pyo3(signature = (arrow_path, output_path, include_masks = true, groups = vec![], progress = None))]
+pub fn arrow_to_coco(
+    arrow_path: PathBuf,
+    output_path: PathBuf,
+    include_masks: bool,
+    groups: Vec<String>,
+    progress: Option<Py<PyAny>>,
+) -> Result<usize, Error> {
+    use edgefirst_client::coco::ArrowToCocoOptions;
+
+    let options = ArrowToCocoOptions {
+        include_masks,
+        groups,
+        ..Default::default()
+    };
+
+    match progress {
+        Some(progress) => {
+            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+
+            let task = std::thread::spawn(move || {
+                arrow_to_coco_sync(&arrow_path, &output_path, &options, Some(tx))
+            });
+
+            while let Some(status) = rx.blocking_recv() {
+                Python::attach(|py| {
+                    progress
+                        .call1(py, (status.current, status.total))
+                        .expect("Progress callback should be callable");
+                });
+            }
+
+            task.join().unwrap()
+        }
+        None => arrow_to_coco_sync(&arrow_path, &output_path, &options, None),
+    }
+}
+
+#[cfg(feature = "polars")]
+#[tokio_wrap::sync]
+fn arrow_to_coco_sync(
+    arrow_path: &PathBuf,
+    output_path: &PathBuf,
+    options: &edgefirst_client::coco::ArrowToCocoOptions,
+    progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+) -> Result<usize, Error> {
+    Ok(edgefirst_client::coco::arrow_to_coco(arrow_path, output_path, options, progress).await?)
 }

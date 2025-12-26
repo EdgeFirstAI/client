@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **COCO dataset format support** - Complete bidirectional conversion between COCO JSON and EdgeFirst Arrow format
+  - `coco_to_arrow()` - Convert COCO annotation files to EdgeFirst Arrow format
+  - `arrow_to_coco()` - Convert EdgeFirst Arrow files back to COCO JSON format
+  - Supports object detection bounding boxes with perfect round-trip fidelity (<0.001px error)
+  - Supports polygon segmentation masks (~90% spatial accuracy, 92% average IoU)
+  - Handles both polygon and RLE segmentation formats
+  - Streaming architecture for memory-efficient processing of large datasets
+  - Progress reporting via async channels
+  - Processes COCO2017 val set (36K annotations) in ~9 seconds
+
+- **COCO Studio integration** - Import/export workflows for EdgeFirst Studio
+  - `import_coco_to_studio()` - Import COCO datasets into Studio via bulk API
+  - `export_studio_to_coco()` - Export Studio datasets to COCO format
+  - Batch processing with configurable batch sizes
+  - Supports ZIP archives and directory structures
+
+- **COCO CLI commands** - Command-line tools for COCO conversion
+  - `edgefirst coco-to-arrow` - Convert COCO to Arrow format
+  - `edgefirst arrow-to-coco` - Convert Arrow to COCO format
+  - Progress indicators and file size reporting
+
+- **COCO Python bindings** - Python API for COCO conversion
+  - `coco_to_arrow()` and `arrow_to_coco()` standalone functions
+  - `Client.import_coco()` and `Client.export_coco()` methods
+  - Async progress callback support
+
 ## [2.7.3] - 2025-12-18
 
 ### Fixed

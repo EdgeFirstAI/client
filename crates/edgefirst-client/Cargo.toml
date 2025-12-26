@@ -39,9 +39,13 @@ tokio-util = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 walkdir = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
+dirs = "5.0"
 image = { version = "0.25", features = ["jpeg", "png"] }
+pathfinding = "4.11"
 png = "0.17"
 rand = { version = "0.9", features = ["std_rng"] }
 sha1 = { workspace = true }
+tempfile = { workspace = true }

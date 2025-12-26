@@ -55,6 +55,7 @@
 
 mod api;
 mod client;
+pub mod coco;
 mod dataset;
 mod error;
 pub mod format;
