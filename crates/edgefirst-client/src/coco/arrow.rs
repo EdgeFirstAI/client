@@ -22,22 +22,32 @@ use tokio::sync::Semaphore;
 /// Unflatten polygon coordinates from Arrow flat format.
 ///
 /// Converts `[x1, y1, x2, y2, NaN, x3, y3, ...]` to `[[(x1,y1), (x2,y2)], [(x3,y3), ...]]`
+///
+/// **IMPORTANT**: The separator is a SINGLE NaN, not a pair. We must process
+/// elements one at a time, not in chunks of 2, to correctly handle the separator.
 fn unflatten_polygon_coords(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
     let mut polygons = Vec::new();
     let mut current = Vec::new();
+    let mut i = 0;
 
-    for chunk in coords.chunks(2) {
-        if chunk.len() == 2 {
-            let x = chunk[0];
-            let y = chunk[1];
-
-            if x.is_nan() || y.is_nan() {
-                if !current.is_empty() {
-                    polygons.push(std::mem::take(&mut current));
-                }
-            } else {
-                current.push((x, y));
+    while i < coords.len() {
+        if coords[i].is_nan() {
+            // Single NaN separator - save current polygon and start new one
+            if !current.is_empty() {
+                polygons.push(std::mem::take(&mut current));
             }
+            i += 1;
+        } else if i + 1 < coords.len() && !coords[i + 1].is_nan() {
+            // Have both x and y coordinates (neither is NaN)
+            current.push((coords[i], coords[i + 1]));
+            i += 2;
+        } else if i + 1 < coords.len() && coords[i + 1].is_nan() {
+            // x is valid but y is NaN - this shouldn't happen in well-formed data
+            // but handle it gracefully: skip x, process NaN on next iteration
+            i += 1;
+        } else {
+            // Odd trailing value - skip
+            i += 1;
         }
     }
 

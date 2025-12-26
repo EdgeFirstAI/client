@@ -11,8 +11,9 @@
 #[cfg(feature = "polars")]
 mod integration {
     use edgefirst_client::coco::{
-        arrow_to_coco, coco_to_arrow, ArrowToCocoOptions, CocoAnnotation, CocoDataset,
-        CocoReader, CocoSegmentation, CocoToArrowOptions, CocoWriter,
+        arrow_to_coco, coco_to_arrow, decode_compressed_rle, decode_rle, ArrowToCocoOptions,
+        CocoAnnotation, CocoCompressedRle, CocoDataset, CocoReader, CocoRle, CocoSegmentation,
+        CocoToArrowOptions, CocoWriter,
     };
     use pathfinding::kuhn_munkres::kuhn_munkres_min;
     use pathfinding::matrix::Matrix;
@@ -284,13 +285,26 @@ mod integration {
         (area / 2.0).abs()
     }
 
-    /// Calculate total area of a segmentation using Shoelace formula
+    /// Calculate total area of a segmentation (Shoelace for polygon, pixel count for RLE)
     fn compute_segmentation_area(seg: &CocoSegmentation) -> f64 {
         match seg {
             CocoSegmentation::Polygon(polys) => {
                 polys.iter().map(|p| polygon_area(p)).sum()
             }
-            _ => 0.0,
+            CocoSegmentation::Rle(rle) => {
+                if let Ok((mask, _, _)) = decode_rle(rle) {
+                    mask.iter().filter(|&&v| v == 1).count() as f64
+                } else {
+                    0.0
+                }
+            }
+            CocoSegmentation::CompressedRle(compressed) => {
+                if let Ok((mask, _, _)) = decode_compressed_rle(compressed) {
+                    mask.iter().filter(|&&v| v == 1).count() as f64
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
@@ -315,26 +329,69 @@ mod integration {
         Some((min_x, min_y, max_x, max_y))
     }
 
-    /// Calculate IoU between two polygon bounding boxes
-    fn polygon_bbox_iou(seg1: &CocoSegmentation, seg2: &CocoSegmentation) -> f64 {
-        let bounds1 = match seg1 {
-            CocoSegmentation::Polygon(polys) => {
-                polys.iter().filter_map(|p| polygon_bounds(p)).fold(None, |acc, b| {
-                    match acc {
-                        None => Some(b),
-                        Some((min_x, min_y, max_x, max_y)) => Some((
-                            min_x.min(b.0),
-                            min_y.min(b.1),
-                            max_x.max(b.2),
-                            max_y.max(b.3),
-                        )),
-                    }
-                })
-            }
-            _ => None,
-        };
+    /// Calculate bounding box from RLE mask by decoding and finding min/max non-zero pixels
+    fn rle_bounds(rle: &CocoRle) -> Option<(f64, f64, f64, f64)> {
+        let (mask, height, width) = decode_rle(rle).ok()?;
 
-        let bounds2 = match seg2 {
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+        let mut found_any = false;
+
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y as usize) * (width as usize) + (x as usize);
+                if mask[idx] == 1 {
+                    found_any = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        if found_any {
+            Some((min_x as f64, min_y as f64, max_x as f64, max_y as f64))
+        } else {
+            None
+        }
+    }
+
+    /// Calculate bounding box from compressed RLE mask
+    fn compressed_rle_bounds(compressed: &CocoCompressedRle) -> Option<(f64, f64, f64, f64)> {
+        let (mask, height, width) = decode_compressed_rle(compressed).ok()?;
+
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+        let mut found_any = false;
+
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y as usize) * (width as usize) + (x as usize);
+                if mask[idx] == 1 {
+                    found_any = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        if found_any {
+            Some((min_x as f64, min_y as f64, max_x as f64, max_y as f64))
+        } else {
+            None
+        }
+    }
+
+    /// Get bounding box for any segmentation type
+    fn segmentation_bounds(seg: &CocoSegmentation) -> Option<(f64, f64, f64, f64)> {
+        match seg {
             CocoSegmentation::Polygon(polys) => {
                 polys.iter().filter_map(|p| polygon_bounds(p)).fold(None, |acc, b| {
                     match acc {
@@ -348,8 +405,15 @@ mod integration {
                     }
                 })
             }
-            _ => None,
-        };
+            CocoSegmentation::Rle(rle) => rle_bounds(rle),
+            CocoSegmentation::CompressedRle(compressed) => compressed_rle_bounds(compressed),
+        }
+    }
+
+    /// Calculate IoU between two segmentation bounding boxes (supports polygon and RLE)
+    fn polygon_bbox_iou(seg1: &CocoSegmentation, seg2: &CocoSegmentation) -> f64 {
+        let bounds1 = segmentation_bounds(seg1);
+        let bounds2 = segmentation_bounds(seg2);
 
         match (bounds1, bounds2) {
             (Some((a_x1, a_y1, a_x2, a_y2)), Some((b_x1, b_y1, b_x2, b_y2))) => {
@@ -403,9 +467,13 @@ mod integration {
         restored_with_seg: usize,
         /// Matched pairs with both having segmentation
         matched_pairs_with_seg: usize,
-        /// Pairs where vertex count matches exactly
+        /// Original polygon annotations (vertex comparison makes sense)
+        polygon_pairs: usize,
+        /// Original RLE annotations (vertex comparison doesn't make sense)
+        rle_pairs: usize,
+        /// Pairs where vertex count matches exactly (polygon only)
         vertex_count_exact_match: usize,
-        /// Pairs where vertex count is within 10%
+        /// Pairs where vertex count is within 10% (polygon only)
         vertex_count_close_match: usize,
         /// Pairs where polygon part count matches
         part_count_match: usize,
@@ -425,8 +493,12 @@ mod integration {
         max_area_ratio: f64,
         /// Sum of polygon bbox IoU for averaging
         sum_bbox_iou: f64,
-        /// Count of segmentations with zero area (RLE or degenerate)
+        /// Count of segmentations with zero area (degenerate)
         zero_area_count: usize,
+        /// Sum of RLE bbox IoU for averaging
+        rle_sum_bbox_iou: f64,
+        /// RLE pairs with bbox IoU >= 0.9
+        rle_bbox_iou_high: usize,
     }
 
     impl MaskValidationResult {
@@ -447,10 +519,11 @@ mod integration {
         }
 
         fn avg_area_ratio(&self) -> f64 {
-            if self.matched_pairs_with_seg == 0 {
+            let valid_count = self.matched_pairs_with_seg - self.zero_area_count;
+            if valid_count == 0 {
                 1.0
             } else {
-                self.sum_area_ratio / self.matched_pairs_with_seg as f64
+                self.sum_area_ratio / valid_count as f64
             }
         }
 
@@ -459,6 +532,22 @@ mod integration {
                 1.0
             } else {
                 self.sum_bbox_iou / self.matched_pairs_with_seg as f64
+            }
+        }
+
+        fn avg_rle_bbox_iou(&self) -> f64 {
+            if self.rle_pairs == 0 {
+                1.0
+            } else {
+                self.rle_sum_bbox_iou / self.rle_pairs as f64
+            }
+        }
+
+        fn avg_polygon_bbox_iou(&self) -> f64 {
+            if self.polygon_pairs == 0 {
+                1.0
+            } else {
+                (self.sum_bbox_iou - self.rle_sum_bbox_iou) / self.polygon_pairs as f64
             }
         }
 
@@ -473,17 +562,19 @@ mod integration {
                 self.preservation_rate() * 100.0
             );
             println!(
-                "  │ Matched pairs with seg: {}",
-                self.matched_pairs_with_seg
+                "  │ Matched pairs: {} total ({} polygon, {} RLE→polygon)",
+                self.matched_pairs_with_seg,
+                self.polygon_pairs,
+                self.rle_pairs
             );
             println!("  │                                                         │");
-            println!("  │ Polygon Structure:                                      │");
+            println!("  │ Polygon Structure (polygon→polygon only):               │");
             println!(
                 "  │   Vertex count exact: {}/{} ({:.1}%)",
                 self.vertex_count_exact_match,
-                self.matched_pairs_with_seg,
-                if self.matched_pairs_with_seg > 0 {
-                    self.vertex_count_exact_match as f64 / self.matched_pairs_with_seg as f64 * 100.0
+                self.polygon_pairs,
+                if self.polygon_pairs > 0 {
+                    self.vertex_count_exact_match as f64 / self.polygon_pairs as f64 * 100.0
                 } else {
                     100.0
                 }
@@ -491,9 +582,9 @@ mod integration {
             println!(
                 "  │   Vertex count ±10%:  {}/{} ({:.1}%)",
                 self.vertex_count_close_match,
-                self.matched_pairs_with_seg,
-                if self.matched_pairs_with_seg > 0 {
-                    self.vertex_count_close_match as f64 / self.matched_pairs_with_seg as f64 * 100.0
+                self.polygon_pairs,
+                if self.polygon_pairs > 0 {
+                    self.vertex_count_close_match as f64 / self.polygon_pairs as f64 * 100.0
                 } else {
                     100.0
                 }
@@ -501,21 +592,21 @@ mod integration {
             println!(
                 "  │   Part count match:   {}/{} ({:.1}%)",
                 self.part_count_match,
-                self.matched_pairs_with_seg,
-                if self.matched_pairs_with_seg > 0 {
-                    self.part_count_match as f64 / self.matched_pairs_with_seg as f64 * 100.0
+                self.polygon_pairs,
+                if self.polygon_pairs > 0 {
+                    self.part_count_match as f64 / self.polygon_pairs as f64 * 100.0
                 } else {
                     100.0
                 }
             );
             println!("  │                                                         │");
-            println!("  │ Area Preservation (Shoelace):                           │");
+            println!("  │ Area Preservation:                                      │");
             println!(
                 "  │   Area within ±1%:  {}/{} ({:.1}%)",
                 self.area_within_1pct,
-                self.matched_pairs_with_seg,
-                if self.matched_pairs_with_seg > 0 {
-                    self.area_within_1pct as f64 / self.matched_pairs_with_seg as f64 * 100.0
+                self.matched_pairs_with_seg - self.zero_area_count,
+                if self.matched_pairs_with_seg > self.zero_area_count {
+                    self.area_within_1pct as f64 / (self.matched_pairs_with_seg - self.zero_area_count) as f64 * 100.0
                 } else {
                     100.0
                 }
@@ -523,9 +614,9 @@ mod integration {
             println!(
                 "  │   Area within ±5%:  {}/{} ({:.1}%)",
                 self.area_within_5pct,
-                self.matched_pairs_with_seg,
-                if self.matched_pairs_with_seg > 0 {
-                    self.area_within_5pct as f64 / self.matched_pairs_with_seg as f64 * 100.0
+                self.matched_pairs_with_seg - self.zero_area_count,
+                if self.matched_pairs_with_seg > self.zero_area_count {
+                    self.area_within_5pct as f64 / (self.matched_pairs_with_seg - self.zero_area_count) as f64 * 100.0
                 } else {
                     100.0
                 }
@@ -536,18 +627,44 @@ mod integration {
                 if self.min_area_ratio == f64::MAX { 1.0 } else { self.min_area_ratio },
                 if self.max_area_ratio == 0.0 { 1.0 } else { self.max_area_ratio }
             );
+            if self.zero_area_count > 0 {
+                println!(
+                    "  │   Zero-area (skipped): {}",
+                    self.zero_area_count
+                );
+            }
             println!("  │                                                         │");
-            println!("  │ Spatial Accuracy (Polygon Bbox IoU):                    │");
+            println!("  │ Spatial Accuracy (Bbox IoU):                            │");
             println!(
-                "  │   IoU >= 0.9:  {}/{} ({:.1}%)",
+                "  │   All: IoU >= 0.9: {}/{} ({:.1}%), avg={:.4}",
                 self.bbox_iou_high,
                 self.matched_pairs_with_seg,
                 if self.matched_pairs_with_seg > 0 {
                     self.bbox_iou_high as f64 / self.matched_pairs_with_seg as f64 * 100.0
                 } else {
                     100.0
-                }
+                },
+                self.avg_bbox_iou()
             );
+            if self.polygon_pairs > 0 {
+                println!(
+                    "  │   Polygon: avg IoU={:.4}",
+                    self.avg_polygon_bbox_iou()
+                );
+            }
+            if self.rle_pairs > 0 {
+                println!(
+                    "  │   RLE→Polygon: {}/{} IoU >= 0.9 ({:.1}%), avg={:.4}",
+                    self.rle_bbox_iou_high,
+                    self.rle_pairs,
+                    if self.rle_pairs > 0 {
+                        self.rle_bbox_iou_high as f64 / self.rle_pairs as f64 * 100.0
+                    } else {
+                        100.0
+                    },
+                    self.avg_rle_bbox_iou()
+                );
+            }
             println!(
                 "  │   IoU < 0.5:   {}/{} ({:.1}%) [problematic]",
                 self.bbox_iou_low,
@@ -557,10 +674,6 @@ mod integration {
                 } else {
                     0.0
                 }
-            );
-            println!(
-                "  │   Average IoU: {:.4}",
-                self.avg_bbox_iou()
             );
             if self.zero_area_count > 0 {
                 println!(
@@ -612,28 +725,41 @@ mod integration {
                         (Some(orig_seg), Some(rest_seg)) => {
                             result.matched_pairs_with_seg += 1;
 
-                            // Compare polygon structure
-                            let orig_vertices = count_polygon_vertices(orig_seg);
-                            let rest_vertices = count_polygon_vertices(rest_seg);
-                            let orig_parts = count_polygon_parts(orig_seg);
-                            let rest_parts = count_polygon_parts(rest_seg);
+                            // Check if original is RLE or Polygon
+                            let is_rle = matches!(
+                                orig_seg,
+                                CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_)
+                            );
 
-                            if orig_vertices == rest_vertices {
-                                result.vertex_count_exact_match += 1;
+                            if is_rle {
+                                result.rle_pairs += 1;
+                            } else {
+                                result.polygon_pairs += 1;
+
+                                // Polygon structure comparison only makes sense for polygon→polygon
+                                let orig_vertices = count_polygon_vertices(orig_seg);
+                                let rest_vertices = count_polygon_vertices(rest_seg);
+                                let orig_parts = count_polygon_parts(orig_seg);
+                                let rest_parts = count_polygon_parts(rest_seg);
+
+                                if orig_vertices == rest_vertices {
+                                    result.vertex_count_exact_match += 1;
+                                }
+
+                                // Check if within 10%
+                                let vertex_diff =
+                                    (orig_vertices as f64 - rest_vertices as f64).abs();
+                                let vertex_threshold = (orig_vertices as f64 * 0.1).max(1.0);
+                                if vertex_diff <= vertex_threshold {
+                                    result.vertex_count_close_match += 1;
+                                }
+
+                                if orig_parts == rest_parts {
+                                    result.part_count_match += 1;
+                                }
                             }
 
-                            // Check if within 10%
-                            let vertex_diff = (orig_vertices as f64 - rest_vertices as f64).abs();
-                            let vertex_threshold = (orig_vertices as f64 * 0.1).max(1.0);
-                            if vertex_diff <= vertex_threshold {
-                                result.vertex_count_close_match += 1;
-                            }
-
-                            if orig_parts == rest_parts {
-                                result.part_count_match += 1;
-                            }
-
-                            // Compare area using Shoelace formula (more reliable than stored area)
+                            // Compare area (works for both polygon and RLE)
                             let orig_area = compute_segmentation_area(orig_seg);
                             let rest_area = compute_segmentation_area(rest_seg);
 
@@ -652,11 +778,11 @@ mod integration {
                                     result.area_within_5pct += 1;
                                 }
                             } else {
-                                // Track zero-area segmentations (likely RLE or degenerate polygons)
+                                // Track zero-area segmentations (degenerate polygons)
                                 result.zero_area_count += 1;
                             }
 
-                            // Compare polygon bounding box IoU
+                            // Compare bounding box IoU (now works for RLE too)
                             let bbox_iou = polygon_bbox_iou(orig_seg, rest_seg);
                             result.sum_bbox_iou += bbox_iou;
                             if bbox_iou >= 0.9 {
@@ -664,6 +790,14 @@ mod integration {
                             }
                             if bbox_iou < 0.5 {
                                 result.bbox_iou_low += 1;
+                            }
+
+                            // Track RLE-specific IoU
+                            if is_rle {
+                                result.rle_sum_bbox_iou += bbox_iou;
+                                if bbox_iou >= 0.9 {
+                                    result.rle_bbox_iou_high += 1;
+                                }
                             }
                         }
                         _ => {
@@ -929,6 +1063,48 @@ mod integration {
         // Mask validation with timing
         let mask_result = validate_segmentation_masks(&original, &restored, &mut timings);
         mask_result.report();
+
+        // Diagnostic: check RLE→Polygon conversion specifically
+        let rle_in_original: Vec<_> = original
+            .annotations
+            .iter()
+            .filter(|a| matches!(&a.segmentation, Some(CocoSegmentation::Rle(_))))
+            .collect();
+
+        if !rle_in_original.is_empty() {
+            let original_by_name = build_annotation_map_by_name(&original);
+            let restored_by_name = build_annotation_map_by_name(&restored);
+
+            let mut rle_with_polygon = 0;
+            let mut rle_empty_polygon = 0;
+
+            for (name, orig_anns) in &original_by_name {
+                if let Some(rest_anns) = restored_by_name.get(name) {
+                    let matches = hungarian_match(orig_anns, rest_anns);
+                    for (orig_idx, rest_idx) in &matches {
+                        let orig_ann = orig_anns[*orig_idx];
+                        if matches!(&orig_ann.segmentation, Some(CocoSegmentation::Rle(_))) {
+                            let rest_ann = rest_anns[*rest_idx];
+                            match &rest_ann.segmentation {
+                                Some(CocoSegmentation::Polygon(polys)) if !polys.is_empty() => {
+                                    rle_with_polygon += 1;
+                                }
+                                _ => {
+                                    rle_empty_polygon += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!(
+                "\n  RLE→Polygon: {}/{} converted, {} empty/failed",
+                rle_with_polygon,
+                rle_in_original.len(),
+                rle_empty_polygon
+            );
+        }
 
         // Assert mask preservation
         assert!(

@@ -294,6 +294,103 @@ mod integration_tests {
         }
     }
 
+    /// Test contour extraction from binary mask
+    #[test]
+    fn test_mask_to_contours_simple_square() {
+        // 7x7 image with a 3x3 filled square in the center
+        #[rustfmt::skip]
+        let mask: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 0, 0,
+            0, 0, 1, 1, 1, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+
+        let contours = mask_to_contours(&mask, 7, 7);
+
+        assert!(!contours.is_empty(), "Should find at least one contour");
+        assert!(contours[0].len() >= 3, "Contour should have at least 3 points");
+
+        // Verify all contour points are within the square region
+        for (x, y) in &contours[0] {
+            assert!(
+                *x >= 2.0 && *x <= 4.0 && *y >= 2.0 && *y <= 4.0,
+                "Contour point ({}, {}) outside expected square region",
+                x,
+                y
+            );
+        }
+    }
+
+    /// Test RLE to mask conversion with contour extraction
+    #[test]
+    fn test_rle_to_mask_with_contours() {
+        // Create RLE for a simple rectangle
+        // 10x10 image, rectangle from (2,2) to (7,7)
+        // In column-major order, this is:
+        // Columns 0-1: all bg (20 pixels each, 40 total = counts[0])
+        // Columns 2-7: 2 bg, 6 fg, 2 bg per column = 6 columns
+        // Columns 8-9: all bg (20 pixels total)
+
+        // Actually let's make it simpler - 10x10 with a 6x6 filled square
+        // Rectangle from row 2, col 2 to row 7, col 7 (6x6 = 36 pixels)
+        let height = 10u32;
+        let width = 10u32;
+
+        // Build RLE manually for this pattern
+        // Column 0: all bg (10)
+        // Column 1: all bg (10)
+        // Column 2: 2 bg, 6 fg, 2 bg = start with prev bg
+        // ...and so on
+
+        // For simplicity, let's use a stripe pattern that's easier to verify
+        // 10x10 with rows 3-6 (4 rows) being foreground
+        // In column-major: each column has bg=3, fg=4, bg=3
+
+        // First column: 3 bg + 4 fg + 3 bg
+        // RLE: [3, 4, 3, 4, 3, 4, ...] for 10 columns
+        // Total: 10 * 10 = 100 pixels
+
+        // Actually, RLE is cumulative across the whole image
+        // Let me build: first 3 bg, then 4 fg, then 6 bg (to next column), etc.
+        // This gets complex. Let's just test with a known working pattern.
+
+        // Simple: horizontal stripe in middle
+        // Rows 0-2: bg, rows 3-6: fg, rows 7-9: bg
+        // In column major: col 0 = [bg bg bg fg fg fg fg bg bg bg]
+        // counts: 3 fg, 4 bg, 3 bg = [3, 4, 3] per column
+
+        // For 10 columns, column-major layout:
+        // Total = 100
+        // Each column: 3 bg, 4 fg, 3 bg (but they merge across columns)
+
+        // Let me just use the RLE from our test_decode_rle_simple
+        let rle = CocoRle {
+            counts: vec![0, 2, 2, 2, 10], // 2x2 square in top-left of 4x4
+            size: [4, 4],
+        };
+
+        let mask_result = coco_rle_to_mask(&rle, 4, 4);
+        assert!(mask_result.is_ok(), "RLE to mask should succeed");
+
+        let mask = mask_result.unwrap();
+        assert!(
+            !mask.polygon.is_empty(),
+            "Should extract at least one polygon from RLE"
+        );
+
+        // Check polygon has reasonable number of points
+        let total_points: usize = mask.polygon.iter().map(|p| p.len()).sum();
+        assert!(
+            total_points >= 3,
+            "Should have at least 3 points, got {}",
+            total_points
+        );
+    }
+
     /// Test CocoIndex efficient lookups
     #[test]
     fn test_coco_index_lookups() {
