@@ -396,15 +396,54 @@ pub async fn export_studio_to_coco(
     Ok(annotation_count)
 }
 
-/// Download images for samples (placeholder - actual implementation would use client.download_dataset).
+/// Download images for samples from their presigned URLs.
+///
+/// Returns a vector of (archive_path, image_data) pairs suitable for ZIP creation.
 async fn download_images(
-    _client: &Client,
-    _samples: &[Sample],
-    _progress: Option<Sender<Progress>>,
+    client: &Client,
+    samples: &[Sample],
+    progress: Option<Sender<Progress>>,
 ) -> Result<Vec<(String, Vec<u8>)>, Error> {
-    // This would be implemented using client.download_dataset or direct URL fetches
-    // For now, return empty - images would need to be downloaded separately
-    Ok(vec![])
+    let mut result = Vec::with_capacity(samples.len());
+    let total = samples.len();
+
+    for (i, sample) in samples.iter().enumerate() {
+        // Find image file URL
+        let image_url = sample.files.iter().find_map(|f| {
+            if f.file_type() == "image" {
+                f.url()
+            } else {
+                None
+            }
+        });
+
+        if let Some(url) = image_url {
+            // Download the image
+            match client.download(url).await {
+                Ok(data) => {
+                    // Build archive path from sample name
+                    let name = sample.image_name.as_deref().unwrap_or("unknown");
+                    let filename = if name.contains('.') {
+                        format!("images/{}", name)
+                    } else {
+                        format!("images/{}.jpg", name)
+                    };
+                    result.push((filename, data));
+                }
+                Err(e) => {
+                    // Log warning but continue with other images
+                    log::warn!("Failed to download image for sample {:?}: {}", sample.image_name, e);
+                }
+            }
+        }
+
+        // Update progress
+        if let Some(ref p) = progress {
+            let _ = p.send(Progress { current: i + 1, total }).await;
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

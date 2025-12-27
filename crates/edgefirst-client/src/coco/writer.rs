@@ -160,6 +160,203 @@ impl CocoWriter {
 
         self.write_zip(dataset, images, path)
     }
+
+    /// Split a dataset by group and write each group to its own directory.
+    ///
+    /// Creates a directory structure like:
+    /// ```text
+    /// output_dir/
+    /// ├── train/
+    /// │   ├── annotations/instances_train.json
+    /// │   └── images/
+    /// │       └── *.jpg
+    /// └── val/
+    ///     ├── annotations/instances_val.json
+    ///     └── images/
+    ///         └── *.jpg
+    /// ```
+    ///
+    /// # Arguments
+    /// * `dataset` - The COCO dataset to split
+    /// * `group_assignments` - Parallel array of group names for each image
+    /// * `images_source` - Optional source directory containing images to copy
+    /// * `output_dir` - Output root directory
+    ///
+    /// # Returns
+    /// HashMap of group name → number of images written
+    pub fn write_split_by_group<P: AsRef<Path>>(
+        &self,
+        dataset: &CocoDataset,
+        group_assignments: &[String],
+        images_source: Option<&Path>,
+        output_dir: P,
+    ) -> Result<std::collections::HashMap<String, usize>, Error> {
+        use std::collections::{HashMap, HashSet};
+
+        let output_dir = output_dir.as_ref();
+
+        // Validate input
+        if dataset.images.len() != group_assignments.len() {
+            return Err(Error::CocoError(format!(
+                "Image count ({}) does not match group assignment count ({})",
+                dataset.images.len(),
+                group_assignments.len()
+            )));
+        }
+
+        // Build groups
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, group) in group_assignments.iter().enumerate() {
+            groups.entry(group.clone()).or_default().push(idx);
+        }
+
+        let mut result = HashMap::new();
+
+        for (group_name, image_indices) in &groups {
+            // Create subdirectory structure
+            let group_dir = output_dir.join(group_name);
+            let annotations_dir = group_dir.join("annotations");
+            let images_dir = group_dir.join("images");
+
+            std::fs::create_dir_all(&annotations_dir)?;
+            std::fs::create_dir_all(&images_dir)?;
+
+            // Build subset dataset for this group
+            let image_ids: HashSet<u64> = image_indices
+                .iter()
+                .map(|&idx| dataset.images[idx].id)
+                .collect();
+
+            let subset = CocoDataset {
+                info: dataset.info.clone(),
+                licenses: dataset.licenses.clone(),
+                images: image_indices
+                    .iter()
+                    .map(|&idx| dataset.images[idx].clone())
+                    .collect(),
+                annotations: dataset
+                    .annotations
+                    .iter()
+                    .filter(|ann| image_ids.contains(&ann.image_id))
+                    .cloned()
+                    .collect(),
+                categories: dataset.categories.clone(),
+            };
+
+            // Write annotations JSON
+            let ann_file = annotations_dir.join(format!("instances_{}.json", group_name));
+            self.write_json(&subset, &ann_file)?;
+
+            // Copy images if source provided
+            if let Some(source) = images_source {
+                for &idx in image_indices {
+                    let image = &dataset.images[idx];
+                    let src_path = source.join(&image.file_name);
+                    let dst_path = images_dir.join(&image.file_name);
+
+                    if src_path.exists() {
+                        std::fs::copy(&src_path, &dst_path)?;
+                    }
+                }
+            }
+
+            result.insert(group_name.clone(), image_indices.len());
+        }
+
+        Ok(result)
+    }
+
+    /// Split a dataset by group and write each group to its own ZIP archive.
+    ///
+    /// Creates ZIP archives like:
+    /// - `output_dir/train.zip` containing train split
+    /// - `output_dir/val.zip` containing val split
+    ///
+    /// # Arguments
+    /// * `dataset` - The COCO dataset to split
+    /// * `group_assignments` - Parallel array of group names for each image
+    /// * `images_source` - Optional source directory containing images to include
+    /// * `output_dir` - Output directory for ZIP files
+    ///
+    /// # Returns
+    /// HashMap of group name → number of images written
+    pub fn write_split_by_group_zip<P: AsRef<Path>>(
+        &self,
+        dataset: &CocoDataset,
+        group_assignments: &[String],
+        images_source: Option<&Path>,
+        output_dir: P,
+    ) -> Result<std::collections::HashMap<String, usize>, Error> {
+        use std::collections::{HashMap, HashSet};
+
+        let output_dir = output_dir.as_ref();
+        std::fs::create_dir_all(output_dir)?;
+
+        // Validate input
+        if dataset.images.len() != group_assignments.len() {
+            return Err(Error::CocoError(format!(
+                "Image count ({}) does not match group assignment count ({})",
+                dataset.images.len(),
+                group_assignments.len()
+            )));
+        }
+
+        // Build groups
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, group) in group_assignments.iter().enumerate() {
+            groups.entry(group.clone()).or_default().push(idx);
+        }
+
+        let mut result = HashMap::new();
+
+        for (group_name, image_indices) in &groups {
+            // Build subset dataset for this group
+            let image_ids: HashSet<u64> = image_indices
+                .iter()
+                .map(|&idx| dataset.images[idx].id)
+                .collect();
+
+            let subset = CocoDataset {
+                info: dataset.info.clone(),
+                licenses: dataset.licenses.clone(),
+                images: image_indices
+                    .iter()
+                    .map(|&idx| dataset.images[idx].clone())
+                    .collect(),
+                annotations: dataset
+                    .annotations
+                    .iter()
+                    .filter(|ann| image_ids.contains(&ann.image_id))
+                    .cloned()
+                    .collect(),
+                categories: dataset.categories.clone(),
+            };
+
+            // Collect images if source provided
+            let images: Vec<(String, Vec<u8>)> = if let Some(source) = images_source {
+                image_indices
+                    .iter()
+                    .filter_map(|&idx| {
+                        let image = &dataset.images[idx];
+                        let src_path = source.join(&image.file_name);
+                        std::fs::read(&src_path)
+                            .ok()
+                            .map(|data| (format!("images/{}", image.file_name), data))
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // Write ZIP
+            let zip_path = output_dir.join(format!("{}.zip", group_name));
+            self.write_zip(&subset, images.into_iter(), &zip_path)?;
+
+            result.insert(group_name.clone(), image_indices.len());
+        }
+
+        Ok(result)
+    }
 }
 
 impl Default for CocoWriter {
@@ -408,5 +605,127 @@ mod tests {
         // Should contain annotations and image
         assert!(archive.by_name("annotations/instances.json").is_ok());
         assert!(archive.by_name("images/test.jpg").is_ok());
+    }
+
+    #[test]
+    fn test_write_split_by_group() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_dir = temp_dir.path().join("split_output");
+
+        let dataset = CocoDataset {
+            images: vec![
+                CocoImage {
+                    id: 1,
+                    width: 640,
+                    height: 480,
+                    file_name: "train1.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 2,
+                    width: 640,
+                    height: 480,
+                    file_name: "train2.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 3,
+                    width: 800,
+                    height: 600,
+                    file_name: "val1.jpg".to_string(),
+                    ..Default::default()
+                },
+            ],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                supercategory: None,
+            }],
+            annotations: vec![
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [10.0, 20.0, 100.0, 80.0],
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 2,
+                    category_id: 1,
+                    bbox: [20.0, 30.0, 100.0, 80.0],
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 3,
+                    image_id: 3,
+                    category_id: 1,
+                    bbox: [30.0, 40.0, 100.0, 80.0],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let groups = vec![
+            "train".to_string(),
+            "train".to_string(),
+            "val".to_string(),
+        ];
+
+        let writer = CocoWriter::new();
+        let result = writer
+            .write_split_by_group(&dataset, &groups, None, &output_dir)
+            .unwrap();
+
+        // Verify counts
+        assert_eq!(result.get("train"), Some(&2));
+        assert_eq!(result.get("val"), Some(&1));
+
+        // Verify directory structure
+        assert!(output_dir.join("train/annotations/instances_train.json").exists());
+        assert!(output_dir.join("val/annotations/instances_val.json").exists());
+
+        // Verify train JSON content
+        let train_json = std::fs::read_to_string(
+            output_dir.join("train/annotations/instances_train.json"),
+        )
+        .unwrap();
+        let train_data: CocoDataset = serde_json::from_str(&train_json).unwrap();
+        assert_eq!(train_data.images.len(), 2);
+        assert_eq!(train_data.annotations.len(), 2);
+
+        // Verify val JSON content
+        let val_json = std::fs::read_to_string(
+            output_dir.join("val/annotations/instances_val.json"),
+        )
+        .unwrap();
+        let val_data: CocoDataset = serde_json::from_str(&val_json).unwrap();
+        assert_eq!(val_data.images.len(), 1);
+        assert_eq!(val_data.annotations.len(), 1);
+    }
+
+    #[test]
+    fn test_write_split_by_group_mismatch() {
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Wrong number of group assignments
+        let groups = vec!["train".to_string(), "val".to_string()];
+
+        let writer = CocoWriter::new();
+        let result = writer.write_split_by_group(
+            &dataset,
+            &groups,
+            None,
+            std::path::Path::new("/tmp/test"),
+        );
+
+        assert!(result.is_err());
     }
 }

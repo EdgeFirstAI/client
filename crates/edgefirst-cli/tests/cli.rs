@@ -4794,3 +4794,254 @@ fn test_server_rejects_inconsistent_group_snapshot() -> Result<(), Box<dyn std::
         }
     }
 }
+
+// ============================================================================
+// COCO Format Tests
+// ============================================================================
+
+#[test]
+fn test_coco_to_arrow_basic() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0}],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let input = temp_dir.path().join("test.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let output = temp_dir.path().join("output.arrow");
+
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Converted 1"));
+
+    assert!(output.exists(), "Arrow output file should exist");
+}
+
+#[test]
+fn test_coco_to_arrow_with_group() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0}],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let input = temp_dir.path().join("test.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let output = temp_dir.path().join("output.arrow");
+
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--group",
+            "train",
+        ])
+        .assert()
+        .success();
+
+    assert!(output.exists(), "Arrow output file should exist");
+}
+
+#[test]
+fn test_coco_roundtrip_cli() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0,
+             "segmentation": [[10, 20, 110, 20, 110, 100, 10, 100]]}
+        ],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let input = temp_dir.path().join("original.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let arrow = temp_dir.path().join("converted.arrow");
+    let restored = temp_dir.path().join("restored.json");
+
+    // COCO -> Arrow
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            arrow.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(arrow.exists(), "Arrow file should exist after conversion");
+
+    // Arrow -> COCO
+    edgefirst_cmd()
+        .args([
+            "arrow-to-coco",
+            arrow.to_str().unwrap(),
+            "-o",
+            restored.to_str().unwrap(),
+            "--pretty",
+        ])
+        .assert()
+        .success();
+
+    assert!(restored.exists(), "Restored COCO file should exist");
+
+    // Verify restored file content
+    let contents = std::fs::read_to_string(&restored).unwrap();
+    let restored_data: serde_json::Value = serde_json::from_str(&contents).unwrap();
+
+    assert_eq!(
+        restored_data["annotations"].as_array().unwrap().len(),
+        1,
+        "Should have 1 annotation"
+    );
+    assert_eq!(
+        restored_data["categories"].as_array().unwrap().len(),
+        1,
+        "Should have 1 category"
+    );
+}
+
+#[test]
+fn test_coco_to_arrow_multiple_annotations() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    let coco_json = r#"{
+        "images": [
+            {"id": 1, "width": 640, "height": 480, "file_name": "image1.jpg"},
+            {"id": 2, "width": 800, "height": 600, "file_name": "image2.jpg"}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0},
+            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [200, 150, 50, 60], "area": 3000, "iscrowd": 0},
+            {"id": 3, "image_id": 2, "category_id": 1, "bbox": [50, 50, 200, 150], "area": 30000, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 1, "name": "person", "supercategory": "human"},
+            {"id": 2, "name": "car", "supercategory": "vehicle"}
+        ]
+    }"#;
+
+    let input = temp_dir.path().join("multi.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let output = temp_dir.path().join("multi.arrow");
+
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Converted 3"));
+
+    assert!(output.exists());
+}
+
+#[test]
+fn test_coco_to_arrow_with_masks() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0,
+             "segmentation": [[10, 20, 110, 20, 110, 100, 10, 100]]}
+        ],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let input = temp_dir.path().join("masks.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let output = temp_dir.path().join("masks.arrow");
+
+    // --masks defaults to true, so we don't need to specify it
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(output.exists());
+}
+
+#[test]
+fn test_arrow_to_coco_with_groups() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    // Create COCO with group
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0}],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let input = temp_dir.path().join("test.json");
+    std::fs::write(&input, coco_json).unwrap();
+
+    let arrow = temp_dir.path().join("test.arrow");
+    let output = temp_dir.path().join("filtered.json");
+
+    // COCO -> Arrow with group
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            input.to_str().unwrap(),
+            "-o",
+            arrow.to_str().unwrap(),
+            "--group",
+            "train",
+        ])
+        .assert()
+        .success();
+
+    // Arrow -> COCO with group filter
+    edgefirst_cmd()
+        .args([
+            "arrow-to-coco",
+            arrow.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--groups",
+            "train",
+        ])
+        .assert()
+        .success();
+
+    assert!(output.exists());
+
+    // Verify content
+    let contents = std::fs::read_to_string(&output).unwrap();
+    let restored_data: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    assert_eq!(
+        restored_data["annotations"].as_array().unwrap().len(),
+        1,
+        "Should have 1 annotation in filtered output"
+    );
+}

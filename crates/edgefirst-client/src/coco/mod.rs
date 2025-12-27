@@ -56,7 +56,7 @@ mod writer;
 mod arrow;
 
 #[cfg(feature = "polars")]
-mod studio;
+pub mod studio;
 
 // Re-export types
 pub use types::{
@@ -65,7 +65,7 @@ pub use types::{
 };
 
 // Re-export readers/writers
-pub use reader::{CocoReadOptions, CocoReader};
+pub use reader::{infer_group_from_filename, read_coco_directory, CocoReadOptions, CocoReader};
 pub use writer::{CocoWriteOptions, CocoWriter};
 
 // Re-export conversion functions

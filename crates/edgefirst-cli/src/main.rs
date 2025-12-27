@@ -523,6 +523,74 @@ enum Command {
         #[clap(long)]
         pretty: bool,
     },
+    /// Import COCO dataset into EdgeFirst Studio.
+    ///
+    /// Reads COCO annotations and images, converts to EdgeFirst format,
+    /// and uploads to Studio using the bulk API.
+    ///
+    /// Examples:
+    ///   edgefirst import-coco ./coco-data dataset-123 annotation-set-456
+    ///   edgefirst import-coco instances.json dataset-123 annset-456 --group train
+    ImportCoco {
+        /// Path to COCO folder, ZIP, or JSON file
+        coco_path: PathBuf,
+
+        /// Target dataset ID in Studio
+        dataset_id: String,
+
+        /// Target annotation set ID
+        annotation_set_id: String,
+
+        /// Group name for all samples (e.g., "train", "val")
+        #[clap(long)]
+        group: Option<String>,
+
+        /// Include segmentation masks (default: true)
+        #[clap(long, default_value = "true")]
+        masks: bool,
+
+        /// Include images in upload (default: true)
+        #[clap(long, default_value = "true")]
+        images: bool,
+
+        /// Batch size for uploads
+        #[clap(long, default_value = "100")]
+        batch_size: usize,
+    },
+    /// Export EdgeFirst Studio dataset to COCO format.
+    ///
+    /// Downloads samples and annotations from Studio and converts to COCO format.
+    ///
+    /// Examples:
+    ///   edgefirst export-coco dataset-123 annset-456 -o instances.json
+    ///   edgefirst export-coco dataset-123 annset-456 -o coco.zip --images --groups train,val
+    ExportCoco {
+        /// Source dataset ID in Studio
+        dataset_id: String,
+
+        /// Source annotation set ID
+        annotation_set_id: String,
+
+        /// Output file path (JSON or ZIP)
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Filter by group names (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        groups: Vec<String>,
+
+        /// Include segmentation masks
+        #[clap(long, default_value = "true")]
+        masks: bool,
+
+        /// Include images in output (creates ZIP)
+        #[clap(long)]
+        images: bool,
+
+        /// Pretty-print JSON output
+        #[clap(long)]
+        pretty: bool,
+    },
 }
 
 // Command handler functions
@@ -2962,6 +3030,160 @@ async fn handle_arrow_to_coco(
     Ok(())
 }
 
+/// Handle COCO import to Studio.
+async fn handle_import_coco(
+    client: &Client,
+    coco_path: PathBuf,
+    dataset_id: String,
+    annotation_set_id: String,
+    group: Option<String>,
+    masks: bool,
+    images: bool,
+    batch_size: usize,
+) -> Result<(), Error> {
+    use edgefirst_client::coco::studio::{import_coco_to_studio, CocoImportOptions};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    println!("Importing COCO dataset to Studio...");
+    println!("  Source:         {:?}", coco_path);
+    println!("  Dataset:        {}", dataset_id);
+    println!("  Annotation Set: {}", annotation_set_id);
+    if let Some(ref g) = group {
+        println!("  Group:          {}", g);
+    }
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let options = CocoImportOptions {
+        include_masks: masks,
+        include_images: images,
+        group,
+        batch_size,
+    };
+
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+
+    let coco_path_clone = coco_path.clone();
+    let client = client.clone();
+    let task = tokio::spawn(async move {
+        import_coco_to_studio(
+            &client,
+            &coco_path_clone,
+            dataset_id,
+            annotation_set_id,
+            &options,
+            Some(tx),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let count = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Imported {} samples to Studio", count);
+
+    Ok(())
+}
+
+/// Handle Studio export to COCO.
+async fn handle_export_coco(
+    client: &Client,
+    dataset_id: String,
+    annotation_set_id: String,
+    output: PathBuf,
+    groups: Vec<String>,
+    masks: bool,
+    images: bool,
+    pretty: bool,
+) -> Result<(), Error> {
+    use chrono::Datelike;
+    use edgefirst_client::coco::studio::{export_studio_to_coco, CocoExportOptions};
+    use edgefirst_client::coco::CocoInfo;
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let output_zip = output
+        .extension()
+        .map(|e| e == "zip")
+        .unwrap_or(false);
+
+    println!("Exporting Studio dataset to COCO format...");
+    println!("  Dataset:        {}", dataset_id);
+    println!("  Annotation Set: {}", annotation_set_id);
+    println!("  Output:         {:?}", output);
+    if !groups.is_empty() {
+        println!("  Groups:         {}", groups.join(", "));
+    }
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let options = CocoExportOptions {
+        groups,
+        include_masks: masks,
+        include_images: images,
+        output_zip,
+        pretty_json: pretty,
+        info: Some(CocoInfo {
+            description: Some("Exported from EdgeFirst Studio".to_string()),
+            version: Some("1.0".to_string()),
+            year: Some(chrono::Utc::now().year() as u32),
+            ..Default::default()
+        }),
+    };
+
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+
+    let output_clone = output.clone();
+    let client = client.clone();
+    let task = tokio::spawn(async move {
+        export_studio_to_coco(
+            &client,
+            dataset_id,
+            annotation_set_id,
+            &output_clone,
+            &options,
+            Some(tx),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let count = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Exported {} annotations to COCO format", count);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -2981,6 +3203,51 @@ async fn main() -> Result<(), Error> {
     // Handle sleep command - no authentication needed
     if let Command::Sleep { seconds } = args.cmd {
         return handle_sleep(seconds).await;
+    }
+
+    // Handle local file commands - no authentication needed
+    match &args.cmd {
+        Command::CocoToArrow {
+            coco_path,
+            output,
+            masks,
+            group,
+        } => {
+            return handle_coco_to_arrow(
+                coco_path.clone(),
+                output.clone(),
+                *masks,
+                group.clone(),
+            )
+            .await;
+        }
+        Command::ArrowToCoco {
+            arrow_path,
+            output,
+            masks,
+            groups,
+            pretty,
+        } => {
+            return handle_arrow_to_coco(
+                arrow_path.clone(),
+                output.clone(),
+                *masks,
+                groups.clone(),
+                *pretty,
+            )
+            .await;
+        }
+        Command::GenerateArrow {
+            folder,
+            output,
+            detect_sequences,
+        } => {
+            return handle_generate_arrow(folder.clone(), output.clone(), *detect_sequences);
+        }
+        Command::ValidateSnapshot { path, verbose } => {
+            return handle_validate_snapshot(path.clone(), *verbose);
+        }
+        _ => {}
     }
 
     // Handle login command specially - ignore existing token, use --server or
@@ -3231,25 +3498,53 @@ async fn main() -> Result<(), Error> {
         Command::DeleteSnapshot { snapshot_id } => {
             handle_delete_snapshot(&client, snapshot_id).await
         }
-        Command::GenerateArrow {
-            folder,
-            output,
-            detect_sequences,
-        } => handle_generate_arrow(folder, output, detect_sequences),
-        Command::ValidateSnapshot { path, verbose } => handle_validate_snapshot(path, verbose),
-        Command::CocoToArrow {
+        // These are handled early without authentication
+        Command::GenerateArrow { .. } => unreachable!(),
+        Command::ValidateSnapshot { .. } => unreachable!(),
+        Command::CocoToArrow { .. } => unreachable!(),
+        Command::ArrowToCoco { .. } => unreachable!(),
+        Command::ImportCoco {
             coco_path,
-            output,
-            masks,
+            dataset_id,
+            annotation_set_id,
             group,
-        } => handle_coco_to_arrow(coco_path, output, masks, group).await,
-        Command::ArrowToCoco {
-            arrow_path,
-            output,
             masks,
+            images,
+            batch_size,
+        } => {
+            handle_import_coco(
+                &client,
+                coco_path,
+                dataset_id,
+                annotation_set_id,
+                group,
+                masks,
+                images,
+                batch_size,
+            )
+            .await
+        }
+        Command::ExportCoco {
+            dataset_id,
+            annotation_set_id,
+            output,
             groups,
+            masks,
+            images,
             pretty,
-        } => handle_arrow_to_coco(arrow_path, output, masks, groups, pretty).await,
+        } => {
+            handle_export_coco(
+                &client,
+                dataset_id,
+                annotation_set_id,
+                output,
+                groups,
+                masks,
+                images,
+                pretty,
+            )
+            .await
+        }
     }
 }
 

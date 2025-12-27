@@ -270,6 +270,139 @@ fn validate_dataset(dataset: &CocoDataset) -> Result<(), Error> {
     Ok(())
 }
 
+/// Infer group name from COCO annotation filename.
+///
+/// Extracts the split name from standard COCO naming conventions:
+/// - `instances_train2017.json` → `"train"`
+/// - `instances_val2017.json` → `"val"`
+/// - `instances_test2017.json` → `"test"`
+/// - `person_keypoints_train2017.json` → `"train"`
+///
+/// # Arguments
+/// * `filename` - The annotation file name
+///
+/// # Returns
+/// The inferred group name if extraction succeeds
+pub fn infer_group_from_filename(filename: &str) -> Option<String> {
+    let stem = Path::new(filename).file_stem()?.to_str()?;
+
+    // Try common COCO patterns
+    // Pattern: instances_<group><year>.json
+    if let Some(rest) = stem.strip_prefix("instances_") {
+        let group = rest.trim_end_matches(char::is_numeric);
+        if !group.is_empty() {
+            return Some(group.to_string());
+        }
+    }
+
+    // Pattern: person_keypoints_<group><year>.json
+    if let Some(rest) = stem.strip_prefix("person_keypoints_") {
+        let group = rest.trim_end_matches(char::is_numeric);
+        if !group.is_empty() {
+            return Some(group.to_string());
+        }
+    }
+
+    // Pattern: captions_<group><year>.json
+    if let Some(rest) = stem.strip_prefix("captions_") {
+        let group = rest.trim_end_matches(char::is_numeric);
+        if !group.is_empty() {
+            return Some(group.to_string());
+        }
+    }
+
+    // Pattern: panoptic_<group><year>.json
+    if let Some(rest) = stem.strip_prefix("panoptic_") {
+        let group = rest.trim_end_matches(char::is_numeric);
+        if !group.is_empty() {
+            return Some(group.to_string());
+        }
+    }
+
+    // Fallback: look for train/val/test anywhere in the filename
+    let lower = filename.to_lowercase();
+    if lower.contains("train") {
+        return Some("train".to_string());
+    }
+    if lower.contains("val") {
+        return Some("val".to_string());
+    }
+    if lower.contains("test") {
+        return Some("test".to_string());
+    }
+
+    None
+}
+
+/// Read all COCO annotation files from a directory.
+///
+/// Discovers and reads annotation files from standard COCO directory structures:
+/// ```text
+/// coco_dir/
+/// ├── annotations/
+/// │   ├── instances_train2017.json
+/// │   └── instances_val2017.json
+/// └── ...
+/// ```
+///
+/// # Arguments
+/// * `path` - Path to the COCO directory
+/// * `options` - Read options
+///
+/// # Returns
+/// Vector of `(CocoDataset, inferred_group)` pairs
+pub fn read_coco_directory<P: AsRef<Path>>(
+    path: P,
+    options: &CocoReadOptions,
+) -> Result<Vec<(CocoDataset, String)>, Error> {
+    let path = path.as_ref();
+    let mut results = Vec::new();
+
+    // Look for annotation files
+    let annotations_dir = path.join("annotations");
+    let search_dirs: Vec<&Path> = if annotations_dir.is_dir() {
+        vec![annotations_dir.as_path(), path]
+    } else {
+        vec![path]
+    };
+
+    for search_dir in search_dirs {
+        if !search_dir.is_dir() {
+            continue;
+        }
+
+        for entry in std::fs::read_dir(search_dir)? {
+            let entry = entry?;
+            let file_path = entry.path();
+
+            if !file_path.is_file() {
+                continue;
+            }
+
+            let filename = file_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+            // Only process instance annotation files
+            if filename.ends_with(".json") && filename.contains("instances") {
+                let group = infer_group_from_filename(filename).unwrap_or_else(|| "default".to_string());
+
+                let reader = CocoReader::with_options(options.clone());
+                let dataset = reader.read_json(&file_path)?;
+
+                results.push((dataset, group));
+            }
+        }
+    }
+
+    if results.is_empty() {
+        return Err(Error::MissingAnnotations(format!(
+            "No COCO annotation files found in {}",
+            path.display()
+        )));
+    }
+
+    Ok(results)
+}
+
 /// Merge a source dataset into a target dataset.
 fn merge_datasets(target: &mut CocoDataset, source: CocoDataset) {
     // Take info if not set
@@ -477,5 +610,77 @@ mod tests {
         let filtered = reader.apply_filters(dataset);
         assert_eq!(filtered.images.len(), 2);
         assert_eq!(filtered.annotations.len(), 2);
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_instances() {
+        assert_eq!(
+            infer_group_from_filename("instances_train2017.json"),
+            Some("train".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("instances_val2017.json"),
+            Some("val".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("instances_test2017.json"),
+            Some("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_keypoints() {
+        assert_eq!(
+            infer_group_from_filename("person_keypoints_train2017.json"),
+            Some("train".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("person_keypoints_val2017.json"),
+            Some("val".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_captions() {
+        assert_eq!(
+            infer_group_from_filename("captions_train2017.json"),
+            Some("train".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("captions_val2017.json"),
+            Some("val".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_panoptic() {
+        assert_eq!(
+            infer_group_from_filename("panoptic_train2017.json"),
+            Some("train".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("panoptic_val2017.json"),
+            Some("val".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_fallback() {
+        // Falls back to looking for train/val/test in filename
+        assert_eq!(
+            infer_group_from_filename("my_custom_train_annotations.json"),
+            Some("train".to_string())
+        );
+        assert_eq!(
+            infer_group_from_filename("validation_data.json"),
+            Some("val".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_no_match() {
+        // No recognizable pattern
+        assert_eq!(infer_group_from_filename("annotations.json"), None);
+        assert_eq!(infer_group_from_filename("data.json"), None);
     }
 }
