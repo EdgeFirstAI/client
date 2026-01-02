@@ -4,14 +4,16 @@
 //! COCO JSON data structures for serde serialization/deserialization.
 //!
 //! Supports object detection and instance segmentation annotation types.
-//! Keypoints, captions, and panoptic segmentation are NOT supported in this version.
+//! Keypoints, captions, and panoptic segmentation are NOT supported in this
+//! version.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level COCO dataset structure.
 ///
-/// This is the root structure for COCO annotation files like `instances_train2017.json`.
+/// This is the root structure for COCO annotation files like
+/// `instances_train2017.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CocoDataset {
     /// Dataset metadata (optional but commonly present).
@@ -160,7 +162,8 @@ pub struct CocoAnnotation {
 /// Segmentation format: polygon array or RLE.
 ///
 /// COCO supports two segmentation formats:
-/// - **Polygon**: For single instances (`iscrowd=0`), uses nested coordinate arrays
+/// - **Polygon**: For single instances (`iscrowd=0`), uses nested coordinate
+///   arrays
 /// - **RLE**: For crowds (`iscrowd=1`), uses run-length encoding
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

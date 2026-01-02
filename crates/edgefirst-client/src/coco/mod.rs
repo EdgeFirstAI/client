@@ -3,12 +3,14 @@
 
 //! # COCO Dataset Format Support
 //!
-//! This module provides comprehensive support for the COCO (Common Objects in Context)
-//! dataset format, enabling bidirectional conversion between COCO and EdgeFirst formats.
+//! This module provides comprehensive support for the COCO (Common Objects in
+//! Context) dataset format, enabling bidirectional conversion between COCO and
+//! EdgeFirst formats.
 //!
 //! ## Supported Workflows
 //!
-//! 1. **COCO → EdgeFirst Arrow**: Convert COCO JSON/ZIP to Arrow-based EdgeFirst format
+//! 1. **COCO → EdgeFirst Arrow**: Convert COCO JSON/ZIP to Arrow-based
+//!    EdgeFirst format
 //! 2. **EdgeFirst Arrow → COCO**: Convert Arrow format back to COCO JSON
 //! 3. **COCO → Studio**: Import COCO directly into EdgeFirst Studio via API
 //! 4. **Studio → COCO**: Export Studio dataset to COCO format
@@ -25,14 +27,17 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use edgefirst_client::coco::{CocoReader, coco_to_arrow, CocoToArrowOptions};
+//! use edgefirst_client::coco::{CocoReader, CocoToArrowOptions, coco_to_arrow};
 //!
 //! # async fn example() -> Result<(), edgefirst_client::Error> {
 //! // Read COCO annotations
 //! let reader = CocoReader::new();
 //! let dataset = reader.read_json("annotations/instances_val2017.json")?;
-//! println!("Found {} images and {} annotations",
-//!          dataset.images.len(), dataset.annotations.len());
+//! println!(
+//!     "Found {} images and {} annotations",
+//!     dataset.images.len(),
+//!     dataset.annotations.len()
+//! );
 //!
 //! // Convert to EdgeFirst Arrow format
 //! let options = CocoToArrowOptions::default();
@@ -41,7 +46,8 @@
 //!     "dataset.arrow",
 //!     &options,
 //!     None,
-//! ).await?;
+//! )
+//! .await?;
 //! println!("Converted {} samples", count);
 //! # Ok(())
 //! # }
@@ -50,6 +56,7 @@
 mod convert;
 mod reader;
 mod types;
+pub mod verify;
 mod writer;
 
 #[cfg(feature = "polars")]
@@ -65,7 +72,10 @@ pub use types::{
 };
 
 // Re-export readers/writers
-pub use reader::{infer_group_from_filename, read_coco_directory, CocoReadOptions, CocoReader};
+pub use reader::{
+    CocoReadOptions, CocoReader, infer_group_from_filename, infer_group_from_folder,
+    read_coco_directory,
+};
 pub use writer::{CocoWriteOptions, CocoWriter};
 
 // Re-export conversion functions
@@ -77,12 +87,19 @@ pub use convert::{
 
 // Re-export Arrow conversions (feature-gated)
 #[cfg(feature = "polars")]
-pub use arrow::{arrow_to_coco, coco_to_arrow, ArrowToCocoOptions, CocoToArrowOptions};
+pub use arrow::{ArrowToCocoOptions, CocoToArrowOptions, arrow_to_coco, coco_to_arrow};
 
 // Re-export Studio integration (feature-gated)
 #[cfg(feature = "polars")]
 pub use studio::{
-    export_studio_to_coco, import_coco_to_studio, CocoExportOptions, CocoImportOptions,
+    CocoExportOptions, CocoImportOptions, CocoImportResult, CocoUpdateOptions, CocoUpdateResult,
+    CocoVerifyOptions, export_studio_to_coco, import_coco_to_studio, update_coco_annotations,
+    verify_coco_import,
+};
+
+// Re-export verification types
+pub use verify::{
+    BboxValidationResult, CategoryValidationResult, MaskValidationResult, VerificationResult,
 };
 
 #[cfg(test)]

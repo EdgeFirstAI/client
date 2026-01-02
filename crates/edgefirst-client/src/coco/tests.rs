@@ -142,7 +142,7 @@ mod integration_tests {
             // (coco_bbox, image_width, image_height)
             ([0.0, 0.0, 640.0, 480.0], 640, 480), // Full image
             ([100.0, 100.0, 200.0, 200.0], 1000, 1000), // Center region
-            ([0.5, 0.5, 1.0, 1.0], 100, 100), // Sub-pixel precision
+            ([0.5, 0.5, 1.0, 1.0], 100, 100),     // Sub-pixel precision
             ([320.0, 240.0, 100.0, 75.0], 640, 480), // Typical detection
         ];
 
@@ -168,7 +168,9 @@ mod integration_tests {
     #[test]
     fn test_polygon_roundtrip_precision() {
         let original = vec![
-            vec![10.0, 20.0, 100.0, 20.0, 100.0, 100.0, 50.0, 120.0, 10.0, 100.0],
+            vec![
+                10.0, 20.0, 100.0, 20.0, 100.0, 100.0, 50.0, 120.0, 10.0, 100.0,
+            ],
             vec![200.0, 200.0, 250.0, 200.0, 250.0, 250.0, 200.0, 250.0],
         ];
 
@@ -217,7 +219,8 @@ mod integration_tests {
         // positions 0-1: fg, 2-3: bg, 4-5: fg, 6-7: bg, 8-15: bg
         // RLE (starting with bg): [0, 2, 2, 2, 10]
         //
-        // Actually, the RLE counts should be: 0 (bg), 2 (fg), 2 (bg), 2 (fg), 10 (bg) = sum 16 ✓
+        // Actually, the RLE counts should be: 0 (bg), 2 (fg), 2 (bg), 2 (fg), 10 (bg) =
+        // sum 16 ✓
 
         let rle = CocoRle {
             counts: vec![0, 2, 2, 2, 10],
@@ -312,7 +315,10 @@ mod integration_tests {
         let contours = mask_to_contours(&mask, 7, 7);
 
         assert!(!contours.is_empty(), "Should find at least one contour");
-        assert!(contours[0].len() >= 3, "Contour should have at least 3 points");
+        assert!(
+            contours[0].len() >= 3,
+            "Contour should have at least 3 points"
+        );
 
         // Verify all contour points are within the square region
         for (x, y) in &contours[0] {
@@ -396,17 +402,55 @@ mod integration_tests {
     fn test_coco_index_lookups() {
         let dataset = CocoDataset {
             images: vec![
-                CocoImage { id: 1, width: 640, height: 480, file_name: "a.jpg".to_string(), ..Default::default() },
-                CocoImage { id: 2, width: 800, height: 600, file_name: "b.jpg".to_string(), ..Default::default() },
+                CocoImage {
+                    id: 1,
+                    width: 640,
+                    height: 480,
+                    file_name: "a.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 2,
+                    width: 800,
+                    height: 600,
+                    file_name: "b.jpg".to_string(),
+                    ..Default::default()
+                },
             ],
             categories: vec![
-                CocoCategory { id: 10, name: "zebra".to_string(), supercategory: None },
-                CocoCategory { id: 20, name: "apple".to_string(), supercategory: None },
+                CocoCategory {
+                    id: 10,
+                    name: "zebra".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 20,
+                    name: "apple".to_string(),
+                    supercategory: None,
+                },
             ],
             annotations: vec![
-                CocoAnnotation { id: 100, image_id: 1, category_id: 10, bbox: [0.0; 4], ..Default::default() },
-                CocoAnnotation { id: 101, image_id: 1, category_id: 20, bbox: [0.0; 4], ..Default::default() },
-                CocoAnnotation { id: 102, image_id: 2, category_id: 10, bbox: [0.0; 4], ..Default::default() },
+                CocoAnnotation {
+                    id: 100,
+                    image_id: 1,
+                    category_id: 10,
+                    bbox: [0.0; 4],
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 101,
+                    image_id: 1,
+                    category_id: 20,
+                    bbox: [0.0; 4],
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 102,
+                    image_id: 2,
+                    category_id: 10,
+                    bbox: [0.0; 4],
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };

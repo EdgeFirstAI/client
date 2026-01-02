@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-//! Coordinate and geometry conversion functions between COCO and EdgeFirst formats.
+//! Coordinate and geometry conversion functions between COCO and EdgeFirst
+//! formats.
 //!
 //! ## Coordinate Systems
 //!
@@ -16,7 +17,8 @@ use crate::{Box2d, Error, Mask};
 // Bounding Box Conversion
 // =============================================================================
 
-/// Convert COCO bbox `[x, y, w, h]` (top-left, pixels) to EdgeFirst `Box2d` (top-left, normalized).
+/// Convert COCO bbox `[x, y, w, h]` (top-left, pixels) to EdgeFirst `Box2d`
+/// (top-left, normalized).
 ///
 /// EdgeFirst `Box2d` uses `{x, y, w, h}` where `(x, y)` is the top-left corner,
 /// normalized to the range `[0, 1]`.
@@ -36,8 +38,8 @@ use crate::{Box2d, Error, Mask};
 /// let coco_bbox = [100.0, 50.0, 200.0, 150.0]; // x=100, y=50, w=200, h=150
 /// let box2d = coco_bbox_to_box2d(&coco_bbox, 640, 480);
 ///
-/// assert!((box2d.left() - 100.0/640.0).abs() < 1e-6);
-/// assert!((box2d.top() - 50.0/480.0).abs() < 1e-6);
+/// assert!((box2d.left() - 100.0 / 640.0).abs() < 1e-6);
+/// assert!((box2d.top() - 50.0 / 480.0).abs() < 1e-6);
 /// ```
 pub fn coco_bbox_to_box2d(bbox: &[f64; 4], image_width: u32, image_height: u32) -> Box2d {
     let [x, y, w, h] = *bbox;
@@ -121,8 +123,8 @@ pub fn validate_coco_bbox(
 
 /// Convert COCO polygon segmentation to EdgeFirst `Mask` format.
 ///
-/// COCO polygons: `[[x1,y1,x2,y2,...], [x3,y3,...]]` (nested, pixel coordinates)
-/// EdgeFirst Mask: `Vec<Vec<(f32, f32)>>` (nested, normalized 0-1)
+/// COCO polygons: `[[x1,y1,x2,y2,...], [x3,y3,...]]` (nested, pixel
+/// coordinates) EdgeFirst Mask: `Vec<Vec<(f32, f32)>>` (nested, normalized 0-1)
 ///
 /// # Arguments
 /// * `polygons` - COCO polygon array (nested Vec of pixel coordinates)
@@ -187,7 +189,8 @@ pub fn mask_to_coco_polygon(mask: &Mask, image_width: u32, image_height: u32) ->
 
 /// Decode uncompressed RLE to binary mask.
 ///
-/// **CRITICAL**: RLE uses column-major (Fortran) order, starting with background.
+/// **CRITICAL**: RLE uses column-major (Fortran) order, starting with
+/// background.
 ///
 /// # Arguments
 /// * `rle` - COCO RLE with counts array
@@ -330,7 +333,8 @@ pub fn mask_to_contours(mask: &[u8], width: u32, height: u32) -> Vec<Vec<(f64, f
         for start_x in 0..w {
             let idx = start_y * w + start_x;
             if mask[idx] == 1 && !visited[idx] {
-                // Check if this is a boundary pixel (has at least one neighbor that's 0 or edge)
+                // Check if this is a boundary pixel (has at least one neighbor that's 0 or
+                // edge)
                 let is_boundary = start_x == 0
                     || start_x == w - 1
                     || start_y == 0
@@ -422,11 +426,7 @@ fn trace_contour(
 /// Convert RLE segmentation to EdgeFirst `Mask`.
 ///
 /// Decodes the RLE, extracts contours, and normalizes to `[0, 1]` range.
-pub fn coco_rle_to_mask(
-    rle: &CocoRle,
-    image_width: u32,
-    image_height: u32,
-) -> Result<Mask, Error> {
+pub fn coco_rle_to_mask(rle: &CocoRle, image_width: u32, image_height: u32) -> Result<Mask, Error> {
     let (binary_mask, height, width) = decode_rle(rle)?;
     let contours = mask_to_contours(&binary_mask, width, height);
 
@@ -666,8 +666,8 @@ mod tests {
     #[test]
     fn test_polygon_filters_too_small() {
         let polygons = vec![
-            vec![10.0, 10.0], // Only 1 point - should be filtered
-            vec![10.0, 10.0, 50.0, 50.0], // Only 2 points - should be filtered
+            vec![10.0, 10.0],                         // Only 1 point - should be filtered
+            vec![10.0, 10.0, 50.0, 50.0],             // Only 2 points - should be filtered
             vec![10.0, 10.0, 50.0, 10.0, 50.0, 50.0], // 3 points - should be kept
         ];
 
@@ -686,10 +686,12 @@ mod tests {
         // 0 1
         // 1 1
         // 0 0
-        // Column-major: [0,1,0], [1,1,0] → counts: [1,1,1, 0,2,1] simplified to [1,2,1,2]
+        // Column-major: [0,1,0], [1,1,0] → counts: [1,1,1, 0,2,1] simplified to
+        // [1,2,1,2]
         let rle = CocoRle {
-            counts: vec![1, 2, 1, 2], // bg=1, fg=2, bg=1, fg=2 (wait, that's 6 not 6... let me recalc)
-            size: [3, 2],             // height=3, width=2
+            counts: vec![1, 2, 1, 2], /* bg=1, fg=2, bg=1, fg=2 (wait, that's 6 not 6... let me
+                                       * recalc) */
+            size: [3, 2], // height=3, width=2
         };
 
         // Total pixels = 6
@@ -767,9 +769,8 @@ mod tests {
 
     #[test]
     fn test_calculate_coco_area_polygon() {
-        let seg = CocoSegmentation::Polygon(vec![vec![
-            0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0,
-        ]]);
+        let seg =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
         let area = calculate_coco_area(&seg).unwrap();
         assert!((area - 10000.0).abs() < 1e-6);
     }

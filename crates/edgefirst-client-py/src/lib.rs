@@ -2361,6 +2361,60 @@ impl Display for Label {
     }
 }
 
+/// A dataset group for organizing samples into logical subsets.
+///
+/// Groups partition samples within a dataset for purposes such as training,
+/// validation, and testing. Common group names include "train", "val", and
+/// "test", following conventions from datasets like COCO and ImageNet.
+///
+/// Each sample can belong to at most one group. Groups are managed at the
+/// dataset level and can be created, listed, and assigned to samples through
+/// the Client.
+///
+/// Example:
+///     >>> groups = client.groups(dataset_id)
+///     >>> for group in groups:
+///     ...     print(f"{group.name}: {group.id}")
+///     train: 1
+///     val: 2
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Group(edgefirst_client::Group);
+
+#[pymethods]
+impl Group {
+    /// The unique numeric identifier for this group.
+    ///
+    /// This ID is used when assigning samples to groups via
+    /// `set_sample_group_id()`.
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    /// The human-readable name of the group (e.g., "train", "val", "test").
+    ///
+    /// Group names are unique within a dataset.
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("Group(id={}, name='{}')", self.id(), self.name())
+    }
+
+    pub fn __str__(&self) -> String {
+        self.name().to_string()
+    }
+}
+
+impl Display for Group {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct AnnotationSet {
     inner: edgefirst_client::AnnotationSet,
@@ -4280,6 +4334,93 @@ impl Client {
         Ok(self.0.update_label(&label.0).await?)
     }
 
+    /// List all groups for a dataset.
+    ///
+    /// Groups organize samples into logical subsets such as "train", "val", and
+    /// "test". This method retrieves all groups that have been created for
+    /// the specified dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID
+    /// object).
+    ///
+    /// Returns:
+    ///     List[Group]: All groups associated with this dataset.
+    ///
+    /// Example:
+    ///     >>> groups = client.groups(dataset_id)
+    ///     >>> for group in groups:
+    ///     ...     print(f"{group.name} (id={group.id})")
+    ///     train (id=1)
+    ///     val (id=2)
+    ///     test (id=3)
+    #[tokio_wrap::sync]
+    pub fn groups<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Vec<Group>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let groups = self
+            .0
+            .groups(dataset_id.0)
+            .await?
+            .into_iter()
+            .map(Group)
+            .collect::<Vec<_>>();
+        Ok(groups)
+    }
+
+    /// Get an existing group by name or create a new one.
+    ///
+    /// This method is idempotent: calling it multiple times with the same name
+    /// returns the same group ID. This makes it safe to use in concurrent
+    /// workflows.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID
+    /// object).     name: The group name (e.g., "train", "val", "test").
+    ///
+    /// Returns:
+    ///     int: The group ID, which can be passed to `set_sample_group_id()`.
+    ///
+    /// Example:
+    ///     >>> # Create groups for a dataset split
+    ///     >>> train_id = client.get_or_create_group(dataset_id, "train")
+    ///     >>> val_id = client.get_or_create_group(dataset_id, "val")
+    ///     >>>
+    ///     >>> # Assign samples to groups
+    ///     >>> client.set_sample_group_id(sample1, train_id)
+    ///     >>> client.set_sample_group_id(sample2, val_id)
+    #[tokio_wrap::sync]
+    pub fn get_or_create_group<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self.0.get_or_create_group(dataset_id.0, name).await?)
+    }
+
+    /// Set the group for a sample.
+    ///
+    /// Assigns a sample to a group, replacing any existing group assignment.
+    /// Each sample can belong to at most one group at a time.
+    ///
+    /// Args:
+    ///     sample_id: The sample identifier (string, int, or SampleID object).
+    ///     group_id: The group ID to assign (from `get_or_create_group()`).
+    ///
+    /// Example:
+    ///     >>> # Assign a sample to the training group
+    ///     >>> train_id = client.get_or_create_group(dataset_id, "train")
+    ///     >>> client.set_sample_group_id(sample_id, train_id)
+    #[tokio_wrap::sync]
+    pub fn set_sample_group_id<'py>(
+        &self,
+        sample_id: Bound<'py, PyAny>,
+        group_id: u64,
+    ) -> Result<(), Error> {
+        let sample_id: SampleID = sample_id.try_into()?;
+        Ok(self.0.set_sample_group_id(sample_id.0, group_id).await?)
+    }
+
     #[tokio_wrap::sync]
     #[pyo3(signature = (project_id, name, description=None))]
     pub fn create_dataset<'py>(
@@ -5783,6 +5924,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SnapshotRestoreResult>()?;
     m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
+    m.add_class::<Group>()?;
+    m.add_class::<Label>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;
     m.add_class::<Box2d>()?;

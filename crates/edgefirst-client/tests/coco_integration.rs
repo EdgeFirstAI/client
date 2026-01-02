@@ -11,25 +11,22 @@
 #[cfg(feature = "polars")]
 mod integration {
     use edgefirst_client::coco::{
-        arrow_to_coco, coco_to_arrow, decode_compressed_rle, decode_rle, ArrowToCocoOptions,
-        CocoAnnotation, CocoCompressedRle, CocoDataset, CocoReader, CocoRle, CocoSegmentation,
-        CocoToArrowOptions, CocoWriter,
+        ArrowToCocoOptions, CocoAnnotation, CocoCompressedRle, CocoDataset, CocoReader, CocoRle,
+        CocoSegmentation, CocoToArrowOptions, CocoWriter, arrow_to_coco, coco_to_arrow,
+        decode_compressed_rle, decode_rle,
     };
-    use pathfinding::kuhn_munkres::kuhn_munkres_min;
-    use pathfinding::matrix::Matrix;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant};
+    use pathfinding::{kuhn_munkres::kuhn_munkres_min, matrix::Matrix};
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
     use tempfile::TempDir;
 
     /// Path to COCO2017 val annotations
     fn coco_val_path() -> Option<PathBuf> {
         let path = dirs::home_dir()?.join("Datasets/COCO/annotations/instances_val2017.json");
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
+        if path.exists() { Some(path) } else { None }
     }
 
     // ==================== Timing Infrastructure ====================
@@ -75,11 +72,7 @@ mod integration {
 
         fn report(&self) {
             if self.samples.len() == 1 {
-                println!(
-                    "  {}: {:.3}s",
-                    self.name,
-                    self.samples[0].as_secs_f64()
-                );
+                println!("  {}: {:.3}s", self.name, self.samples[0].as_secs_f64());
             } else {
                 println!(
                     "  {}: min={:.3}s, max={:.3}s, avg={:.3}s, total={:.3}s ({} samples)",
@@ -206,8 +199,9 @@ mod integration {
         }
     }
 
-    /// Use Hungarian algorithm to find optimal matching between two sets of annotations.
-    /// Returns pairs of (original_idx, restored_idx) for matched annotations.
+    /// Use Hungarian algorithm to find optimal matching between two sets of
+    /// annotations. Returns pairs of (original_idx, restored_idx) for
+    /// matched annotations.
     fn hungarian_match<'a>(
         orig_anns: &[&'a CocoAnnotation],
         rest_anns: &[&'a CocoAnnotation],
@@ -285,12 +279,11 @@ mod integration {
         (area / 2.0).abs()
     }
 
-    /// Calculate total area of a segmentation (Shoelace for polygon, pixel count for RLE)
+    /// Calculate total area of a segmentation (Shoelace for polygon, pixel
+    /// count for RLE)
     fn compute_segmentation_area(seg: &CocoSegmentation) -> f64 {
         match seg {
-            CocoSegmentation::Polygon(polys) => {
-                polys.iter().map(|p| polygon_area(p)).sum()
-            }
+            CocoSegmentation::Polygon(polys) => polys.iter().map(|p| polygon_area(p)).sum(),
             CocoSegmentation::Rle(rle) => {
                 if let Ok((mask, _, _)) = decode_rle(rle) {
                     mask.iter().filter(|&&v| v == 1).count() as f64
@@ -329,7 +322,8 @@ mod integration {
         Some((min_x, min_y, max_x, max_y))
     }
 
-    /// Calculate bounding box from RLE mask by decoding and finding min/max non-zero pixels
+    /// Calculate bounding box from RLE mask by decoding and finding min/max
+    /// non-zero pixels
     fn rle_bounds(rle: &CocoRle) -> Option<(f64, f64, f64, f64)> {
         let (mask, height, width) = decode_rle(rle).ok()?;
 
@@ -392,25 +386,25 @@ mod integration {
     /// Get bounding box for any segmentation type
     fn segmentation_bounds(seg: &CocoSegmentation) -> Option<(f64, f64, f64, f64)> {
         match seg {
-            CocoSegmentation::Polygon(polys) => {
-                polys.iter().filter_map(|p| polygon_bounds(p)).fold(None, |acc, b| {
-                    match acc {
-                        None => Some(b),
-                        Some((min_x, min_y, max_x, max_y)) => Some((
-                            min_x.min(b.0),
-                            min_y.min(b.1),
-                            max_x.max(b.2),
-                            max_y.max(b.3),
-                        )),
-                    }
-                })
-            }
+            CocoSegmentation::Polygon(polys) => polys
+                .iter()
+                .filter_map(|p| polygon_bounds(p))
+                .fold(None, |acc, b| match acc {
+                    None => Some(b),
+                    Some((min_x, min_y, max_x, max_y)) => Some((
+                        min_x.min(b.0),
+                        min_y.min(b.1),
+                        max_x.max(b.2),
+                        max_y.max(b.3),
+                    )),
+                }),
             CocoSegmentation::Rle(rle) => rle_bounds(rle),
             CocoSegmentation::CompressedRle(compressed) => compressed_rle_bounds(compressed),
         }
     }
 
-    /// Calculate IoU between two segmentation bounding boxes (supports polygon and RLE)
+    /// Calculate IoU between two segmentation bounding boxes (supports polygon
+    /// and RLE)
     fn polygon_bbox_iou(seg1: &CocoSegmentation, seg2: &CocoSegmentation) -> f64 {
         let bounds1 = segmentation_bounds(seg1);
         let bounds2 = segmentation_bounds(seg2);
@@ -443,9 +437,7 @@ mod integration {
     /// Count total polygon vertices in a segmentation
     fn count_polygon_vertices(seg: &CocoSegmentation) -> usize {
         match seg {
-            CocoSegmentation::Polygon(polys) => {
-                polys.iter().map(|p| p.len() / 2).sum()
-            }
+            CocoSegmentation::Polygon(polys) => polys.iter().map(|p| p.len() / 2).sum(),
             _ => 0,
         }
     }
@@ -563,9 +555,7 @@ mod integration {
             );
             println!(
                 "  │ Matched pairs: {} total ({} polygon, {} RLE→polygon)",
-                self.matched_pairs_with_seg,
-                self.polygon_pairs,
-                self.rle_pairs
+                self.matched_pairs_with_seg, self.polygon_pairs, self.rle_pairs
             );
             println!("  │                                                         │");
             println!("  │ Polygon Structure (polygon→polygon only):               │");
@@ -606,7 +596,9 @@ mod integration {
                 self.area_within_1pct,
                 self.matched_pairs_with_seg - self.zero_area_count,
                 if self.matched_pairs_with_seg > self.zero_area_count {
-                    self.area_within_1pct as f64 / (self.matched_pairs_with_seg - self.zero_area_count) as f64 * 100.0
+                    self.area_within_1pct as f64
+                        / (self.matched_pairs_with_seg - self.zero_area_count) as f64
+                        * 100.0
                 } else {
                     100.0
                 }
@@ -616,7 +608,9 @@ mod integration {
                 self.area_within_5pct,
                 self.matched_pairs_with_seg - self.zero_area_count,
                 if self.matched_pairs_with_seg > self.zero_area_count {
-                    self.area_within_5pct as f64 / (self.matched_pairs_with_seg - self.zero_area_count) as f64 * 100.0
+                    self.area_within_5pct as f64
+                        / (self.matched_pairs_with_seg - self.zero_area_count) as f64
+                        * 100.0
                 } else {
                     100.0
                 }
@@ -624,14 +618,19 @@ mod integration {
             println!(
                 "  │   Area ratio: avg={:.4}, min={:.4}, max={:.4}",
                 self.avg_area_ratio(),
-                if self.min_area_ratio == f64::MAX { 1.0 } else { self.min_area_ratio },
-                if self.max_area_ratio == 0.0 { 1.0 } else { self.max_area_ratio }
+                if self.min_area_ratio == f64::MAX {
+                    1.0
+                } else {
+                    self.min_area_ratio
+                },
+                if self.max_area_ratio == 0.0 {
+                    1.0
+                } else {
+                    self.max_area_ratio
+                }
             );
             if self.zero_area_count > 0 {
-                println!(
-                    "  │   Zero-area (skipped): {}",
-                    self.zero_area_count
-                );
+                println!("  │   Zero-area (skipped): {}", self.zero_area_count);
             }
             println!("  │                                                         │");
             println!("  │ Spatial Accuracy (Bbox IoU):                            │");
@@ -647,10 +646,7 @@ mod integration {
                 self.avg_bbox_iou()
             );
             if self.polygon_pairs > 0 {
-                println!(
-                    "  │   Polygon: avg IoU={:.4}",
-                    self.avg_polygon_bbox_iou()
-                );
+                println!("  │   Polygon: avg IoU={:.4}", self.avg_polygon_bbox_iou());
             }
             if self.rle_pairs > 0 {
                 println!(
@@ -676,10 +672,7 @@ mod integration {
                 }
             );
             if self.zero_area_count > 0 {
-                println!(
-                    "  │   Zero-area (RLE/degenerate): {}",
-                    self.zero_area_count
-                );
+                println!("  │   Zero-area (RLE/degenerate): {}", self.zero_area_count);
             }
             println!("  └─────────────────────────────────────────────────────────┘");
         }
@@ -801,7 +794,8 @@ mod integration {
                             }
                         }
                         _ => {
-                            // One or both missing segmentation - already counted above
+                            // One or both missing segmentation - already
+                            // counted above
                         }
                     }
                 }
@@ -976,18 +970,14 @@ mod integration {
         // Step 1: Read original COCO dataset
         let start = Instant::now();
         let reader = CocoReader::new();
-        let original = reader.read_json(&coco_path).expect("Failed to read COCO JSON");
+        let original = reader
+            .read_json(&coco_path)
+            .expect("Failed to read COCO JSON");
         timings.coco_read.add(start.elapsed());
 
-        println!(
-            "\n═══════════════════════════════════════════════════════════════"
-        );
-        println!(
-            "  COCO2017 VAL ROUND-TRIP TEST"
-        );
-        println!(
-            "═══════════════════════════════════════════════════════════════"
-        );
+        println!("\n═══════════════════════════════════════════════════════════════");
+        println!("  COCO2017 VAL ROUND-TRIP TEST");
+        println!("═══════════════════════════════════════════════════════════════");
         println!(
             "Original dataset: {} images, {} annotations, {} categories",
             original.images.len(),
@@ -1122,7 +1112,8 @@ mod integration {
         );
 
         // Most masks should have high quality (IoU >= 0.9)
-        let high_iou_rate = mask_result.bbox_iou_high as f64 / mask_result.matched_pairs_with_seg as f64;
+        let high_iou_rate =
+            mask_result.bbox_iou_high as f64 / mask_result.matched_pairs_with_seg as f64;
         assert!(
             high_iou_rate > 0.85,
             "Too few masks with IoU >= 0.9: {:.1}% (expected > 85%)",
@@ -1178,7 +1169,9 @@ mod integration {
     }
 
     /// Build a map of annotations by sample name for efficient lookup
-    fn build_annotation_map_by_name(dataset: &CocoDataset) -> HashMap<String, Vec<&CocoAnnotation>> {
+    fn build_annotation_map_by_name(
+        dataset: &CocoDataset,
+    ) -> HashMap<String, Vec<&CocoAnnotation>> {
         let image_names: HashMap<u64, String> = dataset
             .images
             .iter()
@@ -1327,9 +1320,15 @@ mod integration {
         }
 
         println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║               PERFORMANCE BENCHMARK ({} runs)                 ║", RUNS);
+        println!(
+            "║               PERFORMANCE BENCHMARK ({} runs)                 ║",
+            RUNS
+        );
         println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ Dataset: {} annotations                                     ║", ann_count);
+        println!(
+            "║ Dataset: {} annotations                                     ║",
+            ann_count
+        );
         to_arrow_times.report();
         to_coco_times.report();
 

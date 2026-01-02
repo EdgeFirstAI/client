@@ -3,28 +3,35 @@
 
 //! COCO to EdgeFirst Arrow format conversion.
 //!
-//! Provides high-performance conversion between COCO JSON and EdgeFirst Arrow format,
-//! supporting async operations and progress tracking.
+//! Provides high-performance conversion between COCO JSON and EdgeFirst Arrow
+//! format, supporting async operations and progress tracking.
 
-use super::convert::*;
-use super::reader::CocoReader;
-use super::types::*;
-use super::writer::{CocoDatasetBuilder, CocoWriter};
+use super::{
+    convert::*,
+    reader::CocoReader,
+    types::*,
+    writer::{CocoDatasetBuilder, CocoWriter},
+};
 use crate::{Annotation, Box2d, Error, Mask, Progress, Sample};
 use polars::prelude::*;
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Semaphore;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+use tokio::sync::{Semaphore, mpsc::Sender};
 
 /// Unflatten polygon coordinates from Arrow flat format.
 ///
-/// Converts `[x1, y1, x2, y2, NaN, x3, y3, ...]` to `[[(x1,y1), (x2,y2)], [(x3,y3), ...]]`
+/// Converts `[x1, y1, x2, y2, NaN, x3, y3, ...]` to `[[(x1,y1), (x2,y2)],
+/// [(x3,y3), ...]]`
 ///
 /// **IMPORTANT**: The separator is a SINGLE NaN, not a pair. We must process
-/// elements one at a time, not in chunks of 2, to correctly handle the separator.
+/// elements one at a time, not in chunks of 2, to correctly handle the
+/// separator.
 fn unflatten_polygon_coords(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
     let mut polygons = Vec::new();
     let mut current = Vec::new();
@@ -149,7 +156,12 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
 
     // Send initial progress
     if let Some(ref p) = progress {
-        let _ = p.send(Progress { current: 0, total: total_images }).await;
+        let _ = p
+            .send(Progress {
+                current: 0,
+                total: total_images,
+            })
+            .await;
     }
 
     // Process images in parallel
@@ -172,7 +184,8 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             let _permit = sem.acquire().await.map_err(|e| Error::SemaphoreError(e))?;
 
             // Convert this image's annotations to EdgeFirst samples
-            let samples = convert_image_annotations(&image, &index, include_masks, group.as_deref());
+            let samples =
+                convert_image_annotations(&image, &index, include_masks, group.as_deref());
 
             // Update progress
             let c = current.fetch_add(1, Ordering::SeqCst) + 1;
@@ -229,9 +242,9 @@ fn convert_image_annotations(
 
             // Convert mask if present and requested
             let mask = if include_masks {
-                ann.segmentation.as_ref().and_then(|seg| {
-                    coco_segmentation_to_mask(seg, image.width, image.height).ok()
-                })
+                ann.segmentation
+                    .as_ref()
+                    .and_then(|seg| coco_segmentation_to_mask(seg, image.width, image.height).ok())
             } else {
                 None
             };
@@ -296,7 +309,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let total_rows = df.height();
 
     if let Some(ref p) = progress {
-        let _ = p.send(Progress { current: 0, total: total_rows }).await;
+        let _ = p
+            .send(Progress {
+                current: 0,
+                total: total_rows,
+            })
+            .await;
     }
 
     // Extract columns - all at once for O(n) instead of O(n²) per-row access
@@ -323,7 +341,11 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .map(|c| {
             c.str()
                 .ok()
-                .map(|s| s.into_iter().map(|v| v.unwrap_or_default().to_string()).collect())
+                .map(|s| {
+                    s.into_iter()
+                        .map(|v| v.unwrap_or_default().to_string())
+                        .collect()
+                })
                 .unwrap_or_default()
         })
         .unwrap_or_else(|| vec!["".to_string(); total_rows]);
@@ -339,7 +361,10 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     };
 
     // Extract all sizes upfront if present
-    let sizes = df.column("size").ok().and_then(|c| extract_all_sizes(c).ok());
+    let sizes = df
+        .column("size")
+        .ok()
+        .and_then(|c| extract_all_sizes(c).ok());
 
     // Build COCO dataset
     let mut builder = CocoDatasetBuilder::new();
@@ -439,7 +464,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         // Update progress every 1000 rows to reduce overhead
         if let Some(ref p) = progress {
             if i - last_progress_update >= 1000 || i == total_rows - 1 {
-                let _ = p.send(Progress { current: i + 1, total: total_rows }).await;
+                let _ = p
+                    .send(Progress {
+                        current: i + 1,
+                        total: total_rows,
+                    })
+                    .await;
                 last_progress_update = i;
             }
         }
@@ -545,10 +575,7 @@ mod tests {
             sample_name_from_filename("000000397133.jpg"),
             "000000397133"
         );
-        assert_eq!(
-            sample_name_from_filename("train2017/image.jpg"),
-            "image"
-        );
+        assert_eq!(sample_name_from_filename("train2017/image.jpg"), "image");
         assert_eq!(sample_name_from_filename("test"), "test");
     }
 

@@ -29,6 +29,7 @@ imagesize = { workspace = true }
 infer = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
+pathfinding = "4.11"
 polars = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

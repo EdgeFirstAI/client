@@ -8,10 +8,12 @@
 
 use super::types::*;
 use crate::Error;
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    fs::File,
+    io::{BufReader, Read},
+    path::Path,
+};
 
 /// Options for COCO reading.
 #[derive(Debug, Clone, Default)]
@@ -334,9 +336,49 @@ pub fn infer_group_from_filename(filename: &str) -> Option<String> {
     None
 }
 
+/// Infer the group name from an image folder path.
+///
+/// Extracts the group from folder names like "train2017", "val2017",
+/// "test2017". Strips trailing year numbers to get the group name.
+///
+/// # Examples
+/// - `train2017/000000001.jpg` → "train"
+/// - `val2017/000000002.jpg` → "val"
+/// - `test2017/000000003.jpg` → "test"
+/// - `custom_split/image.jpg` → "custom_split"
+///
+/// # Arguments
+/// * `image_path` - Relative path to the image (e.g.,
+///   "train2017/000000001.jpg")
+///
+/// # Returns
+/// Inferred group name, or None if no folder component is found.
+pub fn infer_group_from_folder(image_path: &str) -> Option<String> {
+    let path = Path::new(image_path);
+
+    // Get the parent folder name (e.g., "train2017" from "train2017/image.jpg")
+    let folder = path.parent()?.file_name()?.to_str()?;
+
+    if folder.is_empty() {
+        return None;
+    }
+
+    // Strip trailing year numbers (e.g., "train2017" → "train")
+    let group = folder.trim_end_matches(char::is_numeric);
+
+    if group.is_empty() {
+        // Folder was all digits, use original
+        Some(folder.to_string())
+    } else {
+        Some(group.to_string())
+    }
+}
+
 /// Read all COCO annotation files from a directory.
 ///
-/// Discovers and reads annotation files from standard COCO directory structures:
+/// Discovers and reads annotation files from standard COCO directory
+/// structures:
+///
 /// ```text
 /// coco_dir/
 /// ├── annotations/
@@ -346,10 +388,12 @@ pub fn infer_group_from_filename(filename: &str) -> Option<String> {
 /// ```
 ///
 /// # Arguments
+///
 /// * `path` - Path to the COCO directory
 /// * `options` - Read options
 ///
 /// # Returns
+///
 /// Vector of `(CocoDataset, inferred_group)` pairs
 pub fn read_coco_directory<P: AsRef<Path>>(
     path: P,
@@ -383,7 +427,8 @@ pub fn read_coco_directory<P: AsRef<Path>>(
 
             // Only process instance annotation files
             if filename.ends_with(".json") && filename.contains("instances") {
-                let group = infer_group_from_filename(filename).unwrap_or_else(|| "default".to_string());
+                let group =
+                    infer_group_from_filename(filename).unwrap_or_else(|| "default".to_string());
 
                 let reader = CocoReader::with_options(options.clone());
                 let dataset = reader.read_json(&file_path)?;

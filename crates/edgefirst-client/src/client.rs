@@ -5,13 +5,15 @@ use crate::{
     Annotation, Error, Sample, Task,
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult, Organization,
-        Project, ProjectID, SamplesCountResult, SamplesListParams, SamplesListResult, Snapshot,
-        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
-        SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
-        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
+        Project, ProjectID, SampleID, SamplesCountResult, SamplesListParams, SamplesListResult,
+        Snapshot, SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID,
+        SnapshotRestore, SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus,
+        TasksListParams, TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
         ValidationSessionID,
     },
-    dataset::{AnnotationSet, AnnotationType, Dataset, FileType, Label, NewLabel, NewLabelObject},
+    dataset::{
+        AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
+    },
     retry::{create_retry_policy, log_retry_configuration},
     storage::{FileTokenStorage, MemoryTokenStorage, TokenStorage},
 };
@@ -456,7 +458,10 @@ impl Client {
             match Self::extract_server_from_token(&token) {
                 Ok(server) => format!("https://{}.edgefirst.studio", server),
                 Err(e) => {
-                    warn!("Failed to extract server from token: {}. Using default server.", e);
+                    warn!(
+                        "Failed to extract server from token: {}. Using default server.",
+                        e
+                    );
                     "https://edgefirst.studio".to_string()
                 }
             }
@@ -1158,6 +1163,196 @@ impl Client {
         Ok(())
     }
 
+    /// Lists the groups for the specified dataset.
+    ///
+    /// Groups are used to organize samples into logical subsets such as
+    /// "train", "val", "test", etc. Each sample can belong to at most one
+    /// group at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The ID of the dataset to list groups for
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of [`Group`] objects for the dataset. Returns an
+    /// empty vector if no groups have been created yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dataset does not exist or cannot be accessed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// let groups = client.groups(dataset_id).await?;
+    /// for group in groups {
+    ///     println!("{}: {}", group.id, group.name);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn groups(&self, dataset_id: DatasetID) -> Result<Vec<Group>, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("groups.list".to_owned(), Some(params)).await
+    }
+
+    /// Gets an existing group by name or creates a new one.
+    ///
+    /// This is a convenience method that first checks if a group with the
+    /// specified name exists, and creates it if not. This is useful when
+    /// you need to ensure a group exists before assigning samples to it.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The ID of the dataset
+    /// * `name` - The name of the group (e.g., "train", "val", "test")
+    ///
+    /// # Returns
+    ///
+    /// Returns the group ID (either existing or newly created).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The dataset does not exist or cannot be accessed
+    /// - The group creation fails
+    ///
+    /// # Concurrency
+    ///
+    /// This method handles concurrent creation attempts gracefully. If another
+    /// process creates the group between the existence check and creation,
+    /// this method will return the existing group's ID.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// // Get or create a "train" group
+    /// let train_group_id = client
+    ///     .get_or_create_group(dataset_id.clone(), "train")
+    ///     .await?;
+    /// println!("Train group ID: {}", train_group_id);
+    ///
+    /// // Calling again returns the same ID
+    /// let same_id = client.get_or_create_group(dataset_id, "train").await?;
+    /// assert_eq!(train_group_id, same_id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_or_create_group(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+    ) -> Result<u64, Error> {
+        // First check if the group already exists
+        let groups = self.groups(dataset_id.clone()).await?;
+        if let Some(group) = groups.iter().find(|g| g.name == name) {
+            return Ok(group.id);
+        }
+
+        // Create the group
+        #[derive(Serialize)]
+        struct CreateGroupParams {
+            dataset_id: DatasetID,
+            group_names: Vec<String>,
+            group_splits: Vec<i64>,
+        }
+
+        let params = CreateGroupParams {
+            dataset_id: dataset_id.clone(),
+            group_names: vec![name.to_string()],
+            group_splits: vec![0], // No automatic splitting
+        };
+
+        let created_groups: Vec<Group> = self.rpc("groups.create".to_owned(), Some(params)).await?;
+        if let Some(group) = created_groups.into_iter().find(|g| g.name == name) {
+            Ok(group.id)
+        } else {
+            // Group might have been created by concurrent call, try fetching again
+            let groups = self.groups(dataset_id).await?;
+            groups
+                .iter()
+                .find(|g| g.name == name)
+                .map(|g| g.id)
+                .ok_or_else(|| {
+                    Error::RpcError(0, format!("Failed to create or find group '{}'", name))
+                })
+        }
+    }
+
+    /// Sets the group for a sample.
+    ///
+    /// Assigns a sample to a specific group. Each sample can belong to at most
+    /// one group at a time. Setting a new group replaces any existing group
+    /// assignment.
+    ///
+    /// # Arguments
+    ///
+    /// * `sample_id` - The ID of the sample (image) to update
+    /// * `group_id` - The ID of the group to assign. Use
+    ///   [`get_or_create_group`] to obtain a group ID from a name.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The sample does not exist
+    /// - The group does not exist
+    /// - Insufficient permissions to modify the sample
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID, SampleID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    /// let sample_id: SampleID = 12345.into();
+    ///
+    /// // Get or create the "val" group
+    /// let val_group_id = client.get_or_create_group(dataset_id, "val").await?;
+    ///
+    /// // Assign the sample to the "val" group
+    /// client.set_sample_group_id(sample_id, val_group_id).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`get_or_create_group`]: Self::get_or_create_group
+    pub async fn set_sample_group_id(
+        &self,
+        sample_id: SampleID,
+        group_id: u64,
+    ) -> Result<(), Error> {
+        #[derive(Serialize)]
+        struct SetGroupParams {
+            image_id: SampleID,
+            group_id: u64,
+        }
+
+        let params = SetGroupParams {
+            image_id: sample_id,
+            group_id,
+        };
+        let _: String = self
+            .rpc("image.set_group_id".to_owned(), Some(params))
+            .await?;
+        Ok(())
+    }
+
     /// Downloads dataset samples to the local filesystem.
     ///
     /// # Arguments
@@ -1229,7 +1424,7 @@ impl Client {
         let file_types = file_types.to_vec();
         let output = output.clone();
 
-        parallel_foreach_items(samples, progress, move |sample| {
+        parallel_foreach_items(samples, progress, None, move |sample| {
             let client = client.clone();
             let file_types = file_types.clone();
             let output = output.clone();
@@ -1573,6 +1768,85 @@ impl Client {
         }
     }
 
+    /// Delete annotations in bulk from specified samples.
+    ///
+    /// This method calls the `annotation.bulk.del` API to efficiently remove
+    /// annotations from multiple samples at once. Useful for clearing
+    /// annotations before re-importing updated data.
+    ///
+    /// # Arguments
+    /// * `annotation_set_id` - The annotation set containing the annotations
+    /// * `annotation_types` - Types to delete: "box" for bounding boxes, "seg"
+    ///   for masks
+    /// * `sample_ids` - Sample IDs (image IDs) to delete annotations from
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use edgefirst_client::{Client, AnnotationSetID, SampleID};
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// # let client = Client::new()?.with_login("user", "pass").await?;
+    /// let annotation_set_id = AnnotationSetID::from(123);
+    /// let sample_ids = vec![SampleID::from(1), SampleID::from(2)];
+    ///
+    /// client
+    ///     .delete_annotations_bulk(
+    ///         annotation_set_id,
+    ///         &["box".to_string(), "seg".to_string()],
+    ///         &sample_ids,
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn delete_annotations_bulk(
+        &self,
+        annotation_set_id: AnnotationSetID,
+        annotation_types: &[String],
+        sample_ids: &[SampleID],
+    ) -> Result<(), Error> {
+        use crate::api::AnnotationBulkDeleteParams;
+
+        let params = AnnotationBulkDeleteParams {
+            annotation_set_id: annotation_set_id.into(),
+            annotation_types: annotation_types.to_vec(),
+            image_ids: sample_ids.iter().map(|id| (*id).into()).collect(),
+            delete_all: None,
+        };
+
+        let _: String = self
+            .rpc("annotation.bulk.del".to_owned(), Some(params))
+            .await?;
+        Ok(())
+    }
+
+    /// Add annotations in bulk.
+    ///
+    /// This method calls the `annotation.add_bulk` API to efficiently add
+    /// multiple annotations at once. The annotations must be in server format
+    /// with image_id references.
+    ///
+    /// # Arguments
+    /// * `annotation_set_id` - The annotation set to add annotations to
+    /// * `annotations` - Vector of server-format annotations to add
+    ///
+    /// # Returns
+    /// Vector of created annotation records from the server.
+    pub async fn add_annotations_bulk(
+        &self,
+        annotation_set_id: AnnotationSetID,
+        annotations: Vec<crate::api::ServerAnnotation>,
+    ) -> Result<Vec<serde_json::Value>, Error> {
+        use crate::api::AnnotationAddBulkParams;
+
+        let params = AnnotationAddBulkParams {
+            annotation_set_id: annotation_set_id.into(),
+            annotations,
+        };
+
+        self.rpc("annotation.add_bulk".to_owned(), Some(params))
+            .await
+    }
+
     /// Helper to parse frame number from image_name when sequence_name is
     /// present. This ensures frame_number is always derived from the image
     /// filename, not from the server's frame_number field (which may be
@@ -1613,9 +1887,10 @@ impl Client {
         groups: &[String],
         types: &[FileType],
     ) -> Result<SamplesCountResult, Error> {
+        // Use server type names for API calls (e.g., "box" instead of "box2d")
         let types = annotation_types
             .iter()
-            .map(|t| t.to_string())
+            .map(|t| t.as_server_type().to_string())
             .chain(types.iter().map(|t| t.to_string()))
             .collect::<Vec<_>>();
 
@@ -1639,9 +1914,10 @@ impl Client {
         types: &[FileType],
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<Sample>, Error> {
+        // Use server type names for API calls (e.g., "box" instead of "box2d")
         let types_vec = annotation_types
             .iter()
-            .map(|t| t.to_string())
+            .map(|t| t.as_server_type().to_string())
             .chain(types.iter().map(|t| t.to_string()))
             .collect::<Vec<_>>();
         let labels = self
@@ -1668,6 +1944,78 @@ impl Client {
         };
 
         self.fetch_samples_paginated(context, total, progress).await
+    }
+
+    /// Get all sample names in a dataset.
+    ///
+    /// This is an efficient method for checking which samples already exist,
+    /// useful for resuming interrupted imports. It only retrieves sample names
+    /// without loading full annotation data.
+    ///
+    /// # Arguments
+    /// * `dataset_id` - The dataset to query
+    /// * `groups` - Optional group filter (empty = all groups)
+    /// * `progress` - Optional progress channel
+    ///
+    /// # Returns
+    /// A HashSet of sample names (image_name field) that exist in the dataset.
+    pub async fn sample_names(
+        &self,
+        dataset_id: DatasetID,
+        groups: &[String],
+        progress: Option<Sender<Progress>>,
+    ) -> Result<std::collections::HashSet<String>, Error> {
+        use std::collections::HashSet;
+
+        let total = self
+            .samples_count(dataset_id, None, &[], groups, &[])
+            .await?
+            .total as usize;
+
+        if total == 0 {
+            return Ok(HashSet::new());
+        }
+
+        let mut names = HashSet::with_capacity(total);
+        let mut continue_token: Option<String> = None;
+        let mut current = 0;
+
+        loop {
+            let params = SamplesListParams {
+                dataset_id,
+                annotation_set_id: None,
+                types: vec![], // No type filter - we just want names
+                group_names: groups.to_vec(),
+                continue_token: continue_token.clone(),
+            };
+
+            let result: SamplesListResult =
+                self.rpc("samples.list".to_owned(), Some(params)).await?;
+            current += result.samples.len();
+            continue_token = result.continue_token;
+
+            if result.samples.is_empty() {
+                break;
+            }
+
+            // Extract sample names (normalized without extension)
+            for sample in result.samples {
+                if let Some(name) = sample.name() {
+                    names.insert(name);
+                }
+            }
+
+            if let Some(ref p) = progress {
+                let _ = p.send(Progress { current, total }).await;
+            }
+
+            match &continue_token {
+                Some(token) if !token.is_empty() => continue,
+                _ => break,
+            }
+        }
+
+        Ok(names)
     }
 
     async fn fetch_samples_paginated(
@@ -1840,6 +2188,30 @@ impl Client {
         samples: Vec<Sample>,
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
+        self.populate_samples_with_concurrency(
+            dataset_id,
+            annotation_set_id,
+            samples,
+            progress,
+            None,
+        )
+        .await
+    }
+
+    /// Populate samples with custom upload concurrency.
+    ///
+    /// Same as [`populate_samples`](Self::populate_samples) but allows
+    /// specifying the maximum number of concurrent file uploads. Use this
+    /// for bulk imports where higher concurrency can significantly reduce
+    /// upload time.
+    pub async fn populate_samples_with_concurrency(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        samples: Vec<Sample>,
+        progress: Option<Sender<Progress>>,
+        concurrency: Option<usize>,
+    ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
         use crate::api::SamplesPopulateParams;
 
         // Track which files need to be uploaded
@@ -1864,7 +2236,7 @@ impl Client {
 
         // Upload files if we have any
         if has_files_to_upload {
-            self.upload_sample_files(&results, files_to_upload, progress)
+            self.upload_sample_files(&results, files_to_upload, progress, concurrency)
                 .await?;
         }
 
@@ -1951,6 +2323,7 @@ impl Client {
         results: &[crate::SamplesPopulateResult],
         files_to_upload: Vec<(String, String, PathBuf, String)>,
         progress: Option<Sender<Progress>>,
+        concurrency: Option<usize>,
     ) -> Result<(), Error> {
         // Build a map from (sample_uuid, basename) -> local_path
         let mut upload_map: HashMap<(String, String), PathBuf> = HashMap::new();
@@ -1966,29 +2339,34 @@ impl Client {
             .map(|result| (result.uuid.clone(), result.urls.clone()))
             .collect();
 
-        parallel_foreach_items(upload_tasks, progress.clone(), move |(uuid, urls)| {
-            let http = http.clone();
-            let upload_map = upload_map.clone();
+        parallel_foreach_items(
+            upload_tasks,
+            progress.clone(),
+            concurrency,
+            move |(uuid, urls)| {
+                let http = http.clone();
+                let upload_map = upload_map.clone();
 
-            async move {
-                // Upload all files for this sample
-                for url_info in &urls {
-                    if let Some(local_path) =
-                        upload_map.get(&(uuid.clone(), url_info.filename.clone()))
-                    {
-                        // Upload the file
-                        upload_file_to_presigned_url(
-                            http.clone(),
-                            &url_info.url,
-                            local_path.clone(),
-                        )
-                        .await?;
+                async move {
+                    // Upload all files for this sample
+                    for url_info in &urls {
+                        if let Some(local_path) =
+                            upload_map.get(&(uuid.clone(), url_info.filename.clone()))
+                        {
+                            // Upload the file
+                            upload_file_to_presigned_url(
+                                http.clone(),
+                                &url_info.url,
+                                local_path.clone(),
+                            )
+                            .await?;
+                        }
                     }
-                }
 
-                Ok(())
-            }
-        })
+                    Ok(())
+                }
+            },
+        )
         .await
     }
 
@@ -3217,8 +3595,16 @@ impl Client {
         Params: Serialize,
         RpcResult: DeserializeOwned,
     {
+        let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3usize);
+
+        let url = format!("{}/api", self.url);
+
+        // Serialize request body once before retry loop to avoid Clone bound on Params
         let request = RpcRequest {
-            method,
+            method: method.clone(),
             params,
             ..Default::default()
         };
@@ -3230,21 +3616,99 @@ impl Client {
             );
         }
 
-        let url = format!("{}/api", self.url);
+        let request_body = serde_json::to_vec(&request)?;
+        let mut last_error: Option<Error> = None;
 
-        // Use client-level timeout (allows retry mechanism to work properly)
-        // Per-request timeout overrides can prevent retries from functioning
-        let res = self
-            .http
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("User-Agent", "EdgeFirst Client")
-            .header("Authorization", format!("Bearer {}", self.token().await))
-            .json(&request)
-            .send()
-            .await?;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                // Exponential backoff: 1s, 2s, 4s, 8s, ...
+                let delay = Duration::from_secs(1 << (attempt - 1).min(4));
+                warn!(
+                    "Retry {}/{} for RPC '{}' after {:?}",
+                    attempt, max_retries, method, delay
+                );
+                tokio::time::sleep(delay).await;
+            }
 
-        self.process_rpc_response(res).await
+            let result = self
+                .http
+                .post(&url)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "EdgeFirst Client")
+                .header("Authorization", format!("Bearer {}", self.token().await))
+                .body(request_body.clone())
+                .send()
+                .await;
+
+            match result {
+                Ok(res) => {
+                    let status = res.status();
+                    let status_code = status.as_u16();
+
+                    // Check for retryable HTTP status codes before processing response
+                    if matches!(status_code, 408 | 429 | 500 | 502 | 503 | 504)
+                        && attempt < max_retries
+                    {
+                        warn!(
+                            "RPC '{}' failed with HTTP {} (retrying)",
+                            method, status_code
+                        );
+                        last_error = Some(Error::HttpError(res.error_for_status().unwrap_err()));
+                        continue;
+                    }
+
+                    // Process the response
+                    match self.process_rpc_response(res).await {
+                        Ok(result) => {
+                            if attempt > 0 {
+                                debug!("RPC '{}' succeeded on retry {}", method, attempt);
+                            }
+                            return Ok(result);
+                        }
+                        Err(e) => {
+                            // Don't retry client errors (4xx except 408, 429)
+                            if attempt > 0 {
+                                error!("RPC '{}' failed after {} retries: {}", method, attempt, e);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Transport error (timeout, connection failure, etc.)
+                    let is_timeout = e.is_timeout();
+                    let is_connect = e.is_connect();
+
+                    if (is_timeout || is_connect) && attempt < max_retries {
+                        warn!(
+                            "RPC '{}' transport error (retrying): {}",
+                            method,
+                            if is_timeout {
+                                "timeout"
+                            } else {
+                                "connection failed"
+                            }
+                        );
+                        last_error = Some(Error::HttpError(e));
+                        continue;
+                    }
+
+                    if attempt > 0 {
+                        error!("RPC '{}' failed after {} retries: {}", method, attempt, e);
+                    }
+                    return Err(Error::HttpError(e));
+                }
+            }
+        }
+
+        // Should not reach here
+        Err(last_error.unwrap_or_else(|| {
+            Error::InvalidParameters(format!(
+                "RPC '{}' failed after {} retries",
+                method, max_retries
+            ))
+        }))
     }
 
     async fn process_rpc_response<RpcResult>(
@@ -3287,9 +3751,8 @@ impl Client {
 /// tracking.
 ///
 /// This helper eliminates boilerplate for parallel item processing with:
-/// - Semaphore limiting concurrent tasks to `max_tasks()` (configurable via
-///   `MAX_TASKS` environment variable, default: half of CPU cores, min 2, max
-///   8)
+/// - Semaphore limiting concurrent tasks (configurable via `concurrency` param
+///   or `MAX_TASKS` env var, default: half of CPU cores clamped to 2-8)
 /// - Atomic progress counter with automatic item-level updates
 /// - Progress updates sent after each item completes (not byte-level streaming)
 /// - Proper error propagation from spawned tasks
@@ -3302,13 +3765,14 @@ impl Client {
 ///
 /// * `items` - Collection of items to process in parallel
 /// * `progress` - Optional progress channel for tracking completion
+/// * `concurrency` - Optional max concurrent tasks (defaults to `max_tasks()`)
 /// * `work_fn` - Async function to execute for each item
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// parallel_foreach_items(samples, progress, |sample| async move {
-///     // Process sample
+/// // Use default concurrency
+/// parallel_foreach_items(samples, progress, None, |sample| async move {
 ///     sample.download(&client, file_type).await?;
 ///     Ok(())
 /// }).await?;
@@ -3316,6 +3780,7 @@ impl Client {
 async fn parallel_foreach_items<T, F, Fut>(
     items: Vec<T>,
     progress: Option<Sender<Progress>>,
+    concurrency: Option<usize>,
     work_fn: F,
 ) -> Result<(), Error>
 where
@@ -3325,7 +3790,7 @@ where
 {
     let total = items.len();
     let current = Arc::new(AtomicUsize::new(0));
-    let sem = Arc::new(Semaphore::new(max_tasks()));
+    let sem = Arc::new(Semaphore::new(concurrency.unwrap_or_else(max_tasks)));
     let work_fn = Arc::new(work_fn);
 
     let tasks = items
@@ -3532,37 +3997,130 @@ async fn upload_part(
 ///
 /// This is used for populate_samples to upload files to S3 after
 /// receiving presigned URLs from the server.
+///
+/// Includes explicit retry logic with exponential backoff for transient
+/// failures.
 async fn upload_file_to_presigned_url(
     http: reqwest::Client,
     url: &str,
     path: PathBuf,
 ) -> Result<(), Error> {
-    // Read the entire file into memory
+    let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3usize);
+
+    // Read the entire file into memory once
     let file_data = fs::read(&path).await?;
     let file_size = file_data.len();
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
-    // Upload (retry is handled by reqwest client)
-    let resp = http
-        .put(url)
-        .header(CONTENT_LENGTH, file_size)
-        .body(file_data)
-        .send()
-        .await?;
+    let mut last_error: Option<Error> = None;
 
-    if resp.status().is_success() {
-        debug!(
-            "Successfully uploaded file: {:?} ({} bytes)",
-            path, file_size
-        );
-        Ok(())
-    } else {
-        let status = resp.status();
-        let error_text = resp.text().await.unwrap_or_default();
-        Err(Error::InvalidParameters(format!(
-            "Upload failed: HTTP {} - {}",
-            status, error_text
-        )))
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            // Exponential backoff: 1s, 2s, 4s, 8s, ...
+            let delay = Duration::from_secs(1 << (attempt - 1).min(4));
+            warn!(
+                "Retry {}/{} for upload '{}' after {:?}",
+                attempt, max_retries, filename, delay
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        // Attempt upload
+        let result = http
+            .put(url)
+            .header(CONTENT_LENGTH, file_size)
+            .body(file_data.clone())
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if attempt > 0 {
+                        debug!(
+                            "Upload '{}' succeeded on retry {} ({} bytes)",
+                            filename, attempt, file_size
+                        );
+                    } else {
+                        debug!(
+                            "Successfully uploaded file: {} ({} bytes)",
+                            filename, file_size
+                        );
+                    }
+                    return Ok(());
+                }
+
+                let status = resp.status();
+                let status_code = status.as_u16();
+
+                // Check if error is retryable
+                let is_retryable =
+                    matches!(status_code, 408 | 429 | 500 | 502 | 503 | 504 | 409 | 423);
+
+                if is_retryable && attempt < max_retries {
+                    let error_text = resp.text().await.unwrap_or_default();
+                    warn!(
+                        "Upload '{}' failed with HTTP {} (retryable): {}",
+                        filename, status_code, error_text
+                    );
+                    last_error = Some(Error::InvalidParameters(format!(
+                        "Upload failed: HTTP {} - {}",
+                        status, error_text
+                    )));
+                    continue;
+                }
+
+                // Non-retryable error or max retries exceeded
+                let error_text = resp.text().await.unwrap_or_default();
+                if attempt > 0 {
+                    error!(
+                        "Upload '{}' failed after {} retries: HTTP {} - {}",
+                        filename, attempt, status, error_text
+                    );
+                }
+                return Err(Error::InvalidParameters(format!(
+                    "Upload failed: HTTP {} - {}",
+                    status, error_text
+                )));
+            }
+            Err(e) => {
+                // Transport error (timeout, connection failure, etc.)
+                let is_timeout = e.is_timeout();
+                let is_connect = e.is_connect();
+
+                if (is_timeout || is_connect) && attempt < max_retries {
+                    warn!(
+                        "Upload '{}' transport error (retrying): {}",
+                        filename,
+                        if is_timeout {
+                            "timeout"
+                        } else {
+                            "connection failed"
+                        }
+                    );
+                    last_error = Some(Error::HttpError(e));
+                    continue;
+                }
+
+                // Non-retryable or max retries exceeded
+                if attempt > 0 {
+                    error!(
+                        "Upload '{}' failed after {} retries: {}",
+                        filename, attempt, e
+                    );
+                }
+                return Err(Error::HttpError(e));
+            }
+        }
     }
+
+    // Should not reach here, but return last error if we do
+    Err(last_error.unwrap_or_else(|| {
+        Error::InvalidParameters(format!("Upload failed after {} retries", max_retries))
+    }))
 }
 
 #[cfg(test)]

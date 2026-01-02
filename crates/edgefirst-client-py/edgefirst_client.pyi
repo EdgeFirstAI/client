@@ -911,6 +911,68 @@ class Label:
         """Set the index of the label."""
         ...
 
+class Group:
+    """
+    A dataset group for organizing samples into logical subsets.
+
+    Groups partition samples within a dataset for purposes such as training,
+    validation, and testing. Common group names include "train", "val", and "test",
+    following conventions from datasets like COCO and ImageNet.
+
+    Each sample can belong to at most one group. Groups are managed at the dataset
+    level and can be created, listed, and assigned to samples through the Client.
+
+    Attributes:
+        id: The unique numeric identifier for this group.
+        name: The human-readable name of the group.
+
+    Examples:
+        List and inspect groups:
+
+        >>> groups = client.groups(dataset_id)
+        >>> for group in groups:
+        ...     print(f"{group.name}: {group.id}")
+        train: 1
+        val: 2
+        test: 3
+
+        Filter samples by group:
+
+        >>> train_group = next(g for g in groups if g.name == "train")
+        >>> train_samples = client.samples(dataset_id, group_id=train_group.id)
+
+    See Also:
+        Client.groups: List all groups for a dataset.
+        Client.get_or_create_group: Create or retrieve a group by name.
+        Client.set_sample_group_id: Assign a sample to a group.
+    """
+
+    @property
+    def id(self) -> int:
+        """
+        The unique numeric identifier for this group.
+
+        This ID is used when assigning samples to groups via
+        :meth:`Client.set_sample_group_id`.
+
+        Returns:
+            int: The group's unique identifier.
+        """
+        ...
+
+    @property
+    def name(self) -> str:
+        """
+        The human-readable name of the group.
+
+        Common names include "train", "val", and "test". Group names are
+        unique within a dataset.
+
+        Returns:
+            str: The group name (e.g., "train", "val", "test").
+        """
+        ...
+
 class Dataset:
     """
     A dataset in EdgeFirst Studio containing sensor data and annotations.
@@ -3774,6 +3836,132 @@ class Client:
 
         Raises:
             Error: If the label does not exist or cannot be updated.
+        """
+        ...
+
+    def groups(self, dataset_id: DatasetUID) -> List[Group]:
+        """
+        List all groups for a dataset.
+
+        Groups organize samples into logical subsets such as "train", "val", and
+        "test". This method retrieves all groups that have been created for the
+        specified dataset.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier. Can be a string ID,
+                integer, or DatasetID object.
+
+        Returns:
+            List[Group]: All groups associated with this dataset. Returns an empty
+                list if no groups have been created.
+
+        Raises:
+            Error: If the dataset does not exist or cannot be accessed.
+
+        Examples:
+            List all groups in a dataset:
+
+            >>> groups = client.groups(dataset_id)
+            >>> for group in groups:
+            ...     print(f"{group.name} (id={group.id})")
+            train (id=1)
+            val (id=2)
+            test (id=3)
+
+            Check if a specific group exists:
+
+            >>> groups = client.groups(dataset_id)
+            >>> group_names = [g.name for g in groups]
+            >>> if "train" in group_names:
+            ...     print("Training group exists")
+
+        See Also:
+            get_or_create_group: Create or retrieve a group by name.
+            Group: The group class with id and name properties.
+        """
+        ...
+
+    def get_or_create_group(self, dataset_id: DatasetUID, name: str) -> int:
+        """
+        Get an existing group by name or create a new one.
+
+        This method is idempotent: calling it multiple times with the same name
+        returns the same group ID. This makes it safe to use in concurrent workflows
+        without coordination between workers.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier. Can be a string ID,
+                integer, or DatasetID object.
+            name (str): The group name (e.g., "train", "val", "test"). Group names
+                are case-sensitive and must be unique within the dataset.
+
+        Returns:
+            int: The group ID, which can be passed to :meth:`set_sample_group_id`.
+
+        Raises:
+            Error: If the dataset does not exist or the group cannot be created.
+
+        Examples:
+            Create groups for a typical train/val/test split:
+
+            >>> train_id = client.get_or_create_group(dataset_id, "train")
+            >>> val_id = client.get_or_create_group(dataset_id, "val")
+            >>> test_id = client.get_or_create_group(dataset_id, "test")
+
+            Idempotent behavior - safe to call multiple times:
+
+            >>> id1 = client.get_or_create_group(dataset_id, "train")
+            >>> id2 = client.get_or_create_group(dataset_id, "train")
+            >>> assert id1 == id2  # Same ID returned
+
+            Assign samples after creating groups:
+
+            >>> train_id = client.get_or_create_group(dataset_id, "train")
+            >>> for sample in training_samples:
+            ...     client.set_sample_group_id(sample.id, train_id)
+
+        See Also:
+            groups: List all groups for a dataset.
+            set_sample_group_id: Assign a sample to a group.
+        """
+        ...
+
+    def set_sample_group_id(self, sample_id: SampleUID, group_id: int) -> None:
+        """
+        Set the group for a sample.
+
+        Assigns a sample to a group, replacing any existing group assignment.
+        Each sample can belong to at most one group at a time.
+
+        Args:
+            sample_id (SampleUID): The sample identifier. Can be a string ID,
+                integer, or SampleID object.
+            group_id (int): The group ID to assign. Obtain this from
+                :meth:`get_or_create_group` or from a :class:`Group` object's
+                ``id`` property.
+
+        Raises:
+            Error: If the sample or group does not exist.
+
+        Examples:
+            Assign a sample to the training group:
+
+            >>> train_id = client.get_or_create_group(dataset_id, "train")
+            >>> client.set_sample_group_id(sample_id, train_id)
+
+            Batch assign samples to groups:
+
+            >>> train_id = client.get_or_create_group(dataset_id, "train")
+            >>> val_id = client.get_or_create_group(dataset_id, "val")
+            >>>
+            >>> for sample in samples[:800]:  # 80% for training
+            ...     client.set_sample_group_id(sample.id, train_id)
+            >>> for sample in samples[800:]:  # 20% for validation
+            ...     client.set_sample_group_id(sample.id, val_id)
+
+        See Also:
+            get_or_create_group: Create or retrieve a group by name.
+            groups: List all groups for a dataset.
         """
         ...
 

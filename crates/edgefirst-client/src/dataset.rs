@@ -160,6 +160,22 @@ impl From<&String> for AnnotationType {
     }
 }
 
+impl AnnotationType {
+    /// Returns the server API type name for this annotation type.
+    ///
+    /// The server uses different naming conventions than the client:
+    /// - `Box2d` → `"box"` (server) vs `"box2d"` (client display)
+    /// - `Box3d` → `"box3d"` (same)
+    /// - `Mask` → `"seg"` (server) vs `"mask"` (client display)
+    pub fn as_server_type(&self) -> &'static str {
+        match self {
+            AnnotationType::Box2d => "box",
+            AnnotationType::Box3d => "box3d",
+            AnnotationType::Mask => "seg",
+        }
+    }
+}
+
 impl std::fmt::Display for AnnotationType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -912,23 +928,141 @@ impl<'de> serde::Deserialize<'de> for Mask {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::Deserialize;
+        // First, deserialize to a raw JSON value to handle various formats
+        let value = serde_json::Value::deserialize(deserializer)?;
 
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum MaskFormat {
-            Polygon { polygon: Vec<Vec<(f32, f32)>> },
-            Direct(Vec<Vec<(f32, f32)>>),
-        }
+        // Try to extract polygon data from various formats
+        let polygon_value = if let Some(obj) = value.as_object() {
+            // Format: {"polygon": [...]}
+            obj.get("polygon")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            // Format: [[...]] (direct array)
+            value
+        };
 
-        match MaskFormat::deserialize(deserializer)? {
-            MaskFormat::Polygon { polygon } => Ok(Self { polygon }),
-            MaskFormat::Direct(polygon) => Ok(Self { polygon }),
-        }
+        // Parse the polygon array, filtering out null/invalid values
+        let polygon = parse_polygon_value(&polygon_value);
+
+        Ok(Self { polygon })
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// Parse polygon value from JSON, handling malformed data gracefully.
+///
+/// Handles multiple formats:
+/// - `[[[x,y],[x,y],...]]` - 3D array with point pairs (correct format)
+/// - `[[x,y,x,y,...]]` - 2D array with flat coords (COCO format, legacy)
+/// - `[[null,null,...]]` - corrupted data (returns empty)
+/// - `null` - missing data (returns empty)
+fn parse_polygon_value(value: &serde_json::Value) -> Vec<Vec<(f32, f32)>> {
+    let Some(outer_array) = value.as_array() else {
+        return vec![];
+    };
+
+    let mut result = Vec::new();
+
+    for ring in outer_array {
+        let Some(ring_array) = ring.as_array() else {
+            continue;
+        };
+
+        // Check if this is a 3D array (point pairs) or 2D array (flat coords)
+        let is_3d = ring_array
+            .first()
+            .map(|first| first.is_array())
+            .unwrap_or(false);
+
+        let points: Vec<(f32, f32)> = if is_3d {
+            // 3D format: [[x1,y1], [x2,y2], ...]
+            ring_array
+                .iter()
+                .filter_map(|point| {
+                    let arr = point.as_array()?;
+                    if arr.len() >= 2 {
+                        let x = arr[0].as_f64()? as f32;
+                        let y = arr[1].as_f64()? as f32;
+                        if x.is_finite() && y.is_finite() {
+                            Some((x, y))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            // 2D format (flat): [x1, y1, x2, y2, ...]
+            ring_array
+                .chunks(2)
+                .filter_map(|chunk| {
+                    if chunk.len() >= 2 {
+                        let x = chunk[0].as_f64()? as f32;
+                        let y = chunk[1].as_f64()? as f32;
+                        if x.is_finite() && y.is_finite() {
+                            Some((x, y))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        // Only add rings with at least 3 valid points
+        if points.len() >= 3 {
+            result.push(points);
+        }
+    }
+
+    result
+}
+
+/// Helper struct for deserializing annotations from the server.
+///
+/// The server sends bounding box coordinates as flat fields (x, y, w, h) at the
+/// annotation level, but we want to store them as a nested Box2d struct.
+#[derive(Deserialize)]
+struct AnnotationRaw {
+    #[serde(default)]
+    sample_id: Option<SampleID>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    sequence_name: Option<String>,
+    #[serde(default)]
+    frame_number: Option<u32>,
+    #[serde(rename = "group_name", default)]
+    group: Option<String>,
+    #[serde(rename = "object_reference", alias = "object_id", default)]
+    object_id: Option<String>,
+    #[serde(default)]
+    label_name: Option<String>,
+    #[serde(default)]
+    label_index: Option<u64>,
+    // Nested box2d format (if server sends it this way)
+    #[serde(default)]
+    box2d: Option<Box2d>,
+    #[serde(default)]
+    box3d: Option<Box3d>,
+    #[serde(default)]
+    mask: Option<Mask>,
+    // Flat box2d fields from server (x, y, w, h at annotation level)
+    #[serde(default)]
+    x: Option<f64>,
+    #[serde(default)]
+    y: Option<f64>,
+    #[serde(default)]
+    w: Option<f64>,
+    #[serde(default)]
+    h: Option<f64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
 pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     sample_id: Option<SampleID>,
@@ -962,6 +1096,38 @@ pub struct Annotation {
     box3d: Option<Box3d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mask: Option<Mask>,
+}
+
+impl<'de> serde::Deserialize<'de> for Annotation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Deserialize to AnnotationRaw first to handle server format differences
+        let raw: AnnotationRaw = serde::Deserialize::deserialize(deserializer)?;
+
+        // Prefer nested box2d if present, otherwise construct from flat x/y/w/h
+        let box2d = raw.box2d.or_else(|| match (raw.x, raw.y, raw.w, raw.h) {
+            (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+                Some(Box2d::new(x as f32, y as f32, w as f32, h as f32))
+            }
+            _ => None,
+        });
+
+        Ok(Annotation {
+            sample_id: raw.sample_id,
+            name: raw.name,
+            sequence_name: raw.sequence_name,
+            frame_number: raw.frame_number,
+            group: raw.group,
+            object_id: raw.object_id,
+            label_name: raw.label_name,
+            label_index: raw.label_index,
+            box2d,
+            box3d: raw.box3d,
+            mask: raw.mask,
+        })
+    }
 }
 
 impl Default for Annotation {
@@ -1143,10 +1309,46 @@ pub struct NewLabel {
     pub labels: Vec<NewLabelObject>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[allow(dead_code)]
+/// A dataset group for organizing samples into logical subsets.
+///
+/// Groups are used to partition samples within a dataset for different purposes
+/// such as training, validation, and testing. Each sample can belong to at most
+/// one group at a time.
+///
+/// # Common Group Names
+///
+/// - `"train"` - Training data for model fitting
+/// - `"val"` - Validation data for hyperparameter tuning
+/// - `"test"` - Test data for final evaluation
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use edgefirst_client::{Client, DatasetID};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = Client::new()?.with_token_path(None)?;
+/// let dataset_id: DatasetID = "ds-123".try_into()?;
+///
+/// // List all groups in the dataset
+/// let groups = client.groups(dataset_id).await?;
+/// for group in groups {
+///     println!("Group [{}]: {}", group.id, group.name);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Group {
-    pub id: u64, // Groups seem to use raw u64, not a specific ID type
+    /// The unique numeric identifier for this group.
+    ///
+    /// Group IDs are assigned by the server and are unique within an
+    /// organization.
+    pub id: u64,
+
+    /// The human-readable name of the group.
+    ///
+    /// Common names include "train", "val", "test", but any string is valid.
     pub name: String,
 }
 

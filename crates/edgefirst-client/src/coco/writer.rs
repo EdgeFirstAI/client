@@ -7,11 +7,12 @@
 
 use super::types::*;
 use crate::Error;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::Path;
-use zip::write::SimpleFileOptions;
-use zip::CompressionMethod;
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+    path::Path,
+};
+use zip::{CompressionMethod, write::SimpleFileOptions};
 
 /// Options for COCO writing.
 #[derive(Debug, Clone)]
@@ -36,7 +37,7 @@ impl Default for CocoWriteOptions {
 /// # Example
 ///
 /// ```rust,no_run
-/// use edgefirst_client::coco::{CocoWriter, CocoDataset};
+/// use edgefirst_client::coco::{CocoDataset, CocoWriter};
 ///
 /// let writer = CocoWriter::new();
 /// let dataset = CocoDataset::default();
@@ -275,7 +276,8 @@ impl CocoWriter {
     /// # Arguments
     /// * `dataset` - The COCO dataset to split
     /// * `group_assignments` - Parallel array of group names for each image
-    /// * `images_source` - Optional source directory containing images to include
+    /// * `images_source` - Optional source directory containing images to
+    ///   include
     /// * `output_dir` - Output directory for ZIP files
     ///
     /// # Returns
@@ -667,11 +669,7 @@ mod tests {
             ..Default::default()
         };
 
-        let groups = vec![
-            "train".to_string(),
-            "train".to_string(),
-            "val".to_string(),
-        ];
+        let groups = vec!["train".to_string(), "train".to_string(), "val".to_string()];
 
         let writer = CocoWriter::new();
         let result = writer
@@ -683,23 +681,28 @@ mod tests {
         assert_eq!(result.get("val"), Some(&1));
 
         // Verify directory structure
-        assert!(output_dir.join("train/annotations/instances_train.json").exists());
-        assert!(output_dir.join("val/annotations/instances_val.json").exists());
+        assert!(
+            output_dir
+                .join("train/annotations/instances_train.json")
+                .exists()
+        );
+        assert!(
+            output_dir
+                .join("val/annotations/instances_val.json")
+                .exists()
+        );
 
         // Verify train JSON content
-        let train_json = std::fs::read_to_string(
-            output_dir.join("train/annotations/instances_train.json"),
-        )
-        .unwrap();
+        let train_json =
+            std::fs::read_to_string(output_dir.join("train/annotations/instances_train.json"))
+                .unwrap();
         let train_data: CocoDataset = serde_json::from_str(&train_json).unwrap();
         assert_eq!(train_data.images.len(), 2);
         assert_eq!(train_data.annotations.len(), 2);
 
         // Verify val JSON content
-        let val_json = std::fs::read_to_string(
-            output_dir.join("val/annotations/instances_val.json"),
-        )
-        .unwrap();
+        let val_json =
+            std::fs::read_to_string(output_dir.join("val/annotations/instances_val.json")).unwrap();
         let val_data: CocoDataset = serde_json::from_str(&val_json).unwrap();
         assert_eq!(val_data.images.len(), 1);
         assert_eq!(val_data.annotations.len(), 1);
@@ -719,12 +722,8 @@ mod tests {
         let groups = vec!["train".to_string(), "val".to_string()];
 
         let writer = CocoWriter::new();
-        let result = writer.write_split_by_group(
-            &dataset,
-            &groups,
-            None,
-            std::path::Path::new("/tmp/test"),
-        );
+        let result =
+            writer.write_split_by_group(&dataset, &groups, None, std::path::Path::new("/tmp/test"));
 
         assert!(result.is_err());
     }
