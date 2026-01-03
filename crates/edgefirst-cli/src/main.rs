@@ -3092,27 +3092,66 @@ async fn handle_arrow_to_coco(
     Ok(())
 }
 
-/// Validate COCO import parameters.
-fn validate_coco_import_params(
+/// Arguments for COCO import CLI command.
+/// Groups all parameters to reduce function parameter count.
+struct CocoCliImportArgs {
+    /// Path to COCO annotation JSON file or extracted directory.
+    coco_path: PathBuf,
+    /// Project ID (required when creating new dataset).
+    project: Option<String>,
+    /// Create new dataset with this name.
+    name: Option<String>,
+    /// Description for new dataset.
+    description: Option<String>,
+    /// Target dataset ID.
+    dataset: Option<String>,
+    /// Target annotation set ID.
+    annotation_set: Option<String>,
+    /// Group name for samples.
+    group: Option<String>,
+    /// Include segmentation masks.
+    masks: bool,
+    /// Include images in upload.
+    images: bool,
+    /// Batch size for uploads.
+    batch_size: usize,
+    /// Maximum concurrent uploads.
+    concurrency: usize,
+    /// Verify import instead of uploading.
     verify: bool,
+    /// Update annotations on existing samples.
     update: bool,
-    name: &Option<String>,
-) -> Result<(), Error> {
-    if verify && name.is_some() {
+}
+
+/// Context for COCO import operations after resolving IDs.
+struct CocoImportContext {
+    coco_path: PathBuf,
+    dataset_id: DatasetID,
+    annotation_set_id: AnnotationSetID,
+    group: Option<String>,
+    masks: bool,
+    images: bool,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+/// Validate COCO import parameters.
+fn validate_coco_import_params(args: &CocoCliImportArgs) -> Result<(), Error> {
+    if args.verify && args.name.is_some() {
         return Err(Error::InvalidParameters(
             "--verify cannot be used with --name (cannot verify a dataset that doesn't exist yet)."
                 .to_owned(),
         ));
     }
 
-    if update && name.is_some() {
+    if args.update && args.name.is_some() {
         return Err(Error::InvalidParameters(
             "--update cannot be used with --name (cannot update a dataset that doesn't exist yet)."
                 .to_owned(),
         ));
     }
 
-    if verify && update {
+    if args.verify && args.update {
         return Err(Error::InvalidParameters(
             "--verify and --update cannot be used together.".to_owned(),
         ));
@@ -3233,93 +3272,62 @@ fn print_coco_header(
 }
 
 /// Handle COCO import to Studio.
-async fn handle_import_coco(
-    client: &Client,
-    coco_path: PathBuf,
-    project: Option<String>,
-    name: Option<String>,
-    description: Option<String>,
-    dataset: Option<String>,
-    annotation_set: Option<String>,
-    group: Option<String>,
-    masks: bool,
-    images: bool,
-    batch_size: usize,
-    concurrency: usize,
-    verify: bool,
-    update: bool,
-) -> Result<(), Error> {
-    validate_coco_import_params(verify, update, &name)?;
+async fn handle_import_coco(client: &Client, args: CocoCliImportArgs) -> Result<(), Error> {
+    validate_coco_import_params(&args)?;
 
-    let (dataset_id, annotation_set_id) =
-        resolve_dataset_ids(client, name, project, description, dataset, annotation_set).await?;
+    let (dataset_id, annotation_set_id) = resolve_dataset_ids(
+        client,
+        args.name,
+        args.project,
+        args.description,
+        args.dataset,
+        args.annotation_set,
+    )
+    .await?;
 
-    if verify {
-        handle_coco_verify(
-            client,
-            &coco_path,
-            dataset_id,
-            annotation_set_id,
-            group,
-            masks,
-        )
-        .await
-    } else if update {
-        handle_coco_update(
-            client,
-            &coco_path,
-            dataset_id,
-            annotation_set_id,
-            group,
-            masks,
-            batch_size,
-            concurrency,
-        )
-        .await
+    let ctx = CocoImportContext {
+        coco_path: args.coco_path,
+        dataset_id,
+        annotation_set_id,
+        group: args.group,
+        masks: args.masks,
+        images: args.images,
+        batch_size: args.batch_size,
+        concurrency: args.concurrency,
+    };
+
+    if args.verify {
+        handle_coco_verify(client, &ctx).await
+    } else if args.update {
+        handle_coco_update(client, &ctx).await
     } else {
-        handle_coco_import_normal(
-            client,
-            &coco_path,
-            dataset_id,
-            annotation_set_id,
-            group,
-            masks,
-            images,
-            batch_size,
-            concurrency,
-        )
-        .await
+        handle_coco_import_normal(client, &ctx).await
     }
 }
 
 /// Handle COCO verify mode.
-async fn handle_coco_verify(
-    client: &Client,
-    coco_path: &Path,
-    dataset_id: DatasetID,
-    annotation_set_id: AnnotationSetID,
-    group: Option<String>,
-    masks: bool,
-) -> Result<(), Error> {
+async fn handle_coco_verify(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
     use edgefirst_client::coco::studio::{verify_coco_import, CocoVerifyOptions};
 
     print_coco_header(
         "Verifying COCO import",
-        coco_path,
-        &dataset_id,
-        &annotation_set_id,
-        &group,
+        &ctx.coco_path,
+        &ctx.dataset_id,
+        &ctx.annotation_set_id,
+        &ctx.group,
     );
 
     let pb = create_progress_bar();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
     let verify_options = CocoVerifyOptions {
-        verify_masks: masks,
-        group,
+        verify_masks: ctx.masks,
+        group: ctx.group.clone(),
     };
 
-    let coco_path_owned = coco_path.to_path_buf();
+    let coco_path_owned = ctx.coco_path.clone();
+    let dataset_id = ctx.dataset_id.clone();
+    let annotation_set_id = ctx.annotation_set_id.clone();
     let client = client.clone();
     let task = tokio::spawn(async move {
         verify_coco_import(
@@ -3354,37 +3362,30 @@ async fn handle_coco_verify(
 }
 
 /// Handle COCO update mode.
-async fn handle_coco_update(
-    client: &Client,
-    coco_path: &Path,
-    dataset_id: DatasetID,
-    annotation_set_id: AnnotationSetID,
-    group: Option<String>,
-    masks: bool,
-    batch_size: usize,
-    concurrency: usize,
-) -> Result<(), Error> {
+async fn handle_coco_update(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
     use edgefirst_client::coco::studio::{update_coco_annotations, CocoUpdateOptions};
 
     print_coco_header(
         "Updating annotations on existing samples",
-        coco_path,
-        &dataset_id,
-        &annotation_set_id,
-        &group,
+        &ctx.coco_path,
+        &ctx.dataset_id,
+        &ctx.annotation_set_id,
+        &ctx.group,
     );
 
     let pb = create_progress_bar();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
     let update_options = CocoUpdateOptions {
-        include_masks: masks,
-        group,
-        batch_size,
-        concurrency,
+        include_masks: ctx.masks,
+        group: ctx.group.clone(),
+        batch_size: ctx.batch_size,
+        concurrency: ctx.concurrency,
     };
 
-    let coco_path_owned = coco_path.to_path_buf();
+    let coco_path_owned = ctx.coco_path.clone();
+    let dataset_id = ctx.dataset_id.clone();
+    let annotation_set_id = ctx.annotation_set_id.clone();
     let client = client.clone();
     let task = tokio::spawn(async move {
         update_coco_annotations(
@@ -3422,40 +3423,32 @@ async fn handle_coco_update(
 }
 
 /// Handle normal COCO import mode.
-async fn handle_coco_import_normal(
-    client: &Client,
-    coco_path: &Path,
-    dataset_id: DatasetID,
-    annotation_set_id: AnnotationSetID,
-    group: Option<String>,
-    masks: bool,
-    images: bool,
-    batch_size: usize,
-    concurrency: usize,
-) -> Result<(), Error> {
+async fn handle_coco_import_normal(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
     use edgefirst_client::coco::studio::{import_coco_to_studio, CocoImportOptions};
 
     print_coco_header(
         "Importing COCO dataset to Studio",
-        coco_path,
-        &dataset_id,
-        &annotation_set_id,
-        &group,
+        &ctx.coco_path,
+        &ctx.dataset_id,
+        &ctx.annotation_set_id,
+        &ctx.group,
     );
 
     let pb = create_progress_bar();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
     let options = CocoImportOptions {
-        include_masks: masks,
-        include_images: images,
-        group,
-        batch_size,
-        concurrency,
+        include_masks: ctx.masks,
+        include_images: ctx.images,
+        group: ctx.group.clone(),
+        batch_size: ctx.batch_size,
+        concurrency: ctx.concurrency,
         resume: true,
     };
 
-    let coco_path_owned = coco_path.to_path_buf();
+    let coco_path_owned = ctx.coco_path.clone();
+    let dataset_id = ctx.dataset_id.clone();
+    let annotation_set_id = ctx.annotation_set_id.clone();
     let client = client.clone();
     let task = tokio::spawn(async move {
         import_coco_to_studio(
@@ -3902,8 +3895,7 @@ async fn main() -> Result<(), Error> {
             verify,
             update,
         } => {
-            handle_import_coco(
-                &client,
+            let args = CocoCliImportArgs {
                 coco_path,
                 project,
                 name,
@@ -3917,8 +3909,8 @@ async fn main() -> Result<(), Error> {
                 concurrency,
                 verify,
                 update,
-            )
-            .await
+            };
+            handle_import_coco(&client, args).await
         }
         Command::ExportCoco {
             dataset_id,

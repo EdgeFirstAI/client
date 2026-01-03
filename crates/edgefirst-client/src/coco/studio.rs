@@ -200,17 +200,14 @@ pub async fn import_coco_to_studio(
     let index = CocoIndex::from_dataset(&dataset);
     send_progress(&progress, 0, to_import).await;
 
-    let imported = upload_images_in_batches(
+    let upload_ctx = UploadContext {
         client,
-        &dataset_id,
-        &annotation_set_id,
-        &images_to_import,
-        &index,
-        &images_dir,
+        dataset_id: &dataset_id,
+        annotation_set_id: &annotation_set_id,
         options,
-        &progress,
-    )
-    .await?;
+        progress: &progress,
+    };
+    let imported = upload_images_in_batches(&upload_ctx, &images_to_import, &index, &images_dir).await?;
 
     Ok(CocoImportResult {
         total_images,
@@ -272,35 +269,40 @@ async fn send_progress(progress: &Option<Sender<Progress>>, current: usize, tota
     }
 }
 
+/// Context for batch upload operations.
+struct UploadContext<'a> {
+    client: &'a Client,
+    dataset_id: &'a DatasetID,
+    annotation_set_id: &'a AnnotationSetID,
+    options: &'a CocoImportOptions,
+    progress: &'a Option<Sender<Progress>>,
+}
+
 /// Upload images in batches with high concurrency.
-async fn upload_images_in_batches(
-    client: &Client,
-    dataset_id: &DatasetID,
-    annotation_set_id: &AnnotationSetID,
+async fn upload_images_in_batches<'a>(
+    ctx: &UploadContext<'a>,
     images: &[&CocoImage],
     index: &CocoIndex,
     images_dir: &Path,
-    options: &CocoImportOptions,
-    progress: &Option<Sender<Progress>>,
 ) -> Result<usize, Error> {
     let mut imported = 0;
     let to_import = images.len();
 
-    for batch in images.chunks(options.batch_size) {
-        let samples = convert_batch_to_samples(batch, index, images_dir, options)?;
+    for batch in images.chunks(ctx.options.batch_size) {
+        let samples = convert_batch_to_samples(batch, index, images_dir, ctx.options)?;
 
-        client
+        ctx.client
             .populate_samples_with_concurrency(
-                dataset_id.clone(),
-                Some(annotation_set_id.clone()),
+                ctx.dataset_id.clone(),
+                Some(ctx.annotation_set_id.clone()),
                 samples,
                 None,
-                Some(options.concurrency),
+                Some(ctx.options.concurrency),
             )
             .await?;
 
         imported += batch.len();
-        send_progress(progress, imported, to_import).await;
+        send_progress(ctx.progress, imported, to_import).await;
     }
 
     Ok(imported)
@@ -829,6 +831,178 @@ impl Default for CocoUpdateOptions {
     }
 }
 
+/// Read COCO dataset from a path, handling both files and directories.
+fn read_coco_dataset_for_update(coco_path: &Path) -> Result<CocoDataset, Error> {
+    if coco_path.is_dir() {
+        // Read all annotation files and merge into one dataset
+        let datasets = read_coco_directory(coco_path, &CocoReadOptions::default())?;
+        log::info!("Found {} annotation files in directory", datasets.len());
+
+        // Merge all datasets, preserving group info by prefixing file_name
+        let mut merged = CocoDataset::default();
+        for (mut ds, group) in datasets {
+            log::info!(
+                "  - {} group: {} images, {} annotations",
+                group,
+                ds.images.len(),
+                ds.annotations.len()
+            );
+            // Prefix file_name with group folder so infer_group_from_folder can extract it
+            for image in &mut ds.images {
+                if !image.file_name.contains('/') {
+                    image.file_name = format!("{}2017/{}", group, image.file_name);
+                }
+            }
+            merge_coco_datasets(&mut merged, ds);
+        }
+        Ok(merged)
+    } else if coco_path.extension().is_some_and(|e| e == "json") {
+        let reader = CocoReader::new();
+        reader.read_json(coco_path)
+    } else {
+        Err(Error::InvalidParameters(
+            "COCO update requires a JSON annotation file or directory.".to_string(),
+        ))
+    }
+}
+
+/// Build a map of sample name -> (sample_id, width, height, group) from samples.
+fn build_sample_info_map(
+    samples: &[Sample],
+) -> std::collections::HashMap<String, (crate::SampleID, u32, u32, Option<String>)> {
+    use std::collections::HashMap;
+    let mut sample_info = HashMap::new();
+    for sample in samples {
+        if let (Some(name), Some(id), Some(w), Some(h)) =
+            (sample.name(), sample.id(), sample.width, sample.height)
+        {
+            sample_info.insert(name, (id, w, h, sample.group.clone()));
+        }
+    }
+    sample_info
+}
+
+/// Ensure all COCO category labels exist in Studio.
+async fn ensure_labels_exist(
+    client: &Client,
+    dataset_id: &DatasetID,
+    categories: &[crate::coco::CocoCategory],
+) -> Result<std::collections::HashMap<String, u64>, Error> {
+    use std::collections::{HashMap, HashSet};
+
+    // Get existing labels
+    let existing_labels = client.labels(dataset_id.clone()).await?;
+    let existing_label_names: HashSet<String> = existing_labels
+        .iter()
+        .map(|l| l.name().to_string())
+        .collect();
+
+    // Find COCO categories that don't exist as labels in Studio
+    let missing_labels: Vec<String> = categories
+        .iter()
+        .filter(|c| !existing_label_names.contains(&c.name))
+        .map(|c| c.name.clone())
+        .collect();
+
+    // Create missing labels
+    if !missing_labels.is_empty() {
+        log::info!(
+            "Creating {} missing labels in Studio...",
+            missing_labels.len()
+        );
+        for label_name in &missing_labels {
+            client.add_label(dataset_id.clone(), label_name).await?;
+        }
+    }
+
+    // Re-query labels to get their IDs after creation
+    let labels = client.labels(dataset_id.clone()).await?;
+    let label_map: HashMap<String, u64> = labels
+        .iter()
+        .map(|l| (l.name().to_string(), l.id()))
+        .collect();
+
+    log::info!(
+        "Label map has {} entries for {} COCO categories",
+        label_map.len(),
+        categories.len()
+    );
+
+    Ok(label_map)
+}
+
+/// Update sample groups in bulk.
+async fn update_sample_groups(
+    client: &Client,
+    dataset_id: &DatasetID,
+    samples_needing_group_update: &[(crate::SampleID, String)],
+) -> usize {
+    use std::collections::{HashMap, HashSet};
+
+    if samples_needing_group_update.is_empty() {
+        return 0;
+    }
+
+    log::info!(
+        "Updating groups for {} samples...",
+        samples_needing_group_update.len()
+    );
+
+    // Collect unique group names and get/create their IDs
+    let unique_groups: HashSet<String> = samples_needing_group_update
+        .iter()
+        .map(|(_, group)| group.clone())
+        .collect();
+
+    let mut group_id_map: HashMap<String, u64> = HashMap::new();
+    for group_name in unique_groups {
+        match client
+            .get_or_create_group(dataset_id.clone(), &group_name)
+            .await
+        {
+            Ok(group_id) => {
+                group_id_map.insert(group_name, group_id);
+            }
+            Err(e) => {
+                log::warn!("Failed to get/create group '{}': {}", group_name, e);
+            }
+        }
+    }
+
+    // Update each sample's group
+    let mut updated_count = 0;
+    let mut failed_count = 0;
+    for (sample_id, group_name) in samples_needing_group_update {
+        if let Some(&group_id) = group_id_map.get(group_name) {
+            match client.set_sample_group_id(*sample_id, group_id).await {
+                Ok(_) => {
+                    updated_count += 1;
+                    if updated_count % 1000 == 0 {
+                        log::debug!("Updated groups for {} samples so far", updated_count);
+                    }
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    if failed_count <= 5 {
+                        log::warn!("Failed to update group for sample {:?}: {}", sample_id, e);
+                    }
+                }
+            }
+        }
+    }
+
+    if failed_count > 5 {
+        log::warn!("... and {} more group update failures", failed_count - 5);
+    }
+    log::info!(
+        "Updated groups for {} samples ({} failed)",
+        updated_count,
+        failed_count
+    );
+
+    updated_count
+}
+
 /// Update annotations on existing samples without re-uploading images.
 ///
 /// This function reads COCO annotations and updates the annotations on samples
@@ -857,43 +1031,11 @@ pub async fn update_coco_annotations(
     progress: Option<Sender<Progress>>,
 ) -> Result<CocoUpdateResult, Error> {
     use crate::{SampleID, api::ServerAnnotation};
-    use std::collections::HashMap;
 
     let coco_path = coco_path.as_ref();
 
-    // Read COCO annotations - when given a directory, read ALL annotation files
-    let dataset = if coco_path.is_dir() {
-        // Read all annotation files and merge into one dataset
-        let datasets = read_coco_directory(coco_path, &CocoReadOptions::default())?;
-        log::info!("Found {} annotation files in directory", datasets.len());
-
-        // Merge all datasets, preserving group info by prefixing file_name
-        let mut merged = CocoDataset::default();
-        for (mut ds, group) in datasets {
-            log::info!(
-                "  - {} group: {} images, {} annotations",
-                group,
-                ds.images.len(),
-                ds.annotations.len()
-            );
-            // Prefix file_name with group folder so infer_group_from_folder can extract it
-            for image in &mut ds.images {
-                if !image.file_name.contains('/') {
-                    image.file_name = format!("{}2017/{}", group, image.file_name);
-                }
-            }
-            merge_coco_datasets(&mut merged, ds);
-        }
-        merged
-    } else if coco_path.extension().is_some_and(|e| e == "json") {
-        let reader = CocoReader::new();
-        reader.read_json(coco_path)?
-    } else {
-        return Err(Error::InvalidParameters(
-            "COCO update requires a JSON annotation file or directory.".to_string(),
-        ));
-    };
-
+    // Read COCO annotations
+    let dataset = read_coco_dataset_for_update(coco_path)?;
     let total_images = dataset.images.len();
 
     if total_images == 0 {
@@ -909,30 +1051,20 @@ pub async fn update_coco_annotations(
         dataset.categories.len()
     );
 
-    // Query ALL existing samples from Studio to get their IDs and dimensions
-    // (no group filter - we want to update annotations regardless of group)
+    // Query ALL existing samples from Studio
     log::info!("Fetching existing samples from Studio...");
     let existing_samples = client
         .samples(
             dataset_id.clone(),
             Some(annotation_set_id.clone()),
             &[],
-            &[], // No group filter - get all samples
             &[],
-            progress.clone(), // Show progress while fetching
+            &[],
+            progress.clone(),
         )
         .await?;
 
-    // Build a map of sample name -> (sample_id, width, height, group)
-    let mut sample_info: HashMap<String, (SampleID, u32, u32, Option<String>)> = HashMap::new();
-    for sample in &existing_samples {
-        if let (Some(name), Some(id), Some(w), Some(h)) =
-            (sample.name(), sample.id(), sample.width, sample.height)
-        {
-            sample_info.insert(name, (id, w, h, sample.group.clone()));
-        }
-    }
-
+    let sample_info = build_sample_info_map(&existing_samples);
     log::info!(
         "Found {} existing samples in Studio with IDs and dimensions",
         sample_info.len()
@@ -941,44 +1073,8 @@ pub async fn update_coco_annotations(
     // Build COCO index for efficient annotation lookup
     let coco_index = CocoIndex::from_dataset(&dataset);
 
-    // Get existing labels and create any missing ones from COCO categories
-    let existing_labels = client.labels(dataset_id.clone()).await?;
-    let existing_label_names: std::collections::HashSet<String> = existing_labels
-        .iter()
-        .map(|l| l.name().to_string())
-        .collect();
-
-    // Find COCO categories that don't exist as labels in Studio
-    let mut missing_labels: Vec<String> = Vec::new();
-    for category in dataset.categories.iter() {
-        if !existing_label_names.contains(&category.name) {
-            missing_labels.push(category.name.clone());
-        }
-    }
-
-    // Create missing labels
-    if !missing_labels.is_empty() {
-        log::info!(
-            "Creating {} missing labels in Studio...",
-            missing_labels.len()
-        );
-        for label_name in &missing_labels {
-            client.add_label(dataset_id.clone(), label_name).await?;
-        }
-    }
-
-    // Re-query labels to get their IDs after creation
-    let labels = client.labels(dataset_id.clone()).await?;
-    let label_map: HashMap<String, u64> = labels
-        .iter()
-        .map(|l| (l.name().to_string(), l.id()))
-        .collect();
-
-    log::info!(
-        "Label map has {} entries for {} COCO categories",
-        label_map.len(),
-        dataset.categories.len()
-    );
+    // Ensure all labels exist
+    let label_map = ensure_labels_exist(client, &dataset_id, &dataset.categories).await?;
 
     // Collect sample IDs to update and annotations to add
     let mut sample_ids_to_update: Vec<SampleID> = Vec::new();
@@ -1156,68 +1252,9 @@ pub async fn update_coco_annotations(
             .await;
     }
 
-    // Step 3: Update sample groups if needed using image.set_group_id API
-    let groups_updated = if !samples_needing_group_update.is_empty() {
-        log::info!(
-            "Updating groups for {} samples...",
-            samples_needing_group_update.len()
-        );
-
-        // Collect unique group names and get/create their IDs
-        let unique_groups: HashSet<String> = samples_needing_group_update
-            .iter()
-            .map(|(_, group)| group.clone())
-            .collect();
-
-        let mut group_id_map: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        for group_name in unique_groups {
-            match client
-                .get_or_create_group(dataset_id.clone(), &group_name)
-                .await
-            {
-                Ok(group_id) => {
-                    group_id_map.insert(group_name, group_id);
-                }
-                Err(e) => {
-                    log::warn!("Failed to get/create group '{}': {}", group_name, e);
-                }
-            }
-        }
-
-        // Update each sample's group
-        let mut updated_count = 0;
-        let mut failed_count = 0;
-        for (sample_id, group_name) in &samples_needing_group_update {
-            if let Some(&group_id) = group_id_map.get(group_name) {
-                match client.set_sample_group_id(*sample_id, group_id).await {
-                    Ok(_) => {
-                        updated_count += 1;
-                        if updated_count % 1000 == 0 {
-                            log::debug!("Updated groups for {} samples so far", updated_count);
-                        }
-                    }
-                    Err(e) => {
-                        failed_count += 1;
-                        if failed_count <= 5 {
-                            log::warn!("Failed to update group for sample {:?}: {}", sample_id, e);
-                        }
-                    }
-                }
-            }
-        }
-        if failed_count > 5 {
-            log::warn!("... and {} more group update failures", failed_count - 5);
-        }
-        log::info!(
-            "Updated groups for {} samples ({} failed)",
-            updated_count,
-            failed_count
-        );
-        updated_count
-    } else {
-        0
-    };
+    // Step 3: Update sample groups if needed
+    let groups_updated =
+        update_sample_groups(client, &dataset_id, &samples_needing_group_update).await;
 
     log::info!(
         "Update complete: {} samples updated, {} not found, {} annotations added, {} groups updated",
@@ -2089,5 +2126,187 @@ mod tests {
         assert_eq!(result.total_images, 500);
         assert_eq!(result.updated, 450);
         assert_eq!(result.not_found, 50);
+    }
+
+    // =========================================================================
+    // read_coco_dataset_for_update tests
+    // =========================================================================
+
+    #[test]
+    fn test_read_coco_dataset_for_update_invalid_extension() {
+        let result = read_coco_dataset_for_update(Path::new("/tmp/file.txt"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("COCO update requires a JSON annotation file")
+        );
+    }
+
+    #[test]
+    fn test_read_coco_dataset_for_update_nonexistent_json() {
+        let result = read_coco_dataset_for_update(Path::new("/nonexistent/file.json"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_coco_dataset_for_update_nonexistent_directory() {
+        let result = read_coco_dataset_for_update(Path::new("/nonexistent_dir"));
+        // Directory doesn't exist, so is_dir() returns false, and it's not .json
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // build_sample_info_map tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_sample_info_map_empty() {
+        let samples: Vec<crate::Sample> = vec![];
+        let map = build_sample_info_map(&samples);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_build_sample_info_map_with_samples() {
+        use crate::{Sample, SampleID};
+
+        let mut sample1 = Sample::default();
+        sample1.image_name = Some("sample1".to_string());
+        sample1.id = Some(SampleID::from(1));
+        sample1.width = Some(640);
+        sample1.height = Some(480);
+        sample1.group = Some("train".to_string());
+
+        let mut sample2 = Sample::default();
+        sample2.image_name = Some("sample2".to_string());
+        sample2.id = Some(SampleID::from(2));
+        sample2.width = Some(1280);
+        sample2.height = Some(720);
+        sample2.group = None;
+
+        let samples = vec![sample1, sample2];
+        let map = build_sample_info_map(&samples);
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("sample1"));
+        assert!(map.contains_key("sample2"));
+
+        let (id1, w1, h1, g1) = map.get("sample1").unwrap();
+        assert_eq!(*id1, SampleID::from(1));
+        assert_eq!(*w1, 640);
+        assert_eq!(*h1, 480);
+        assert_eq!(g1.as_deref(), Some("train"));
+
+        let (id2, w2, h2, g2) = map.get("sample2").unwrap();
+        assert_eq!(*id2, SampleID::from(2));
+        assert_eq!(*w2, 1280);
+        assert_eq!(*h2, 720);
+        assert!(g2.is_none());
+    }
+
+    #[test]
+    fn test_build_sample_info_map_skips_incomplete_samples() {
+        use crate::Sample;
+
+        // Sample missing id
+        let mut sample_no_id = Sample::default();
+        sample_no_id.image_name = Some("no_id".to_string());
+        sample_no_id.width = Some(640);
+        sample_no_id.height = Some(480);
+
+        // Sample missing name
+        let mut sample_no_name = Sample::default();
+        sample_no_name.id = Some(crate::SampleID::from(1));
+        sample_no_name.width = Some(640);
+        sample_no_name.height = Some(480);
+
+        // Sample missing dimensions
+        let mut sample_no_dims = Sample::default();
+        sample_no_dims.image_name = Some("no_dims".to_string());
+        sample_no_dims.id = Some(crate::SampleID::from(2));
+
+        let samples = vec![sample_no_id, sample_no_name, sample_no_dims];
+        let map = build_sample_info_map(&samples);
+
+        // All samples should be skipped because they're incomplete
+        assert!(map.is_empty());
+    }
+
+    // =========================================================================
+    // UploadContext tests
+    // =========================================================================
+
+    #[test]
+    fn test_coco_import_options_clone() {
+        // Test that options can be cloned (used in async contexts)
+        let options = CocoImportOptions::default();
+        let cloned = options.clone();
+
+        assert_eq!(options.batch_size, cloned.batch_size);
+        assert_eq!(options.concurrency, cloned.concurrency);
+        assert_eq!(options.include_masks, cloned.include_masks);
+    }
+
+    // =========================================================================
+    // CocoImportOptions custom values tests
+    // =========================================================================
+
+    #[test]
+    fn test_coco_import_options_custom() {
+        let options = CocoImportOptions {
+            include_masks: false,
+            include_images: false,
+            group: Some("test".to_string()),
+            batch_size: 50,
+            concurrency: 32,
+            resume: false,
+        };
+
+        assert!(!options.include_masks);
+        assert!(!options.include_images);
+        assert_eq!(options.group.as_deref(), Some("test"));
+        assert_eq!(options.batch_size, 50);
+        assert_eq!(options.concurrency, 32);
+        assert!(!options.resume);
+    }
+
+    #[test]
+    fn test_coco_update_options_custom() {
+        let options = CocoUpdateOptions {
+            include_masks: false,
+            group: Some("val".to_string()),
+            batch_size: 25,
+            concurrency: 16,
+        };
+
+        assert!(!options.include_masks);
+        assert_eq!(options.group.as_deref(), Some("val"));
+        assert_eq!(options.batch_size, 25);
+        assert_eq!(options.concurrency, 16);
+    }
+
+    // =========================================================================
+    // extract_sample_name tests
+    // =========================================================================
+
+    #[test]
+    fn test_extract_sample_name_simple() {
+        assert_eq!(extract_sample_name("image.jpg"), "image");
+    }
+
+    #[test]
+    fn test_extract_sample_name_with_path() {
+        assert_eq!(extract_sample_name("train2017/000001.jpg"), "000001");
+    }
+
+    #[test]
+    fn test_extract_sample_name_no_extension() {
+        assert_eq!(extract_sample_name("image"), "image");
+    }
+
+    #[test]
+    fn test_extract_sample_name_multiple_dots() {
+        assert_eq!(extract_sample_name("image.v2.final.jpg"), "image.v2.final");
     }
 }
