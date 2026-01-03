@@ -11,9 +11,11 @@
 //! etc. subdirectories first.
 
 use super::{
-    convert::*,
+    convert::{
+        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask, mask_to_coco_polygon,
+    },
     reader::{CocoReadOptions, CocoReader, read_coco_directory},
-    types::*,
+    types::{CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
     writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter},
 };
 use crate::{
@@ -147,51 +149,8 @@ pub async fn import_coco_to_studio(
 ) -> Result<CocoImportResult, Error> {
     let coco_path = coco_path.as_ref();
 
-    // Read annotations - when given a directory, read ALL annotation files
-    let (dataset, images_dir) = if coco_path.is_dir() {
-        // Read all annotation files and merge into one dataset
-        let datasets = read_coco_directory(coco_path, &CocoReadOptions::default())?;
-        log::info!("Found {} annotation files in directory", datasets.len());
-
-        // Merge all datasets, preserving group info by prefixing file_name
-        let mut merged = CocoDataset::default();
-        for (mut ds, group) in datasets {
-            log::info!(
-                "  - {} group: {} images, {} annotations",
-                group,
-                ds.images.len(),
-                ds.annotations.len()
-            );
-            // Prefix file_name with group folder so infer_group_from_folder can extract it
-            // e.g., "000000123.jpg" -> "train2017/000000123.jpg"
-            for image in &mut ds.images {
-                if !image.file_name.contains('/') {
-                    image.file_name = format!("{}2017/{}", group, image.file_name);
-                }
-            }
-            merge_coco_datasets(&mut merged, ds);
-        }
-        (merged, coco_path.to_path_buf())
-    } else if coco_path.extension().is_some_and(|e| e == "json") {
-        // JSON file directly
-        let reader = CocoReader::new();
-        let dataset = reader.read_json(coco_path)?;
-        let parent = coco_path
-            .parent()
-            .and_then(|p| p.parent()) // Go up from annotations/ to COCO root
-            .unwrap_or(Path::new("."));
-        (dataset, parent.to_path_buf())
-    } else {
-        return Err(Error::InvalidParameters(
-            "COCO import requires a JSON annotation file or directory. \
-             ZIP archives must be extracted first."
-                .to_string(),
-        ));
-    };
-
-    // User-provided group acts as a filter (only import images from matching
-    // folders)
-    let group_filter = options.group.as_deref();
+    // Read COCO dataset
+    let (dataset, images_dir) = read_coco_from_path(coco_path)?;
 
     let total_images = dataset.images.len();
     if total_images == 0 {
@@ -206,82 +165,21 @@ pub async fn import_coco_to_studio(
     }
 
     // Check for existing samples if resume is enabled
-    // Query ALL samples (no group filter) to properly detect duplicates
-    let existing_names: HashSet<String> = if options.resume {
-        log::info!("Checking for existing samples in dataset {}...", dataset_id);
-        let names = client.sample_names(dataset_id.clone(), &[], None).await?;
-        log::info!("Found {} existing samples in dataset", names.len());
-        if !names.is_empty() {
-            // Log a few sample names for debugging
-            let samples: Vec<_> = names.iter().take(3).collect();
-            log::debug!("Sample names from server: {:?}", samples);
-        }
-        names
-    } else {
-        HashSet::new()
-    };
+    let existing_names = fetch_existing_sample_names(client, &dataset_id, options.resume).await?;
 
-    // Filter images:
-    // 1. Skip if already imported (resume mode)
-    // 2. Skip if doesn't match group filter (when --group is specified)
-    let images_to_import: Vec<_> = dataset
-        .images
-        .iter()
-        .filter(|img| {
-            // Check group filter first
-            if let Some(filter) = group_filter {
-                let inferred = super::reader::infer_group_from_folder(&img.file_name);
-                if inferred.as_deref() != Some(filter) {
-                    return false;
-                }
-            }
-
-            // Check if already imported
-            let sample_name = Path::new(&img.file_name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(String::from)
-                .unwrap_or_else(|| img.file_name.clone());
-            !existing_names.contains(&sample_name)
-        })
-        .collect();
-
-    // Count images filtered by group vs already imported
-    let filtered_by_group = if group_filter.is_some() {
-        dataset
-            .images
-            .iter()
-            .filter(|img| {
-                let inferred = super::reader::infer_group_from_folder(&img.file_name);
-                inferred.as_deref() != group_filter
-            })
-            .count()
-    } else {
-        0
-    };
-    let skipped = total_images - filtered_by_group - images_to_import.len();
-    let to_import = images_to_import.len();
+    // Filter images for import
+    let group_filter = options.group.as_deref();
+    let (images_to_import, skipped, filtered_by_group) =
+        filter_images_for_import(&dataset.images, group_filter, &existing_names);
 
     // Log filtering info
-    if filtered_by_group > 0 {
-        log::info!(
-            "Group filter '{}': {} images excluded, {} matching",
-            group_filter.unwrap_or(""),
-            filtered_by_group,
-            total_images - filtered_by_group
-        );
-    }
+    log_import_filter_info(group_filter, filtered_by_group, total_images);
+
+    let to_import = images_to_import.len();
 
     // If nothing to import, return early
     if to_import == 0 {
-        if skipped > 0 {
-            log::info!(
-                "All {} matching images already imported, nothing to do",
-                skipped
-            );
-        } else {
-            log::info!("No images to import");
-        }
+        log_nothing_to_import(skipped);
         return Ok(CocoImportResult {
             total_images,
             skipped,
@@ -298,39 +196,99 @@ pub async fn import_coco_to_studio(
         );
     }
 
+    // Build index and upload
     let index = CocoIndex::from_dataset(&dataset);
+    send_progress(&progress, 0, to_import).await;
 
-    if let Some(ref p) = progress {
-        let _ = p
-            .send(Progress {
-                current: 0,
-                total: to_import,
-            })
-            .await;
+    let imported = upload_images_in_batches(
+        client,
+        &dataset_id,
+        &annotation_set_id,
+        &images_to_import,
+        &index,
+        &images_dir,
+        options,
+        &progress,
+    )
+    .await?;
+
+    Ok(CocoImportResult {
+        total_images,
+        skipped,
+        imported,
+    })
+}
+
+/// Fetch existing sample names from the server if resume is enabled.
+async fn fetch_existing_sample_names(
+    client: &Client,
+    dataset_id: &DatasetID,
+    resume: bool,
+) -> Result<HashSet<String>, Error> {
+    if !resume {
+        return Ok(HashSet::new());
     }
 
-    // Convert and upload in batches with high concurrency
+    log::info!("Checking for existing samples in dataset {}...", dataset_id);
+    let names = client.sample_names(dataset_id.clone(), &[], None).await?;
+    log::info!("Found {} existing samples in dataset", names.len());
+
+    if !names.is_empty() {
+        let samples: Vec<_> = names.iter().take(3).collect();
+        log::debug!("Sample names from server: {:?}", samples);
+    }
+
+    Ok(names)
+}
+
+/// Log filtering information.
+fn log_import_filter_info(group_filter: Option<&str>, filtered_by_group: usize, total: usize) {
+    if filtered_by_group > 0 {
+        log::info!(
+            "Group filter '{}': {} images excluded, {} matching",
+            group_filter.unwrap_or(""),
+            filtered_by_group,
+            total - filtered_by_group
+        );
+    }
+}
+
+/// Log when there's nothing to import.
+fn log_nothing_to_import(skipped: usize) {
+    if skipped > 0 {
+        log::info!(
+            "All {} matching images already imported, nothing to do",
+            skipped
+        );
+    } else {
+        log::info!("No images to import");
+    }
+}
+
+/// Send progress update.
+async fn send_progress(progress: &Option<Sender<Progress>>, current: usize, total: usize) {
+    if let Some(p) = progress {
+        let _ = p.send(Progress { current, total }).await;
+    }
+}
+
+/// Upload images in batches with high concurrency.
+async fn upload_images_in_batches(
+    client: &Client,
+    dataset_id: &DatasetID,
+    annotation_set_id: &AnnotationSetID,
+    images: &[&CocoImage],
+    index: &CocoIndex,
+    images_dir: &Path,
+    options: &CocoImportOptions,
+    progress: &Option<Sender<Progress>>,
+) -> Result<usize, Error> {
     let mut imported = 0;
+    let to_import = images.len();
 
-    for batch in images_to_import.chunks(options.batch_size) {
-        let mut samples = Vec::with_capacity(batch.len());
+    for batch in images.chunks(options.batch_size) {
+        let samples = convert_batch_to_samples(batch, index, images_dir, options)?;
 
-        for image in batch {
-            // Always infer group from image folder path
-            let image_group = super::reader::infer_group_from_folder(&image.file_name);
-
-            let sample = convert_coco_image_to_sample(
-                image,
-                &index,
-                &images_dir,
-                options.include_masks,
-                options.include_images,
-                image_group.as_deref(),
-            )?;
-            samples.push(sample);
-        }
-
-        // Upload batch with high concurrency
         client
             .populate_samples_with_concurrency(
                 dataset_id.clone(),
@@ -342,23 +300,35 @@ pub async fn import_coco_to_studio(
             .await?;
 
         imported += batch.len();
-
-        // Update progress
-        if let Some(ref p) = progress {
-            let _ = p
-                .send(Progress {
-                    current: imported,
-                    total: to_import,
-                })
-                .await;
-        }
+        send_progress(progress, imported, to_import).await;
     }
 
-    Ok(CocoImportResult {
-        total_images,
-        skipped,
-        imported,
-    })
+    Ok(imported)
+}
+
+/// Convert a batch of COCO images to EdgeFirst samples.
+fn convert_batch_to_samples(
+    batch: &[&CocoImage],
+    index: &CocoIndex,
+    images_dir: &Path,
+    options: &CocoImportOptions,
+) -> Result<Vec<Sample>, Error> {
+    let mut samples = Vec::with_capacity(batch.len());
+
+    for image in batch {
+        let image_group = super::reader::infer_group_from_folder(&image.file_name);
+        let sample = convert_coco_image_to_sample(
+            image,
+            index,
+            images_dir,
+            options.include_masks,
+            options.include_images,
+            image_group.as_deref(),
+        )?;
+        samples.push(sample);
+    }
+
+    Ok(samples)
 }
 
 /// Validate that images are extracted and accessible.
@@ -432,6 +402,106 @@ fn infer_group_from_filename(path: &Path) -> Option<String> {
     }
 
     None
+}
+
+/// Read COCO dataset from a path (directory or JSON file).
+///
+/// Returns the dataset and the base directory for images.
+fn read_coco_from_path(coco_path: &Path) -> Result<(CocoDataset, PathBuf), Error> {
+    if coco_path.is_dir() {
+        // Read all annotation files and merge into one dataset
+        let datasets = read_coco_directory(coco_path, &CocoReadOptions::default())?;
+        log::info!("Found {} annotation files in directory", datasets.len());
+
+        // Merge all datasets, preserving group info by prefixing file_name
+        let mut merged = CocoDataset::default();
+        for (mut ds, group) in datasets {
+            log::info!(
+                "  - {} group: {} images, {} annotations",
+                group,
+                ds.images.len(),
+                ds.annotations.len()
+            );
+            // Prefix file_name with group folder so infer_group_from_folder can extract it
+            // e.g., "000000123.jpg" -> "train2017/000000123.jpg"
+            for image in &mut ds.images {
+                if !image.file_name.contains('/') {
+                    image.file_name = format!("{}2017/{}", group, image.file_name);
+                }
+            }
+            merge_coco_datasets(&mut merged, ds);
+        }
+        Ok((merged, coco_path.to_path_buf()))
+    } else if coco_path.extension().is_some_and(|e| e == "json") {
+        // JSON file directly
+        let reader = CocoReader::new();
+        let dataset = reader.read_json(coco_path)?;
+        let parent = coco_path
+            .parent()
+            .and_then(|p| p.parent()) // Go up from annotations/ to COCO root
+            .unwrap_or(Path::new("."));
+        Ok((dataset, parent.to_path_buf()))
+    } else {
+        Err(Error::InvalidParameters(
+            "COCO import requires a JSON annotation file or directory. \
+             ZIP archives must be extracted first."
+                .to_string(),
+        ))
+    }
+}
+
+/// Filter images for import based on group filter and existing samples.
+///
+/// Returns a vector of images to import, the count of skipped images,
+/// and the count of images filtered by group.
+fn filter_images_for_import<'a>(
+    images: &'a [CocoImage],
+    group_filter: Option<&str>,
+    existing_names: &HashSet<String>,
+) -> (Vec<&'a CocoImage>, usize, usize) {
+    let total = images.len();
+
+    // Filter images that match group filter and aren't already imported
+    let images_to_import: Vec<_> = images
+        .iter()
+        .filter(|img| {
+            // Check group filter
+            if let Some(filter) = group_filter {
+                let inferred = super::reader::infer_group_from_folder(&img.file_name);
+                if inferred.as_deref() != Some(filter) {
+                    return false;
+                }
+            }
+            // Check if already imported
+            let sample_name = extract_sample_name(&img.file_name);
+            !existing_names.contains(&sample_name)
+        })
+        .collect();
+
+    // Count images filtered by group
+    let filtered_by_group = if group_filter.is_some() {
+        images
+            .iter()
+            .filter(|img| {
+                let inferred = super::reader::infer_group_from_folder(&img.file_name);
+                inferred.as_deref() != group_filter
+            })
+            .count()
+    } else {
+        0
+    };
+
+    let skipped = total - filtered_by_group - images_to_import.len();
+    (images_to_import, skipped, filtered_by_group)
+}
+
+/// Extract sample name from a file name.
+fn extract_sample_name(file_name: &str) -> String {
+    Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(String::from)
+        .unwrap_or_else(|| file_name.to_string())
 }
 
 /// Merge two COCO datasets, avoiding duplicates.
@@ -1430,6 +1500,11 @@ pub async fn verify_coco_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coco::{CocoAnnotation, CocoCategory};
+
+    // =========================================================================
+    // Options default tests
+    // =========================================================================
 
     #[test]
     fn test_coco_import_options_default() {
@@ -1449,14 +1524,248 @@ mod tests {
         assert!(options.include_masks);
         assert!(!options.include_images);
         assert!(!options.output_zip);
+        assert!(!options.pretty_json);
+        assert!(options.info.is_none());
     }
 
     #[test]
-    fn test_find_image_file() {
-        // Test with non-existent directory - should return None
+    fn test_coco_update_options_default() {
+        let options = CocoUpdateOptions::default();
+        assert!(options.include_masks);
+        assert!(options.group.is_none());
+        assert_eq!(options.batch_size, 100);
+        assert_eq!(options.concurrency, 64);
+    }
+
+    #[test]
+    fn test_coco_verify_options_default() {
+        let options = CocoVerifyOptions::default();
+        assert!(options.verify_masks);
+        assert!(options.group.is_none());
+    }
+
+    // =========================================================================
+    // find_image_file tests
+    // =========================================================================
+
+    #[test]
+    fn test_find_image_file_nonexistent() {
         let result = find_image_file(Path::new("/nonexistent"), "test.jpg");
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_find_image_file_with_subdirectory_in_name() {
+        // Tests that file_name like "train2017/000001.jpg" is handled
+        let result = find_image_file(Path::new("/nonexistent"), "train2017/image.jpg");
+        assert!(result.is_none()); // Non-existent, but exercises the path logic
+    }
+
+    // =========================================================================
+    // infer_group_from_filename tests
+    // =========================================================================
+
+    #[test]
+    fn test_infer_group_from_filename_instances_train() {
+        let path = Path::new("annotations/instances_train2017.json");
+        assert_eq!(infer_group_from_filename(path), Some("train".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_instances_val() {
+        let path = Path::new("annotations/instances_val2017.json");
+        assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_instances_test() {
+        let path = Path::new("instances_test2017.json");
+        assert_eq!(infer_group_from_filename(path), Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_train_prefix() {
+        let path = Path::new("train_annotations.json");
+        assert_eq!(infer_group_from_filename(path), Some("train".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_val_prefix() {
+        let path = Path::new("val_data.json");
+        assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_validation_prefix() {
+        // The function checks "val" before "validation", so "validation_set" matches "val"
+        let path = Path::new("validation_set.json");
+        assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_custom() {
+        let path = Path::new("my_custom_annotations.json");
+        assert_eq!(infer_group_from_filename(path), None);
+    }
+
+    #[test]
+    fn test_infer_group_from_filename_instances_2014() {
+        let path = Path::new("instances_val2014.json");
+        assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
+    }
+
+    // =========================================================================
+    // merge_coco_datasets tests
+    // =========================================================================
+
+    #[test]
+    fn test_merge_coco_datasets_empty() {
+        let mut target = CocoDataset::default();
+        let source = CocoDataset::default();
+        merge_coco_datasets(&mut target, source);
+        assert!(target.images.is_empty());
+        assert!(target.annotations.is_empty());
+        assert!(target.categories.is_empty());
+    }
+
+    #[test]
+    fn test_merge_coco_datasets_basic() {
+        let mut target = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                file_name: "img1.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "cat".to_string(),
+                supercategory: None,
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let source = CocoDataset {
+            images: vec![CocoImage {
+                id: 2,
+                file_name: "img2.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 2,
+                name: "dog".to_string(),
+                supercategory: None,
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 2,
+                image_id: 2,
+                category_id: 2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        merge_coco_datasets(&mut target, source);
+
+        assert_eq!(target.images.len(), 2);
+        assert_eq!(target.categories.len(), 2);
+        assert_eq!(target.annotations.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_coco_datasets_deduplicates_images() {
+        let mut target = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                file_name: "img1.jpg".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let source = CocoDataset {
+            images: vec![
+                CocoImage {
+                    id: 1, // Duplicate
+                    file_name: "img1_dup.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 2,
+                    file_name: "img2.jpg".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        merge_coco_datasets(&mut target, source);
+
+        assert_eq!(target.images.len(), 2); // Only 2, not 3
+        assert_eq!(target.images[0].file_name, "img1.jpg"); // Original preserved
+    }
+
+    #[test]
+    fn test_merge_coco_datasets_deduplicates_categories() {
+        let mut target = CocoDataset {
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                supercategory: None,
+            }],
+            ..Default::default()
+        };
+
+        let source = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1, // Duplicate
+                    name: "person_dup".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 2,
+                    name: "car".to_string(),
+                    supercategory: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        merge_coco_datasets(&mut target, source);
+
+        assert_eq!(target.categories.len(), 2);
+        assert_eq!(target.categories[0].name, "person"); // Original preserved
+    }
+
+    #[test]
+    fn test_merge_coco_datasets_info_preserved() {
+        let mut target = CocoDataset::default();
+
+        let source = CocoDataset {
+            info: CocoInfo {
+                description: Some("Test dataset".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        merge_coco_datasets(&mut target, source);
+
+        assert_eq!(
+            target.info.description,
+            Some("Test dataset".to_string())
+        );
+    }
+
+    // =========================================================================
+    // convert_coco_image_to_sample tests
+    // =========================================================================
 
     #[test]
     fn test_convert_coco_image_to_sample() {
@@ -1506,6 +1815,148 @@ mod tests {
         assert_eq!(sample.annotations.len(), 1);
         assert_eq!(sample.annotations[0].label(), Some(&"person".to_string()));
     }
+
+    #[test]
+    fn test_convert_coco_image_to_sample_no_annotations() {
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "empty.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![],
+            annotations: vec![],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+
+        let sample = convert_coco_image_to_sample(
+            &image,
+            &index,
+            Path::new("/tmp"),
+            true,
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(sample.image_name, Some("empty".to_string()));
+        assert!(sample.annotations.is_empty());
+    }
+
+    #[test]
+    fn test_convert_coco_image_to_sample_with_mask() {
+        let image = CocoImage {
+            id: 1,
+            width: 100,
+            height: 100,
+            file_name: "masked.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "object".to_string(),
+                supercategory: None,
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [10.0, 10.0, 50.0, 50.0],
+                area: 2500.0,
+                iscrowd: 0,
+                segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                    10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
+                ]])),
+            }],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+
+        // With masks
+        let sample_with =
+            convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), true, false, None)
+                .unwrap();
+        assert!(sample_with.annotations[0].mask().is_some());
+
+        // Without masks
+        let sample_without =
+            convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), false, false, None)
+                .unwrap();
+        assert!(sample_without.annotations[0].mask().is_none());
+    }
+
+    // =========================================================================
+    // compute_bbox_from_mask tests
+    // =========================================================================
+
+    #[test]
+    fn test_compute_bbox_from_mask_simple() {
+        let mask = crate::Mask::new(vec![vec![
+            (0.1, 0.1),
+            (0.5, 0.1),
+            (0.5, 0.5),
+            (0.1, 0.5),
+        ]]);
+
+        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+
+        assert!(bbox.is_some());
+        let [x, y, w, h] = bbox.unwrap();
+        assert!((x - 10.0).abs() < 1.0);
+        assert!((y - 10.0).abs() < 1.0);
+        assert!((w - 40.0).abs() < 1.0);
+        assert!((h - 40.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_compute_bbox_from_mask_empty() {
+        let mask = crate::Mask::new(vec![]);
+        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+        assert!(bbox.is_none());
+    }
+
+    #[test]
+    fn test_compute_bbox_from_mask_with_nan() {
+        let mask = crate::Mask::new(vec![vec![
+            (f32::NAN, f32::NAN),
+            (f32::NAN, f32::NAN),
+        ]]);
+        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+        assert!(bbox.is_none());
+    }
+
+    #[test]
+    fn test_compute_bbox_from_mask_multiple_rings() {
+        // Two disjoint regions
+        let mask = crate::Mask::new(vec![
+            vec![(0.1, 0.1), (0.2, 0.1), (0.2, 0.2), (0.1, 0.2)],
+            vec![(0.8, 0.8), (0.9, 0.8), (0.9, 0.9), (0.8, 0.9)],
+        ]);
+
+        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+
+        assert!(bbox.is_some());
+        let [x, y, w, h] = bbox.unwrap();
+        // Should encompass both regions: 0.1 to 0.9
+        assert!((x - 10.0).abs() < 1.0);
+        assert!((y - 10.0).abs() < 1.0);
+        assert!((w - 80.0).abs() < 1.0);
+        assert!((h - 80.0).abs() < 1.0);
+    }
+
+    // =========================================================================
+    // mask_to_polygon_string tests
+    // =========================================================================
 
     #[test]
     fn test_mask_to_polygon_string() {
@@ -1591,5 +2042,52 @@ mod tests {
 
         // Only 1 point remains, so the ring should be dropped
         assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn test_mask_to_polygon_string_negative_infinity() {
+        let mask = crate::Mask::new(vec![vec![
+            (0.1, 0.2),
+            (f32::NEG_INFINITY, 0.4), // -Infinity - should be filtered
+            (0.3, 0.4),
+            (0.5, 0.6),
+        ]]);
+
+        let result = mask_to_polygon_string(&mask);
+        assert_eq!(result, "[[[0.1,0.2],[0.3,0.4],[0.5,0.6]]]");
+    }
+
+    // =========================================================================
+    // CocoImportResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_coco_import_result() {
+        let result = CocoImportResult {
+            total_images: 100,
+            skipped: 30,
+            imported: 70,
+        };
+
+        assert_eq!(result.total_images, 100);
+        assert_eq!(result.skipped, 30);
+        assert_eq!(result.imported, 70);
+    }
+
+    // =========================================================================
+    // CocoUpdateResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_coco_update_result() {
+        let result = CocoUpdateResult {
+            total_images: 500,
+            updated: 450,
+            not_found: 50,
+        };
+
+        assert_eq!(result.total_images, 500);
+        assert_eq!(result.updated, 450);
+        assert_eq!(result.not_found, 50);
     }
 }

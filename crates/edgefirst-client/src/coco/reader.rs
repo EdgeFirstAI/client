@@ -6,7 +6,7 @@
 //! Provides memory-efficient reading of COCO annotation files from JSON files
 //! or ZIP archives without requiring full extraction.
 
-use super::types::*;
+use super::types::CocoDataset;
 use crate::Error;
 use std::{
     collections::HashSet,
@@ -486,6 +486,7 @@ fn merge_datasets(target: &mut CocoDataset, source: CocoDataset) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coco::{CocoAnnotation, CocoCategory, CocoImage};
 
     #[test]
     fn test_reader_default() {

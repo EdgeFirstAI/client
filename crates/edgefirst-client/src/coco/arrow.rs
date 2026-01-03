@@ -7,9 +7,11 @@
 //! format, supporting async operations and progress tracking.
 
 use super::{
-    convert::*,
+    convert::{
+        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask, mask_to_coco_polygon,
+    },
     reader::CocoReader,
-    types::*,
+    types::{CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
     writer::{CocoDatasetBuilder, CocoWriter},
 };
 use crate::{Annotation, Box2d, Error, Mask, Progress, Sample};
@@ -567,7 +569,204 @@ fn extract_all_sizes(col: &Column) -> Result<Vec<(u32, u32)>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coco::{CocoAnnotation, CocoCategory, CocoDataset};
     use tempfile::TempDir;
+
+    // =========================================================================
+    // unflatten_polygon_coords tests
+    // =========================================================================
+
+    #[test]
+    fn test_unflatten_polygon_coords_empty() {
+        let coords: Vec<f32> = vec![];
+        let result = unflatten_polygon_coords(&coords);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_single_polygon() {
+        // Simple rectangle: 4 points
+        let coords = vec![0.1, 0.2, 0.3, 0.2, 0.3, 0.4, 0.1, 0.4];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 4);
+        assert_eq!(result[0][0], (0.1, 0.2));
+        assert_eq!(result[0][3], (0.1, 0.4));
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_multiple_polygons() {
+        // Two triangles separated by NaN
+        let coords = vec![
+            0.1, 0.1, 0.2, 0.1, 0.15, 0.2, // First triangle
+            f32::NAN, // Separator
+            0.5, 0.5, 0.6, 0.5, 0.55, 0.6, // Second triangle
+        ];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), 3);
+        assert_eq!(result[1].len(), 3);
+        assert_eq!(result[0][0], (0.1, 0.1));
+        assert_eq!(result[1][0], (0.5, 0.5));
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_leading_nan() {
+        // NaN at the start should be handled gracefully
+        let coords = vec![f32::NAN, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 3);
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_trailing_nan() {
+        // NaN at the end
+        let coords = vec![0.1, 0.2, 0.3, 0.4, f32::NAN];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 2);
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_consecutive_nans() {
+        // Multiple NaNs in a row
+        let coords = vec![0.1, 0.2, f32::NAN, f32::NAN, 0.3, 0.4];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), 1);
+        assert_eq!(result[1].len(), 1);
+    }
+
+    #[test]
+    fn test_unflatten_polygon_coords_odd_values() {
+        // Odd number of coordinates (trailing x without y)
+        let coords = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let result = unflatten_polygon_coords(&coords);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 2); // Only complete pairs
+    }
+
+    // =========================================================================
+    // convert_image_annotations tests
+    // =========================================================================
+
+    #[test]
+    fn test_convert_image_annotations_basic() {
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "test_image.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "cat".to_string(),
+                supercategory: Some("animal".to_string()),
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [100.0, 100.0, 200.0, 200.0],
+                area: 40000.0,
+                iscrowd: 0,
+                segmentation: None,
+            }],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+        let samples = convert_image_annotations(&image, &index, true, Some("train"));
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].image_name, Some("test_image".to_string()));
+        assert_eq!(samples[0].group, Some("train".to_string()));
+        assert_eq!(samples[0].annotations.len(), 1);
+        assert_eq!(
+            samples[0].annotations[0].label(),
+            Some(&"cat".to_string())
+        );
+    }
+
+    #[test]
+    fn test_convert_image_annotations_with_mask() {
+        let image = CocoImage {
+            id: 1,
+            width: 100,
+            height: 100,
+            file_name: "masked.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "object".to_string(),
+                supercategory: None,
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [10.0, 10.0, 50.0, 50.0],
+                area: 2500.0,
+                iscrowd: 0,
+                segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                    10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
+                ]])),
+            }],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+
+        // With masks enabled
+        let samples_with_mask = convert_image_annotations(&image, &index, true, None);
+        assert!(samples_with_mask[0].annotations[0].mask().is_some());
+
+        // With masks disabled
+        let samples_no_mask = convert_image_annotations(&image, &index, false, None);
+        assert!(samples_no_mask[0].annotations[0].mask().is_none());
+    }
+
+    #[test]
+    fn test_convert_image_annotations_no_annotations() {
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "empty.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![],
+            annotations: vec![],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+        let samples = convert_image_annotations(&image, &index, true, None);
+
+        assert!(samples.is_empty());
+    }
+
+    // =========================================================================
+    // sample_name_from_filename tests
+    // =========================================================================
 
     #[test]
     fn test_sample_name_from_filename() {
@@ -580,11 +779,43 @@ mod tests {
     }
 
     #[test]
+    fn test_sample_name_from_filename_nested_path() {
+        assert_eq!(
+            sample_name_from_filename("a/b/c/deep_image.png"),
+            "deep_image"
+        );
+    }
+
+    #[test]
+    fn test_sample_name_from_filename_no_extension() {
+        assert_eq!(sample_name_from_filename("no_extension"), "no_extension");
+    }
+
+    // =========================================================================
+    // Options tests
+    // =========================================================================
+
+    #[test]
     fn test_coco_to_arrow_options_default() {
         let options = CocoToArrowOptions::default();
         assert!(options.include_masks);
         assert!(options.group.is_none());
         assert!(options.max_workers >= 2);
+    }
+
+    #[test]
+    fn test_arrow_to_coco_options_default() {
+        let options = ArrowToCocoOptions::default();
+        assert!(options.groups.is_empty());
+        assert!(options.include_masks);
+        assert!(options.info.is_none());
+    }
+
+    #[test]
+    fn test_max_workers() {
+        let workers = max_workers();
+        assert!(workers >= 2);
+        assert!(workers <= 8);
     }
 
     #[tokio::test]

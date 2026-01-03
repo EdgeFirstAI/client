@@ -854,6 +854,11 @@ pub fn validate_categories(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coco::{CocoCategory, CocoImage, CocoRle};
+
+    // =========================================================================
+    // bbox_iou tests
+    // =========================================================================
 
     #[test]
     fn test_bbox_iou_perfect_overlap() {
@@ -879,6 +884,27 @@ mod tests {
     }
 
     #[test]
+    fn test_bbox_iou_contained() {
+        // b is fully contained in a
+        let a = [0.0, 0.0, 100.0, 100.0];
+        let b = [25.0, 25.0, 50.0, 50.0];
+        // Intersection: 50x50 = 2500, Union: 10000
+        let expected = 2500.0 / 10000.0;
+        assert!((bbox_iou(&a, &b) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bbox_iou_zero_area() {
+        let a = [0.0, 0.0, 0.0, 0.0];
+        let b = [0.0, 0.0, 100.0, 100.0];
+        assert!(bbox_iou(&a, &b) < 1e-6);
+    }
+
+    // =========================================================================
+    // polygon_area tests
+    // =========================================================================
+
+    #[test]
     fn test_polygon_area_square() {
         // 10x10 square
         let coords = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
@@ -893,6 +919,158 @@ mod tests {
     }
 
     #[test]
+    fn test_polygon_area_too_small() {
+        // Less than 3 points (6 coords)
+        let coords = [0.0, 0.0, 10.0, 10.0];
+        assert!(polygon_area(&coords) < 1e-6);
+    }
+
+    #[test]
+    fn test_polygon_area_complex() {
+        // L-shaped polygon (can compute as two rectangles)
+        // Points: (0,0), (20,0), (20,10), (10,10), (10,20), (0,20)
+        let coords = [0.0, 0.0, 20.0, 0.0, 20.0, 10.0, 10.0, 10.0, 10.0, 20.0, 0.0, 20.0];
+        // Area = 10*20 + 10*10 = 300
+        assert!((polygon_area(&coords) - 300.0).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // polygon_bounds tests
+    // =========================================================================
+
+    #[test]
+    fn test_polygon_bounds_square() {
+        let coords = [0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0];
+        let bounds = polygon_bounds(&coords);
+        assert_eq!(bounds, Some((0.0, 0.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn test_polygon_bounds_offset() {
+        let coords = [50.0, 60.0, 150.0, 60.0, 150.0, 160.0, 50.0, 160.0];
+        let bounds = polygon_bounds(&coords);
+        assert_eq!(bounds, Some((50.0, 60.0, 150.0, 160.0)));
+    }
+
+    #[test]
+    fn test_polygon_bounds_too_small() {
+        let coords = [0.0, 0.0];
+        assert!(polygon_bounds(&coords).is_none());
+    }
+
+    // =========================================================================
+    // hungarian_match tests
+    // =========================================================================
+
+    #[test]
+    fn test_hungarian_match_empty_inputs() {
+        let orig: Vec<&CocoAnnotation> = vec![];
+        let rest: Vec<&CocoAnnotation> = vec![];
+        let matches = hungarian_match(&orig, &rest);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_hungarian_match_perfect_match() {
+        let ann1 = CocoAnnotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 100.0, 100.0],
+            ..Default::default()
+        };
+        let ann2 = CocoAnnotation {
+            id: 2,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 100.0, 100.0], // Same bbox
+            ..Default::default()
+        };
+
+        let orig = vec![&ann1];
+        let rest = vec![&ann2];
+        let matches = hungarian_match(&orig, &rest);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], (0, 0));
+    }
+
+    #[test]
+    fn test_hungarian_match_multiple() {
+        let ann1 = CocoAnnotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 50.0, 50.0],
+            ..Default::default()
+        };
+        let ann2 = CocoAnnotation {
+            id: 2,
+            image_id: 1,
+            category_id: 1,
+            bbox: [100.0, 100.0, 50.0, 50.0],
+            ..Default::default()
+        };
+
+        let ann3 = CocoAnnotation {
+            id: 3,
+            image_id: 1,
+            category_id: 1,
+            bbox: [100.0, 100.0, 50.0, 50.0], // Matches ann2
+            ..Default::default()
+        };
+        let ann4 = CocoAnnotation {
+            id: 4,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 50.0, 50.0], // Matches ann1
+            ..Default::default()
+        };
+
+        let orig = vec![&ann1, &ann2];
+        let rest = vec![&ann3, &ann4];
+        let matches = hungarian_match(&orig, &rest);
+
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn test_hungarian_match_unequal_sizes() {
+        let ann1 = CocoAnnotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 100.0, 100.0],
+            ..Default::default()
+        };
+        let ann2 = CocoAnnotation {
+            id: 2,
+            image_id: 1,
+            category_id: 1,
+            bbox: [200.0, 200.0, 100.0, 100.0],
+            ..Default::default()
+        };
+        let ann3 = CocoAnnotation {
+            id: 3,
+            image_id: 1,
+            category_id: 1,
+            bbox: [0.0, 0.0, 100.0, 100.0], // Matches ann1
+            ..Default::default()
+        };
+
+        let orig = vec![&ann1, &ann2];
+        let rest = vec![&ann3]; // Fewer restored
+        let matches = hungarian_match(&orig, &rest);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], (0, 0)); // ann1 matched to ann3
+    }
+
+    // =========================================================================
+    // BboxValidationResult tests
+    // =========================================================================
+
+    #[test]
     fn test_bbox_validation_result_rates() {
         let mut result = BboxValidationResult::default();
         result.total_matched = 100;
@@ -903,5 +1081,335 @@ mod tests {
 
         assert!((result.match_rate() - 0.909).abs() < 0.01);
         assert!((result.avg_iou() - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_bbox_validation_result_empty() {
+        let result = BboxValidationResult::default();
+        assert!((result.match_rate() - 1.0).abs() < 1e-6);
+        assert!((result.avg_iou() - 1.0).abs() < 1e-6);
+        assert!((result.within_1px_rate() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bbox_validation_result_is_valid() {
+        let mut result = BboxValidationResult::default();
+        result.total_matched = 100;
+        result.errors_by_range[0] = 400; // All within 1px
+        result.sum_iou = 98.0;
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    fn test_bbox_validation_result_not_valid() {
+        let mut result = BboxValidationResult::default();
+        result.total_matched = 100;
+        result.total_unmatched = 50; // Low match rate
+        result.errors_by_range[0] = 200;
+        result.sum_iou = 50.0;
+        assert!(!result.is_valid());
+    }
+
+    // =========================================================================
+    // MaskValidationResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_mask_validation_result_new() {
+        let result = MaskValidationResult::new();
+        assert_eq!(result.min_area_ratio, f64::MAX);
+        assert_eq!(result.max_area_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_mask_validation_result_preservation_rate() {
+        let mut result = MaskValidationResult::new();
+        result.original_with_seg = 100;
+        result.restored_with_seg = 95;
+        assert!((result.preservation_rate() - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_mask_validation_result_empty() {
+        let result = MaskValidationResult::new();
+        assert!((result.preservation_rate() - 1.0).abs() < 1e-6);
+        assert!((result.avg_area_ratio() - 1.0).abs() < 1e-6);
+        assert!((result.avg_bbox_iou() - 1.0).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // CategoryValidationResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_category_validation_result_is_valid() {
+        let result = CategoryValidationResult {
+            coco_categories: ["person", "car"].iter().map(|s| s.to_string()).collect(),
+            studio_categories: ["person", "car"].iter().map(|s| s.to_string()).collect(),
+            missing_categories: vec![],
+            extra_categories: vec![],
+        };
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    fn test_category_validation_result_missing() {
+        let result = CategoryValidationResult {
+            coco_categories: ["person", "car"].iter().map(|s| s.to_string()).collect(),
+            studio_categories: ["person"].iter().map(|s| s.to_string()).collect(),
+            missing_categories: vec!["car".to_string()],
+            extra_categories: vec![],
+        };
+        assert!(!result.is_valid());
+    }
+
+    // =========================================================================
+    // compute_segmentation_area tests
+    // =========================================================================
+
+    #[test]
+    fn test_compute_segmentation_area_polygon() {
+        let seg =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
+        let area = compute_segmentation_area(&seg);
+        assert!((area - 10000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_segmentation_area_multiple_polygons() {
+        // Two 10x10 squares
+        let seg = CocoSegmentation::Polygon(vec![
+            vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0],
+            vec![20.0, 20.0, 30.0, 20.0, 30.0, 30.0, 20.0, 30.0],
+        ]);
+        let area = compute_segmentation_area(&seg);
+        assert!((area - 200.0).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // count_polygon_vertices/parts tests
+    // =========================================================================
+
+    #[test]
+    fn test_count_polygon_vertices() {
+        let seg =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]]);
+        assert_eq!(count_polygon_vertices(&seg), 4);
+    }
+
+    #[test]
+    fn test_count_polygon_vertices_multiple() {
+        let seg = CocoSegmentation::Polygon(vec![
+            vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0], // 3 vertices
+            vec![20.0, 20.0, 30.0, 20.0, 30.0, 30.0, 20.0, 30.0], // 4 vertices
+        ]);
+        assert_eq!(count_polygon_vertices(&seg), 7);
+    }
+
+    #[test]
+    fn test_count_polygon_parts() {
+        let seg = CocoSegmentation::Polygon(vec![
+            vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0],
+            vec![20.0, 20.0, 30.0, 20.0, 30.0, 30.0],
+        ]);
+        assert_eq!(count_polygon_parts(&seg), 2);
+    }
+
+    #[test]
+    fn test_count_polygon_vertices_rle() {
+        let rle = CocoRle {
+            counts: vec![100],
+            size: [10, 10],
+        };
+        let seg = CocoSegmentation::Rle(rle);
+        assert_eq!(count_polygon_vertices(&seg), 0);
+    }
+
+    // =========================================================================
+    // VerificationResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_verification_result_is_valid() {
+        let result = VerificationResult {
+            coco_image_count: 100,
+            studio_image_count: 100,
+            missing_images: vec![],
+            extra_images: vec![],
+            coco_annotation_count: 500,
+            studio_annotation_count: 500,
+            bbox_validation: {
+                let mut bv = BboxValidationResult::default();
+                bv.total_matched = 500;
+                bv.errors_by_range[0] = 2000; // All within 1px
+                bv.sum_iou = 495.0;
+                bv
+            },
+            mask_validation: {
+                let mut mv = MaskValidationResult::new();
+                mv.original_with_seg = 500;
+                mv.restored_with_seg = 500;
+                mv.matched_pairs_with_seg = 500;
+                mv.sum_bbox_iou = 475.0;
+                mv
+            },
+            category_validation: CategoryValidationResult {
+                coco_categories: ["person"].iter().map(|s| s.to_string()).collect(),
+                studio_categories: ["person"].iter().map(|s| s.to_string()).collect(),
+                missing_categories: vec![],
+                extra_categories: vec![],
+            },
+        };
+
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    fn test_verification_result_summary() {
+        let result = VerificationResult {
+            coco_image_count: 100,
+            studio_image_count: 98,
+            missing_images: vec!["img1.jpg".to_string(), "img2.jpg".to_string()],
+            extra_images: vec![],
+            coco_annotation_count: 500,
+            studio_annotation_count: 490,
+            bbox_validation: BboxValidationResult::default(),
+            mask_validation: MaskValidationResult::new(),
+            category_validation: CategoryValidationResult::default(),
+        };
+
+        let summary = result.summary();
+        assert!(summary.contains("Images:"));
+        assert!(summary.contains("Annotations:"));
+    }
+
+    // =========================================================================
+    // build_annotation_map_by_name tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_annotation_map_by_name() {
+        let dataset = CocoDataset {
+            images: vec![
+                CocoImage {
+                    id: 1,
+                    file_name: "image1.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 2,
+                    file_name: "image2.jpg".to_string(),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 1,
+                    ..Default::default()
+                },
+                CocoAnnotation {
+                    id: 3,
+                    image_id: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let map = build_annotation_map_by_name(&dataset);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("image1").unwrap().len(), 2);
+        assert_eq!(map.get("image2").unwrap().len(), 1);
+    }
+
+    // =========================================================================
+    // validate_categories tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_categories_match() {
+        let original = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "cat".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 2,
+                    name: "dog".to_string(),
+                    supercategory: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let restored = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "cat".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 2,
+                    name: "dog".to_string(),
+                    supercategory: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = validate_categories(&original, &restored);
+        assert!(result.is_valid());
+        assert!(result.missing_categories.is_empty());
+        assert!(result.extra_categories.is_empty());
+    }
+
+    #[test]
+    fn test_validate_categories_missing_and_extra() {
+        let original = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "cat".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 2,
+                    name: "dog".to_string(),
+                    supercategory: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let restored = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "cat".to_string(),
+                    supercategory: None,
+                },
+                CocoCategory {
+                    id: 3,
+                    name: "bird".to_string(),
+                    supercategory: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = validate_categories(&original, &restored);
+        assert!(!result.is_valid());
+        assert!(result.missing_categories.contains(&"dog".to_string()));
+        assert!(result.extra_categories.contains(&"bird".to_string()));
     }
 }

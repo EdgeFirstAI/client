@@ -3092,6 +3092,146 @@ async fn handle_arrow_to_coco(
     Ok(())
 }
 
+/// Validate COCO import parameters.
+fn validate_coco_import_params(
+    verify: bool,
+    update: bool,
+    name: &Option<String>,
+) -> Result<(), Error> {
+    if verify && name.is_some() {
+        return Err(Error::InvalidParameters(
+            "--verify cannot be used with --name (cannot verify a dataset that doesn't exist yet)."
+                .to_owned(),
+        ));
+    }
+
+    if update && name.is_some() {
+        return Err(Error::InvalidParameters(
+            "--update cannot be used with --name (cannot update a dataset that doesn't exist yet)."
+                .to_owned(),
+        ));
+    }
+
+    if verify && update {
+        return Err(Error::InvalidParameters(
+            "--verify and --update cannot be used together.".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Resolve dataset and annotation set IDs from command line arguments.
+async fn resolve_dataset_ids(
+    client: &Client,
+    name: Option<String>,
+    project: Option<String>,
+    description: Option<String>,
+    dataset: Option<String>,
+    annotation_set: Option<String>,
+) -> Result<(DatasetID, AnnotationSetID), Error> {
+    match (name, dataset) {
+        (Some(dataset_name), None) => {
+            create_new_dataset_with_annotation_set(client, &dataset_name, project, description)
+                .await
+        }
+        (None, Some(ds_id)) => {
+            resolve_existing_dataset(client, &ds_id, annotation_set).await
+        }
+        (Some(_), Some(_)) => Err(Error::InvalidParameters(
+            "Cannot specify both --name and --dataset. Use --name to create a new dataset or --dataset to use an existing one.".to_owned()
+        )),
+        (None, None) => Err(Error::InvalidParameters(
+            "Must specify either --name (to create a new dataset) or --dataset (to use an existing one).".to_owned()
+        )),
+    }
+}
+
+/// Create a new dataset with a default annotation set.
+async fn create_new_dataset_with_annotation_set(
+    client: &Client,
+    dataset_name: &str,
+    project: Option<String>,
+    description: Option<String>,
+) -> Result<(DatasetID, AnnotationSetID), Error> {
+    let project_id = project.ok_or_else(|| {
+        Error::InvalidParameters(
+            "--project is required when creating a new dataset with --name".to_owned(),
+        )
+    })?;
+
+    println!("Creating new dataset '{}'...", dataset_name);
+    let ds_id = client
+        .create_dataset(&project_id, dataset_name, description.as_deref())
+        .await?;
+    println!("  Created dataset: {}", ds_id);
+
+    let ann_set_name = "annotations";
+    println!("Creating annotation set '{}'...", ann_set_name);
+    let ann_set_id = client
+        .create_annotation_set(ds_id.clone(), ann_set_name, None)
+        .await?;
+    println!("  Created annotation set: {}", ann_set_id);
+
+    Ok((ds_id, ann_set_id))
+}
+
+/// Resolve an existing dataset and its annotation set.
+async fn resolve_existing_dataset(
+    client: &Client,
+    ds_id: &str,
+    annotation_set: Option<String>,
+) -> Result<(DatasetID, AnnotationSetID), Error> {
+    let dataset_id: DatasetID = ds_id.to_string().try_into()?;
+
+    let annotation_set_id = if let Some(as_id) = annotation_set {
+        as_id.try_into()?
+    } else {
+        let ann_sets = client.annotation_sets(dataset_id.clone()).await?;
+        if ann_sets.is_empty() {
+            return Err(Error::InvalidParameters(
+                "Dataset has no annotation sets. Create one first or use --name to create a new dataset.".to_owned()
+            ));
+        }
+        println!("  Using annotation set: {}", ann_sets[0].id());
+        ann_sets[0].id().clone()
+    };
+
+    Ok((dataset_id, annotation_set_id))
+}
+
+/// Create a progress bar with standard styling.
+fn create_progress_bar() -> indicatif::ProgressBar {
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+    pb
+}
+
+/// Print COCO operation header.
+fn print_coco_header(
+    operation: &str,
+    coco_path: &Path,
+    dataset_id: &DatasetID,
+    annotation_set_id: &AnnotationSetID,
+    group: &Option<String>,
+) {
+    println!("{}...", operation);
+    println!("  Source:         {:?}", coco_path);
+    println!("  Dataset:        {}", dataset_id);
+    println!("  Annotation Set: {}", annotation_set_id);
+    if let Some(g) = group {
+        println!("  Group:          {}", g);
+    }
+}
+
 /// Handle COCO import to Studio.
 async fn handle_import_coco(
     client: &Client,
@@ -3109,284 +3249,244 @@ async fn handle_import_coco(
     verify: bool,
     update: bool,
 ) -> Result<(), Error> {
-    use edgefirst_client::coco::studio::{
-        CocoImportOptions, CocoUpdateOptions, CocoVerifyOptions, import_coco_to_studio,
-        update_coco_annotations, verify_coco_import,
-    };
-    use indicatif::{ProgressBar, ProgressStyle};
+    validate_coco_import_params(verify, update, &name)?;
 
-    // For verify mode, we need an existing dataset
-    if verify && name.is_some() {
-        return Err(Error::InvalidParameters(
-            "--verify cannot be used with --name (cannot verify a dataset that doesn't exist yet)."
-                .to_owned(),
-        ));
-    }
+    let (dataset_id, annotation_set_id) =
+        resolve_dataset_ids(client, name, project, description, dataset, annotation_set).await?;
 
-    // For update mode, we need an existing dataset
-    if update && name.is_some() {
-        return Err(Error::InvalidParameters(
-            "--update cannot be used with --name (cannot update a dataset that doesn't exist yet)."
-                .to_owned(),
-        ));
-    }
-
-    // verify and update are mutually exclusive
-    if verify && update {
-        return Err(Error::InvalidParameters(
-            "--verify and --update cannot be used together.".to_owned(),
-        ));
-    }
-
-    // Determine dataset and annotation set IDs
-    let (dataset_id, annotation_set_id) = match (&name, &dataset) {
-        (Some(dataset_name), None) => {
-            // Create new dataset
-            let project_id = project.ok_or_else(|| {
-                Error::InvalidParameters(
-                    "--project is required when creating a new dataset with --name".to_owned(),
-                )
-            })?;
-
-            println!("Creating new dataset '{}'...", dataset_name);
-
-            let ds_id = client
-                .create_dataset(&project_id, dataset_name, description.as_deref())
-                .await?;
-
-            println!("  Created dataset: {}", ds_id);
-
-            // Create default annotation set named "annotations"
-            let ann_set_name = "annotations";
-            println!("Creating annotation set '{}'...", ann_set_name);
-
-            let ann_set_id = client
-                .create_annotation_set(ds_id.clone(), ann_set_name, None)
-                .await?;
-
-            println!("  Created annotation set: {}", ann_set_id);
-
-            (ds_id, ann_set_id)
-        }
-        (None, Some(ds_id)) => {
-            // Use existing dataset
-            let dataset_id: DatasetID = ds_id.clone().try_into()?;
-
-            let annotation_set_id = if let Some(as_id) = annotation_set {
-                as_id.try_into()?
-            } else {
-                // Get the first annotation set from the dataset
-                let ann_sets = client.annotation_sets(dataset_id.clone()).await?;
-                if ann_sets.is_empty() {
-                    return Err(Error::InvalidParameters(
-                        "Dataset has no annotation sets. Create one first or use --name to create a new dataset.".to_owned()
-                    ));
-                }
-                println!("  Using annotation set: {}", ann_sets[0].id());
-                ann_sets[0].id().clone()
-            };
-
-            (dataset_id, annotation_set_id)
-        }
-        (Some(_), Some(_)) => {
-            return Err(Error::InvalidParameters(
-                "Cannot specify both --name and --dataset. Use --name to create a new dataset or --dataset to use an existing one.".to_owned()
-            ));
-        }
-        (None, None) => {
-            return Err(Error::InvalidParameters(
-                "Must specify either --name (to create a new dataset) or --dataset (to use an existing one).".to_owned()
-            ));
-        }
-    };
-
-    // Handle verification mode
     if verify {
-        println!("Verifying COCO import...");
-        println!("  Source:         {:?}", coco_path);
-        println!("  Dataset:        {}", dataset_id);
-        println!("  Annotation Set: {}", annotation_set_id);
-        if let Some(ref g) = group {
-            println!("  Group:          {}", g);
-        }
-
-        let pb = ProgressBar::new(0);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
-
-        let verify_options = CocoVerifyOptions {
-            verify_masks: masks,
+        handle_coco_verify(
+            client,
+            &coco_path,
+            dataset_id,
+            annotation_set_id,
             group,
-        };
-
-        let coco_path_clone = coco_path.clone();
-        let client = client.clone();
-        let task = tokio::spawn(async move {
-            verify_coco_import(
-                &client,
-                &coco_path_clone,
-                dataset_id,
-                annotation_set_id,
-                &verify_options,
-                Some(tx),
-            )
-            .await
-        });
-
-        while let Some(progress) = rx.recv().await {
-            pb.set_length(progress.total as u64);
-            pb.set_position(progress.current as u64);
-        }
-
-        let result = task.await??;
-        pb.finish_and_clear();
-
-        // Print verification result
-        println!("\n{}", result);
-
-        if result.is_valid() {
-            println!("Verification passed!");
-            Ok(())
-        } else {
-            Err(Error::InvalidParameters(
-                "Verification failed. See details above.".to_owned(),
-            ))
-        }
+            masks,
+        )
+        .await
     } else if update {
-        // Update mode - update annotations on existing samples without re-uploading
-        // images
-        println!("Updating annotations on existing samples...");
-        println!("  Source:         {:?}", coco_path);
-        println!("  Dataset:        {}", dataset_id);
-        println!("  Annotation Set: {}", annotation_set_id);
-        if let Some(ref g) = group {
-            println!("  Group:          {}", g);
-        }
-
-        let pb = ProgressBar::new(0);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
-
-        let update_options = CocoUpdateOptions {
-            include_masks: masks,
+        handle_coco_update(
+            client,
+            &coco_path,
+            dataset_id,
+            annotation_set_id,
             group,
+            masks,
             batch_size,
             concurrency,
-        };
+        )
+        .await
+    } else {
+        handle_coco_import_normal(
+            client,
+            &coco_path,
+            dataset_id,
+            annotation_set_id,
+            group,
+            masks,
+            images,
+            batch_size,
+            concurrency,
+        )
+        .await
+    }
+}
 
-        let coco_path_clone = coco_path.clone();
-        let client = client.clone();
-        let task = tokio::spawn(async move {
-            update_coco_annotations(
-                &client,
-                &coco_path_clone,
-                dataset_id,
-                annotation_set_id,
-                &update_options,
-                Some(tx),
-            )
-            .await
-        });
+/// Handle COCO verify mode.
+async fn handle_coco_verify(
+    client: &Client,
+    coco_path: &Path,
+    dataset_id: DatasetID,
+    annotation_set_id: AnnotationSetID,
+    group: Option<String>,
+    masks: bool,
+) -> Result<(), Error> {
+    use edgefirst_client::coco::studio::{verify_coco_import, CocoVerifyOptions};
 
-        while let Some(progress) = rx.recv().await {
-            pb.set_length(progress.total as u64);
-            pb.set_position(progress.current as u64);
-        }
+    print_coco_header(
+        "Verifying COCO import",
+        coco_path,
+        &dataset_id,
+        &annotation_set_id,
+        &group,
+    );
 
-        let result = task.await??;
-        pb.finish_with_message("done");
+    let pb = create_progress_bar();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
-        println!(
-            "\n✓ Update complete: {} updated, {} not found in Studio, {} total",
-            result.updated, result.not_found, result.total_images
-        );
+    let verify_options = CocoVerifyOptions {
+        verify_masks: masks,
+        group,
+    };
 
-        if result.not_found > 0 {
-            println!(
-                "  Note: {} samples from COCO were not found in Studio. Run import without --update to add them.",
-                result.not_found
-            );
-        }
+    let coco_path_owned = coco_path.to_path_buf();
+    let client = client.clone();
+    let task = tokio::spawn(async move {
+        verify_coco_import(
+            &client,
+            &coco_path_owned,
+            dataset_id,
+            annotation_set_id,
+            &verify_options,
+            Some(tx),
+        )
+        .await
+    });
 
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let result = task.await??;
+    pb.finish_and_clear();
+
+    println!("\n{}", result);
+
+    if result.is_valid() {
+        println!("Verification passed!");
         Ok(())
     } else {
-        // Normal import mode
-        println!("Importing COCO dataset to Studio...");
-        println!("  Source:         {:?}", coco_path);
-        println!("  Dataset:        {}", dataset_id);
-        println!("  Annotation Set: {}", annotation_set_id);
-        if let Some(ref g) = group {
-            println!("  Group:          {}", g);
-        }
-
-        let pb = ProgressBar::new(0);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
-
-        let options = CocoImportOptions {
-            include_masks: masks,
-            include_images: images,
-            group,
-            batch_size,
-            concurrency,
-            resume: true, // Always resume by default
-        };
-
-        let coco_path_clone = coco_path.clone();
-        let client = client.clone();
-        let task = tokio::spawn(async move {
-            import_coco_to_studio(
-                &client,
-                &coco_path_clone,
-                dataset_id,
-                annotation_set_id,
-                &options,
-                Some(tx),
-            )
-            .await
-        });
-
-        while let Some(progress) = rx.recv().await {
-            pb.set_length(progress.total as u64);
-            pb.set_position(progress.current as u64);
-        }
-
-        let result = task.await??;
-        pb.finish_with_message("done");
-
-        // Show import summary
-        if result.skipped > 0 {
-            println!(
-                "\n✓ Import complete: {} imported, {} skipped (already existed), {} total",
-                result.imported, result.skipped, result.total_images
-            );
-        } else {
-            println!("\n✓ Imported {} samples to Studio", result.imported);
-        }
-
-        Ok(())
+        Err(Error::InvalidParameters(
+            "Verification failed. See details above.".to_owned(),
+        ))
     }
+}
+
+/// Handle COCO update mode.
+async fn handle_coco_update(
+    client: &Client,
+    coco_path: &Path,
+    dataset_id: DatasetID,
+    annotation_set_id: AnnotationSetID,
+    group: Option<String>,
+    masks: bool,
+    batch_size: usize,
+    concurrency: usize,
+) -> Result<(), Error> {
+    use edgefirst_client::coco::studio::{update_coco_annotations, CocoUpdateOptions};
+
+    print_coco_header(
+        "Updating annotations on existing samples",
+        coco_path,
+        &dataset_id,
+        &annotation_set_id,
+        &group,
+    );
+
+    let pb = create_progress_bar();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let update_options = CocoUpdateOptions {
+        include_masks: masks,
+        group,
+        batch_size,
+        concurrency,
+    };
+
+    let coco_path_owned = coco_path.to_path_buf();
+    let client = client.clone();
+    let task = tokio::spawn(async move {
+        update_coco_annotations(
+            &client,
+            &coco_path_owned,
+            dataset_id,
+            annotation_set_id,
+            &update_options,
+            Some(tx),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let result = task.await??;
+    pb.finish_with_message("done");
+
+    println!(
+        "\n✓ Update complete: {} updated, {} not found in Studio, {} total",
+        result.updated, result.not_found, result.total_images
+    );
+
+    if result.not_found > 0 {
+        println!(
+            "  Note: {} samples from COCO were not found in Studio. Run import without --update to add them.",
+            result.not_found
+        );
+    }
+
+    Ok(())
+}
+
+/// Handle normal COCO import mode.
+async fn handle_coco_import_normal(
+    client: &Client,
+    coco_path: &Path,
+    dataset_id: DatasetID,
+    annotation_set_id: AnnotationSetID,
+    group: Option<String>,
+    masks: bool,
+    images: bool,
+    batch_size: usize,
+    concurrency: usize,
+) -> Result<(), Error> {
+    use edgefirst_client::coco::studio::{import_coco_to_studio, CocoImportOptions};
+
+    print_coco_header(
+        "Importing COCO dataset to Studio",
+        coco_path,
+        &dataset_id,
+        &annotation_set_id,
+        &group,
+    );
+
+    let pb = create_progress_bar();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+
+    let options = CocoImportOptions {
+        include_masks: masks,
+        include_images: images,
+        group,
+        batch_size,
+        concurrency,
+        resume: true,
+    };
+
+    let coco_path_owned = coco_path.to_path_buf();
+    let client = client.clone();
+    let task = tokio::spawn(async move {
+        import_coco_to_studio(
+            &client,
+            &coco_path_owned,
+            dataset_id,
+            annotation_set_id,
+            &options,
+            Some(tx),
+        )
+        .await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let result = task.await??;
+    pb.finish_with_message("done");
+
+    if result.skipped > 0 {
+        println!(
+            "\n✓ Import complete: {} imported, {} skipped (already existed), {} total",
+            result.imported, result.skipped, result.total_images
+        );
+    } else {
+        println!("\n✓ Imported {} samples to Studio", result.imported);
+    }
+
+    Ok(())
 }
 
 /// Handle Studio export to COCO.

@@ -5,7 +5,9 @@
 //!
 //! Provides efficient writing of COCO annotation files to JSON or ZIP archives.
 
-use super::types::*;
+use super::types::{
+    CocoAnnotation, CocoCategory, CocoDataset, CocoImage, CocoInfo, CocoSegmentation,
+};
 use crate::Error;
 use std::{
     fs::File,
