@@ -7,7 +7,7 @@ import PackageDescription
 // =============================================================================
 // Configuration - Updated automatically by release workflow
 // =============================================================================
-let version = "2.7.3"
+let version = "2.8.0"
 let checksum = "6f6ebbd93578ca6aba4eaa0d5b2451a77af62d82e9c4fe765836a7475fbaaac5"
 
 // Toggle for local development vs release distribution
