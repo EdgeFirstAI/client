@@ -8,7 +8,7 @@ import PackageDescription
 // Configuration - Updated automatically by release workflow
 // =============================================================================
 let version = "2.8.0"
-let checksum = "6f6ebbd93578ca6aba4eaa0d5b2451a77af62d82e9c4fe765836a7475fbaaac5"
+let checksum = "30ecc45f297ca1cae6827e28afc18d1fb37438aae2a6ef2de940d24ac098d743"
 
 // Toggle for local development vs release distribution
 // Set USE_LOCAL_FRAMEWORK=true environment variable for local XCFramework
