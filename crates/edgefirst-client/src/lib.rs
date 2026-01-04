@@ -55,6 +55,7 @@
 
 mod api;
 mod client;
+pub mod coco;
 mod dataset;
 mod error;
 pub mod format;
@@ -72,7 +73,7 @@ pub use crate::{
     },
     client::{Client, Progress},
     dataset::{
-        Annotation, AnnotationSet, AnnotationType, Box2d, Box3d, Dataset, FileType, GpsData,
+        Annotation, AnnotationSet, AnnotationType, Box2d, Box3d, Dataset, FileType, GpsData, Group,
         ImuData, Label, Location, Mask, Sample, SampleFile,
     },
     error::Error,

@@ -78,6 +78,10 @@ pub enum Error {
     /// Polars dataframe operation error (only with "polars" feature).
     #[cfg(feature = "polars")]
     PolarsError(polars::error::PolarsError),
+    /// COCO format parsing or validation error.
+    CocoError(String),
+    /// ZIP archive read/write error.
+    ZipError(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -165,6 +169,12 @@ impl From<polars::error::PolarsError> for Error {
     }
 }
 
+impl From<zip::result::ZipError> for Error {
+    fn from(err: zip::result::ZipError) -> Self {
+        Error::ZipError(err.to_string())
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -202,6 +212,8 @@ impl std::fmt::Display for Error {
             Error::StorageError(s) => write!(f, "Token storage error: {}", s),
             #[cfg(feature = "polars")]
             Error::PolarsError(e) => write!(f, "Polars error: {}", e),
+            Error::CocoError(s) => write!(f, "COCO format error: {}", s),
+            Error::ZipError(s) => write!(f, "ZIP error: {}", s),
         }
     }
 }

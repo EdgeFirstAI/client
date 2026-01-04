@@ -927,7 +927,7 @@ pub struct SamplesPopulateParams {
 /// The API returns an array of populated sample results, one for each sample
 /// that was submitted. Each result contains the sample UUID and presigned URLs
 /// for uploading the associated files.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct SamplesPopulateResult {
     /// UUID of the sample that was populated
     pub uuid: String,
@@ -944,6 +944,74 @@ pub struct PresignedUrl {
     pub key: String,
     /// Presigned URL for uploading (PUT request)
     pub url: String,
+}
+
+// ============================================================================
+// Annotation API Types
+// ============================================================================
+
+/// Annotation data for the server-side `annotation.add_bulk` API.
+///
+/// This struct represents annotations in the format expected by the server,
+/// which differs from our client-side `Annotation` struct. Key differences:
+/// - Uses `image_id` (server) vs `sample_id` (client)
+/// - Uses `type` string ("box", "seg") vs `AnnotationType` enum
+/// - Coordinates are stored as separate `x`, `y`, `w`, `h` fields
+/// - Polygon is stored as a JSON string
+#[derive(Serialize, Clone, Debug)]
+pub struct ServerAnnotation {
+    /// Label ID (resolved from label name before sending)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_id: Option<u64>,
+    /// Label index (alternative to label_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_index: Option<u64>,
+    /// Label name (alternative to label_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_name: Option<String>,
+    /// Annotation type: "box" for bounding box, "seg" for segmentation
+    #[serde(rename = "type")]
+    pub annotation_type: String,
+    /// Bounding box X coordinate (normalized 0-1, center)
+    pub x: f64,
+    /// Bounding box Y coordinate (normalized 0-1, center)
+    pub y: f64,
+    /// Bounding box width (normalized 0-1)
+    pub w: f64,
+    /// Bounding box height (normalized 0-1)
+    pub h: f64,
+    /// Confidence score (0-1)
+    pub score: f64,
+    /// Polygon data as JSON string (for segmentation)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub polygon: String,
+    /// Image/sample ID in the database
+    pub image_id: u64,
+    /// Annotation set ID
+    pub annotation_set_id: u64,
+    /// Object tracking reference (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_reference: Option<String>,
+}
+
+/// Parameters for the `annotation.add_bulk` API.
+#[derive(Serialize, Debug)]
+pub struct AnnotationAddBulkParams {
+    pub annotation_set_id: u64,
+    pub annotations: Vec<ServerAnnotation>,
+}
+
+/// Parameters for the `annotation.bulk.del` API.
+#[derive(Serialize, Debug)]
+pub struct AnnotationBulkDeleteParams {
+    pub annotation_set_id: u64,
+    pub annotation_types: Vec<String>,
+    /// Image IDs to delete annotations from (required if delete_all is false)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub image_ids: Vec<u64>,
+    /// Delete all annotations of the specified types in the annotation set
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete_all: Option<bool>,
 }
 
 #[derive(Deserialize)]
