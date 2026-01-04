@@ -344,13 +344,11 @@ pub fn mask_to_contours(mask: &[u8], width: u32, height: u32) -> Vec<Vec<(f64, f
                     || (start_y > 0 && mask[idx - w] == 0)
                     || (start_y < h - 1 && mask[idx + w] == 0);
 
-                if is_boundary {
-                    if let Some(contour) = trace_contour(mask, w, h, start_x, start_y, &mut visited)
-                    {
-                        if contour.len() >= 3 {
-                            contours.push(contour);
-                        }
-                    }
+                if is_boundary
+                    && let Some(contour) = trace_contour(mask, w, h, start_x, start_y, &mut visited)
+                    && contour.len() >= 3
+                {
+                    contours.push(contour);
                 }
             }
         }

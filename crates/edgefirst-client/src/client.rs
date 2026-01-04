@@ -1255,7 +1255,7 @@ impl Client {
         name: &str,
     ) -> Result<u64, Error> {
         // First check if the group already exists
-        let groups = self.groups(dataset_id.clone()).await?;
+        let groups = self.groups(dataset_id).await?;
         if let Some(group) = groups.iter().find(|g| g.name == name) {
             return Ok(group.id);
         }
@@ -1269,7 +1269,7 @@ impl Client {
         }
 
         let params = CreateGroupParams {
-            dataset_id: dataset_id.clone(),
+            dataset_id,
             group_names: vec![name.to_string()],
             group_splits: vec![0], // No automatic splitting
         };

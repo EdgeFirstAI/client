@@ -70,10 +70,10 @@ impl CocoWriter {
     /// * `path` - Output file path
     pub fn write_json<P: AsRef<Path>>(&self, dataset: &CocoDataset, path: P) -> Result<(), Error> {
         // Ensure parent directory exists
-        if let Some(parent) = path.as_ref().parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.as_ref().parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         let file = File::create(path.as_ref())?;
@@ -105,10 +105,10 @@ impl CocoWriter {
         path: P,
     ) -> Result<(), Error> {
         // Ensure parent directory exists
-        if let Some(parent) = path.as_ref().parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.as_ref().parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         let file = File::create(path.as_ref())?;

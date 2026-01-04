@@ -207,7 +207,8 @@ pub async fn import_coco_to_studio(
         options,
         progress: &progress,
     };
-    let imported = upload_images_in_batches(&upload_ctx, &images_to_import, &index, &images_dir).await?;
+    let imported =
+        upload_images_in_batches(&upload_ctx, &images_to_import, &index, &images_dir).await?;
 
     Ok(CocoImportResult {
         total_images,
@@ -227,7 +228,7 @@ async fn fetch_existing_sample_names(
     }
 
     log::info!("Checking for existing samples in dataset {}...", dataset_id);
-    let names = client.sample_names(dataset_id.clone(), &[], None).await?;
+    let names = client.sample_names(*dataset_id, &[], None).await?;
     log::info!("Found {} existing samples in dataset", names.len());
 
     if !names.is_empty() {
@@ -293,8 +294,8 @@ async fn upload_images_in_batches<'a>(
 
         ctx.client
             .populate_samples_with_concurrency(
-                ctx.dataset_id.clone(),
-                Some(ctx.annotation_set_id.clone()),
+                *ctx.dataset_id,
+                Some(*ctx.annotation_set_id),
                 samples,
                 None,
                 Some(ctx.options.concurrency),
@@ -592,13 +593,11 @@ fn convert_coco_image_to_sample(
 
     // Create sample files
     let mut files = Vec::new();
-    if include_images {
-        if let Some(image_path) = find_image_file(images_dir, &image.file_name) {
-            files.push(SampleFile::with_filename(
-                FileType::Image.to_string(),
-                image_path.to_string_lossy().to_string(),
-            ));
-        }
+    if include_images && let Some(image_path) = find_image_file(images_dir, &image.file_name) {
+        files.push(SampleFile::with_filename(
+            FileType::Image.to_string(),
+            image_path.to_string_lossy().to_string(),
+        ));
     }
 
     Ok(Sample {
@@ -643,8 +642,8 @@ pub async fn export_studio_to_coco(
     // Fetch all samples
     let all_samples = client
         .samples(
-            dataset_id.clone(),
-            Some(annotation_set_id.clone()),
+            dataset_id,
+            Some(annotation_set_id),
             &annotation_types,
             &groups,
             &[],
@@ -677,11 +676,11 @@ pub async fn export_studio_to_coco(
                 let label = ann.label().map(|s| s.as_str()).unwrap_or("unknown");
                 let category_id = builder.add_category(label, None);
 
-                let bbox = box2d_to_coco_bbox(&box2d, width, height);
+                let bbox = box2d_to_coco_bbox(box2d, width, height);
 
                 let segmentation = if options.include_masks {
                     ann.mask().map(|mask| {
-                        let coco_poly = mask_to_coco_polygon(&mask, width, height);
+                        let coco_poly = mask_to_coco_polygon(mask, width, height);
                         CocoSegmentation::Polygon(coco_poly)
                     })
                 } else {
@@ -866,7 +865,8 @@ fn read_coco_dataset_for_update(coco_path: &Path) -> Result<CocoDataset, Error> 
     }
 }
 
-/// Build a map of sample name -> (sample_id, width, height, group) from samples.
+/// Build a map of sample name -> (sample_id, width, height, group) from
+/// samples.
 fn build_sample_info_map(
     samples: &[Sample],
 ) -> std::collections::HashMap<String, (crate::SampleID, u32, u32, Option<String>)> {
@@ -891,7 +891,7 @@ async fn ensure_labels_exist(
     use std::collections::{HashMap, HashSet};
 
     // Get existing labels
-    let existing_labels = client.labels(dataset_id.clone()).await?;
+    let existing_labels = client.labels(*dataset_id).await?;
     let existing_label_names: HashSet<String> = existing_labels
         .iter()
         .map(|l| l.name().to_string())
@@ -911,12 +911,12 @@ async fn ensure_labels_exist(
             missing_labels.len()
         );
         for label_name in &missing_labels {
-            client.add_label(dataset_id.clone(), label_name).await?;
+            client.add_label(*dataset_id, label_name).await?;
         }
     }
 
     // Re-query labels to get their IDs after creation
-    let labels = client.labels(dataset_id.clone()).await?;
+    let labels = client.labels(*dataset_id).await?;
     let label_map: HashMap<String, u64> = labels
         .iter()
         .map(|l| (l.name().to_string(), l.id()))
@@ -929,6 +929,120 @@ async fn ensure_labels_exist(
     );
 
     Ok(label_map)
+}
+
+/// Convert a single COCO annotation to a ServerAnnotation.
+///
+/// This is a pure transformation function that can be easily tested.
+fn convert_coco_annotation_to_server(
+    coco_ann: &super::types::CocoAnnotation,
+    coco_index: &CocoIndex,
+    label_map: &std::collections::HashMap<String, u64>,
+    image_id: u64,
+    annotation_set_id: u64,
+    dims: (u32, u32),
+    include_masks: bool,
+) -> (crate::api::ServerAnnotation, bool) {
+    let (width, height) = dims;
+
+    // Get category name and label_id
+    let category_name = coco_index
+        .categories
+        .get(&coco_ann.category_id)
+        .map(|c| c.name.as_str())
+        .unwrap_or("unknown");
+
+    let label_id = label_map.get(category_name).copied();
+    let missing_label = label_id.is_none();
+
+    // Convert bounding box to server format
+    let box2d = coco_bbox_to_box2d(&coco_ann.bbox, width, height);
+
+    // Convert mask to polygon string if enabled
+    let polygon = if include_masks {
+        coco_ann
+            .segmentation
+            .as_ref()
+            .and_then(|seg| coco_segmentation_to_mask(seg, width, height).ok())
+            .map(|mask| mask_to_polygon_string(&mask))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let annotation_type = if polygon.is_empty() { "box" } else { "seg" }.to_string();
+
+    let server_ann = crate::api::ServerAnnotation {
+        label_id,
+        label_index: None,
+        label_name: Some(category_name.to_string()),
+        annotation_type,
+        x: box2d.left() as f64,
+        y: box2d.top() as f64,
+        w: box2d.width() as f64,
+        h: box2d.height() as f64,
+        score: 1.0,
+        polygon,
+        image_id,
+        annotation_set_id,
+        object_reference: None,
+    };
+
+    (server_ann, missing_label)
+}
+
+/// Process a single COCO image for update, returning annotations and group
+/// update info.
+fn process_image_for_update(
+    coco_image: &CocoImage,
+    sample_info: &std::collections::HashMap<String, (crate::SampleID, u32, u32, Option<String>)>,
+    coco_index: &CocoIndex,
+    label_map: &std::collections::HashMap<String, u64>,
+    annotation_set_id: u64,
+    include_masks: bool,
+) -> Option<(
+    crate::SampleID,
+    Vec<crate::api::ServerAnnotation>,
+    Option<String>,
+    usize,
+)> {
+    let sample_name = extract_sample_name(&coco_image.file_name);
+    let expected_group = super::reader::infer_group_from_folder(&coco_image.file_name);
+
+    let (sample_id, width, height, current_group) = sample_info.get(&sample_name)?;
+    let (sample_id, width, height) = (*sample_id, *width, *height);
+    let image_id: u64 = sample_id.into();
+
+    // Check if group needs updating
+    let group_update = expected_group.as_ref().and_then(|expected| {
+        if Some(expected) != current_group.as_ref() {
+            Some(expected.clone())
+        } else {
+            None
+        }
+    });
+
+    // Convert all annotations for this image
+    let mut annotations = Vec::new();
+    let mut missing_label_count = 0;
+
+    for coco_ann in coco_index.annotations_for_image(coco_image.id) {
+        let (server_ann, missing) = convert_coco_annotation_to_server(
+            coco_ann,
+            coco_index,
+            label_map,
+            image_id,
+            annotation_set_id,
+            (width, height),
+            include_masks,
+        );
+        if missing {
+            missing_label_count += 1;
+        }
+        annotations.push(server_ann);
+    }
+
+    Some((sample_id, annotations, group_update, missing_label_count))
 }
 
 /// Update sample groups in bulk.
@@ -956,10 +1070,7 @@ async fn update_sample_groups(
 
     let mut group_id_map: HashMap<String, u64> = HashMap::new();
     for group_name in unique_groups {
-        match client
-            .get_or_create_group(dataset_id.clone(), &group_name)
-            .await
-        {
+        match client.get_or_create_group(*dataset_id, &group_name).await {
             Ok(group_id) => {
                 group_id_map.insert(group_name, group_id);
             }
@@ -1055,8 +1166,8 @@ pub async fn update_coco_annotations(
     log::info!("Fetching existing samples from Studio...");
     let existing_samples = client
         .samples(
-            dataset_id.clone(),
-            Some(annotation_set_id.clone()),
+            dataset_id,
+            Some(annotation_set_id),
             &[],
             &[],
             &[],
@@ -1076,97 +1187,38 @@ pub async fn update_coco_annotations(
     // Ensure all labels exist
     let label_map = ensure_labels_exist(client, &dataset_id, &dataset.categories).await?;
 
-    // Collect sample IDs to update and annotations to add
+    // Process all images and collect results
+    let annotation_set_id_u64: u64 = annotation_set_id.into();
     let mut sample_ids_to_update: Vec<SampleID> = Vec::new();
     let mut server_annotations: Vec<ServerAnnotation> = Vec::new();
-    // Samples that need group updates: (sample_id, group_name)
     let mut samples_needing_group_update: Vec<(SampleID, String)> = Vec::new();
     let mut not_found = 0;
     let mut missing_label_count = 0;
 
-    let annotation_set_id_u64: u64 = annotation_set_id.into();
-
     for coco_image in &dataset.images {
-        let sample_name = std::path::Path::new(&coco_image.file_name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(String::from)
-            .unwrap_or_else(|| coco_image.file_name.clone());
-
-        // Extract expected group from file_name (e.g., "train2017/000000123.jpg" ->
-        // "train")
-        let expected_group = super::reader::infer_group_from_folder(&coco_image.file_name);
-
-        // Check if sample exists in Studio
-        if let Some((sample_id, width, height, current_group)) = sample_info.get(&sample_name) {
-            let (sample_id, width, height) = (*sample_id, *width, *height);
-            sample_ids_to_update.push(sample_id);
-
-            // Check if group needs updating
-            if let Some(ref expected) = expected_group {
-                if expected_group != *current_group {
-                    samples_needing_group_update.push((sample_id, expected.clone()));
+        match process_image_for_update(
+            coco_image,
+            &sample_info,
+            &coco_index,
+            &label_map,
+            annotation_set_id_u64,
+            options.include_masks,
+        ) {
+            Some((sample_id, annotations, group_update, missing_labels)) => {
+                sample_ids_to_update.push(sample_id);
+                server_annotations.extend(annotations);
+                missing_label_count += missing_labels;
+                if let Some(group) = group_update {
+                    samples_needing_group_update.push((sample_id, group));
                 }
             }
-
-            // Get annotations for this image
-            let annotations = coco_index.annotations_for_image(coco_image.id);
-            let image_id: u64 = sample_id.into();
-
-            for coco_ann in annotations {
-                // Get category name and label_id
-                let category_name = coco_index
-                    .categories
-                    .get(&coco_ann.category_id)
-                    .map(|c| c.name.as_str())
-                    .unwrap_or("unknown");
-
-                let label_id = label_map.get(category_name).copied();
-                if label_id.is_none() {
-                    missing_label_count += 1;
-                }
-
-                // Convert bounding box to server format (x, y, w, h normalized center-based)
-                let box2d = coco_bbox_to_box2d(&coco_ann.bbox, width, height);
-
-                // Convert mask to polygon string if enabled
-                let polygon = if options.include_masks {
-                    coco_ann
-                        .segmentation
-                        .as_ref()
-                        .and_then(|seg| coco_segmentation_to_mask(seg, width, height).ok())
-                        .map(|mask| mask_to_polygon_string(&mask))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-
-                // Determine annotation type
-                let annotation_type = if !polygon.is_empty() {
-                    "seg".to_string()
-                } else {
-                    "box".to_string()
-                };
-
-                server_annotations.push(ServerAnnotation {
-                    label_id,
-                    label_index: None,
-                    label_name: Some(category_name.to_string()),
-                    annotation_type,
-                    x: box2d.left() as f64,
-                    y: box2d.top() as f64,
-                    w: box2d.width() as f64,
-                    h: box2d.height() as f64,
-                    score: 1.0,
-                    polygon,
-                    image_id,
-                    annotation_set_id: annotation_set_id_u64,
-                    object_reference: None,
-                });
+            None => {
+                not_found += 1;
+                log::debug!(
+                    "Sample not found in Studio: {}",
+                    extract_sample_name(&coco_image.file_name)
+                );
             }
-        } else {
-            not_found += 1;
-            log::debug!("Sample not found in Studio: {}", sample_name);
         }
     }
 
@@ -1217,7 +1269,7 @@ pub async fn update_coco_annotations(
     // Delete in batches to avoid overwhelming the server
     for batch in sample_ids_to_update.chunks(options.batch_size) {
         client
-            .delete_annotations_bulk(annotation_set_id.clone(), &annotation_types, batch)
+            .delete_annotations_bulk(annotation_set_id, &annotation_types, batch)
             .await?;
     }
 
@@ -1425,8 +1477,8 @@ pub async fn verify_coco_import(
 
     let studio_samples = client
         .samples(
-            dataset_id.clone(),
-            Some(annotation_set_id.clone()),
+            dataset_id,
+            Some(annotation_set_id),
             &annotation_types,
             &groups,
             &[],
@@ -1474,7 +1526,7 @@ pub async fn verify_coco_import(
 
                 let segmentation = if options.verify_masks {
                     ann.mask().map(|mask| {
-                        let coco_poly = mask_to_coco_polygon(&mask, width, height);
+                        let coco_poly = mask_to_coco_polygon(mask, width, height);
                         CocoSegmentation::Polygon(coco_poly)
                     })
                 } else {
@@ -1634,7 +1686,8 @@ mod tests {
 
     #[test]
     fn test_infer_group_from_filename_validation_prefix() {
-        // The function checks "val" before "validation", so "validation_set" matches "val"
+        // The function checks "val" before "validation", so "validation_set" matches
+        // "val"
         let path = Path::new("validation_set.json");
         assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
     }
@@ -1794,10 +1847,7 @@ mod tests {
 
         merge_coco_datasets(&mut target, source);
 
-        assert_eq!(
-            target.info.description,
-            Some("Test dataset".to_string())
-        );
+        assert_eq!(target.info.description, Some("Test dataset".to_string()));
     }
 
     // =========================================================================
@@ -1872,15 +1922,9 @@ mod tests {
 
         let index = CocoIndex::from_dataset(&dataset);
 
-        let sample = convert_coco_image_to_sample(
-            &image,
-            &index,
-            Path::new("/tmp"),
-            true,
-            false,
-            None,
-        )
-        .unwrap();
+        let sample =
+            convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), true, false, None)
+                .unwrap();
 
         assert_eq!(sample.image_name, Some("empty".to_string()));
         assert!(sample.annotations.is_empty());
@@ -1938,12 +1982,7 @@ mod tests {
 
     #[test]
     fn test_compute_bbox_from_mask_simple() {
-        let mask = crate::Mask::new(vec![vec![
-            (0.1, 0.1),
-            (0.5, 0.1),
-            (0.5, 0.5),
-            (0.1, 0.5),
-        ]]);
+        let mask = crate::Mask::new(vec![vec![(0.1, 0.1), (0.5, 0.1), (0.5, 0.5), (0.1, 0.5)]]);
 
         let bbox = compute_bbox_from_mask(&mask, 100, 100);
 
@@ -1964,10 +2003,7 @@ mod tests {
 
     #[test]
     fn test_compute_bbox_from_mask_with_nan() {
-        let mask = crate::Mask::new(vec![vec![
-            (f32::NAN, f32::NAN),
-            (f32::NAN, f32::NAN),
-        ]]);
+        let mask = crate::Mask::new(vec![vec![(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]]);
         let bbox = compute_bbox_from_mask(&mask, 100, 100);
         assert!(bbox.is_none());
     }

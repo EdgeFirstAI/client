@@ -183,7 +183,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
         let group = group.clone();
 
         let task = tokio::spawn(async move {
-            let _permit = sem.acquire().await.map_err(|e| Error::SemaphoreError(e))?;
+            let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
 
             // Convert this image's annotations to EdgeFirst samples
             let samples =
@@ -212,10 +212,10 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     let df = crate::samples_dataframe(&all_samples)?;
 
     // Write Arrow file
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let mut file = std::fs::File::create(output_path)?;
     IpcWriter::new(&mut file).finish(&mut df.clone())?;
@@ -259,12 +259,14 @@ fn convert_image_annotations(
             annotation.set_mask(mask);
             annotation.set_group(group.map(String::from));
 
-            let mut sample = Sample::default();
-            sample.image_name = Some(sample_name.clone());
-            sample.width = Some(image.width);
-            sample.height = Some(image.height);
-            sample.group = group.map(String::from);
-            sample.annotations = vec![annotation];
+            let sample = Sample {
+                image_name: Some(sample_name.clone()),
+                width: Some(image.width),
+                height: Some(image.height),
+                group: group.map(String::from),
+                annotations: vec![annotation],
+                ..Default::default()
+            };
 
             Some(sample)
         })
@@ -464,16 +466,16 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         }
 
         // Update progress every 1000 rows to reduce overhead
-        if let Some(ref p) = progress {
-            if i - last_progress_update >= 1000 || i == total_rows - 1 {
-                let _ = p
-                    .send(Progress {
-                        current: i + 1,
-                        total: total_rows,
-                    })
-                    .await;
-                last_progress_update = i;
-            }
+        if let Some(ref p) = progress
+            && (i - last_progress_update >= 1000 || i == total_rows - 1)
+        {
+            let _ = p
+                .send(Progress {
+                    current: i + 1,
+                    total: total_rows,
+                })
+                .await;
+            last_progress_update = i;
         }
     }
 
@@ -599,9 +601,19 @@ mod tests {
     fn test_unflatten_polygon_coords_multiple_polygons() {
         // Two triangles separated by NaN
         let coords = vec![
-            0.1, 0.1, 0.2, 0.1, 0.15, 0.2, // First triangle
+            0.1,
+            0.1,
+            0.2,
+            0.1,
+            0.15,
+            0.2,      // First triangle
             f32::NAN, // Separator
-            0.5, 0.5, 0.6, 0.5, 0.55, 0.6, // Second triangle
+            0.5,
+            0.5,
+            0.6,
+            0.5,
+            0.55,
+            0.6, // Second triangle
         ];
         let result = unflatten_polygon_coords(&coords);
 
@@ -693,10 +705,7 @@ mod tests {
         assert_eq!(samples[0].image_name, Some("test_image".to_string()));
         assert_eq!(samples[0].group, Some("train".to_string()));
         assert_eq!(samples[0].annotations.len(), 1);
-        assert_eq!(
-            samples[0].annotations[0].label(),
-            Some(&"cat".to_string())
-        );
+        assert_eq!(samples[0].annotations[0].label(), Some(&"cat".to_string()));
     }
 
     #[test]

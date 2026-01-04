@@ -830,7 +830,7 @@ async fn handle_dataset(
     groups: bool,
 ) -> Result<(), Error> {
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.clone().try_into()?;
-    let dataset = client.dataset(dataset_id_parsed.clone()).await?;
+    let dataset = client.dataset(dataset_id_parsed).await?;
     println!(
         "[{}] {}: {}",
         dataset.id(),
@@ -839,7 +839,7 @@ async fn handle_dataset(
     );
 
     if labels {
-        let labels = client.labels(dataset_id_parsed.clone()).await?;
+        let labels = client.labels(dataset_id_parsed).await?;
         println!("Labels:");
         for label in labels {
             println!("    [{}] {}", label.id(), label.name());
@@ -847,7 +847,7 @@ async fn handle_dataset(
     }
 
     if groups {
-        let groups = client.groups(dataset_id_parsed.clone()).await?;
+        let groups = client.groups(dataset_id_parsed).await?;
         println!("Groups:");
         for group in groups {
             println!("    [{}] {}", group.id, group.name);
@@ -3208,7 +3208,7 @@ async fn create_new_dataset_with_annotation_set(
     let ann_set_name = "annotations";
     println!("Creating annotation set '{}'...", ann_set_name);
     let ann_set_id = client
-        .create_annotation_set(ds_id.clone(), ann_set_name, None)
+        .create_annotation_set(ds_id, ann_set_name, None)
         .await?;
     println!("  Created annotation set: {}", ann_set_id);
 
@@ -3226,14 +3226,14 @@ async fn resolve_existing_dataset(
     let annotation_set_id = if let Some(as_id) = annotation_set {
         as_id.try_into()?
     } else {
-        let ann_sets = client.annotation_sets(dataset_id.clone()).await?;
+        let ann_sets = client.annotation_sets(dataset_id).await?;
         if ann_sets.is_empty() {
             return Err(Error::InvalidParameters(
                 "Dataset has no annotation sets. Create one first or use --name to create a new dataset.".to_owned()
             ));
         }
         println!("  Using annotation set: {}", ann_sets[0].id());
-        ann_sets[0].id().clone()
+        ann_sets[0].id()
     };
 
     Ok((dataset_id, annotation_set_id))
@@ -3307,7 +3307,7 @@ async fn handle_import_coco(client: &Client, args: CocoCliImportArgs) -> Result<
 
 /// Handle COCO verify mode.
 async fn handle_coco_verify(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
-    use edgefirst_client::coco::studio::{verify_coco_import, CocoVerifyOptions};
+    use edgefirst_client::coco::studio::{CocoVerifyOptions, verify_coco_import};
 
     print_coco_header(
         "Verifying COCO import",
@@ -3326,8 +3326,8 @@ async fn handle_coco_verify(client: &Client, ctx: &CocoImportContext) -> Result<
     };
 
     let coco_path_owned = ctx.coco_path.clone();
-    let dataset_id = ctx.dataset_id.clone();
-    let annotation_set_id = ctx.annotation_set_id.clone();
+    let dataset_id = ctx.dataset_id;
+    let annotation_set_id = ctx.annotation_set_id;
     let client = client.clone();
     let task = tokio::spawn(async move {
         verify_coco_import(
@@ -3363,7 +3363,7 @@ async fn handle_coco_verify(client: &Client, ctx: &CocoImportContext) -> Result<
 
 /// Handle COCO update mode.
 async fn handle_coco_update(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
-    use edgefirst_client::coco::studio::{update_coco_annotations, CocoUpdateOptions};
+    use edgefirst_client::coco::studio::{CocoUpdateOptions, update_coco_annotations};
 
     print_coco_header(
         "Updating annotations on existing samples",
@@ -3384,8 +3384,8 @@ async fn handle_coco_update(client: &Client, ctx: &CocoImportContext) -> Result<
     };
 
     let coco_path_owned = ctx.coco_path.clone();
-    let dataset_id = ctx.dataset_id.clone();
-    let annotation_set_id = ctx.annotation_set_id.clone();
+    let dataset_id = ctx.dataset_id;
+    let annotation_set_id = ctx.annotation_set_id;
     let client = client.clone();
     let task = tokio::spawn(async move {
         update_coco_annotations(
@@ -3424,7 +3424,7 @@ async fn handle_coco_update(client: &Client, ctx: &CocoImportContext) -> Result<
 
 /// Handle normal COCO import mode.
 async fn handle_coco_import_normal(client: &Client, ctx: &CocoImportContext) -> Result<(), Error> {
-    use edgefirst_client::coco::studio::{import_coco_to_studio, CocoImportOptions};
+    use edgefirst_client::coco::studio::{CocoImportOptions, import_coco_to_studio};
 
     print_coco_header(
         "Importing COCO dataset to Studio",
@@ -3447,8 +3447,8 @@ async fn handle_coco_import_normal(client: &Client, ctx: &CocoImportContext) -> 
     };
 
     let coco_path_owned = ctx.coco_path.clone();
-    let dataset_id = ctx.dataset_id.clone();
-    let annotation_set_id = ctx.annotation_set_id.clone();
+    let dataset_id = ctx.dataset_id;
+    let annotation_set_id = ctx.annotation_set_id;
     let client = client.clone();
     let task = tokio::spawn(async move {
         import_coco_to_studio(

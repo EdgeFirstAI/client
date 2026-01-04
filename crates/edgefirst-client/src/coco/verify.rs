@@ -321,6 +321,48 @@ impl MaskValidationResult {
     pub fn is_valid(&self) -> bool {
         self.preservation_rate() > 0.95 && self.avg_bbox_iou() > 0.90
     }
+
+    /// Aggregate a single segmentation comparison into the result.
+    pub fn aggregate_comparison(&mut self, cmp: &SegmentationPairComparison) {
+        self.matched_pairs_with_seg += 1;
+
+        if cmp.is_rle {
+            self.rle_pairs += 1;
+        } else {
+            self.polygon_pairs += 1;
+            if cmp.vertex_exact_match {
+                self.vertex_count_exact_match += 1;
+            }
+            if cmp.vertex_close_match {
+                self.vertex_count_close_match += 1;
+            }
+            if cmp.part_match {
+                self.part_count_match += 1;
+            }
+        }
+
+        if let Some(area_ratio) = cmp.area_ratio {
+            self.sum_area_ratio += area_ratio;
+            self.min_area_ratio = self.min_area_ratio.min(area_ratio);
+            self.max_area_ratio = self.max_area_ratio.max(area_ratio);
+            if (area_ratio - 1.0).abs() <= 0.01 {
+                self.area_within_1pct += 1;
+            }
+            if (area_ratio - 1.0).abs() <= 0.05 {
+                self.area_within_5pct += 1;
+            }
+        } else {
+            self.zero_area_count += 1;
+        }
+
+        self.sum_bbox_iou += cmp.bbox_iou;
+        if cmp.bbox_iou >= 0.9 {
+            self.bbox_iou_high += 1;
+        }
+        if cmp.bbox_iou < 0.5 {
+            self.bbox_iou_low += 1;
+        }
+    }
 }
 
 impl fmt::Display for MaskValidationResult {
@@ -401,6 +443,71 @@ impl fmt::Display for CategoryValidationResult {
     }
 }
 
+/// Result of comparing a single segmentation pair.
+#[derive(Debug, Clone, Default)]
+pub struct SegmentationPairComparison {
+    /// Whether the original was RLE (vs polygon).
+    pub is_rle: bool,
+    /// Vertex count exact match (polygon only).
+    pub vertex_exact_match: bool,
+    /// Vertex count within 10% (polygon only).
+    pub vertex_close_match: bool,
+    /// Part count match (polygon only).
+    pub part_match: bool,
+    /// Area ratio (restored / original), or None if zero area.
+    pub area_ratio: Option<f64>,
+    /// Bounding box IoU.
+    pub bbox_iou: f64,
+}
+
+/// Compare two segmentations and return comparison metrics.
+pub fn compare_segmentation_pair(
+    orig_seg: &CocoSegmentation,
+    rest_seg: &CocoSegmentation,
+) -> SegmentationPairComparison {
+    let is_rle = matches!(
+        orig_seg,
+        CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_)
+    );
+
+    let (vertex_exact_match, vertex_close_match, part_match) = if is_rle {
+        (false, false, false)
+    } else {
+        let orig_vertices = count_polygon_vertices(orig_seg);
+        let rest_vertices = count_polygon_vertices(rest_seg);
+        let orig_parts = count_polygon_parts(orig_seg);
+        let rest_parts = count_polygon_parts(rest_seg);
+
+        let vertex_diff = (orig_vertices as f64 - rest_vertices as f64).abs();
+        let vertex_threshold = (orig_vertices as f64 * 0.1).max(1.0);
+
+        (
+            orig_vertices == rest_vertices,
+            vertex_diff <= vertex_threshold,
+            orig_parts == rest_parts,
+        )
+    };
+
+    let orig_area = compute_segmentation_area(orig_seg);
+    let rest_area = compute_segmentation_area(rest_seg);
+    let area_ratio = if orig_area > 0.0 && rest_area > 0.0 {
+        Some(rest_area / orig_area)
+    } else {
+        None
+    };
+
+    let bbox_iou = segmentation_bbox_iou(orig_seg, rest_seg);
+
+    SegmentationPairComparison {
+        is_rle,
+        vertex_exact_match,
+        vertex_close_match,
+        part_match,
+        area_ratio,
+        bbox_iou,
+    }
+}
+
 /// Calculate Intersection over Union (IoU) for two COCO bboxes.
 /// COCO bbox format: [x, y, width, height] (top-left corner)
 pub fn bbox_iou(a: &[f64; 4], b: &[f64; 4]) -> f64 {
@@ -461,11 +568,12 @@ pub fn hungarian_match<'a>(
     let mut weights = Vec::with_capacity(size * size);
     for i in 0..size {
         for j in 0..size {
-            let cost = if i < n && j < m {
-                let iou = bbox_iou(&orig_anns[i].bbox, &rest_anns[j].bbox);
-                ((1.0 - iou) * scale as f64) as i64
-            } else {
-                max_cost // Dummy entry
+            let cost = match (orig_anns.get(i), rest_anns.get(j)) {
+                (Some(orig), Some(rest)) => {
+                    let iou = bbox_iou(&orig.bbox, &rest.bbox);
+                    ((1.0 - iou) * scale as f64) as i64
+                }
+                _ => max_cost, // Dummy entry for padding
             };
             weights.push(cost);
         }
@@ -759,71 +867,11 @@ pub fn validate_masks(original: &CocoDataset, restored: &CocoDataset) -> MaskVal
                 let orig_ann = orig_anns[*orig_idx];
                 let rest_ann = rest_anns[*rest_idx];
 
-                match (&orig_ann.segmentation, &rest_ann.segmentation) {
-                    (Some(orig_seg), Some(rest_seg)) => {
-                        result.matched_pairs_with_seg += 1;
-
-                        let is_rle = matches!(
-                            orig_seg,
-                            CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_)
-                        );
-
-                        if is_rle {
-                            result.rle_pairs += 1;
-                        } else {
-                            result.polygon_pairs += 1;
-
-                            let orig_vertices = count_polygon_vertices(orig_seg);
-                            let rest_vertices = count_polygon_vertices(rest_seg);
-                            let orig_parts = count_polygon_parts(orig_seg);
-                            let rest_parts = count_polygon_parts(rest_seg);
-
-                            if orig_vertices == rest_vertices {
-                                result.vertex_count_exact_match += 1;
-                            }
-
-                            let vertex_diff = (orig_vertices as f64 - rest_vertices as f64).abs();
-                            let vertex_threshold = (orig_vertices as f64 * 0.1).max(1.0);
-                            if vertex_diff <= vertex_threshold {
-                                result.vertex_count_close_match += 1;
-                            }
-
-                            if orig_parts == rest_parts {
-                                result.part_count_match += 1;
-                            }
-                        }
-
-                        // Compare area
-                        let orig_area = compute_segmentation_area(orig_seg);
-                        let rest_area = compute_segmentation_area(rest_seg);
-
-                        if orig_area > 0.0 && rest_area > 0.0 {
-                            let area_ratio = rest_area / orig_area;
-                            result.sum_area_ratio += area_ratio;
-                            result.min_area_ratio = result.min_area_ratio.min(area_ratio);
-                            result.max_area_ratio = result.max_area_ratio.max(area_ratio);
-
-                            if (area_ratio - 1.0).abs() <= 0.01 {
-                                result.area_within_1pct += 1;
-                            }
-                            if (area_ratio - 1.0).abs() <= 0.05 {
-                                result.area_within_5pct += 1;
-                            }
-                        } else {
-                            result.zero_area_count += 1;
-                        }
-
-                        // Compare bounding box IoU
-                        let seg_iou = segmentation_bbox_iou(orig_seg, rest_seg);
-                        result.sum_bbox_iou += seg_iou;
-                        if seg_iou >= 0.9 {
-                            result.bbox_iou_high += 1;
-                        }
-                        if seg_iou < 0.5 {
-                            result.bbox_iou_low += 1;
-                        }
-                    }
-                    _ => {}
+                if let (Some(orig_seg), Some(rest_seg)) =
+                    (&orig_ann.segmentation, &rest_ann.segmentation)
+                {
+                    let comparison = compare_segmentation_pair(orig_seg, rest_seg);
+                    result.aggregate_comparison(&comparison);
                 }
             }
         }
@@ -929,7 +977,9 @@ mod tests {
     fn test_polygon_area_complex() {
         // L-shaped polygon (can compute as two rectangles)
         // Points: (0,0), (20,0), (20,10), (10,10), (10,20), (0,20)
-        let coords = [0.0, 0.0, 20.0, 0.0, 20.0, 10.0, 10.0, 10.0, 10.0, 20.0, 0.0, 20.0];
+        let coords = [
+            0.0, 0.0, 20.0, 0.0, 20.0, 10.0, 10.0, 10.0, 10.0, 20.0, 0.0, 20.0,
+        ];
         // Area = 10*20 + 10*10 = 300
         assert!((polygon_area(&coords) - 300.0).abs() < 1e-6);
     }
@@ -1192,8 +1242,7 @@ mod tests {
 
     #[test]
     fn test_count_polygon_vertices() {
-        let seg =
-            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]]);
+        let seg = CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]]);
         assert_eq!(count_polygon_vertices(&seg), 4);
     }
 
@@ -1411,5 +1460,175 @@ mod tests {
         assert!(!result.is_valid());
         assert!(result.missing_categories.contains(&"dog".to_string()));
         assert!(result.extra_categories.contains(&"bird".to_string()));
+    }
+
+    // =========================================================================
+    // compare_segmentation_pair tests
+    // =========================================================================
+
+    #[test]
+    fn test_compare_segmentation_pair_identical_polygons() {
+        let seg =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
+        let result = compare_segmentation_pair(&seg, &seg);
+
+        assert!(!result.is_rle);
+        assert!(result.vertex_exact_match);
+        assert!(result.vertex_close_match);
+        assert!(result.part_match);
+        assert!(result.area_ratio.is_some());
+        assert!((result.area_ratio.unwrap() - 1.0).abs() < 1e-6);
+        assert!((result.bbox_iou - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compare_segmentation_pair_different_vertex_count() {
+        let seg1 =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
+        // Triangle with same bounding box
+        let seg2 = CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 50.0, 100.0]]);
+
+        let result = compare_segmentation_pair(&seg1, &seg2);
+
+        assert!(!result.is_rle);
+        assert!(!result.vertex_exact_match); // 4 vs 3 vertices
+        // Note: vertex_close_match is true because threshold is max(10%, 1) = 1, and
+        // diff = 1
+        assert!(result.vertex_close_match);
+        assert!(result.part_match); // Both have 1 part
+    }
+
+    #[test]
+    fn test_compare_segmentation_pair_rle() {
+        let rle = CocoRle {
+            counts: vec![100],
+            size: [10, 10],
+        };
+        let seg = CocoSegmentation::Rle(rle);
+        let poly =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]]);
+
+        let result = compare_segmentation_pair(&seg, &poly);
+
+        assert!(result.is_rle);
+        assert!(!result.vertex_exact_match);
+        assert!(!result.vertex_close_match);
+        assert!(!result.part_match);
+    }
+
+    #[test]
+    fn test_compare_segmentation_pair_scaled() {
+        let seg1 =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
+        let seg2 =
+            CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 50.0, 0.0, 50.0, 50.0, 0.0, 50.0]]);
+
+        let result = compare_segmentation_pair(&seg1, &seg2);
+
+        assert!(result.area_ratio.is_some());
+        // 2500 / 10000 = 0.25
+        assert!((result.area_ratio.unwrap() - 0.25).abs() < 0.01);
+    }
+
+    // =========================================================================
+    // aggregate_comparison tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregate_comparison_polygon() {
+        let mut result = MaskValidationResult::new();
+        let cmp = SegmentationPairComparison {
+            is_rle: false,
+            vertex_exact_match: true,
+            vertex_close_match: true,
+            part_match: true,
+            area_ratio: Some(1.0),
+            bbox_iou: 0.95,
+        };
+
+        result.aggregate_comparison(&cmp);
+
+        assert_eq!(result.matched_pairs_with_seg, 1);
+        assert_eq!(result.polygon_pairs, 1);
+        assert_eq!(result.rle_pairs, 0);
+        assert_eq!(result.vertex_count_exact_match, 1);
+        assert_eq!(result.vertex_count_close_match, 1);
+        assert_eq!(result.part_count_match, 1);
+        assert_eq!(result.area_within_1pct, 1);
+        assert_eq!(result.area_within_5pct, 1);
+        assert_eq!(result.bbox_iou_high, 1);
+    }
+
+    #[test]
+    fn test_aggregate_comparison_rle() {
+        let mut result = MaskValidationResult::new();
+        let cmp = SegmentationPairComparison {
+            is_rle: true,
+            vertex_exact_match: false,
+            vertex_close_match: false,
+            part_match: false,
+            area_ratio: Some(0.98),
+            bbox_iou: 0.92,
+        };
+
+        result.aggregate_comparison(&cmp);
+
+        assert_eq!(result.matched_pairs_with_seg, 1);
+        assert_eq!(result.polygon_pairs, 0);
+        assert_eq!(result.rle_pairs, 1);
+        assert_eq!(result.vertex_count_exact_match, 0);
+        assert_eq!(result.area_within_5pct, 1);
+        assert_eq!(result.bbox_iou_high, 1);
+    }
+
+    #[test]
+    fn test_aggregate_comparison_zero_area() {
+        let mut result = MaskValidationResult::new();
+        let cmp = SegmentationPairComparison {
+            is_rle: false,
+            vertex_exact_match: true,
+            vertex_close_match: true,
+            part_match: true,
+            area_ratio: None, // Zero area
+            bbox_iou: 0.3,
+        };
+
+        result.aggregate_comparison(&cmp);
+
+        assert_eq!(result.zero_area_count, 1);
+        assert_eq!(result.area_within_1pct, 0);
+        assert_eq!(result.bbox_iou_low, 1);
+    }
+
+    #[test]
+    fn test_aggregate_comparison_multiple() {
+        let mut result = MaskValidationResult::new();
+
+        let cmp1 = SegmentationPairComparison {
+            is_rle: false,
+            vertex_exact_match: true,
+            vertex_close_match: true,
+            part_match: true,
+            area_ratio: Some(1.0),
+            bbox_iou: 0.95,
+        };
+        let cmp2 = SegmentationPairComparison {
+            is_rle: true,
+            vertex_exact_match: false,
+            vertex_close_match: false,
+            part_match: false,
+            area_ratio: Some(0.9),
+            bbox_iou: 0.85,
+        };
+
+        result.aggregate_comparison(&cmp1);
+        result.aggregate_comparison(&cmp2);
+
+        assert_eq!(result.matched_pairs_with_seg, 2);
+        assert_eq!(result.polygon_pairs, 1);
+        assert_eq!(result.rle_pairs, 1);
+        assert!((result.sum_area_ratio - 1.9).abs() < 0.01);
+        assert!((result.min_area_ratio - 0.9).abs() < 0.01);
+        assert!((result.max_area_ratio - 1.0).abs() < 0.01);
     }
 }

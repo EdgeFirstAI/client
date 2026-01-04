@@ -70,7 +70,7 @@ pub struct CocoLicense {
 /// Image metadata.
 ///
 /// Each image has a unique ID and associated metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CocoImage {
     /// Unique image ID.
     pub id: u64,
@@ -94,25 +94,10 @@ pub struct CocoImage {
     pub date_captured: Option<String>,
 }
 
-impl Default for CocoImage {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            width: 0,
-            height: 0,
-            file_name: String::new(),
-            license: None,
-            flickr_url: None,
-            coco_url: None,
-            date_captured: None,
-        }
-    }
-}
-
 /// Category definition.
 ///
 /// Categories define the object classes used in the dataset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CocoCategory {
     /// Unique category ID.
     pub id: u32,
@@ -121,16 +106,6 @@ pub struct CocoCategory {
     /// Parent category name (e.g., "human" for "person").
     #[serde(default)]
     pub supercategory: Option<String>,
-}
-
-impl Default for CocoCategory {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            name: String::new(),
-            supercategory: None,
-        }
-    }
 }
 
 /// Annotation for object detection and instance segmentation.

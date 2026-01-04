@@ -915,12 +915,14 @@ class Group:
     """
     A dataset group for organizing samples into logical subsets.
 
-    Groups partition samples within a dataset for purposes such as training,
-    validation, and testing. Common group names include "train", "val", and "test",
-    following conventions from datasets like COCO and ImageNet.
+    Groups partition samples within a dataset for purposes such as
+    training, validation, and testing. Common group names include
+    "train", "val", and "test", following conventions from datasets
+    like COCO and ImageNet.
 
-    Each sample can belong to at most one group. Groups are managed at the dataset
-    level and can be created, listed, and assigned to samples through the Client.
+    Each sample can belong to at most one group. Groups are managed
+    at the dataset level and can be created, listed, and assigned to
+    samples through the Client.
 
     Attributes:
         id: The unique numeric identifier for this group.
@@ -3843,17 +3845,17 @@ class Client:
         """
         List all groups for a dataset.
 
-        Groups organize samples into logical subsets such as "train", "val", and
-        "test". This method retrieves all groups that have been created for the
-        specified dataset.
+        Groups organize samples into logical subsets such as "train",
+        "val", and "test". This method retrieves all groups that have
+        been created for the specified dataset.
 
         Args:
-            dataset_id (DatasetUID): The dataset identifier. Can be a string ID,
-                integer, or DatasetID object.
+            dataset_id (DatasetUID): The dataset identifier. Can be a
+                string ID, integer, or DatasetID object.
 
         Returns:
-            List[Group]: All groups associated with this dataset. Returns an empty
-                list if no groups have been created.
+            List[Group]: All groups associated with this dataset.
+                Returns an empty list if no groups have been created.
 
         Raises:
             Error: If the dataset does not exist or cannot be accessed.
@@ -3885,21 +3887,24 @@ class Client:
         """
         Get an existing group by name or create a new one.
 
-        This method is idempotent: calling it multiple times with the same name
-        returns the same group ID. This makes it safe to use in concurrent workflows
-        without coordination between workers.
+        This method is idempotent: calling it multiple times with the
+        same name returns the same group ID. This makes it safe to use
+        in concurrent workflows without coordination between workers.
 
         Args:
-            dataset_id (DatasetUID): The dataset identifier. Can be a string ID,
-                integer, or DatasetID object.
-            name (str): The group name (e.g., "train", "val", "test"). Group names
-                are case-sensitive and must be unique within the dataset.
+            dataset_id (DatasetUID): The dataset identifier. Can be a
+                string ID, integer, or DatasetID object.
+            name (str): The group name (e.g., "train", "val", "test").
+                Group names are case-sensitive and must be unique
+                within the dataset.
 
         Returns:
-            int: The group ID, which can be passed to :meth:`set_sample_group_id`.
+            int: The group ID, which can be passed to
+                :meth:`set_sample_group_id`.
 
         Raises:
-            Error: If the dataset does not exist or the group cannot be created.
+            Error: If the dataset does not exist or the group cannot
+                be created.
 
         Examples:
             Create groups for a typical train/val/test split:
