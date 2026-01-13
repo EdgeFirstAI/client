@@ -2654,121 +2654,8 @@ fn build_samples_from_directory(
     Ok(samples)
 }
 
-/// Metrics collector for upload-dataset instrumentation.
-/// Tracks API response times to help diagnose server-side performance issues.
 #[cfg(feature = "polars")]
-struct UploadMetrics {
-    /// Response time for each batch's samples.populate2 call
-    batch_times_ms: Vec<u128>,
-    /// Number of samples in each batch
-    batch_sizes: Vec<usize>,
-    /// Overall start time
-    start_time: std::time::Instant,
-}
-
-#[cfg(feature = "polars")]
-impl UploadMetrics {
-    fn new() -> Self {
-        Self {
-            batch_times_ms: Vec::new(),
-            batch_sizes: Vec::new(),
-            start_time: std::time::Instant::now(),
-        }
-    }
-
-    fn record_batch(&mut self, duration: std::time::Duration, batch_size: usize) {
-        self.batch_times_ms.push(duration.as_millis());
-        self.batch_sizes.push(batch_size);
-    }
-
-    fn print_summary(&self) {
-        if self.batch_times_ms.is_empty() {
-            return;
-        }
-
-        let total_batches = self.batch_times_ms.len();
-        let total_samples: usize = self.batch_sizes.iter().sum();
-        let total_time = self.start_time.elapsed();
-
-        // Calculate statistics for batch response times
-        let min_ms = *self.batch_times_ms.iter().min().unwrap();
-        let max_ms = *self.batch_times_ms.iter().max().unwrap();
-        let sum_ms: u128 = self.batch_times_ms.iter().sum();
-        let avg_ms = sum_ms / total_batches as u128;
-
-        // Calculate per-sample times
-        let samples_per_sec = if total_time.as_secs() > 0 {
-            total_samples as f64 / total_time.as_secs_f64()
-        } else {
-            0.0
-        };
-
-        println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║                    UPLOAD METRICS SUMMARY                    ║");
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ Total time:          {:>10.2}s                            ║", total_time.as_secs_f64());
-        println!("║ Total samples:       {:>10}                              ║", total_samples);
-        println!("║ Total batches:       {:>10}                              ║", total_batches);
-        println!("║ Throughput:          {:>10.1} samples/sec                 ║", samples_per_sec);
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║ samples.populate2 response times (per batch):                ║");
-        println!("║   Min:               {:>10} ms                           ║", min_ms);
-        println!("║   Max:               {:>10} ms                           ║", max_ms);
-        println!("║   Avg:               {:>10} ms                           ║", avg_ms);
-        println!("╠══════════════════════════════════════════════════════════════╣");
-
-        // Show timing trend - first 5 and last 5 batches to detect degradation
-        if total_batches > 1 {
-            println!("║ Batch timing trend (detecting degradation):                  ║");
-
-            let show_count = 5.min(total_batches);
-
-            // First N batches
-            println!("║   First {} batches:", show_count);
-            for i in 0..show_count {
-                println!("║     Batch {:>3}: {:>6} ms ({:>3} samples)                      ║",
-                    i + 1, self.batch_times_ms[i], self.batch_sizes[i]);
-            }
-
-            // Last N batches (if different from first)
-            if total_batches > show_count {
-                println!("║   Last {} batches:", show_count);
-                let start_idx = total_batches - show_count;
-                for i in start_idx..total_batches {
-                    println!("║     Batch {:>3}: {:>6} ms ({:>3} samples)                      ║",
-                        i + 1, self.batch_times_ms[i], self.batch_sizes[i]);
-                }
-            }
-
-            // Calculate trend - compare first half avg to second half avg
-            if total_batches >= 4 {
-                let mid = total_batches / 2;
-                let first_half_avg: u128 = self.batch_times_ms[..mid].iter().sum::<u128>() / mid as u128;
-                let second_half_avg: u128 = self.batch_times_ms[mid..].iter().sum::<u128>() / (total_batches - mid) as u128;
-
-                let trend = if second_half_avg > first_half_avg {
-                    let pct = ((second_half_avg as f64 - first_half_avg as f64) / first_half_avg as f64) * 100.0;
-                    format!("+{:.1}% slower", pct)
-                } else if first_half_avg > second_half_avg {
-                    let pct = ((first_half_avg as f64 - second_half_avg as f64) / first_half_avg as f64) * 100.0;
-                    format!("-{:.1}% faster", pct)
-                } else {
-                    "stable".to_string()
-                };
-
-                println!("╠══════════════════════════════════════════════════════════════╣");
-                println!("║ Performance trend:                                           ║");
-                println!("║   First half avg:    {:>10} ms                           ║", first_half_avg);
-                println!("║   Second half avg:   {:>10} ms                           ║", second_half_avg);
-                println!("║   Trend:             {:>15}                        ║", trend);
-            }
-        }
-
-        println!("╚══════════════════════════════════════════════════════════════╝");
-    }
-}
-
-#[cfg(feature = "polars")]
+#[cfg_attr(feature = "tracy", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
 async fn handle_upload_dataset(
     client: &Client,
     dataset_id: String,
@@ -2782,6 +2669,9 @@ async fn handle_upload_dataset(
             "Must provide at least one of --annotations or --images".to_owned(),
         ));
     }
+
+    #[cfg(feature = "tracy")]
+    let _resolve_span = tracing::info_span!("resolve_annotation_set").entered();
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.clone().try_into()?;
 
@@ -2812,6 +2702,9 @@ async fn handle_upload_dataset(
         None
     };
 
+    #[cfg(feature = "tracy")]
+    drop(_resolve_span);
+
     // Warning: annotation_set_id provided but no annotations
     if annotation_set_id.is_some() && annotations.is_none() {
         eprintln!("⚠️  Warning: --annotation-set-id provided but no --annotations file.");
@@ -2821,6 +2714,9 @@ async fn handle_upload_dataset(
 
     // Determine images path
     let images_path = determine_images_path(&annotations, &images)?;
+
+    #[cfg(feature = "tracy")]
+    let _prep_span = tracing::info_span!("preparation").entered();
 
     // Create a spinner for the preparation phase
     let prep_bar = indicatif::ProgressBar::new_spinner();
@@ -2834,13 +2730,20 @@ async fn handle_upload_dataset(
     // Parse annotations from Arrow if provided, or build samples from directory
     let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
     let mut samples = if annotations.is_some() {
+        #[cfg(feature = "tracy")]
+        let _arrow_span = tracing::info_span!("parse_arrow").entered();
         prep_bar.set_message("Reading Arrow file...");
         parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations, &prep_bar)?
     } else {
+        #[cfg(feature = "tracy")]
+        let _scan_span = tracing::info_span!("scan_directory").entered();
         prep_bar.set_message("Scanning directory for images...");
         build_samples_from_directory(&images_path, &prep_bar)?
     };
     prep_bar.finish_and_clear();
+
+    #[cfg(feature = "tracy")]
+    drop(_prep_span);
 
     if samples.is_empty() {
         return Err(Error::InvalidParameters(
@@ -2882,7 +2785,6 @@ async fn handle_upload_dataset(
 
     const BATCH_SIZE: usize = 50;
     let mut all_results = Vec::new();
-    let mut metrics = UploadMetrics::new();
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
     let annotation_set_id_parsed = if should_upload_annotations {
@@ -2901,11 +2803,24 @@ async fn handle_upload_dataset(
         batches.len()
     );
 
-    for batch in batches.iter() {
+    #[cfg(feature = "tracy")]
+    let _upload_span = tracing::info_span!(
+        "upload",
+        total_batches = batches.len(),
+        total_samples = total_samples
+    )
+    .entered();
+
+    for (_batch_num, batch) in batches.iter().enumerate() {
+        #[cfg(feature = "tracy")]
+        let batch_num = _batch_num; // Shadow with non-underscore name for Tracy
+
         let batch_size = batch.len();
 
-        // Time the samples.populate2 API call
-        let batch_start = std::time::Instant::now();
+        #[cfg(feature = "tracy")]
+        let _batch_span =
+            tracing::info_span!("batch", batch_num = batch_num + 1, size = batch_size).entered();
+
         let results = client
             .populate_samples(
                 dataset_id_parsed,
@@ -2914,16 +2829,15 @@ async fn handle_upload_dataset(
                 Some(tx.clone()),
             )
             .await?;
-        let batch_duration = batch_start.elapsed();
-
-        // Record metrics for this batch
-        metrics.record_batch(batch_duration, batch_size);
 
         all_results.extend(results);
 
         // Update offset for next batch so progress continues from where we left off
         offset.fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
     }
+
+    #[cfg(feature = "tracy")]
+    drop(_upload_span);
 
     drop(tx);
 
@@ -2934,9 +2848,6 @@ async fn handle_upload_dataset(
     if all_results.len() > 10 {
         println!("  ... and {} more", all_results.len() - 10);
     }
-
-    // Print instrumentation summary
-    metrics.print_summary();
 
     Ok(())
 }
@@ -4514,9 +4425,55 @@ async fn handle_export_coco(
     Ok(())
 }
 
+/// Initialize logging/tracing based on feature flags and runtime configuration.
+///
+/// When the `tracy` feature is enabled:
+/// - Uses `tracing` crate with a fmt layer for console output
+/// - Adds TracyLayer when `TRACY_ENABLE=1` environment variable is set
+///
+/// When `tracy` feature is disabled:
+/// - Falls back to standard `env_logger` for minimal overhead
+fn init_tracing() {
+    #[cfg(feature = "tracy")]
+    {
+        use tracing_subscriber::prelude::*;
+
+        let tracy_enabled = std::env::var("TRACY_ENABLE")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_filter(filter);
+
+        if tracy_enabled {
+            // Start Tracy client for profiling
+            let _client = tracy_client::Client::start();
+
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(tracing_tracy::TracyLayer::default())
+                .init();
+
+            tracing::info!("Tracy profiling enabled");
+        } else {
+            tracing_subscriber::registry().with(fmt_layer).init();
+        }
+    }
+
+    #[cfg(not(feature = "tracy"))]
+    {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_tracing();
 
     let args = Args::parse();
 

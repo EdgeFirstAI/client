@@ -1466,6 +1466,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn download_dataset(
         &self,
         dataset_id: DatasetID,
@@ -1932,6 +1933,7 @@ impl Client {
     ///
     /// # Returns
     /// Vector of created annotation records from the server.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, annotations), fields(annotation_count = annotations.len())))]
     pub async fn add_annotations_bulk(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -2006,6 +2008,7 @@ impl Client {
         self.rpc("samples.count".to_owned(), Some(params)).await
     }
 
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn samples(
         &self,
         dataset_id: DatasetID,
@@ -2294,6 +2297,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples(
         &self,
         dataset_id: DatasetID,
@@ -2317,6 +2321,7 @@ impl Client {
     /// specifying the maximum number of concurrent file uploads. Use this
     /// for bulk imports where higher concurrency can significantly reduce
     /// upload time.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples_with_concurrency(
         &self,
         dataset_id: DatasetID,
@@ -2770,6 +2775,7 @@ impl Client {
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     /// * [Snapshots Guide](https://doc.edgefirst.ai/latest/studio/snapshots/)
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn create_snapshot(
         &self,
         path: &str,
@@ -3395,6 +3401,7 @@ impl Client {
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
     ///   dataset
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn download_snapshot(
         &self,
         snapshot_id: SnapshotID,
@@ -3546,6 +3553,7 @@ impl Client {
     /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self)))]
     pub async fn restore_snapshot(
         &self,
         project_id: ProjectID,
@@ -3997,6 +4005,7 @@ impl Client {
     ///
     /// NOTE: This API would generally not be called directly and instead users
     /// should use the higher-level methods provided by the client.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, params), fields(method = %method)))]
     pub async fn rpc<Params, RpcResult>(
         &self,
         method: String,
