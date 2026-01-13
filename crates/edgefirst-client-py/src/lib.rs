@@ -1446,6 +1446,8 @@ pub enum FileType {
     LidarReflect,
     RadarPcd,
     RadarCube,
+    /// All sensor types - expands to all known file types
+    All,
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -2019,8 +2021,11 @@ impl Dataset {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
             .collect();
+        // Expand All to all sensor types
+        let types_converted = edgefirst_client::FileType::expand_types(&types_converted);
 
         match progress {
             Some(progress) => {
@@ -2047,10 +2052,13 @@ impl Dataset {
                     })
                 });
 
-                while let Some(status) = rx.blocking_recv() {
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status;
                     Python::attach(|py| {
                         progress
-                            .call1(py, (status.current, status.total))
+                            .call1(py, (current, total, status))
                             .expect("Progress callback should be callable");
                     });
                 }
@@ -2134,8 +2142,10 @@ impl Dataset {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
             .collect();
+        let types_converted = edgefirst_client::FileType::expand_types(&types_converted);
 
         let client_arc = Arc::clone(client_ref);
         let samples = match progress {
@@ -2280,8 +2290,10 @@ impl Dataset {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
             .collect();
+        let types_converted = edgefirst_client::FileType::expand_types(&types_converted);
 
         Ok(SamplesCountResult(
             client_ref
@@ -4703,7 +4715,7 @@ impl Client {
             })
             .collect::<Vec<_>>();
 
-        let types = types
+        let types: Vec<edgefirst_client::FileType> = types
             .into_iter()
             .map(|x| match x {
                 FileType::Image => edgefirst_client::FileType::Image,
@@ -4712,8 +4724,10 @@ impl Client {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
-            .collect::<Vec<_>>();
+            .collect();
+        let types = edgefirst_client::FileType::expand_types(&types);
 
         Ok(SamplesCountResult(
             self.0
@@ -4752,7 +4766,7 @@ impl Client {
             })
             .collect::<Vec<_>>();
 
-        let types = types
+        let types: Vec<edgefirst_client::FileType> = types
             .into_iter()
             .map(|x| match x {
                 FileType::Image => edgefirst_client::FileType::Image,
@@ -4761,8 +4775,10 @@ impl Client {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
-            .collect::<Vec<_>>();
+            .collect();
+        let types = edgefirst_client::FileType::expand_types(&types);
 
         let samples = match progress {
             Some(progress) => {
@@ -4903,7 +4919,7 @@ impl Client {
         progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        let types = types
+        let types: Vec<edgefirst_client::FileType> = types
             .into_iter()
             .map(|x| match x {
                 FileType::Image => edgefirst_client::FileType::Image,
@@ -4912,8 +4928,11 @@ impl Client {
                 FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
                 FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
                 FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::All => edgefirst_client::FileType::All,
             })
-            .collect::<Vec<_>>();
+            .collect();
+        // Expand All to all sensor types
+        let types = edgefirst_client::FileType::expand_types(&types);
 
         match progress {
             Some(progress) => {
@@ -4931,11 +4950,14 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status;
                     Python::attach(|py| {
                         progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                            .call1(py, (current, total, status))
+                            .expect("Progress callback should be callable and accept a tuple of (current, total, status) progress.");
                     });
                 }
 
@@ -5826,14 +5848,17 @@ impl Sample {
         file_type: Option<FileType>,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Convert FileType enum to client type
-        fn convert_file_type(ft: FileType) -> edgefirst_client::FileType {
+        fn convert_file_type(ft: FileType) -> Result<edgefirst_client::FileType, Error> {
             match ft {
-                FileType::Image => edgefirst_client::FileType::Image,
-                FileType::LidarPcd => edgefirst_client::FileType::LidarPcd,
-                FileType::LidarDepth => edgefirst_client::FileType::LidarDepth,
-                FileType::LidarReflect => edgefirst_client::FileType::LidarReflect,
-                FileType::RadarPcd => edgefirst_client::FileType::RadarPcd,
-                FileType::RadarCube => edgefirst_client::FileType::RadarCube,
+                FileType::Image => Ok(edgefirst_client::FileType::Image),
+                FileType::LidarPcd => Ok(edgefirst_client::FileType::LidarPcd),
+                FileType::LidarDepth => Ok(edgefirst_client::FileType::LidarDepth),
+                FileType::LidarReflect => Ok(edgefirst_client::FileType::LidarReflect),
+                FileType::RadarPcd => Ok(edgefirst_client::FileType::RadarPcd),
+                FileType::RadarCube => Ok(edgefirst_client::FileType::RadarCube),
+                FileType::All => Err(Error::TypeError(
+                    "FileType.All is not valid for single file download. Use a specific type (e.g., FileType.Image).".to_string(),
+                )),
             }
         }
 
@@ -5845,7 +5870,7 @@ impl Sample {
                         .to_string(),
                 )
             })?;
-            let ft = convert_file_type(FileType::Image);
+            let ft = convert_file_type(FileType::Image)?;
             return Ok(self.inner.download(client_ref.as_ref(), ft).await?);
         }
 
@@ -5854,7 +5879,7 @@ impl Sample {
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = first_arg.extract::<PyRef<Client>>() {
             warn_method_deprecated(py, "Sample", "download")?;
-            let ft = convert_file_type(file_type.unwrap_or(FileType::Image));
+            let ft = convert_file_type(file_type.unwrap_or(FileType::Image))?;
             return Ok(self.inner.download(&client.0, ft).await?);
         }
 
@@ -5866,7 +5891,7 @@ impl Sample {
                         .to_string(),
                 )
             })?;
-            let ft = convert_file_type(ft_enum);
+            let ft = convert_file_type(ft_enum)?;
             return Ok(self.inner.download(client_ref.as_ref(), ft).await?);
         }
 

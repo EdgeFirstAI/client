@@ -437,6 +437,8 @@ pub enum FileType {
     RadarPcd,
     /// Radar cube data files (.png format)
     RadarCube,
+    /// All sensor types (expands to all of the above)
+    All,
 }
 
 impl From<core::FileType> for FileType {
@@ -448,6 +450,7 @@ impl From<core::FileType> for FileType {
             core::FileType::LidarReflect => FileType::LidarReflect,
             core::FileType::RadarPcd => FileType::RadarPcd,
             core::FileType::RadarCube => FileType::RadarCube,
+            core::FileType::All => FileType::All,
         }
     }
 }
@@ -461,6 +464,7 @@ impl From<FileType> for core::FileType {
             FileType::LidarReflect => core::FileType::LidarReflect,
             FileType::RadarPcd => core::FileType::RadarPcd,
             FileType::RadarCube => core::FileType::RadarCube,
+            FileType::All => core::FileType::All,
         }
     }
 }

@@ -52,7 +52,7 @@
 //! # Environment Variables
 //!
 //! - `EDGEFIRST_MAX_RETRIES`: Maximum number of retries for failed requests
-//!   (default: 3)
+//!   (default: 5)
 //! - `MAX_TASKS`: Maximum concurrent upload/download tasks (default: half of
 //!   CPU cores, min 2, max 8). Lower values (2-8) work better for large files
 //!   to avoid timeouts. Higher values (16-32) are better for many small files.
@@ -73,7 +73,7 @@
 //!
 //! # Configuration
 //!
-//! - `EDGEFIRST_MAX_RETRIES`: Maximum retry attempts per request (default: 3)
+//! - `EDGEFIRST_MAX_RETRIES`: Maximum retry attempts per request (default: 5)
 //! - `EDGEFIRST_TIMEOUT`: Request timeout in seconds (default: 30)
 //!
 //! **For bulk file operations**, increase retry count for better resilience:
@@ -227,7 +227,7 @@ pub fn classify_url(url: &str) -> RetryScope {
 ///
 /// # Retry Configuration
 ///
-/// - **Max retries**: Configurable via `EDGEFIRST_MAX_RETRIES` (default: 3)
+/// - **Max retries**: Configurable via `EDGEFIRST_MAX_RETRIES` (default: 5)
 /// - **Timeout**: Configurable via `EDGEFIRST_TIMEOUT` (default: 30 seconds)
 ///
 /// # Error Classification by Scope
@@ -280,7 +280,7 @@ pub fn create_retry_policy() -> reqwest::retry::Builder {
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3); // Reduced from 5 to 3 for faster failures
+        .unwrap_or(5);
 
     // Use wildcard host scope since we do URL inspection in classify_fn
     reqwest::retry::for_host("*")
@@ -319,7 +319,7 @@ pub fn create_retry_policy() -> reqwest::retry::Builder {
 }
 
 pub fn log_retry_configuration() {
-    let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES").unwrap_or_else(|_| "3".to_string());
+    let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES").unwrap_or_else(|_| "5".to_string());
     let timeout = std::env::var("EDGEFIRST_TIMEOUT").unwrap_or_else(|_| "30".to_string());
     log::debug!(
         "Retry configuration - max_retries={}, timeout={}s",

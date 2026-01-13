@@ -162,6 +162,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             .send(Progress {
                 current: 0,
                 total: total_images,
+                status: None,
             })
             .await;
     }
@@ -192,7 +193,13 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             // Update progress
             let c = current.fetch_add(1, Ordering::SeqCst) + 1;
             if let Some(ref p) = progress {
-                let _ = p.send(Progress { current: c, total }).await;
+                let _ = p
+                    .send(Progress {
+                        current: c,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
 
             Ok::<Vec<Sample>, Error>(samples)
@@ -317,6 +324,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             .send(Progress {
                 current: 0,
                 total: total_rows,
+                status: None,
             })
             .await;
     }
@@ -473,6 +481,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                 .send(Progress {
                     current: i + 1,
                     total: total_rows,
+                    status: None,
                 })
                 .await;
             last_progress_update = i;

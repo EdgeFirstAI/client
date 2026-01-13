@@ -53,19 +53,40 @@ pub enum FileType {
     RadarPcd,
     /// Radar cube data files (.png format)
     RadarCube,
+    /// All sensor types - expands to all known file types
+    All,
 }
 
 impl std::fmt::Display for FileType {
+    /// Returns the server API type name for this file type.
+    /// Used when making API requests to the server.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
             FileType::Image => "image",
+            FileType::LidarPcd => "lidar.pcd",
+            FileType::LidarDepth => "lidar.depth",
+            FileType::LidarReflect => "lidar.reflect",
+            FileType::RadarPcd => "radar.pcd",
+            FileType::RadarCube => "radar.png",
+            FileType::All => "all",
+        };
+        write!(f, "{}", value)
+    }
+}
+
+impl FileType {
+    /// Returns the file extension to use when saving downloaded files.
+    /// This may differ from the API type name (e.g., lidar.depth → lidar.png).
+    pub fn file_extension(&self) -> &'static str {
+        match self {
+            FileType::Image => "jpg", // Will be overridden by infer detection
             FileType::LidarPcd => "lidar.pcd",
             FileType::LidarDepth => "lidar.png",
             FileType::LidarReflect => "lidar.jpg",
             FileType::RadarPcd => "radar.pcd",
             FileType::RadarCube => "radar.png",
-        };
-        write!(f, "{}", value)
+            FileType::All => "",
+        }
     }
 }
 
@@ -76,10 +97,12 @@ impl TryFrom<&str> for FileType {
         match s {
             "image" => Ok(FileType::Image),
             "lidar.pcd" => Ok(FileType::LidarPcd),
-            "lidar.png" => Ok(FileType::LidarDepth),
-            "lidar.jpg" => Ok(FileType::LidarReflect),
-            "radar.pcd" => Ok(FileType::RadarPcd),
-            "radar.png" => Ok(FileType::RadarCube),
+            // Accept CLI names (lidar.png), server names (lidar.depth), and aliases
+            "lidar.png" | "lidar.depth" | "depth.png" | "depthmap" => Ok(FileType::LidarDepth),
+            "lidar.jpg" | "lidar.jpeg" | "lidar.reflect" => Ok(FileType::LidarReflect),
+            "radar.pcd" | "pcd" => Ok(FileType::RadarPcd),
+            "radar.png" | "cube" => Ok(FileType::RadarCube),
+            "all" => Ok(FileType::All),
             _ => Err(crate::Error::InvalidFileType(s.to_string())),
         }
     }
@@ -90,6 +113,83 @@ impl std::str::FromStr for FileType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.try_into()
+    }
+}
+
+impl FileType {
+    /// Returns all concrete sensor file types (excludes `All`).
+    ///
+    /// This is useful for expanding the `All` variant or listing available
+    /// types.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use edgefirst_client::FileType;
+    ///
+    /// let all_types = FileType::all_sensor_types();
+    /// assert!(all_types.contains(&FileType::Image));
+    /// assert!(!all_types.contains(&FileType::All));
+    /// ```
+    pub fn all_sensor_types() -> Vec<FileType> {
+        vec![
+            FileType::Image,
+            FileType::LidarPcd,
+            FileType::LidarDepth,
+            FileType::LidarReflect,
+            FileType::RadarPcd,
+            FileType::RadarCube,
+        ]
+    }
+
+    /// Returns all valid type names as strings for help text.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use edgefirst_client::FileType;
+    ///
+    /// let names = FileType::type_names();
+    /// assert!(names.contains(&"image"));
+    /// assert!(names.contains(&"all"));
+    /// ```
+    pub fn type_names() -> Vec<&'static str> {
+        vec![
+            "image",
+            "lidar.pcd",
+            "lidar.png",
+            "lidar.jpg",
+            "radar.pcd",
+            "radar.png",
+            "all",
+        ]
+    }
+
+    /// Expands a list of file types, replacing `All` with all concrete sensor
+    /// types.
+    ///
+    /// If the input contains `FileType::All`, returns all sensor types.
+    /// Otherwise, returns the input types unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use edgefirst_client::FileType;
+    ///
+    /// let types = vec![FileType::All];
+    /// let expanded = FileType::expand_types(&types);
+    /// assert_eq!(expanded.len(), 6); // All concrete sensor types
+    ///
+    /// let types = vec![FileType::Image, FileType::LidarPcd];
+    /// let expanded = FileType::expand_types(&types);
+    /// assert_eq!(expanded.len(), 2); // Unchanged
+    /// ```
+    pub fn expand_types(types: &[FileType]) -> Vec<FileType> {
+        if types.contains(&FileType::All) {
+            FileType::all_sensor_types()
+        } else {
+            types.to_vec()
+        }
     }
 }
 
@@ -344,7 +444,7 @@ impl AnnotationSet {
 /// Each sample has a unique ID, image reference, and can include additional
 /// sensor data like LiDAR, radar, or depth maps. Samples can also have
 /// associated annotations.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Sample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<SampleID>,
@@ -385,28 +485,30 @@ pub struct Sample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// Camera location and pose (GPS + IMU data).
-    /// Serialized as "sensors" for API compatibility with populate endpoint.
-    #[serde(rename = "sensors", skip_serializing_if = "Option::is_none")]
+    /// Location data is extracted from the "sensors" field during
+    /// deserialization. When uploading samples, this field is serialized
+    /// directly.
+    #[serde(skip_serializing_if = "Option::is_none", skip)]
     pub location: Option<Location>,
     /// Image degradation type (blur, occlusion, weather, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub degradation: Option<String>,
     /// Additional sensor files (LiDAR, radar, depth maps, etc.).
-    /// When deserializing from samples.list: Vec<SampleFile>
-    /// When serializing for samples.populate2: HashMap<String, String>
-    /// (file_type -> filename)
+    /// Deserialization is handled by custom Deserialize impl which extracts
+    /// files from the "sensors" field. Serialization converts to HashMap for
+    /// samples.populate2 API.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
-        serialize_with = "serialize_files",
-        deserialize_with = "deserialize_files"
+        serialize_with = "serialize_files"
     )]
     pub files: Vec<SampleFile>,
+    /// Annotations associated with this sample.
+    /// Deserialization is handled by custom Deserialize impl.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
-        serialize_with = "serialize_annotations",
-        deserialize_with = "deserialize_annotations"
+        serialize_with = "serialize_annotations"
     )]
     pub annotations: Vec<Annotation>,
 }
@@ -421,6 +523,12 @@ where
 
     let value = Option::<i32>::deserialize(deserializer)?;
     Ok(value.and_then(|v| if v < 0 { None } else { Some(v as u32) }))
+}
+
+/// Check if a string is a valid downloadable URL (http/https).
+/// Used to distinguish between pre-signed URLs and inline base64/JSON data.
+fn is_valid_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
 }
 
 // Custom serializer for files field - converts Vec<SampleFile> to
@@ -438,30 +546,6 @@ where
         })
         .collect();
     map.serialize(serializer)
-}
-
-// Custom deserializer for files field - converts HashMap or Vec to
-// Vec<SampleFile>
-fn deserialize_files<'de, D>(deserializer: D) -> Result<Vec<SampleFile>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum FilesFormat {
-        Vec(Vec<SampleFile>),
-        Map(HashMap<String, String>),
-    }
-
-    let value = Option::<FilesFormat>::deserialize(deserializer)?;
-    Ok(value
-        .map(|v| match v {
-            FilesFormat::Vec(files) => files,
-            FilesFormat::Map(map) => convert_files_map_to_vec(map),
-        })
-        .unwrap_or_default())
 }
 
 // Custom serializer for annotations field - serializes to a flat
@@ -496,6 +580,188 @@ where
             AnnotationsFormat::Map(map) => convert_annotations_map_to_vec(map),
         })
         .unwrap_or_default())
+}
+
+/// Intermediate struct for deserializing sensors data that may contain both
+/// file references (URLs/data) and location data (GPS/IMU).
+#[derive(Debug, Default)]
+struct SensorsData {
+    files: Vec<SampleFile>,
+    location: Option<Location>,
+}
+
+/// Deserialize sensors field into both files and location data.
+fn deserialize_sensors_data(value: Option<serde_json::Value>) -> SensorsData {
+    use serde_json::Value;
+
+    /// Create a SampleFile from a string value, distinguishing URL vs inline
+    /// data.
+    fn create_sample_file(file_type: String, value: String) -> SampleFile {
+        if is_valid_url(&value) {
+            SampleFile::with_url(file_type, value)
+        } else {
+            SampleFile::with_data(file_type, value)
+        }
+    }
+
+    /// Create a SampleFile from any JSON value, converting non-strings to JSON.
+    fn create_sample_file_from_value(file_type: String, value: Value) -> Option<SampleFile> {
+        match value {
+            Value::String(s) => Some(create_sample_file(file_type, s)),
+            Value::Object(_) | Value::Array(_) => {
+                // Inline JSON data (legacy format) - serialize to string
+                serde_json::to_string(&value)
+                    .ok()
+                    .map(|data| SampleFile::with_data(file_type, data))
+            }
+            _ => None,
+        }
+    }
+
+    /// Try to extract Location from a JSON object containing gps/imu keys.
+    fn extract_location(map: &serde_json::Map<String, Value>) -> Option<Location> {
+        let gps = map
+            .get("gps")
+            .and_then(|v| serde_json::from_value::<GpsData>(v.clone()).ok());
+        let imu = map
+            .get("imu")
+            .and_then(|v| serde_json::from_value::<ImuData>(v.clone()).ok());
+
+        if gps.is_some() || imu.is_some() {
+            Some(Location { gps, imu })
+        } else {
+            None
+        }
+    }
+
+    let mut result = SensorsData::default();
+
+    match value {
+        None => result,
+        Some(Value::Array(arr)) => {
+            // Array of single-key objects: [{"radar.png": "url"}, {"gps": {...}}, ...]
+            for item in arr {
+                if let Value::Object(map) = item {
+                    // Check if this looks like a SampleFile object (has "type" key)
+                    if map.contains_key("type") {
+                        // Try to parse as SampleFile
+                        if let Ok(file) =
+                            serde_json::from_value::<SampleFile>(Value::Object(map.clone()))
+                        {
+                            result.files.push(file);
+                        }
+                    } else {
+                        // Check for location data (gps/imu)
+                        if let Some(loc) = extract_location(&map) {
+                            // Merge with existing location
+                            if let Some(ref mut existing) = result.location {
+                                if loc.gps.is_some() {
+                                    existing.gps = loc.gps;
+                                }
+                                if loc.imu.is_some() {
+                                    existing.imu = loc.imu;
+                                }
+                            } else {
+                                result.location = Some(loc);
+                            }
+                        } else {
+                            // Single-key object: {file_type: url_or_data}
+                            for (file_type, value) in map {
+                                if let Some(file) = create_sample_file_from_value(file_type, value)
+                                {
+                                    result.files.push(file);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            result
+        }
+        Some(Value::Object(map)) => {
+            // Check if this contains location data (gps or imu keys with object values)
+            if let Some(loc) = extract_location(&map) {
+                result.location = Some(loc);
+            }
+
+            // Also extract any file references (non-location keys)
+            for (key, value) in map {
+                if key != "gps"
+                    && key != "imu"
+                    && let Some(file) = create_sample_file_from_value(key, value)
+                {
+                    result.files.push(file);
+                }
+            }
+            result
+        }
+        Some(_) => result,
+    }
+}
+
+/// Raw sample structure for deserialization.
+/// This mirrors Sample but deserializes sensors into a combined struct
+/// that captures both files and location data.
+#[derive(Deserialize)]
+struct SampleRaw {
+    #[serde(default)]
+    id: Option<SampleID>,
+    #[serde(alias = "group_name")]
+    group: Option<String>,
+    sequence_name: Option<String>,
+    sequence_uuid: Option<String>,
+    sequence_description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_frame_number")]
+    frame_number: Option<u32>,
+    uuid: Option<String>,
+    image_name: Option<String>,
+    image_url: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    date: Option<DateTime<Utc>>,
+    source: Option<String>,
+    degradation: Option<String>,
+    /// Raw sensors JSON - will be processed into files + location
+    #[serde(default, alias = "sensors")]
+    sensors: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_annotations")]
+    annotations: Vec<Annotation>,
+}
+
+impl From<SampleRaw> for Sample {
+    fn from(raw: SampleRaw) -> Self {
+        let sensors_data = deserialize_sensors_data(raw.sensors);
+
+        Sample {
+            id: raw.id,
+            group: raw.group,
+            sequence_name: raw.sequence_name,
+            sequence_uuid: raw.sequence_uuid,
+            sequence_description: raw.sequence_description,
+            frame_number: raw.frame_number,
+            uuid: raw.uuid,
+            image_name: raw.image_name,
+            image_url: raw.image_url,
+            width: raw.width,
+            height: raw.height,
+            date: raw.date,
+            source: raw.source,
+            location: sensors_data.location,
+            degradation: raw.degradation,
+            files: sensors_data.files,
+            annotations: raw.annotations,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Sample {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = SampleRaw::deserialize(deserializer)?;
+        Ok(Sample::from(raw))
+    }
 }
 
 impl Display for Sample {
@@ -619,17 +885,91 @@ impl Sample {
         self
     }
 
+    /// Downloads a file of the specified type for this sample.
+    ///
+    /// Supports both newer datasets (pre-signed URLs) and legacy datasets
+    /// (inline base64-encoded data):
+    /// 1. First tries to download from URL if available
+    /// 2. Falls back to decoding inline base64 data for legacy datasets
     pub async fn download(
         &self,
         client: &Client,
         file_type: FileType,
     ) -> Result<Option<Vec<u8>>, Error> {
-        let url = resolve_file_url(&file_type, self.image_url.as_deref(), &self.files);
+        use base64::{Engine, engine::general_purpose::STANDARD};
 
-        Ok(match url {
-            Some(url) => Some(client.download(url).await?),
-            None => None,
-        })
+        // Handle image type separately (uses image_url field)
+        if file_type == FileType::Image {
+            if let Some(url) = self.image_url.as_deref()
+                && is_valid_url(url) {
+                    return Ok(Some(client.download(url).await?));
+                }
+            return Ok(None);
+        }
+
+        // Find the matching file for this type
+        let file = resolve_file(&file_type, &self.files);
+
+        match file {
+            Some(f) => {
+                // Prefer URL (newer datasets)
+                if let Some(url) = f.url() {
+                    return Ok(Some(client.download(url).await?));
+                }
+
+                // Fall back to inline data (legacy datasets)
+                if let Some(data) = f.data() {
+                    // Legacy data can be in several formats:
+                    // 1. Base64-encoded JSON: "eyJyYWRhci5wY2QiOi..." -> {"radar.pcd": "content"}
+                    // 2. Direct JSON wrapper: {"radar.pcd": "content"}
+                    // 3. Raw content (PCD text, etc.)
+
+                    // Try base64 decode first
+                    let decoded = if let Ok(bytes) = STANDARD.decode(data) {
+                        // Check if decoded bytes are UTF-8 JSON
+                        if let Ok(text) = String::from_utf8(bytes.clone()) {
+                            if text.starts_with('{') {
+                                // It's JSON - use the text for further processing
+                                text
+                            } else {
+                                // Non-JSON binary data - return as-is
+                                return Ok(Some(bytes));
+                            }
+                        } else {
+                            // Binary data - return as-is
+                            return Ok(Some(bytes));
+                        }
+                    } else {
+                        // Not base64 - use original data
+                        data.to_string()
+                    };
+
+                    // Try to unwrap JSON wrapper: {"type_name": "content"}
+                    let content = if decoded.starts_with('{') {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decoded) {
+                            if let Some(obj) = json.as_object() {
+                                obj.values()
+                                    .next()
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or(decoded)
+                            } else {
+                                decoded
+                            }
+                        } else {
+                            decoded
+                        }
+                    } else {
+                        decoded
+                    };
+
+                    return Ok(Some(content.as_bytes().to_vec()));
+                }
+
+                Ok(None)
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -637,6 +977,9 @@ impl Sample {
 ///
 /// For samples retrieved from the server, this contains the file type and URL.
 /// For samples being populated to the server, this can be a type and filename.
+///
+/// Legacy datasets may have inline base64-encoded data instead of URLs.
+/// The `data` field stores this inline content for fallback when no URL exists.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SampleFile {
     r#type: String,
@@ -644,15 +987,24 @@ pub struct SampleFile {
     url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     filename: Option<String>,
+    /// Inline base64-encoded data for legacy datasets without pre-signed URLs.
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
+    data: Option<String>,
+    /// Raw bytes for direct upload (e.g., from ZIP archives).
+    /// This field is not serialized - it's only used during the upload process.
+    #[serde(skip)]
+    bytes: Option<Vec<u8>>,
 }
 
 impl SampleFile {
-    /// Creates a new sample file with type and URL (for downloaded samples).
+    /// Creates a new sample file with type and URL (for newer datasets).
     pub fn with_url(file_type: String, url: String) -> Self {
         Self {
             r#type: file_type,
             url: Some(url),
             filename: None,
+            data: None,
+            bytes: None,
         }
     }
 
@@ -662,6 +1014,38 @@ impl SampleFile {
             r#type: file_type,
             url: None,
             filename: Some(filename),
+            data: None,
+            bytes: None,
+        }
+    }
+
+    /// Creates a new sample file with inline data (for legacy datasets).
+    pub fn with_data(file_type: String, data: String) -> Self {
+        Self {
+            r#type: file_type,
+            url: None,
+            filename: None,
+            data: Some(data),
+            bytes: None,
+        }
+    }
+
+    /// Creates a new sample file with raw bytes for direct upload.
+    ///
+    /// This is useful for uploading files from ZIP archives without extracting
+    /// to disk first. The bytes are uploaded directly to the presigned URL.
+    ///
+    /// # Arguments
+    /// * `file_type` - The type of file (e.g., "image", "lidar.pcd")
+    /// * `filename` - The filename to use for the upload
+    /// * `bytes` - The raw file bytes
+    pub fn with_bytes(file_type: String, filename: String, bytes: Vec<u8>) -> Self {
+        Self {
+            r#type: file_type,
+            url: None,
+            filename: Some(filename),
+            data: None,
+            bytes: Some(bytes),
         }
     }
 
@@ -675,6 +1059,16 @@ impl SampleFile {
 
     pub fn filename(&self) -> Option<&str> {
         self.filename.as_deref()
+    }
+
+    /// Returns inline base64-encoded data (for legacy datasets).
+    pub fn data(&self) -> Option<&str> {
+        self.data.as_deref()
+    }
+
+    /// Returns raw bytes for direct upload (from ZIP archives, etc.).
+    pub fn bytes(&self) -> Option<&[u8]> {
+        self.bytes.as_deref()
     }
 }
 
@@ -1832,52 +2226,45 @@ fn extract_sample_name(image_name: &str) -> String {
         .unwrap_or_else(|| name.clone())
 }
 
-/// Resolve file URL for a given file type from sample data.
+/// Resolve a file for a given file type from sample data.
 ///
-/// Pure function that extracts the URL resolution logic from
-/// `Sample::download()`. Returns `Some(url)` if the file exists, `None`
-/// otherwise.
-///
-/// # Examples
-/// - Image: Uses `image_url` field
-/// - Other files: Searches `files` array by type matching
+/// Returns the matching `SampleFile` if found, which may contain either
+/// a URL (newer datasets) or inline data (legacy datasets).
 ///
 /// # Arguments
-/// * `file_type` - The type of file to resolve (e.g., "image", "lidar.pcd")
-/// * `image_url` - The sample's image URL (for FileType::Image)
-/// * `files` - The sample's file list (for other file types)
-fn resolve_file_url<'a>(
-    file_type: &FileType,
-    image_url: Option<&'a str>,
-    files: &'a [SampleFile],
-) -> Option<&'a str> {
+/// * `file_type` - The type of file to resolve (e.g., LidarPcd, RadarPcd)
+/// * `files` - The sample's file list
+fn resolve_file<'a>(file_type: &FileType, files: &'a [SampleFile]) -> Option<&'a SampleFile> {
     match file_type {
-        FileType::Image => image_url,
-        file => files
-            .iter()
-            .find(|f| f.r#type == file.to_string())
-            .and_then(|f| f.url.as_deref()),
+        FileType::Image => None, // Image uses image_url field, not files
+        FileType::All => None,   // All should be expanded before calling this
+        file => {
+            // Get all possible names for this file type (primary + aliases)
+            let type_names = file_type_names(file);
+            files
+                .iter()
+                .find(|f| type_names.contains(&f.r#type.as_str()))
+        }
+    }
+}
+
+/// Returns all possible server-side names for a file type.
+/// The server uses specific naming conventions in the STUDIO_DB_TYPE_MAP.
+fn file_type_names(file_type: &FileType) -> Vec<&'static str> {
+    match file_type {
+        FileType::Image => vec!["image"],
+        FileType::LidarPcd => vec!["lidar.pcd"],
+        FileType::LidarDepth => vec!["lidar.depth", "depth.png", "depthmap"],
+        FileType::LidarReflect => vec!["lidar.reflect"],
+        FileType::RadarPcd => vec!["radar.pcd", "pcd"],
+        FileType::RadarCube => vec!["radar.png", "cube"],
+        FileType::All => vec![],
     }
 }
 
 // ============================================================================
 // DESERIALIZATION FORMAT CONVERSION HELPERS
 // ============================================================================
-
-/// Convert files HashMap format to Vec<SampleFile>.
-///
-/// Pure function that handles the conversion from the server's populate API
-/// format (HashMap<String, String>) to the internal Vec<SampleFile>
-/// representation.
-///
-/// # Arguments
-/// * `map` - HashMap where key is file type (e.g., "lidar.pcd") and value is
-///   filename
-fn convert_files_map_to_vec(map: HashMap<String, String>) -> Vec<SampleFile> {
-    map.into_iter()
-        .map(|(file_type, filename)| SampleFile::with_filename(file_type, filename))
-        .collect()
-}
 
 /// Convert annotations grouped format to flat Vec<Annotation>.
 ///
@@ -2127,8 +2514,19 @@ mod tests {
     // ==== FileType Conversion Tests ====
     #[test]
     fn test_file_type_conversions() {
-        let cases = vec![
+        // to_string() returns server API type names
+        let api_cases = vec![
             (FileType::Image, "image"),
+            (FileType::LidarPcd, "lidar.pcd"),
+            (FileType::LidarDepth, "lidar.depth"),
+            (FileType::LidarReflect, "lidar.reflect"),
+            (FileType::RadarPcd, "radar.pcd"),
+            (FileType::RadarCube, "radar.png"),
+        ];
+
+        // file_extension() returns file extensions for saving
+        let ext_cases = vec![
+            (FileType::Image, "jpg"),
             (FileType::LidarPcd, "lidar.pcd"),
             (FileType::LidarDepth, "lidar.png"),
             (FileType::LidarReflect, "lidar.jpg"),
@@ -2136,26 +2534,47 @@ mod tests {
             (FileType::RadarCube, "radar.png"),
         ];
 
-        // Test: Display → to_string()
-        for (file_type, expected_str) in &cases {
+        // Test: Display → to_string() returns server API names
+        for (file_type, expected_str) in &api_cases {
             assert_eq!(file_type.to_string(), *expected_str);
         }
 
-        // Test: try_from() string parsing
-        for (file_type, type_str) in &cases {
-            assert_eq!(FileType::try_from(*type_str).unwrap(), *file_type);
+        // Test: file_extension() returns correct extensions
+        for (file_type, expected_ext) in &ext_cases {
+            assert_eq!(file_type.file_extension(), *expected_ext);
         }
 
-        // Test: FromStr trait
-        for (file_type, type_str) in &cases {
-            assert_eq!(FileType::from_str(type_str).unwrap(), *file_type);
-        }
+        // Test: try_from() string parsing (accepts multiple aliases)
+        assert_eq!(
+            FileType::try_from("lidar.depth").unwrap(),
+            FileType::LidarDepth
+        );
+        assert_eq!(
+            FileType::try_from("lidar.png").unwrap(),
+            FileType::LidarDepth
+        );
+        assert_eq!(
+            FileType::try_from("depth.png").unwrap(),
+            FileType::LidarDepth
+        );
+        assert_eq!(
+            FileType::try_from("lidar.reflect").unwrap(),
+            FileType::LidarReflect
+        );
+        assert_eq!(
+            FileType::try_from("lidar.jpg").unwrap(),
+            FileType::LidarReflect
+        );
+        assert_eq!(
+            FileType::try_from("lidar.jpeg").unwrap(),
+            FileType::LidarReflect
+        );
 
         // Test: Invalid input
         assert!(FileType::try_from("invalid").is_err());
 
         // Test: Round-trip (Display → try_from)
-        for (file_type, _) in &cases {
+        for (file_type, _) in &api_cases {
             let s = file_type.to_string();
             let parsed = FileType::try_from(s.as_str()).unwrap();
             assert_eq!(parsed, *file_type);
@@ -2238,18 +2657,17 @@ mod tests {
         assert_eq!(extract_sample_name(".jpg"), ".jpg");
     }
 
-    // ==== File URL Resolution Tests ====
+    // ==== File Resolution Tests ====
     #[test]
-    fn test_resolve_file_url_image_type() {
-        let image_url = Some("https://example.com/image.jpg");
+    fn test_resolve_file_image_type_returns_none() {
+        // Image type uses image_url field, not files array
         let files = vec![];
-        let result = resolve_file_url(&FileType::Image, image_url, &files);
-        assert_eq!(result, Some("https://example.com/image.jpg"));
+        let result = resolve_file(&FileType::Image, &files);
+        assert!(result.is_none());
     }
 
     #[test]
-    fn test_resolve_file_url_lidar_pcd() {
-        let image_url = Some("https://example.com/image.jpg");
+    fn test_resolve_file_lidar_pcd() {
         let files = vec![
             SampleFile::with_url(
                 "lidar.pcd".to_string(),
@@ -2260,57 +2678,73 @@ mod tests {
                 "https://example.com/radar.pcd".to_string(),
             ),
         ];
-        let result = resolve_file_url(&FileType::LidarPcd, image_url, &files);
-        assert_eq!(result, Some("https://example.com/file.pcd"));
+        let result = resolve_file(&FileType::LidarPcd, &files);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().url(), Some("https://example.com/file.pcd"));
     }
 
     #[test]
-    fn test_resolve_file_url_not_found() {
-        let image_url = Some("https://example.com/image.jpg");
+    fn test_resolve_file_not_found() {
         let files = vec![SampleFile::with_url(
             "lidar.pcd".to_string(),
             "https://example.com/file.pcd".to_string(),
         )];
         // Requesting radar.pcd which doesn't exist in files
-        let result = resolve_file_url(&FileType::RadarPcd, image_url, &files);
-        assert_eq!(result, None);
+        let result = resolve_file(&FileType::RadarPcd, &files);
+        assert!(result.is_none());
     }
 
     #[test]
-    fn test_resolve_file_url_no_image_url() {
-        let image_url = None;
-        let files = vec![];
-        let result = resolve_file_url(&FileType::Image, image_url, &files);
-        assert_eq!(result, None);
-    }
-
-    // ==== Format Conversion Tests ====
-    #[test]
-    fn test_convert_files_map_to_vec_single_file() {
-        let mut map = HashMap::new();
-        map.insert("lidar.pcd".to_string(), "scan001.pcd".to_string());
-
-        let files = convert_files_map_to_vec(map);
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].file_type(), "lidar.pcd");
-        assert_eq!(files[0].filename(), Some("scan001.pcd"));
+    fn test_resolve_file_lidar_depth() {
+        // Server returns "lidar.depth" for LiDAR depth data
+        let files = vec![SampleFile::with_url(
+            "lidar.depth".to_string(),
+            "https://example.com/depth.png".to_string(),
+        )];
+        let result = resolve_file(&FileType::LidarDepth, &files);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().url(), Some("https://example.com/depth.png"));
     }
 
     #[test]
-    fn test_convert_files_map_to_vec_multiple_files() {
-        let mut map = HashMap::new();
-        map.insert("lidar.pcd".to_string(), "scan.pcd".to_string());
-        map.insert("radar.pcd".to_string(), "radar.pcd".to_string());
-
-        let files = convert_files_map_to_vec(map);
-        assert_eq!(files.len(), 2);
+    fn test_resolve_file_lidar_reflect() {
+        // Server returns "lidar.reflect" for LiDAR reflectance data
+        let files = vec![SampleFile::with_url(
+            "lidar.reflect".to_string(),
+            "https://example.com/reflect.png".to_string(),
+        )];
+        let result = resolve_file(&FileType::LidarReflect, &files);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().url(),
+            Some("https://example.com/reflect.png")
+        );
     }
 
     #[test]
-    fn test_convert_files_map_to_vec_empty() {
-        let map = HashMap::new();
-        let files = convert_files_map_to_vec(map);
-        assert_eq!(files.len(), 0);
+    fn test_resolve_file_radar_cube() {
+        // Server returns "radar.png" or "cube" for radar cube data
+        let files = vec![SampleFile::with_url(
+            "radar.png".to_string(),
+            "https://example.com/radar.png".to_string(),
+        )];
+        let result = resolve_file(&FileType::RadarCube, &files);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().url(), Some("https://example.com/radar.png"));
+    }
+
+    #[test]
+    fn test_resolve_file_with_inline_data() {
+        // Legacy datasets may have inline data instead of URLs
+        let files = vec![SampleFile::with_data(
+            "radar.pcd".to_string(),
+            "SGVsbG8gV29ybGQ=".to_string(), // base64 "Hello World"
+        )];
+        let result = resolve_file(&FileType::RadarPcd, &files);
+        assert!(result.is_some());
+        let file = result.unwrap();
+        assert!(file.url().is_none());
+        assert_eq!(file.data(), Some("SGVsbG8gV29ybGQ="));
     }
 
     #[test]
@@ -2864,6 +3298,94 @@ mod tests {
         assert_eq!(file.file_type(), "image");
         assert_eq!(file.filename(), Some("test.jpg"));
         assert_eq!(file.url(), None);
+    }
+
+    // ==== Sample GPS/IMU Deserialization Tests ====
+    #[test]
+    fn test_sample_deserializes_gps_imu_from_sensors() {
+        use serde_json::json;
+
+        // Test: GPS and IMU data in sensors array is extracted to location field
+        let sample_json = json!({
+            "id": 123,
+            "image_name": "test.jpg",
+            "sensors": [
+                {"gps": {"lat": 37.7749, "lon": -122.4194}},
+                {"imu": {"roll": 1.5, "pitch": 2.5, "yaw": 3.5}},
+                {"radar.pcd": "https://example.com/radar.pcd"}
+            ]
+        });
+
+        let sample: Sample = serde_json::from_value(sample_json).unwrap();
+
+        // Verify location was extracted
+        assert!(sample.location.is_some());
+        let location = sample.location.as_ref().unwrap();
+
+        // Verify GPS data
+        assert!(location.gps.is_some());
+        let gps = location.gps.as_ref().unwrap();
+        assert!((gps.lat - 37.7749).abs() < 0.0001);
+        assert!((gps.lon - (-122.4194)).abs() < 0.0001);
+
+        // Verify IMU data
+        assert!(location.imu.is_some());
+        let imu = location.imu.as_ref().unwrap();
+        assert!((imu.roll - 1.5).abs() < 0.0001);
+        assert!((imu.pitch - 2.5).abs() < 0.0001);
+        assert!((imu.yaw - 3.5).abs() < 0.0001);
+
+        // Verify files were also extracted (non-GPS/IMU entries)
+        assert_eq!(sample.files.len(), 1);
+        assert_eq!(sample.files[0].file_type(), "radar.pcd");
+        assert_eq!(sample.files[0].url(), Some("https://example.com/radar.pcd"));
+    }
+
+    #[test]
+    fn test_sample_deserializes_gps_only() {
+        use serde_json::json;
+
+        // Test: Only GPS data in sensors
+        let sample_json = json!({
+            "id": 456,
+            "sensors": [
+                {"gps": {"lat": 40.7128, "lon": -74.0060}}
+            ]
+        });
+
+        let sample: Sample = serde_json::from_value(sample_json).unwrap();
+
+        assert!(sample.location.is_some());
+        let location = sample.location.as_ref().unwrap();
+
+        assert!(location.gps.is_some());
+        assert!(location.imu.is_none());
+
+        let gps = location.gps.as_ref().unwrap();
+        assert!((gps.lat - 40.7128).abs() < 0.0001);
+        assert!((gps.lon - (-74.0060)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_sample_deserializes_without_location() {
+        use serde_json::json;
+
+        // Test: Sample with only file sensors (no GPS/IMU)
+        let sample_json = json!({
+            "id": 789,
+            "sensors": [
+                {"radar.pcd": "https://example.com/radar.pcd"},
+                {"lidar.pcd": "https://example.com/lidar.pcd"}
+            ]
+        });
+
+        let sample: Sample = serde_json::from_value(sample_json).unwrap();
+
+        // No location data
+        assert!(sample.location.is_none());
+
+        // Both files extracted
+        assert_eq!(sample.files.len(), 2);
     }
 
     // ==== Label Tests ====
