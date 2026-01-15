@@ -2055,11 +2055,14 @@ impl Dataset {
                 while let Some(prog) = rx.blocking_recv() {
                     let current = prog.current;
                     let total = prog.total;
-                    let status = prog.status;
+                    let status = prog.status.clone();
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (current, total, status))
-                            .expect("Progress callback should be callable");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (current, total, status.clone())).is_err() {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4953,11 +4956,14 @@ impl Client {
                 while let Some(prog) = rx.blocking_recv() {
                     let current = prog.current;
                     let total = prog.total;
-                    let status = prog.status;
+                    let status = prog.status.clone();
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (current, total, status))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total, status) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (current, total, status.clone())).is_err() {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 

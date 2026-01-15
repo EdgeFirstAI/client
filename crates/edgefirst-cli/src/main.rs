@@ -2783,6 +2783,9 @@ async fn handle_upload_dataset(
         bar.finish_with_message("Upload complete");
     });
 
+    // Batch size of 50 chosen for retry resilience: if a batch fails, only 50 samples
+    // need to be retried instead of 500. This adds ~10x more API calls but improves
+    // reliability for large uploads over unreliable connections.
     const BATCH_SIZE: usize = 50;
     let mut all_results = Vec::new();
 
@@ -4473,6 +4476,8 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // Initialize tracing before argument parsing to capture any parsing errors.
+    // Verbosity is controlled via RUST_LOG env var (e.g., RUST_LOG=debug).
     init_tracing();
 
     let args = Args::parse();

@@ -19,6 +19,14 @@ use polars::prelude::*;
 /// and processed in a dataset. EdgeFirst Studio supports various modalities
 /// including visual images and different forms of LiDAR and radar data.
 ///
+/// # String Representations
+///
+/// This enum has two string representations:
+/// - **Display** (`fmt::Display`): Returns the server API type name (e.g., `"lidar.depth"`)
+///   used when making API requests to EdgeFirst Studio.
+/// - **file_extension()**: Returns the file extension for saving (e.g., `"lidar.png"`)
+///   which may differ from the API type name.
+///
 /// # Examples
 ///
 /// ```rust

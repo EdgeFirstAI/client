@@ -4059,9 +4059,10 @@ impl Client {
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 // Exponential backoff with jitter: base delay * 2^attempt, capped at 30s
-                // Jitter: randomize between 75%-125% of base delay to avoid thundering herd
+                // Jitter: randomize between 100%-150% of base delay to avoid thundering herd
+                // while ensuring we never retry faster than the base delay
                 let base_delay_secs = (1u64 << (attempt - 1).min(5)).min(30);
-                let jitter_factor = 0.75 + (rand::random::<f64>() * 0.5); // 0.75 to 1.25
+                let jitter_factor = 1.0 + (rand::random::<f64>() * 0.5); // 1.0 to 1.5
                 let delay_ms = (base_delay_secs as f64 * 1000.0 * jitter_factor) as u64;
                 let delay = Duration::from_millis(delay_ms);
                 warn!(
@@ -4537,7 +4538,9 @@ async fn upload_part_streaming(
             if let Some(ref progress) = progress {
                 let current = confirmed_bytes.load(Ordering::SeqCst)
                     + part_bytes.iter().map(|p| p.load(Ordering::SeqCst)).sum::<usize>();
-                // Use blocking send in map - we'll convert to async-safe below
+                // Best-effort progress reporting: use try_send to avoid blocking.
+                // If the channel is full or closed, we intentionally skip this update
+                // to avoid stalling the upload; subsequent updates will still be delivered.
                 let _ = progress.try_send(Progress {
                     current,
                     total,
