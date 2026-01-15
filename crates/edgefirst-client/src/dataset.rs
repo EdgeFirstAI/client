@@ -487,8 +487,11 @@ pub struct Sample {
     /// Camera location and pose (GPS + IMU data).
     /// Location data is extracted from the "sensors" field during
     /// deserialization. When uploading samples, this field is serialized
-    /// directly.
-    #[serde(skip_serializing_if = "Option::is_none", skip)]
+    /// as "sensors" to match the samples.populate2 API format.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename(serialize = "sensors")
+    )]
     pub location: Option<Location>,
     /// Image degradation type (blur, occlusion, weather, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
