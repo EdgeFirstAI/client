@@ -1992,7 +1992,20 @@ impl Dataset {
     ///     groups: Filter by sample groups (e.g., ["train", "val"])
     ///     types: File types to download (default: [FileType.Image])
     ///     flatten: If True, download all files to a flat directory structure
-    ///     progress: Optional callback function(current, total) for progress
+    ///     progress: Optional callback for download progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     This operation has two phases with distinct progress reporting:
+    ///
+    ///     1. **Fetching metadata** (status=None): Retrieves sample information
+    ///        from the server. Progress counts samples fetched.
+    ///     2. **Downloading files** (status="Downloading"): Downloads actual
+    ///        files to disk. Progress counts samples completed.
+    ///
+    ///     Applications should detect the status change to reset their progress
+    ///     bar for the second phase.
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.download_dataset(dataset.id, ...)` instead.
@@ -2095,11 +2108,17 @@ impl Dataset {
     /// reference
     ///
     /// Args:
-    ///     annotation_set_id: Optional annotation set to include annotations
-    /// from     annotation_types: Filter by annotation types
+    ///     annotation_set_id: Optional annotation set to include annotations from
+    ///     annotation_types: Filter by annotation types
     ///     groups: Filter by sample groups (e.g., ["train", "val"])
     ///     types: File types to include (default: [FileType.Image])
-    ///     progress: Optional callback function(current, total) for progress
+    ///     progress: Optional callback for fetch progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as samples are fetched from the server
+    ///     in paginated batches. Progress unit is samples fetched.
     ///
     /// Returns:
     ///     List of Sample objects
@@ -2178,9 +2197,12 @@ impl Dataset {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -2492,7 +2514,14 @@ impl AnnotationSet {
     /// Args:
     ///     groups: List of dataset groups (train, val, test)
     ///     annotation_types: List of annotation types to filter
-    ///     progress: Optional progress callback
+    ///     progress: Optional callback for fetch progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as samples are fetched and processed
+    ///     for their annotations. Progress unit is samples processed (not individual
+    ///     annotations).
     ///
     /// Returns:
     ///     List[Annotation]: Annotations in this set
@@ -2544,9 +2573,12 @@ impl AnnotationSet {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4509,6 +4541,23 @@ impl Client {
         Ok(AnnotationSet::with_client(inner, Arc::new(self.0.clone())))
     }
 
+    /// Get annotations from an annotation set.
+    ///
+    /// Args:
+    ///     annotation_set_id: ID of the annotation set
+    ///     groups: List of dataset groups (train, val, test)
+    ///     annotation_types: List of annotation types to filter
+    ///     progress: Optional callback for fetch progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as samples are fetched and processed
+    ///     for their annotations. Progress unit is samples processed (not individual
+    ///     annotations).
+    ///
+    /// Returns:
+    ///     List of Annotation objects
     #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None))]
     pub fn annotations<'py>(
         &self,
@@ -4538,9 +4587,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4598,9 +4650,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4621,7 +4676,13 @@ impl Client {
     ///     annotation_set_id: Optional annotation set filter
     ///     groups: List of dataset groups (train, val, test)
     ///     annotation_types: List of annotation types (bbox, box3d, mask)
-    ///     progress: Optional progress callback
+    ///     progress: Optional callback for fetch progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as samples are fetched from the server
+    ///     in paginated batches. Progress unit is samples fetched.
     ///
     /// Returns:
     ///     Polars DataFrame with 13 columns (2025.10 schema)
@@ -4674,9 +4735,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4745,6 +4809,24 @@ impl Client {
         ))
     }
 
+    /// Get samples from a dataset with optional annotations.
+    ///
+    /// Args:
+    ///     dataset_id: Dataset identifier
+    ///     annotation_set_id: Optional annotation set to include annotations from
+    ///     annotation_types: Filter by annotation types
+    ///     groups: Filter by sample groups (e.g., ["train", "val"])
+    ///     types: File types to include (default: [FileType.Image])
+    ///     progress: Optional callback for fetch progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as samples are fetched from the server
+    ///     in paginated batches. Progress unit is samples fetched.
+    ///
+    /// Returns:
+    ///     List of Sample objects
     #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None))]
     pub fn samples<'py>(
         &self,
@@ -4801,9 +4883,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -4838,17 +4923,23 @@ impl Client {
     /// Args:
     ///     dataset_id: ID of the dataset to populate
     ///     annotation_set_id: ID of the annotation set for sample annotations
-    ///     samples: List of Sample objects to create (with files and
-    /// annotations)     progress: Optional callback function(current,
-    /// total) for upload progress
+    ///     samples: List of Sample objects to create (with files and annotations)
+    ///     progress: Optional callback for upload progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as each sample's files are uploaded.
+    ///     Progress unit is samples (not individual files). Each sample may contain
+    ///     multiple files (image, lidar, radar, etc.) which are all uploaded before
+    ///     the sample is counted as complete.
     ///
     /// Returns:
     ///     List of SamplesPopulateResult objects with UUIDs and presigned URLs
     ///
     /// Example:
     ///     ```python
-    ///     from edgefirst_client import Client, Sample, SampleFile, Annotation,
-    /// Box2d
+    ///     from edgefirst_client import Client, Sample, SampleFile, Annotation, Box2d
     ///
     ///     client = Client()
     ///     sample = Sample()
@@ -4860,12 +4951,19 @@ impl Client {
     ///     annotation.set_box2d(Box2d(10.0, 20.0, 100.0, 50.0))
     ///     sample.add_annotation(annotation)
     ///
+    ///     # 2-arg callback (backwards compatible)
     ///     results = client.populate_samples(
     ///         dataset_id,
     ///         annotation_set_id,
     ///         [sample],
     ///         lambda curr, total: print(f"{curr}/{total}")
     ///     )
+    ///
+    ///     # 3-arg callback (with status message)
+    ///     def progress(curr, total, status):
+    ///         msg = f" - {status}" if status else ""
+    ///         print(f"{curr}/{total}{msg}")
+    ///     results = client.populate_samples(dataset_id, ann_set_id, [sample], progress)
     ///     ```
     #[pyo3(signature = (dataset_id, annotation_set_id, samples, progress = None))]
     pub fn populate_samples<'py>(
@@ -4894,9 +4992,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -5191,6 +5292,20 @@ impl Client {
             .collect())
     }
 
+    /// Download a training artifact (exported model) to a local file.
+    ///
+    /// Args:
+    ///     training_session_id: ID of the training session
+    ///     modelname: Name of the model artifact to download
+    ///     filename: Optional local filename (defaults to modelname)
+    ///     progress: Optional callback for download progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as file data is received. Progress unit
+    ///     is bytes downloaded. Total is determined from the HTTP Content-Length
+    ///     header (may be 0 if server doesn't provide it).
     #[pyo3(signature = (training_session_id, modelname, filename = None, progress = None))]
     pub fn download_artifact<'py>(
         &self,
@@ -5218,9 +5333,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -5232,6 +5350,20 @@ impl Client {
         }
     }
 
+    /// Download a training checkpoint to a local file.
+    ///
+    /// Args:
+    ///     training_session_id: ID of the training session
+    ///     checkpoint: Name of the checkpoint to download
+    ///     filename: Optional local filename (defaults to checkpoint name)
+    ///     progress: Optional callback for download progress. Supports two signatures:
+    ///         - `callback(current, total)` - basic progress (backwards compatible)
+    ///         - `callback(current, total, status)` - with status message (v2.8.0+)
+    ///
+    /// Progress:
+    ///     Reports progress with status=None as file data is received. Progress unit
+    ///     is bytes downloaded. Total is determined from the HTTP Content-Length
+    ///     header (may be 0 if server doesn't provide it).
     #[pyo3(signature = (training_session_id, checkpoint, filename = None, progress = None))]
     pub fn download_checkpoint<'py>(
         &self,
@@ -5259,9 +5391,12 @@ impl Client {
 
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable and accept a tuple of (current, total) progress.");
+                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                        if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
                     });
                 }
 
@@ -6048,9 +6183,12 @@ pub fn coco_to_arrow(
 
             while let Some(status) = rx.blocking_recv() {
                 Python::attach(|py| {
-                    progress
-                        .call1(py, (status.current, status.total))
-                        .expect("Progress callback should be callable");
+                    // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                    if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    }
                 });
             }
 
@@ -6110,9 +6248,12 @@ pub fn arrow_to_coco(
 
             while let Some(status) = rx.blocking_recv() {
                 Python::attach(|py| {
-                    progress
-                        .call1(py, (status.current, status.total))
-                        .expect("Progress callback should be callable");
+                    // Try 3-arg callback first (current, total, status), fall back to 2-arg for backwards compatibility
+                    if progress.call1(py, (status.current, status.total, status.status.clone())).is_err() {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    }
                 });
             }
 

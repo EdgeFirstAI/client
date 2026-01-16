@@ -166,7 +166,37 @@ fn sanitize_path_component(name: &str) -> String {
 /// count, and an optional status string to enable progress reporting in
 /// applications.
 ///
+/// # Multi-Stage Progress
+///
+/// The `status` field enables multi-stage progress tracking. When an operation
+/// has multiple phases, the status field changes to indicate the current phase.
+/// Applications should detect status changes to reset their progress display.
+///
+/// # Operation Progress Details
+///
+/// | Operation | Status | Unit | Notes |
+/// |-----------|--------|------|-------|
+/// | [`download_dataset`] | `None` then `"Downloading"` | samples | Two phases: fetch metadata, then download files |
+/// | [`populate_samples`] | `None` | samples | Each sample may contain multiple files |
+/// | [`samples`] | `None` | samples | Paginated API fetch |
+/// | [`sample_names`] | `None` | samples | Paginated API fetch, names only |
+/// | [`annotations`] | `None` | samples | Samples processed for annotations |
+/// | [`download_artifact`] | `None` | bytes | Single file byte-level progress |
+/// | [`download_checkpoint`] | `None` | bytes | Single file byte-level progress |
+/// | [`download_snapshot`] | `None` | bytes | Combined byte progress across all files |
+///
+/// [`download_dataset`]: Client::download_dataset
+/// [`populate_samples`]: Client::populate_samples
+/// [`samples`]: Client::samples
+/// [`sample_names`]: Client::sample_names
+/// [`annotations`]: Client::annotations
+/// [`download_artifact`]: Client::download_artifact
+/// [`download_checkpoint`]: Client::download_checkpoint
+/// [`download_snapshot`]: Client::download_snapshot
+///
 /// # Examples
+///
+/// Basic progress display:
 ///
 /// ```rust
 /// use edgefirst_client::Progress;
@@ -185,14 +215,42 @@ fn sanitize_path_component(name: &str) -> String {
 ///     progress.total
 /// );
 /// ```
+///
+/// Multi-stage progress handling (e.g., for `download_dataset`):
+///
+/// ```rust,ignore
+/// let mut last_status: Option<String> = None;
+///
+/// while let Some(progress) = rx.recv().await {
+///     // Detect stage change and reset progress bar
+///     if progress.status != last_status {
+///         if let Some(ref status) = progress.status {
+///             println!("\n{}", status);
+///         }
+///         last_status = progress.status.clone();
+///     }
+///
+///     let pct = (progress.current as f64 / progress.total as f64) * 100.0;
+///     print!("\r{:.1}% ({}/{})", pct, progress.current, progress.total);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Progress {
-    /// Current number of completed items.
+    /// Current number of completed items or bytes.
     pub current: usize,
-    /// Total number of items to process.
+    /// Total number of items or bytes to process.
     pub total: usize,
     /// Optional status describing the current operation phase.
-    /// Examples: "Fetching samples", "Downloading", "Uploading"
+    ///
+    /// When this value changes from `None` to `Some(...)` or between different
+    /// values, it indicates a new phase has started. Applications should reset
+    /// their progress display when the status changes.
+    ///
+    /// Currently only [`Client::download_dataset`] uses status changes:
+    /// - Phase 1: `None` while fetching sample metadata
+    /// - Phase 2: `"Downloading"` while downloading files
+    ///
+    /// All other operations use `None` throughout.
     pub status: Option<String>,
 }
 
@@ -1416,6 +1474,19 @@ impl Client {
     ///   `{sequence_name}_`, to avoid conflicts between sequences.
     /// * `progress` - Optional channel for progress updates
     ///
+    /// # Progress
+    ///
+    /// This operation has two phases with distinct progress reporting:
+    ///
+    /// 1. **Fetching metadata** (`status: None`): Retrieves sample information
+    ///    from the server. Progress counts samples fetched.
+    /// 2. **Downloading files** (`status: "Downloading"`): Downloads actual
+    ///    files to disk. Progress counts samples completed (each sample may
+    ///    have multiple files for different sensor types).
+    ///
+    /// Applications should detect the status change from `None` to `"Downloading"`
+    /// to reset their progress bar for the second phase.
+    ///
     /// # Returns
     ///
     /// Returns `Ok(())` on success or an error if download fails.
@@ -1746,6 +1817,12 @@ impl Client {
     /// The result is a vector of Annotations objects which contain the
     /// full dataset along with the annotations for the specified types.
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched and processed
+    /// for their annotations. Progress unit is samples processed (not individual
+    /// annotations).
+    ///
     /// To get the annotations as a DataFrame, use the `annotations_dataframe`
     /// method instead.
     pub async fn annotations(
@@ -2008,6 +2085,25 @@ impl Client {
         self.rpc("samples.count".to_owned(), Some(params)).await
     }
 
+    /// Fetches samples from a dataset with optional annotation and file type filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to fetch samples from
+    /// * `annotation_set_id` - Optional annotation set to include annotations from
+    /// * `annotation_types` - Filter by annotation types (box2d, box3d, mask)
+    /// * `groups` - Filter by sample groups (e.g., "train", "val", "test")
+    /// * `types` - File types to include metadata for
+    /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched from the server
+    /// in paginated batches. Progress unit is samples fetched.
+    ///
+    /// # Returns
+    ///
+    /// Vector of [`Sample`] objects with metadata and optionally annotations.
     #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn samples(
         &self,
@@ -2057,11 +2153,18 @@ impl Client {
     /// without loading full annotation data.
     ///
     /// # Arguments
+    ///
     /// * `dataset_id` - The dataset to query
     /// * `groups` - Optional group filter (empty = all groups)
     /// * `progress` - Optional progress channel
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as sample names are fetched from the
+    /// server in paginated batches. Progress unit is samples fetched.
+    ///
     /// # Returns
+    ///
     /// A HashSet of sample names (image_name field) that exist in the dataset.
     pub async fn sample_names(
         &self,
@@ -2248,6 +2351,14 @@ impl Client {
     ///   references. For files, use the full local path - it will be uploaded
     ///   automatically. UUIDs and image dimensions will be
     ///   auto-generated/extracted if not provided.
+    /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as each sample's files are uploaded.
+    /// Progress unit is samples (not individual files). Each sample may contain
+    /// multiple files (image, lidar, radar, etc.) which are all uploaded before
+    /// the sample is counted as complete.
     ///
     /// # Returns
     ///
@@ -2624,6 +2735,12 @@ impl Client {
     /// * `types` - Annotation types to filter (bbox, box3d, mask)
     /// * `progress` - Optional progress callback
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched from the server
+    /// in paginated batches. Progress unit is samples fetched. This method delegates
+    /// to [`samples()`](Self::samples) and shares its progress behavior.
+    ///
     /// # Example
     ///
     /// ```rust,no_run
@@ -2717,6 +2834,12 @@ impl Client {
     /// * `path` - Local file path to MCAP file or directory containing
     ///   EdgeFirst Dataset Format files (Zip/Arrow pairs)
     /// * `progress` - Optional channel to receive upload progress updates
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is uploaded. Progress
+    /// unit is bytes uploaded. For single files, total is the file size. For
+    /// directories, total is the combined size of all files.
     ///
     /// # Returns
     ///
@@ -3354,6 +3477,13 @@ impl Client {
     /// * `output` - Local directory path to save downloaded files
     /// * `progress` - Optional channel to receive download progress updates
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded across all files combined. The total accumulates
+    /// as file sizes become known (from HTTP Content-Length headers), so both
+    /// `current` and `total` may increase during download.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -3684,9 +3814,13 @@ impl Client {
 
     /// Download the model artifact for the specified trainer session to the
     /// specified file path, if path is not provided it will be downloaded to
-    /// the current directory with the same filename.  A progress callback can
-    /// be provided to monitor the progress of the download over a watch
-    /// channel.
+    /// the current directory with the same filename.
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
+    /// header (may be 0 if server doesn't provide it).
     pub async fn download_artifact(
         &self,
         training_session_id: TrainingSessionID,
@@ -3751,13 +3885,17 @@ impl Client {
 
     /// Download the model checkpoint associated with the specified trainer
     /// session to the specified file path, if path is not provided it will be
-    /// downloaded to the current directory with the same filename.  A progress
-    /// callback can be provided to monitor the progress of the download over a
-    /// watch channel.
+    /// downloaded to the current directory with the same filename.
     ///
     /// There is no API for listing checkpoints it is expected that trainers are
     /// aware of possible checkpoints and their names within the checkpoint
     /// folder on the server.
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
+    /// header (may be 0 if server doesn't provide it).
     pub async fn download_checkpoint(
         &self,
         training_session_id: TrainingSessionID,
