@@ -4478,10 +4478,9 @@ fn init_tracing() {
 async fn main() -> Result<(), Error> {
     // Initialize tracing before argument parsing to capture any parsing errors.
     // Verbosity is controlled via RUST_LOG env var (e.g., RUST_LOG=debug).
-    init_tracing();
-
     let args = Args::parse();
 
+    init_tracing();
     // Handle version command early - no authentication needed
     if args.cmd == Command::Version {
         let client = Client::new()?.with_token_path(None)?;
