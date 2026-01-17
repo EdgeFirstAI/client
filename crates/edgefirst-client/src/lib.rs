@@ -59,7 +59,7 @@ pub mod coco;
 mod dataset;
 mod error;
 pub mod format;
-#[cfg(feature = "tracy")]
+#[cfg(feature = "profiling")]
 pub mod instrument;
 mod retry;
 mod storage;

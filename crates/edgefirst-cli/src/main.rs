@@ -32,6 +32,15 @@ struct Args {
     #[clap(long, env = "STUDIO_TOKEN")]
     token: Option<String>,
 
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[clap(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Write trace output to file (Perfetto/CTF-compatible JSON format).
+    /// Requires build with --features trace-file.
+    #[clap(long, global = true, env = "TRACE_FILE")]
+    trace_file: Option<PathBuf>,
+
     /// Client Command
     #[command(subcommand)]
     cmd: Command,
@@ -4433,54 +4442,166 @@ async fn handle_export_coco(
 /// When the `tracy` feature is enabled:
 /// - Uses `tracing` crate with a fmt layer for console output
 /// - Adds TracyLayer when `TRACY_ENABLE=1` environment variable is set
+/// - Adds ChromeLayer when `--trace-file` argument or `TRACE_FILE` env is set
 ///
-/// When `tracy` feature is disabled:
+/// When `profiling` feature is disabled:
 /// - Falls back to standard `env_logger` for minimal overhead
-fn init_tracing() {
+///
+/// Returns a guard that must be held until program exit to ensure trace files are flushed.
+#[cfg(all(feature = "profiling", feature = "trace-file"))]
+fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
+    use tracing_subscriber::prelude::*;
+
+    // Determine log level from verbosity flag
+    let default_level = match args.verbose {
+        0 => tracing::level_filters::LevelFilter::INFO,
+        1 => tracing::level_filters::LevelFilter::DEBUG,
+        _ => tracing::level_filters::LevelFilter::TRACE,
+    };
+
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .from_env_lossy();
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(filter);
+
+    let mut chrome_guard = None;
+
+    // Check for Tracy profiling
     #[cfg(feature = "tracy")]
-    {
-        use tracing_subscriber::prelude::*;
+    let tracy_enabled = std::env::var("TRACY_ENABLE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    #[cfg(not(feature = "tracy"))]
+    let tracy_enabled = false;
 
-        let tracy_enabled = std::env::var("TRACY_ENABLE")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+    // Check for trace file output
+    let trace_path = args.trace_file.clone();
 
-        let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_filter(filter);
-
-        if tracy_enabled {
-            // Start Tracy client for profiling
+    // Build subscriber with enabled layers
+    match (tracy_enabled, trace_path) {
+        #[cfg(feature = "tracy")]
+        (true, Some(path)) => {
+            // Both Tracy and trace file enabled
             let _client = tracy_client::Client::start();
+            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                .file(path.clone())
+                .include_args(true)
+                .build();
+            chrome_guard = Some(guard);
 
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(tracing_tracy::TracyLayer::default())
+                .with(chrome_layer)
+                .init();
+
+            eprintln!("Tracy profiling enabled");
+            eprintln!("Trace output: {}", path.display());
+        }
+        #[cfg(feature = "tracy")]
+        (true, None) => {
+            // Tracy only
+            let _client = tracy_client::Client::start();
             tracing_subscriber::registry()
                 .with(fmt_layer)
                 .with(tracing_tracy::TracyLayer::default())
                 .init();
 
-            tracing::info!("Tracy profiling enabled");
-        } else {
+            eprintln!("Tracy profiling enabled");
+        }
+        (false, Some(path)) => {
+            // Trace file only
+            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                .file(path.clone())
+                .include_args(true)
+                .build();
+            chrome_guard = Some(guard);
+
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(chrome_layer)
+                .init();
+
+            eprintln!("Trace output: {}", path.display());
+        }
+        _ => {
+            // No profiling backends, just fmt layer
             tracing_subscriber::registry().with(fmt_layer).init();
         }
     }
 
+    chrome_guard
+}
+
+/// Initialize tracing without trace-file support (profiling only, no trace output).
+#[cfg(all(feature = "profiling", not(feature = "trace-file")))]
+fn init_tracing(args: &Args) -> Option<()> {
+    use tracing_subscriber::prelude::*;
+
+    // Determine log level from verbosity flag
+    let default_level = match args.verbose {
+        0 => tracing::level_filters::LevelFilter::INFO,
+        1 => tracing::level_filters::LevelFilter::DEBUG,
+        _ => tracing::level_filters::LevelFilter::TRACE,
+    };
+
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .from_env_lossy();
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(filter);
+
+    // Check for Tracy profiling
+    #[cfg(feature = "tracy")]
+    let tracy_enabled = std::env::var("TRACY_ENABLE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
     #[cfg(not(feature = "tracy"))]
-    {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let tracy_enabled = false;
+
+    if tracy_enabled {
+        #[cfg(feature = "tracy")]
+        {
+            let _client = tracy_client::Client::start();
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(tracing_tracy::TracyLayer::default())
+                .init();
+            eprintln!("Tracy profiling enabled");
+        }
+    } else {
+        tracing_subscriber::registry().with(fmt_layer).init();
     }
+
+    None
+}
+
+#[cfg(not(feature = "profiling"))]
+fn init_tracing(args: &Args) -> Option<()> {
+    let log_level = match args.verbose {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+
+    None
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Initialize tracing before argument parsing to capture any parsing errors.
-    // Verbosity is controlled via RUST_LOG env var (e.g., RUST_LOG=debug).
-    init_tracing();
-
+    // Parse arguments first so verbosity and trace file can be configured
     let args = Args::parse();
+
+    // Initialize tracing/logging after parsing args
+    // Keep the guard alive until program exit to ensure trace files are flushed
+    let _trace_guard = init_tracing(&args);
 
     // Handle version command early - no authentication needed
     if args.cmd == Command::Version {

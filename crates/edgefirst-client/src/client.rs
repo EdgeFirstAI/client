@@ -749,6 +749,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, password)))]
     pub async fn with_login(&self, username: &str, password: &str) -> Result<Self, Error> {
         let params = HashMap::from([("username", username), ("password", password)]);
         let login: LoginResult = self
@@ -902,6 +903,7 @@ impl Client {
     ///
     /// If using the legacy `token_path` configuration, saves to the file path.
     /// If using the new storage abstraction, saves to the configured storage.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn save_token(&self) -> Result<(), Error> {
         let token = self.token.read().await;
 
@@ -935,6 +937,7 @@ impl Client {
 
     /// Return the version of the EdgeFirst Studio server for the current
     /// client connection.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn version(&self) -> Result<String, Error> {
         let version: HashMap<String, String> = self
             .rpc_without_auth::<(), HashMap<String, String>>("version".to_owned(), None)
@@ -947,6 +950,7 @@ impl Client {
     ///
     /// Clears the token from memory and from storage (if configured).
     /// If using the legacy `token_path` configuration, removes the token file.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn logout(&self) -> Result<(), Error> {
         {
             let mut token = self.token.write().await;
@@ -973,6 +977,7 @@ impl Client {
     /// Return the token used to authenticate the client with the server.  When
     /// logging into the server using a username and password, the token is
     /// returned by the server and stored in the client for future interactions.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn token(&self) -> String {
         self.token.read().await.clone()
     }
@@ -981,6 +986,7 @@ impl Client {
     /// method is used to ensure that the token is still valid and has not
     /// expired.  If the token is invalid, the server will return an error and
     /// the client will need to login again.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn verify_token(&self) -> Result<(), Error> {
         self.rpc::<(), LoginResult>("auth.verify_token".to_owned(), None)
             .await?;
@@ -993,6 +999,7 @@ impl Client {
     /// the server will return an error and you will need to login again.
     ///
     /// The new token is automatically persisted to storage (if configured).
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn renew_token(&self) -> Result<(), Error> {
         let params = HashMap::from([("username".to_string(), self.username().await?)]);
         let result: LoginResult = self
@@ -1077,6 +1084,7 @@ impl Client {
     }
 
     /// Returns the username associated with the current token.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn username(&self) -> Result<String, Error> {
         match self.token_field("username").await? {
             serde_json::Value::String(username) => Ok(username),
@@ -1085,6 +1093,7 @@ impl Client {
     }
 
     /// Returns the expiration time for the current token.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn token_expiration(&self) -> Result<DateTime<Utc>, Error> {
         let ts = match self.token_field("exp").await? {
             serde_json::Value::Number(exp) => exp.as_i64().ok_or(Error::InvalidToken)?,
@@ -1098,6 +1107,7 @@ impl Client {
     }
 
     /// Returns the organization information for the current user.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn organization(&self) -> Result<Organization, Error> {
         self.rpc::<(), Organization>("org.get".to_owned(), None)
             .await
@@ -1114,6 +1124,7 @@ impl Client {
     /// Projects are the top-level organizational unit in EdgeFirst Studio.
     /// Projects contain datasets, trainers, and trainer sessions.  Projects
     /// are used to group related datasets and trainers together.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn projects(&self, name: Option<&str>) -> Result<Vec<Project>, Error> {
         let projects = self
             .rpc::<(), Vec<Project>>("project.list".to_owned(), None)
@@ -1127,6 +1138,7 @@ impl Client {
 
     /// Return the project with the specified project ID.  If the project does
     /// not exist, an error is returned.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(project_id = %project_id)))]
     pub async fn project(&self, project_id: ProjectID) -> Result<Project, Error> {
         let params = HashMap::from([("project_id", project_id)]);
         self.rpc("project.get".to_owned(), Some(params)).await
@@ -1140,6 +1152,7 @@ impl Client {
     /// case-insensitive exact matches, then shorter names (more specific),
     /// then alphabetically. This ensures "Deer" returns before "Deer
     /// Roundtrip".
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn datasets(
         &self,
         project_id: ProjectID,
@@ -1156,18 +1169,21 @@ impl Client {
 
     /// Return the dataset with the specified dataset ID.  If the dataset does
     /// not exist, an error is returned.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn dataset(&self, dataset_id: DatasetID) -> Result<Dataset, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);
         self.rpc("dataset.get".to_owned(), Some(params)).await
     }
 
     /// Lists the labels for the specified dataset.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn labels(&self, dataset_id: DatasetID) -> Result<Vec<Label>, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);
         self.rpc("label.list".to_owned(), Some(params)).await
     }
 
     /// Add a new label to the dataset with the specified name.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn add_label(&self, dataset_id: DatasetID, name: &str) -> Result<(), Error> {
         let new_label = NewLabel {
             dataset_id,
@@ -1181,6 +1197,7 @@ impl Client {
 
     /// Removes the label with the specified ID from the dataset.  Label IDs are
     /// globally unique so the dataset_id is not required.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn remove_label(&self, label_id: u64) -> Result<(), Error> {
         let params = HashMap::from([("label_id", label_id)]);
         let _: String = self.rpc("label.del".to_owned(), Some(params)).await?;
@@ -1198,6 +1215,7 @@ impl Client {
     /// # Returns
     ///
     /// Returns the dataset ID of the newly created dataset.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn create_dataset(
         &self,
         project_id: &str,
@@ -1230,6 +1248,7 @@ impl Client {
     /// # Returns
     ///
     /// Returns `Ok(())` if the dataset was successfully marked as deleted.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn delete_dataset(&self, dataset_id: DatasetID) -> Result<(), Error> {
         let params = HashMap::from([("id", dataset_id)]);
         let _: String = self.rpc("dataset.delete".to_owned(), Some(params)).await?;
@@ -1239,6 +1258,7 @@ impl Client {
     /// Updates the label with the specified ID to have the new name or index.
     /// Label IDs cannot be changed.  Label IDs are globally unique so the
     /// dataset_id is not required.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, label)))]
     pub async fn update_label(&self, label: &Label) -> Result<(), Error> {
         #[derive(Serialize)]
         struct Params {
@@ -1296,6 +1316,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn groups(&self, dataset_id: DatasetID) -> Result<Vec<Group>, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);
         self.rpc("groups.list".to_owned(), Some(params)).await
@@ -1348,6 +1369,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn get_or_create_group(
         &self,
         dataset_id: DatasetID,
@@ -1431,6 +1453,7 @@ impl Client {
     /// ```
     ///
     /// [`get_or_create_group`]: Self::get_or_create_group
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn set_sample_group_id(
         &self,
         sample_id: SampleID,
@@ -1537,7 +1560,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn download_dataset(
         &self,
         dataset_id: DatasetID,
@@ -1725,6 +1748,7 @@ impl Client {
     }
 
     /// List available annotation sets for the specified dataset.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn annotation_sets(
         &self,
         dataset_id: DatasetID,
@@ -1744,6 +1768,7 @@ impl Client {
     /// # Returns
     ///
     /// Returns the annotation set ID of the newly created annotation set.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn create_annotation_set(
         &self,
         dataset_id: DatasetID,
@@ -1789,6 +1814,7 @@ impl Client {
     ///
     /// Returns `Ok(())` if the annotation set was successfully marked as
     /// deleted.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn delete_annotation_set(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -1799,6 +1825,7 @@ impl Client {
     }
 
     /// Retrieve the annotation set with the specified ID.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn annotation_set(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -1825,6 +1852,7 @@ impl Client {
     ///
     /// To get the annotations as a DataFrame, use the `annotations_dataframe`
     /// method instead.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn annotations(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -1977,6 +2005,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotation_types, sample_ids), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn delete_annotations_bulk(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -2010,7 +2039,7 @@ impl Client {
     ///
     /// # Returns
     /// Vector of created annotation records from the server.
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, annotations), fields(annotation_count = annotations.len())))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotations), fields(annotation_count = annotations.len())))]
     pub async fn add_annotations_bulk(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -2059,6 +2088,7 @@ impl Client {
         }
     }
 
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn samples_count(
         &self,
         dataset_id: DatasetID,
@@ -2104,7 +2134,7 @@ impl Client {
     /// # Returns
     ///
     /// Vector of [`Sample`] objects with metadata and optionally annotations.
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn samples(
         &self,
         dataset_id: DatasetID,
@@ -2166,6 +2196,7 @@ impl Client {
     /// # Returns
     ///
     /// A HashSet of sample names (image_name field) that exist in the dataset.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn sample_names(
         &self,
         dataset_id: DatasetID,
@@ -2408,7 +2439,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples(
         &self,
         dataset_id: DatasetID,
@@ -2432,7 +2463,7 @@ impl Client {
     /// specifying the maximum number of concurrent file uploads. Use this
     /// for bulk imports where higher concurrency can significantly reduce
     /// upload time.
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples_with_concurrency(
         &self,
         dataset_id: DatasetID,
@@ -2640,6 +2671,7 @@ impl Client {
         .await
     }
 
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
         // Validate URL is absolute (has scheme) to avoid RelativeUrlWithoutBase error
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -2704,6 +2736,7 @@ impl Client {
         note = "Use `samples_dataframe()` for complete 2025.10 schema support"
     )]
     #[cfg(feature = "polars")]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn annotations_dataframe(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -2764,6 +2797,7 @@ impl Client {
     /// # }
     /// ```
     #[cfg(feature = "polars")]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn samples_dataframe(
         &self,
         dataset_id: DatasetID,
@@ -2786,6 +2820,7 @@ impl Client {
     /// Results are sorted by match quality: exact matches first, then
     /// case-insensitive exact matches, then shorter descriptions (more
     /// specific), then alphabetically.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn snapshots(&self, name: Option<&str>) -> Result<Vec<Snapshot>, Error> {
         let snapshots: Vec<Snapshot> = self
             .rpc::<(), Vec<Snapshot>>("snapshots.list".to_owned(), None)
@@ -2800,6 +2835,7 @@ impl Client {
     }
 
     /// Get the snapshot with the specified id.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(snapshot_id = %snapshot_id)))]
     pub async fn snapshot(&self, snapshot_id: SnapshotID) -> Result<Snapshot, Error> {
         let params = HashMap::from([("snapshot_id", snapshot_id)]);
         self.rpc("snapshots.get".to_owned(), Some(params)).await
@@ -2898,7 +2934,7 @@ impl Client {
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     /// * [Snapshots Guide](https://doc.edgefirst.ai/latest/studio/snapshots/)
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn create_snapshot(
         &self,
         path: &str,
@@ -3167,6 +3203,7 @@ impl Client {
     ///
     /// * [`create_snapshot`](Self::create_snapshot) - Upload single file or folder
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to dataset
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn create_snapshot_edgefirst_format(
         &self,
         arrow_path: &str,
@@ -3366,6 +3403,7 @@ impl Client {
     ///
     /// * [`create_snapshot`](Self::create_snapshot) - Upload snapshot
     /// * [`snapshots`](Self::snapshots) - List all snapshots
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(snapshot_id = %snapshot_id)))]
     pub async fn delete_snapshot(&self, snapshot_id: SnapshotID) -> Result<(), Error> {
         let params = HashMap::from([("snapshot_id", snapshot_id)]);
         let _: String = self
@@ -3430,6 +3468,7 @@ impl Client {
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
     ///   dataset
     /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn create_snapshot_from_dataset(
         &self,
         dataset_id: DatasetID,
@@ -3531,7 +3570,7 @@ impl Client {
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
     ///   dataset
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn download_snapshot(
         &self,
         snapshot_id: SnapshotID,
@@ -3683,7 +3722,7 @@ impl Client {
     /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     #[allow(clippy::too_many_arguments)]
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn restore_snapshot(
         &self,
         project_id: ProjectID,
@@ -3720,6 +3759,7 @@ impl Client {
     /// sessions together and are akin to an Experiment in MLFlow terminology.  
     /// Each experiment can have multiple trainer sessions associated with it,
     /// these would be akin to runs in MLFlow terminology.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn experiments(
         &self,
         project_id: ProjectID,
@@ -3737,6 +3777,7 @@ impl Client {
 
     /// Return the experiment with the specified experiment ID.  If the
     /// experiment does not exist, an error is returned.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn experiment(&self, experiment_id: ExperimentID) -> Result<Experiment, Error> {
         let params = HashMap::from([("trainer_id", experiment_id)]);
         self.rpc("trainer.get".to_owned(), Some(params)).await
@@ -3754,6 +3795,7 @@ impl Client {
     /// Trainer sessions are akin to runs in MLFlow terminology.  These
     /// represent an actual training session which will produce metrics and
     /// model artifacts.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn training_sessions(
         &self,
         experiment_id: ExperimentID,
@@ -3772,6 +3814,7 @@ impl Client {
 
     /// Return the trainer session with the specified trainer session ID.  If
     /// the trainer session does not exist, an error is returned.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn training_session(
         &self,
         session_id: TrainingSessionID,
@@ -3782,6 +3825,7 @@ impl Client {
     }
 
     /// List validation sessions for the given project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn validation_sessions(
         &self,
         project_id: ProjectID,
@@ -3792,6 +3836,7 @@ impl Client {
     }
 
     /// Retrieve a specific validation session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn validation_session(
         &self,
         session_id: ValidationSessionID,
@@ -3803,6 +3848,7 @@ impl Client {
 
     /// List the artifacts for the specified trainer session.  The artifacts
     /// are returned as a vector of strings.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn artifacts(
         &self,
         training_session_id: TrainingSessionID,
@@ -3821,6 +3867,7 @@ impl Client {
     /// Reports progress with `status: None` as file data is received. Progress
     /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
     /// header (may be 0 if server doesn't provide it).
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(training_session_id = %training_session_id)))]
     pub async fn download_artifact(
         &self,
         training_session_id: TrainingSessionID,
@@ -3896,6 +3943,7 @@ impl Client {
     /// Reports progress with `status: None` as file data is received. Progress
     /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
     /// header (may be 0 if server doesn't provide it).
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(training_session_id = %training_session_id)))]
     pub async fn download_checkpoint(
         &self,
         training_session_id: TrainingSessionID,
@@ -3972,6 +4020,7 @@ impl Client {
     ///   "complete", "error")
     /// * `manager` - Optional filter for task manager type (e.g., "aws",
     ///   "user", "kubernetes")
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn tasks(
         &self,
         name: Option<&str>,
@@ -4012,6 +4061,7 @@ impl Client {
     }
 
     /// Retrieve the task information and status.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(task_id = %task_id)))]
     pub async fn task_info(&self, task_id: TaskID) -> Result<TaskInfo, Error> {
         self.rpc(
             "task.get".to_owned(),
@@ -4021,6 +4071,7 @@ impl Client {
     }
 
     /// Updates the tasks status.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn task_status(&self, task_id: TaskID, status: &str) -> Result<Task, Error> {
         let status = TaskStatus {
             task_id,
@@ -4033,6 +4084,7 @@ impl Client {
     /// Defines the stages for the task.  The stages are defined as a mapping
     /// from stage names to their descriptions.  Once stages are defined their
     /// status can be updated using the update_stage method.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, stages)))]
     pub async fn set_stages(&self, task_id: TaskID, stages: &[(&str, &str)]) -> Result<(), Error> {
         let stages: Vec<HashMap<String, String>> = stages
             .iter()
@@ -4049,6 +4101,7 @@ impl Client {
 
     /// Updates the progress of the task for the provided stage and status
     /// information.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn update_stage(
         &self,
         task_id: TaskID,
@@ -4069,6 +4122,7 @@ impl Client {
     }
 
     /// Raw fetch from the Studio server is used for downloading files.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn fetch(&self, query: &str) -> Result<Vec<u8>, Error> {
         let req = self
             .http
@@ -4094,6 +4148,7 @@ impl Client {
     /// Sends a multipart post request to the server.  This is used by the
     /// upload and download APIs which do not use JSON-RPC but instead transfer
     /// files using multipart/form-data.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, form)))]
     pub async fn post_multipart(&self, method: &str, form: Form) -> Result<String, Error> {
         let req = self
             .http
@@ -4143,7 +4198,7 @@ impl Client {
     ///
     /// NOTE: This API would generally not be called directly and instead users
     /// should use the higher-level methods provided by the client.
-    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, params), fields(method = %method)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method)))]
     pub async fn rpc<Params, RpcResult>(
         &self,
         method: String,
