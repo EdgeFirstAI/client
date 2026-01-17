@@ -10,7 +10,7 @@
 //!
 //! - `profiling` - Base feature enabling tracing spans (no backend)
 //! - `tracy` - Tracy real-time profiler backend (includes `profiling`)
-//! - `trace-file` - Chrome/Perfetto JSON trace file output (includes `profiling`)
+//! - `trace-file` - Trace file output in Chrome JSON (.json) or Perfetto (.pftrace) format
 //!
 //! # Usage
 //!
@@ -37,9 +37,11 @@
 //!
 //! # Trace Output
 //!
-//! When built with `trace-file` feature, traces can be written to JSON files
-//! compatible with [Perfetto UI](https://ui.perfetto.dev/) and convertible to
-//! CTF format using [ctf2ctf](https://github.com/KDABLabs/ctf2ctf).
+//! When built with the `trace-file` feature, traces can be written to files:
+//! - `.json` extension → Chrome JSON format (viewable in Perfetto UI)
+//! - `.pftrace` extension → Native Perfetto format (viewable in Perfetto UI)
+//!
+//! Use `--trace-file path.json` or `--trace-file path.pftrace` to select format.
 
 #[cfg(feature = "profiling")]
 pub use tracing::{

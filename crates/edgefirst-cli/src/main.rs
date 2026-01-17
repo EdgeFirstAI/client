@@ -32,11 +32,18 @@ struct Args {
     #[clap(long, env = "STUDIO_TOKEN")]
     token: Option<String>,
 
+    /// Path to token file (overrides default platform-specific location).
+    /// Useful for testing or running multiple instances with different tokens.
+    #[clap(long, env = "STUDIO_TOKEN_PATH")]
+    token_path: Option<PathBuf>,
+
     /// Increase logging verbosity (-v for debug, -vv for trace)
     #[clap(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
-    /// Write trace output to file (Perfetto/CTF-compatible JSON format).
+    /// Write trace output to file. Format is determined by extension:
+    /// - .json: Chrome JSON format (viewable in Perfetto UI)
+    /// - .pftrace: Native Perfetto format
     /// Requires build with --features trace-file.
     #[clap(long, global = true, env = "TRACE_FILE")]
     trace_file: Option<PathBuf>,
@@ -4437,19 +4444,99 @@ async fn handle_export_coco(
     Ok(())
 }
 
+/// A writer wrapper that outputs Chrome JSON trace format compatible with Perfetto UI.
+///
+/// `tracing-chrome` outputs a raw JSON array `[...]`, but Perfetto prefers
+/// the object format `{"traceEvents": [...]}`. This wrapper adds the required
+/// header and footer.
+#[cfg(feature = "trace-file")]
+struct ChromeJsonWriter {
+    inner: std::fs::File,
+    started: bool,
+}
+
+#[cfg(feature = "trace-file")]
+impl ChromeJsonWriter {
+    fn new(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: std::fs::File::create(path)?,
+            started: false,
+        })
+    }
+}
+
+#[cfg(feature = "trace-file")]
+impl std::io::Write for ChromeJsonWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.started {
+            // tracing-chrome starts with "[\n", we prepend the wrapper
+            std::io::Write::write_all(&mut self.inner, b"{\"traceEvents\":")?;
+            self.started = true;
+        }
+        std::io::Write::write(&mut self.inner, buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.inner)
+    }
+}
+
+#[cfg(feature = "trace-file")]
+impl Drop for ChromeJsonWriter {
+    fn drop(&mut self) {
+        // tracing-chrome ends with "\n]", we append the closing brace
+        let _ = std::io::Write::write_all(&mut self.inner, b"}");
+        let _ = std::io::Write::flush(&mut self.inner);
+    }
+}
+
+/// Trace file format determined by file extension.
+#[cfg(feature = "trace-file")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraceFormat {
+    /// Chrome JSON format (.json) - viewable in Perfetto UI and Chrome tracing
+    ChromeJson,
+    /// Native Perfetto format (.pftrace) - viewable in Perfetto UI
+    Perfetto,
+}
+
+#[cfg(feature = "trace-file")]
+impl TraceFormat {
+    fn from_path(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("pftrace") => TraceFormat::Perfetto,
+            _ => TraceFormat::ChromeJson, // Default to JSON for .json or unknown
+        }
+    }
+}
+
+/// Guard that must be held until program exit to ensure trace files are flushed.
+/// Wraps either Chrome or Perfetto flush guards.
+#[cfg(feature = "trace-file")]
+#[allow(dead_code)] // Fields are intentionally held for RAII, not read
+enum TraceGuard {
+    Chrome(tracing_chrome::FlushGuard),
+    // Perfetto layer doesn't need a guard - it flushes on drop
+    Perfetto,
+}
+
 /// Initialize logging/tracing based on feature flags and runtime configuration.
 ///
 /// When the `tracy` feature is enabled:
 /// - Uses `tracing` crate with a fmt layer for console output
 /// - Adds TracyLayer when `TRACY_ENABLE=1` environment variable is set
-/// - Adds ChromeLayer when `--trace-file` argument or `TRACE_FILE` env is set
+/// - Adds trace layer when `--trace-file` argument or `TRACE_FILE` env is set
+///
+/// Trace file format is determined by extension:
+/// - `.json` → Chrome JSON format (viewable in Perfetto UI and Chrome tracing)
+/// - `.pftrace` → Native Perfetto format (viewable in Perfetto UI)
 ///
 /// When `profiling` feature is disabled:
 /// - Falls back to standard `env_logger` for minimal overhead
 ///
 /// Returns a guard that must be held until program exit to ensure trace files are flushed.
 #[cfg(all(feature = "profiling", feature = "trace-file"))]
-fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
+fn init_tracing(args: &Args) -> Option<TraceGuard> {
     use tracing_subscriber::prelude::*;
 
     // Determine log level from verbosity flag
@@ -4467,8 +4554,6 @@ fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
         .with_target(false)
         .with_filter(filter);
 
-    let mut chrome_guard = None;
-
     // Check for Tracy profiling
     #[cfg(feature = "tracy")]
     let tracy_enabled = std::env::var("TRACY_ENABLE")
@@ -4477,20 +4562,23 @@ fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
     #[cfg(not(feature = "tracy"))]
     let tracy_enabled = false;
 
-    // Check for trace file output
-    let trace_path = args.trace_file.clone();
+    // Check for trace file output and determine format
+    let trace_config = args.trace_file.as_ref().map(|path| {
+        let format = TraceFormat::from_path(path);
+        (path.clone(), format)
+    });
 
-    // Build subscriber with enabled layers
-    match (tracy_enabled, trace_path) {
+    // Build subscriber with enabled layers based on configuration
+    match (tracy_enabled, trace_config) {
         #[cfg(feature = "tracy")]
-        (true, Some(path)) => {
-            // Both Tracy and trace file enabled
+        (true, Some((path, TraceFormat::ChromeJson))) => {
+            // Tracy + Chrome JSON trace file
             let _client = tracy_client::Client::start();
+            let writer = ChromeJsonWriter::new(&path).expect("Failed to create trace file");
             let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                .file(path.clone())
+                .writer(writer)
                 .include_args(true)
                 .build();
-            chrome_guard = Some(guard);
 
             tracing_subscriber::registry()
                 .with(fmt_layer)
@@ -4499,11 +4587,29 @@ fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
                 .init();
 
             eprintln!("Tracy profiling enabled");
-            eprintln!("Trace output: {}", path.display());
+            eprintln!("Trace output (Chrome JSON): {}", path.display());
+            Some(TraceGuard::Chrome(guard))
+        }
+        #[cfg(feature = "tracy")]
+        (true, Some((path, TraceFormat::Perfetto))) => {
+            // Tracy + native Perfetto trace file
+            let _client = tracy_client::Client::start();
+            let file = std::fs::File::create(&path).expect("Failed to create trace file");
+            let perfetto_layer = tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file));
+
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(tracing_tracy::TracyLayer::default())
+                .with(perfetto_layer)
+                .init();
+
+            eprintln!("Tracy profiling enabled");
+            eprintln!("Trace output (Perfetto native): {}", path.display());
+            Some(TraceGuard::Perfetto)
         }
         #[cfg(feature = "tracy")]
         (true, None) => {
-            // Tracy only
+            // Tracy only, no trace file
             let _client = tracy_client::Client::start();
             tracing_subscriber::registry()
                 .with(fmt_layer)
@@ -4511,32 +4617,46 @@ fn init_tracing(args: &Args) -> Option<tracing_chrome::FlushGuard> {
                 .init();
 
             eprintln!("Tracy profiling enabled");
+            None
         }
-        (false, Some(path)) => {
-            // Trace file only
+        (false, Some((path, TraceFormat::ChromeJson))) => {
+            // Chrome JSON trace file only
+            let writer = ChromeJsonWriter::new(&path).expect("Failed to create trace file");
             let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                .file(path.clone())
+                .writer(writer)
                 .include_args(true)
                 .build();
-            chrome_guard = Some(guard);
 
             tracing_subscriber::registry()
                 .with(fmt_layer)
                 .with(chrome_layer)
                 .init();
 
-            eprintln!("Trace output: {}", path.display());
+            eprintln!("Trace output (Chrome JSON): {}", path.display());
+            Some(TraceGuard::Chrome(guard))
+        }
+        (false, Some((path, TraceFormat::Perfetto))) => {
+            // Native Perfetto trace file only
+            let file = std::fs::File::create(&path).expect("Failed to create trace file");
+            let perfetto_layer = tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file));
+
+            tracing_subscriber::registry()
+                .with(fmt_layer)
+                .with(perfetto_layer)
+                .init();
+
+            eprintln!("Trace output (Perfetto native): {}", path.display());
+            Some(TraceGuard::Perfetto)
         }
         _ => {
             // No profiling backends, just fmt layer
             tracing_subscriber::registry().with(fmt_layer).init();
+            None
         }
     }
-
-    chrome_guard
 }
 
-/// Initialize tracing without trace-file support (profiling only, no trace output).
+/// Initialize tracing without trace-file support (profiling only, no file output).
 #[cfg(all(feature = "profiling", not(feature = "trace-file")))]
 fn init_tracing(args: &Args) -> Option<()> {
     use tracing_subscriber::prelude::*;
@@ -4605,7 +4725,7 @@ async fn main() -> Result<(), Error> {
 
     // Handle version command early - no authentication needed
     if args.cmd == Command::Version {
-        let client = Client::new()?.with_token_path(None)?;
+        let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
         let client = match args.server {
             Some(server) => client.with_server(&server)?,
             None => client,
@@ -4661,7 +4781,7 @@ async fn main() -> Result<(), Error> {
     // Handle login command specially - ignore existing token, use --server or
     // default saas
     if args.cmd == Command::Login {
-        let client = Client::new()?.with_token_path(None)?;
+        let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
         // For login, use --server if provided, otherwise default to saas
         let server = args.server.as_deref().unwrap_or("");
         let client = client.with_server(server)?;
@@ -4672,7 +4792,7 @@ async fn main() -> Result<(), Error> {
     // 1. Token's server (from --token or stored token) - highest priority
     // 2. --server override (used with username/password or when no token)
     // 3. Default saas
-    let client = Client::new()?.with_token_path(None)?;
+    let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
 
     // Check if using username/password authentication (will get new token)
     let using_credentials = args.username.is_some() && args.password.is_some();

@@ -820,17 +820,21 @@ impl Client {
                     if let Err(remove_err) = std::fs::remove_file(&token_path) {
                         warn!("Failed to remove corrupted token file: {:?}", remove_err);
                     }
+                    // Clear any token from default storage to ensure we don't use it
                     Ok(Client {
                         token_path: Some(token_path),
                         storage: None,
+                        token: Arc::new(RwLock::new("".to_string())),
                         ..self.clone()
                     })
                 }
             }
         } else {
+            // No token in the legacy file - clear any token from default storage
             Ok(Client {
                 token_path: Some(token_path),
                 storage: None,
+                token: Arc::new(RwLock::new("".to_string())),
                 ..self.clone()
             })
         }
@@ -4240,9 +4244,19 @@ impl Client {
         };
 
         if log_enabled!(Level::Trace) {
+            // Redact sensitive data from log output
+            let log_request = if method == "auth.login" {
+                // Don't log auth.login params (contains password)
+                serde_json::json!({
+                    "method": &method,
+                    "params": "[REDACTED - contains credentials]"
+                })
+            } else {
+                serde_json::to_value(&request)?
+            };
             trace!(
                 "RPC Request: {}",
-                serde_json::ser::to_string_pretty(&request)?
+                serde_json::ser::to_string_pretty(&log_request)?
             );
         }
 
