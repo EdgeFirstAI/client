@@ -32,6 +32,22 @@ struct Args {
     #[clap(long, env = "STUDIO_TOKEN")]
     token: Option<String>,
 
+    /// Path to token file (overrides default platform-specific location).
+    /// Useful for testing or running multiple instances with different tokens.
+    #[clap(long, env = "STUDIO_TOKEN_PATH")]
+    token_path: Option<PathBuf>,
+
+    /// Increase logging verbosity (-v for debug, -vv for trace)
+    #[clap(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Write trace output to file. Format is determined by extension:
+    /// - .json: Chrome JSON format (viewable in Perfetto UI)
+    /// - .pftrace: Native Perfetto format
+    /// Requires build with --features trace-file.
+    #[clap(long, global = true, env = "TRACE_FILE")]
+    trace_file: Option<PathBuf>,
+
     /// Client Command
     #[command(subcommand)]
     cmd: Command,
@@ -2655,7 +2671,7 @@ fn build_samples_from_directory(
 }
 
 #[cfg(feature = "polars")]
-#[cfg_attr(feature = "tracy", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
+#[cfg_attr(feature = "profiling", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
 async fn handle_upload_dataset(
     client: &Client,
     dataset_id: String,
@@ -2670,7 +2686,7 @@ async fn handle_upload_dataset(
         ));
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _resolve_span = tracing::info_span!("resolve_annotation_set").entered();
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.clone().try_into()?;
@@ -2702,7 +2718,7 @@ async fn handle_upload_dataset(
         None
     };
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_resolve_span);
 
     // Warning: annotation_set_id provided but no annotations
@@ -2715,7 +2731,7 @@ async fn handle_upload_dataset(
     // Determine images path
     let images_path = determine_images_path(&annotations, &images)?;
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _prep_span = tracing::info_span!("preparation").entered();
 
     // Create a spinner for the preparation phase
@@ -2730,19 +2746,19 @@ async fn handle_upload_dataset(
     // Parse annotations from Arrow if provided, or build samples from directory
     let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
     let mut samples = if annotations.is_some() {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _arrow_span = tracing::info_span!("parse_arrow").entered();
         prep_bar.set_message("Reading Arrow file...");
         parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations, &prep_bar)?
     } else {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _scan_span = tracing::info_span!("scan_directory").entered();
         prep_bar.set_message("Scanning directory for images...");
         build_samples_from_directory(&images_path, &prep_bar)?
     };
     prep_bar.finish_and_clear();
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_prep_span);
 
     if samples.is_empty() {
@@ -2806,7 +2822,7 @@ async fn handle_upload_dataset(
         batches.len()
     );
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _upload_span = tracing::info_span!(
         "upload",
         total_batches = batches.len(),
@@ -2815,12 +2831,12 @@ async fn handle_upload_dataset(
     .entered();
 
     for (_batch_num, batch) in batches.iter().enumerate() {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let batch_num = _batch_num; // Shadow with non-underscore name for Tracy
 
         let batch_size = batch.len();
 
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _batch_span =
             tracing::info_span!("batch", batch_num = batch_num + 1, size = batch_size).entered();
 
@@ -2839,7 +2855,7 @@ async fn handle_upload_dataset(
         offset.fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_upload_span);
 
     drop(tx);
@@ -4428,62 +4444,232 @@ async fn handle_export_coco(
     Ok(())
 }
 
-/// Initialize logging/tracing based on feature flags and runtime configuration.
+/// A writer wrapper that outputs Chrome JSON trace format compatible with Perfetto UI.
 ///
-/// When the `tracy` feature is enabled:
-/// - Uses `tracing` crate with a fmt layer for console output
-/// - Adds TracyLayer when `TRACY_ENABLE=1` environment variable is set
-///
-/// When `tracy` feature is disabled:
-/// - Falls back to standard `env_logger` for minimal overhead
-fn init_tracing() {
-    #[cfg(feature = "tracy")]
-    {
-        use tracing_subscriber::prelude::*;
+/// `tracing-chrome` outputs a raw JSON array `[...]`, but Perfetto prefers
+/// the object format `{"traceEvents": [...]}`. This wrapper adds the required
+/// header and footer.
+#[cfg(feature = "trace-file")]
+struct ChromeJsonWriter {
+    inner: std::fs::File,
+    started: bool,
+}
 
-        let tracy_enabled = std::env::var("TRACY_ENABLE")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+#[cfg(feature = "trace-file")]
+impl ChromeJsonWriter {
+    fn new(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: std::fs::File::create(path)?,
+            started: false,
+        })
+    }
+}
 
-        let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-            .from_env_lossy();
+#[cfg(feature = "trace-file")]
+impl std::io::Write for ChromeJsonWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.started {
+            // tracing-chrome starts with "[\n", we prepend the wrapper
+            std::io::Write::write_all(&mut self.inner, b"{\"traceEvents\":")?;
+            self.started = true;
+        }
+        std::io::Write::write(&mut self.inner, buf)
+    }
 
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_filter(filter);
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.inner)
+    }
+}
 
-        if tracy_enabled {
-            // Start Tracy client for profiling
-            let _client = tracy_client::Client::start();
-
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tracing_tracy::TracyLayer::default())
-                .init();
-
-            tracing::info!("Tracy profiling enabled");
-        } else {
-            tracing_subscriber::registry().with(fmt_layer).init();
+#[cfg(feature = "trace-file")]
+impl Drop for ChromeJsonWriter {
+    fn drop(&mut self) {
+        // tracing-chrome ends with "\n]", we append the closing brace
+        if let Err(e) = std::io::Write::write_all(&mut self.inner, b"}") {
+            eprintln!("Warning: Failed to write trace file footer: {e}");
+        }
+        if let Err(e) = std::io::Write::flush(&mut self.inner) {
+            eprintln!("Warning: Failed to flush trace file: {e}");
         }
     }
+}
 
-    #[cfg(not(feature = "tracy"))]
-    {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+/// Trace file format determined by file extension.
+#[cfg(feature = "trace-file")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraceFormat {
+    /// Chrome JSON format (.json) - viewable in Perfetto UI and Chrome tracing
+    ChromeJson,
+    /// Native Perfetto format (.pftrace) - viewable in Perfetto UI
+    Perfetto,
+}
+
+#[cfg(feature = "trace-file")]
+impl TraceFormat {
+    fn from_path(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("pftrace") => TraceFormat::Perfetto,
+            _ => TraceFormat::ChromeJson, // Default to JSON for .json or unknown
+        }
     }
+}
+
+/// Guard that must be held until program exit to ensure trace files are flushed.
+/// Wraps either Chrome or Perfetto flush guards.
+#[cfg(feature = "trace-file")]
+#[allow(dead_code)] // Fields are intentionally held for RAII, not read
+enum TraceGuard {
+    Chrome(tracing_chrome::FlushGuard),
+    // Perfetto layer doesn't need a guard - it flushes on drop
+    Perfetto,
+}
+
+/// Initialize logging/tracing based on feature flags and runtime configuration.
+///
+/// Trace file format is determined by extension:
+/// - `.json` → Chrome JSON format (viewable in Perfetto UI and Chrome tracing)
+/// - `.pftrace` → Native Perfetto format (viewable in Perfetto UI)
+///
+/// When `profiling` feature is disabled:
+/// - Falls back to standard `env_logger` for minimal overhead
+///
+/// Returns a guard that must be held until program exit to ensure trace files are flushed.
+#[cfg(all(feature = "profiling", feature = "trace-file"))]
+fn init_tracing(args: &Args) -> Option<TraceGuard> {
+    use tracing_subscriber::prelude::*;
+
+    // Determine log level from verbosity flag
+    let default_level = match args.verbose {
+        0 => tracing::level_filters::LevelFilter::INFO,
+        1 => tracing::level_filters::LevelFilter::DEBUG,
+        _ => tracing::level_filters::LevelFilter::TRACE,
+    };
+
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .from_env_lossy();
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(filter);
+
+    // Check for trace file output and determine format
+    match args.trace_file.as_ref() {
+        Some(path) => {
+            match TraceFormat::from_path(path) {
+                TraceFormat::ChromeJson => {
+                    // Chrome JSON trace file
+                    match ChromeJsonWriter::new(path) {
+                        Ok(writer) => {
+                            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                                .writer(writer)
+                                .include_args(true)
+                                .build();
+
+                            tracing_subscriber::registry()
+                                .with(fmt_layer)
+                                .with(chrome_layer)
+                                .init();
+
+                            eprintln!("Trace output (Chrome JSON): {}", path.display());
+                            Some(TraceGuard::Chrome(guard))
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to create trace file '{}': {e}",
+                                path.display()
+                            );
+                            tracing_subscriber::registry().with(fmt_layer).init();
+                            None
+                        }
+                    }
+                }
+                TraceFormat::Perfetto => {
+                    // Native Perfetto trace file
+                    match std::fs::File::create(path) {
+                        Ok(file) => {
+                            let perfetto_layer =
+                                tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file))
+                                    .with_debug_annotations(true); // Enable span field capture
+
+                            tracing_subscriber::registry()
+                                .with(fmt_layer)
+                                .with(perfetto_layer)
+                                .init();
+
+                            eprintln!("Trace output (Perfetto native): {}", path.display());
+                            Some(TraceGuard::Perfetto)
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to create trace file '{}': {e}",
+                                path.display()
+                            );
+                            tracing_subscriber::registry().with(fmt_layer).init();
+                            None
+                        }
+                    }
+                }
+            }
+        }
+        None => {
+            // No trace file, just fmt layer
+            tracing_subscriber::registry().with(fmt_layer).init();
+            None
+        }
+    }
+}
+
+/// Initialize tracing without trace-file support (profiling only, no file output).
+#[cfg(all(feature = "profiling", not(feature = "trace-file")))]
+fn init_tracing(args: &Args) -> Option<()> {
+    use tracing_subscriber::prelude::*;
+
+    // Determine log level from verbosity flag
+    let default_level = match args.verbose {
+        0 => tracing::level_filters::LevelFilter::INFO,
+        1 => tracing::level_filters::LevelFilter::DEBUG,
+        _ => tracing::level_filters::LevelFilter::TRACE,
+    };
+
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(default_level.into())
+        .from_env_lossy();
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(filter);
+
+    tracing_subscriber::registry().with(fmt_layer).init();
+
+    None
+}
+
+#[cfg(not(feature = "profiling"))]
+fn init_tracing(args: &Args) -> Option<()> {
+    let log_level = match args.verbose {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+
+    None
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Initialize tracing before argument parsing to capture any parsing errors.
-    // Verbosity is controlled via RUST_LOG env var (e.g., RUST_LOG=debug).
+    // Parse arguments first so verbosity and trace file can be configured
     let args = Args::parse();
 
-    init_tracing();
+    // Initialize tracing/logging after parsing args
+    // Keep the guard alive until program exit to ensure trace files are flushed
+    let _trace_guard = init_tracing(&args);
+
     // Handle version command early - no authentication needed
     if args.cmd == Command::Version {
-        let client = Client::new()?.with_token_path(None)?;
+        let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
         let client = match args.server {
             Some(server) => client.with_server(&server)?,
             None => client,
@@ -4539,7 +4725,7 @@ async fn main() -> Result<(), Error> {
     // Handle login command specially - ignore existing token, use --server or
     // default saas
     if args.cmd == Command::Login {
-        let client = Client::new()?.with_token_path(None)?;
+        let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
         // For login, use --server if provided, otherwise default to saas
         let server = args.server.as_deref().unwrap_or("");
         let client = client.with_server(server)?;
@@ -4550,7 +4736,7 @@ async fn main() -> Result<(), Error> {
     // 1. Token's server (from --token or stored token) - highest priority
     // 2. --server override (used with username/password or when no token)
     // 3. Default saas
-    let client = Client::new()?.with_token_path(None)?;
+    let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
 
     // Check if using username/password authentication (will get new token)
     let using_credentials = args.username.is_some() && args.password.is_some();

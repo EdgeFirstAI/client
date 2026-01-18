@@ -1071,16 +1071,18 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
     let _username =
         env::var("STUDIO_USERNAME").expect("STUDIO_USERNAME must be set for authentication tests");
 
-    // Get the token path - must match what the CLI uses
-    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-        .map(|d| d.config_dir().join("token"))
-        .ok_or("ProjectDirs::from returned None - cannot determine token path")?;
+    // Use a temporary directory for token isolation from parallel tests.
+    // This prevents race conditions where another test's login overwrites
+    // our corrupted token file.
+    let temp_dir = tempfile::tempdir()?;
+    let token_path = temp_dir.path().join("token");
 
     println!("Token path: {:?}", token_path);
 
-    // Login first to create a valid token
+    // Login first to create a valid token in the isolated temp directory
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
     cmd.ok()?;
 
     assert!(token_path.exists(), "Token file should exist after login");
@@ -1093,12 +1095,14 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
     // This should gracefully handle the corrupted token
     let mut cmd = edgefirst_cmd();
     cmd.arg("organization");
-    // Explicitly unset authentication environment variables so the command can't
-    // auto-login via clap's env feature. Keep STUDIO_SERVER as it controls which
-    // server instance to connect to.
+    // Explicitly unset authentication environment variables FIRST so the command
+    // can't auto-login via clap's env feature.
     cmd.env_remove("STUDIO_USERNAME");
     cmd.env_remove("STUDIO_PASSWORD");
     cmd.env_remove("STUDIO_TOKEN");
+    // Use the isolated token path (set AFTER env_remove to override any existing)
+    // Keep STUDIO_SERVER as it controls which server instance to connect to.
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
 
     let output = cmd.output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1126,6 +1130,7 @@ fn test_corrupted_token_handling() -> Result<(), Box<dyn std::error::Error>> {
     // Should be able to login again
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
     cmd.ok()?;
 
     assert!(

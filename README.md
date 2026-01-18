@@ -124,6 +124,48 @@ cargo build --release
 - **Python**: 3.8+ (for Python bindings)
 - **Network**: Access to EdgeFirst Studio (*.edgefirst.studio)
 
+### Performance Profiling
+
+EdgeFirst Client includes optional profiling instrumentation for performance analysis and debugging.
+
+> **Note:** Profiling instrumentation is **disabled by default** and compiles to zero-cost no-ops. All release binaries (CLI, Python wheels, mobile SDKs) published to GitHub Releases, PyPI, and crates.io are built **without** tracing features enabled.
+
+**Build with tracing support:**
+
+```bash
+# Standard release build with tracing
+cargo build --release --features trace-file
+
+# Profiling build with debug symbols preserved (for detailed stack traces)
+cargo build --profile profiling --features trace-file
+```
+
+The `profiling` build profile inherits from `release` but preserves debug symbols (`debug = true`, `strip = false`), which provides more detailed information in trace visualizations.
+
+**Generate trace files:**
+
+Use `--trace-file` to capture execution traces. Format is determined by file extension:
+
+```bash
+# Chrome JSON format (viewable in Perfetto UI)
+edgefirst-client --trace-file trace.json download-dataset ds-123 ./output
+
+# Native Perfetto format (smaller files, also viewable in Perfetto UI)
+edgefirst-client --trace-file trace.pftrace download-dataset ds-123 ./output
+```
+
+View traces at https://ui.perfetto.dev/ by dragging the file into the browser.
+
+**What traces capture:**
+
+- Function call hierarchy and timing
+- Dataset IDs, project IDs, and snapshot IDs
+- RPC method names and parameters
+- File paths for uploads/downloads
+- API request/response data (truncated to 4KB for large responses)
+
+> **⚠️ Security Note:** Trace files may contain sensitive information including dataset IDs, file paths, and API response data. Credentials and passwords are automatically redacted, but review trace file contents before sharing, especially for production environments.
+
 ## Quick Start
 
 ### CLI Authentication
