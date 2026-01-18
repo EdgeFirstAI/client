@@ -50,18 +50,37 @@ use polars::prelude::*;
 
 static PART_SIZE: usize = 100 * 1024 * 1024;
 
+/// Source for file content during upload - either a local path or raw bytes.
+#[derive(Clone)]
+enum FileSource {
+    /// File content from a local filesystem path.
+    Path(PathBuf),
+    /// File content as raw bytes (e.g., from a ZIP archive).
+    Bytes(Vec<u8>),
+}
+
 fn max_tasks() -> usize {
     std::env::var("MAX_TASKS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| {
             // Default to half the number of CPUs, minimum 2, maximum 8
-            // Lower max prevents timeout issues with large file uploads
             let cpus = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
             (cpus / 2).clamp(2, 8)
         })
+}
+
+/// Maximum concurrent upload tasks for multipart S3 uploads.
+///
+/// Higher concurrency improves upload throughput by saturating available bandwidth.
+/// Can be overridden via `MAX_UPLOAD_TASKS` environment variable.
+fn max_upload_tasks() -> usize {
+    std::env::var("MAX_UPLOAD_TASKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8) // Default to 8 concurrent part uploads
 }
 
 /// Filters items by name and sorts by match quality.
@@ -143,10 +162,41 @@ fn sanitize_path_component(name: &str) -> String {
 /// Progress information for long-running operations.
 ///
 /// This struct tracks the current progress of operations like file uploads,
-/// downloads, or dataset processing. It provides the current count and total
-/// count to enable progress reporting in applications.
+/// downloads, or dataset processing. It provides the current count, total
+/// count, and an optional status string to enable progress reporting in
+/// applications.
+///
+/// # Multi-Stage Progress
+///
+/// The `status` field enables multi-stage progress tracking. When an operation
+/// has multiple phases, the status field changes to indicate the current phase.
+/// Applications should detect status changes to reset their progress display.
+///
+/// # Operation Progress Details
+///
+/// | Operation | Status | Unit | Notes |
+/// |-----------|--------|------|-------|
+/// | [`download_dataset`] | `None` then `"Downloading"` | samples | Two phases: fetch metadata, then download files |
+/// | [`populate_samples`] | `None` | samples | Each sample may contain multiple files |
+/// | [`samples`] | `None` | samples | Paginated API fetch |
+/// | [`sample_names`] | `None` | samples | Paginated API fetch, names only |
+/// | [`annotations`] | `None` | samples | Samples processed for annotations |
+/// | [`download_artifact`] | `None` | bytes | Single file byte-level progress |
+/// | [`download_checkpoint`] | `None` | bytes | Single file byte-level progress |
+/// | [`download_snapshot`] | `None` | bytes | Combined byte progress across all files |
+///
+/// [`download_dataset`]: Client::download_dataset
+/// [`populate_samples`]: Client::populate_samples
+/// [`samples`]: Client::samples
+/// [`sample_names`]: Client::sample_names
+/// [`annotations`]: Client::annotations
+/// [`download_artifact`]: Client::download_artifact
+/// [`download_checkpoint`]: Client::download_checkpoint
+/// [`download_snapshot`]: Client::download_snapshot
 ///
 /// # Examples
+///
+/// Basic progress display:
 ///
 /// ```rust
 /// use edgefirst_client::Progress;
@@ -154,19 +204,54 @@ fn sanitize_path_component(name: &str) -> String {
 /// let progress = Progress {
 ///     current: 25,
 ///     total: 100,
+///     status: Some("Downloading".to_string()),
 /// };
 /// let percentage = (progress.current as f64 / progress.total as f64) * 100.0;
 /// println!(
-///     "Progress: {:.1}% ({}/{})",
-///     percentage, progress.current, progress.total
+///     "{}: {:.1}% ({}/{})",
+///     progress.status.as_deref().unwrap_or("Progress"),
+///     percentage,
+///     progress.current,
+///     progress.total
 /// );
+/// ```
+///
+/// Multi-stage progress handling (e.g., for `download_dataset`):
+///
+/// ```rust,ignore
+/// let mut last_status: Option<String> = None;
+///
+/// while let Some(progress) = rx.recv().await {
+///     // Detect stage change and reset progress bar
+///     if progress.status != last_status {
+///         if let Some(ref status) = progress.status {
+///             println!("\n{}", status);
+///         }
+///         last_status = progress.status.clone();
+///     }
+///
+///     let pct = (progress.current as f64 / progress.total as f64) * 100.0;
+///     print!("\r{:.1}% ({}/{})", pct, progress.current, progress.total);
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Progress {
-    /// Current number of completed items.
+    /// Current number of completed items or bytes.
     pub current: usize,
-    /// Total number of items to process.
+    /// Total number of items or bytes to process.
     pub total: usize,
+    /// Optional status describing the current operation phase.
+    ///
+    /// When this value changes from `None` to `Some(...)` or between different
+    /// values, it indicates a new phase has started. Applications should reset
+    /// their progress display when the status changes.
+    ///
+    /// Currently only [`Client::download_dataset`] uses status changes:
+    /// - Phase 1: `None` while fetching sample metadata
+    /// - Phase 2: `"Downloading"` while downloading files
+    ///
+    /// All other operations use `None` throughout.
+    pub status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -227,6 +312,9 @@ struct SnapshotCreateMultipartParams {
     snapshot_name: String,
     keys: Vec<String>,
     file_sizes: Vec<usize>,
+    /// Optional snapshot type (e.g., "ziparrow" for EdgeFirst Dataset Format)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    snapshot_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -344,6 +432,8 @@ struct ImagesFilter {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
+    /// HTTP client for large file uploads (no request timeout)
+    upload_http: reqwest::Client,
     url: String,
     token: Arc<RwLock<String>>,
     /// Token storage backend. When set, tokens are automatically persisted.
@@ -428,6 +518,14 @@ impl Client {
             .retry(create_retry_policy())
             .build()?;
 
+        // Separate HTTP client for large file uploads - no request timeout
+        // since upload duration depends on file size and network speed
+        let upload_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(10)
+            .build()?;
+
         // Default to file storage, loading any existing token
         let storage: Arc<dyn TokenStorage> = match FileTokenStorage::new() {
             Ok(file_storage) => Arc::new(file_storage),
@@ -471,6 +569,7 @@ impl Client {
 
         Ok(Client {
             http,
+            upload_http,
             url,
             token: Arc::new(tokio::sync::RwLock::new(token)),
             storage: Some(storage),
@@ -1359,7 +1458,14 @@ impl Client {
     ///
     /// * `dataset_id` - The unique identifier of the dataset
     /// * `groups` - Dataset groups to include (e.g., "train", "val")
-    /// * `file_types` - File types to download (e.g., Image, LidarPcd)
+    /// * `file_types` - File types to download. Supported types:
+    ///   - `FileType::Image` - Standard image files (JPEG, PNG, etc.)
+    ///   - `FileType::LidarPcd` - LiDAR point cloud data (.pcd format)
+    ///   - `FileType::LidarDepth` - LiDAR depth images (.png format)
+    ///   - `FileType::LidarReflect` - LiDAR reflectance images (.jpg format)
+    ///   - `FileType::RadarPcd` - Radar point cloud data (.pcd format)
+    ///   - `FileType::RadarCube` - Radar cube data (.png format)
+    ///   - `FileType::All` - All sensor types (expands to all of the above)
     /// * `output` - Local directory to save downloaded files
     /// * `flatten` - If true, download all files to output root without
     ///   sequence subdirectories. When flattening, filenames are prefixed with
@@ -1367,6 +1473,19 @@ impl Client {
     ///   unavailable) unless the filename already starts with
     ///   `{sequence_name}_`, to avoid conflicts between sequences.
     /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Progress
+    ///
+    /// This operation has two phases with distinct progress reporting:
+    ///
+    /// 1. **Fetching metadata** (`status: None`): Retrieves sample information
+    ///    from the server. Progress counts samples fetched.
+    /// 2. **Downloading files** (`status: "Downloading"`): Downloads actual
+    ///    files to disk. Progress counts samples completed (each sample may
+    ///    have multiple files for different sensor types).
+    ///
+    /// Applications should detect the status change from `None` to `"Downloading"`
+    /// to reset their progress bar for the second phase.
     ///
     /// # Returns
     ///
@@ -1403,9 +1522,22 @@ impl Client {
     ///         None,
     ///     )
     ///     .await?;
+    ///
+    /// // Download all sensor types
+    /// client
+    ///     .download_dataset(
+    ///         dataset_id,
+    ///         &[],
+    ///         &FileType::expand_types(&[FileType::All]),
+    ///         "./data".into(),
+    ///         false,
+    ///         None,
+    ///     )
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn download_dataset(
         &self,
         dataset_id: DatasetID,
@@ -1415,106 +1547,141 @@ impl Client {
         flatten: bool,
         progress: Option<Sender<Progress>>,
     ) -> Result<(), Error> {
+        // Phase 1: Fetch sample metadata (pass progress directly, no wrapper)
         let samples = self
             .samples(dataset_id, None, &[], groups, file_types, progress.clone())
             .await?;
         fs::create_dir_all(&output).await?;
 
-        let client = self.clone();
-        let file_types = file_types.to_vec();
-        let output = output.clone();
+        // Phase 2: Download actual files using direct semaphore pattern
+        let total = samples.len();
+        let current = Arc::new(AtomicUsize::new(0));
+        let sem = Arc::new(Semaphore::new(max_tasks()));
 
-        parallel_foreach_items(samples, progress, None, move |sample| {
-            let client = client.clone();
-            let file_types = file_types.clone();
-            let output = output.clone();
+        // Send initial progress for download phase
+        if let Some(ref progress) = progress {
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: Some("Downloading".to_string()),
+                })
+                .await;
+        }
 
-            async move {
-                for file_type in file_types {
-                    if let Some(data) = sample.download(&client, file_type.clone()).await? {
-                        let (file_ext, is_image) = match file_type.clone() {
-                            FileType::Image => (
-                                infer::get(&data)
-                                    .expect("Failed to identify image file format for sample")
-                                    .extension()
-                                    .to_string(),
-                                true,
-                            ),
-                            other => (other.to_string(), false),
-                        };
+        let tasks = samples
+            .into_iter()
+            .map(|sample| {
+                let client = self.clone();
+                let file_types = file_types.to_vec();
+                let output = output.clone();
+                let progress = progress.clone();
+                let current = current.clone();
+                let sem = sem.clone();
 
-                        // Determine target directory based on sequence membership and flatten
-                        // option
-                        // - flatten=false + sequence_name: dataset/sequence_name/
-                        // - flatten=false + no sequence: dataset/ (root level)
-                        // - flatten=true: dataset/ (all files in output root)
-                        // NOTE: group (train/val/test) is NOT used for directory structure
-                        let sequence_dir = sample
-                            .sequence_name()
-                            .map(|name| sanitize_path_component(name));
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await.map_err(|_| {
+                        Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                    })?;
 
-                        let target_dir = if flatten {
-                            output.clone()
-                        } else {
-                            sequence_dir
-                                .as_ref()
-                                .map(|seq| output.join(seq))
-                                .unwrap_or_else(|| output.clone())
-                        };
-                        fs::create_dir_all(&target_dir).await?;
+                    for file_type in &file_types {
+                        if let Some(data) = sample.download(&client, file_type.clone()).await? {
+                            let (file_ext, is_image) = match file_type {
+                                FileType::Image => (
+                                    infer::get(&data)
+                                        .expect("Failed to identify image file format for sample")
+                                        .extension()
+                                        .to_string(),
+                                    true,
+                                ),
+                                other => (other.file_extension().to_string(), false),
+                            };
 
-                        let sanitized_sample_name = sample
-                            .name()
-                            .map(|name| sanitize_path_component(&name))
-                            .unwrap_or_else(|| "unknown".to_string());
+                            // Determine target directory based on sequence membership and
+                            // flatten option
+                            // - flatten=false + sequence_name: dataset/sequence_name/
+                            // - flatten=false + no sequence: dataset/ (root level)
+                            // - flatten=true: dataset/ (all files in output root)
+                            // NOTE: group (train/val/test) is NOT used for directory structure
+                            let sequence_dir = sample
+                                .sequence_name()
+                                .map(|name| sanitize_path_component(name));
 
-                        let image_name = sample.image_name().map(sanitize_path_component);
+                            let target_dir = if flatten {
+                                output.clone()
+                            } else {
+                                sequence_dir
+                                    .as_ref()
+                                    .map(|seq| output.join(seq))
+                                    .unwrap_or_else(|| output.clone())
+                            };
+                            fs::create_dir_all(&target_dir).await?;
 
-                        // Construct filename with smart prefixing for flatten mode
-                        // When flatten=true and sample belongs to a sequence:
-                        //   - Check if filename already starts with "{sequence_name}_"
-                        //   - If not, prepend "{sequence_name}_{frame}_" to avoid conflicts
-                        //   - If yes, use filename as-is (already uniquely named)
-                        let file_name = if is_image {
-                            if let Some(img_name) = image_name {
-                                Self::build_filename(
-                                    &img_name,
+                            let sanitized_sample_name = sample
+                                .name()
+                                .map(|name| sanitize_path_component(&name))
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            let image_name = sample.image_name().map(sanitize_path_component);
+
+                            // Construct filename with smart prefixing for flatten mode
+                            // When flatten=true and sample belongs to a sequence:
+                            //   - Check if filename already starts with "{sequence_name}_"
+                            //   - If not, prepend "{sequence_name}_{frame}_" to avoid conflicts
+                            //   - If yes, use filename as-is (already uniquely named)
+                            let file_name = if is_image {
+                                if let Some(img_name) = image_name {
+                                    Client::build_filename(
+                                        &img_name,
+                                        flatten,
+                                        sequence_dir.as_ref(),
+                                        sample.frame_number(),
+                                    )
+                                } else {
+                                    format!("{}.{}", sanitized_sample_name, file_ext)
+                                }
+                            } else {
+                                let base_name = format!("{}.{}", sanitized_sample_name, file_ext);
+                                Client::build_filename(
+                                    &base_name,
                                     flatten,
                                     sequence_dir.as_ref(),
                                     sample.frame_number(),
                                 )
-                            } else {
-                                format!("{}.{}", sanitized_sample_name, file_ext)
-                            }
-                        } else {
-                            let base_name = format!("{}.{}", sanitized_sample_name, file_ext);
-                            Self::build_filename(
-                                &base_name,
-                                flatten,
-                                sequence_dir.as_ref(),
-                                sample.frame_number(),
-                            )
-                        };
+                            };
 
-                        let file_path = target_dir.join(&file_name);
+                            let file_path = target_dir.join(&file_name);
 
-                        let mut file = File::create(&file_path).await?;
-                        file.write_all(&data).await?;
-                    } else {
-                        warn!(
-                            "No data for sample: {}",
-                            sample
-                                .id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|| "unknown".to_string())
-                        );
+                            let mut file = File::create(&file_path).await?;
+                            file.write_all(&data).await?;
+                        }
                     }
-                }
 
-                Ok(())
-            }
-        })
-        .await
+                    // Update progress after sample completes
+                    if let Some(progress) = &progress {
+                        let completed = current.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = progress
+                            .send(Progress {
+                                current: completed,
+                                total,
+                                status: Some("Downloading".to_string()),
+                            })
+                            .await;
+                    }
+
+                    Ok::<(), Error>(())
+                })
+            })
+            .collect::<Vec<_>>();
+
+        join_all(tasks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(())
     }
 
     /// Builds a filename with smart prefixing for flatten mode.
@@ -1650,6 +1817,12 @@ impl Client {
     /// The result is a vector of Annotations objects which contain the
     /// full dataset along with the annotations for the specified types.
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched and processed
+    /// for their annotations. Progress unit is samples processed (not individual
+    /// annotations).
+    ///
     /// To get the annotations as a DataFrame, use the `annotations_dataframe`
     /// method instead.
     pub async fn annotations(
@@ -1724,7 +1897,13 @@ impl Client {
             self.process_sample_annotations(&result.samples, context.labels, &mut annotations);
 
             if let Some(progress) = &progress {
-                let _ = progress.send(Progress { current, total }).await;
+                let _ = progress
+                    .send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
 
             match &continue_token {
@@ -1831,6 +2010,7 @@ impl Client {
     ///
     /// # Returns
     /// Vector of created annotation records from the server.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, annotations), fields(annotation_count = annotations.len())))]
     pub async fn add_annotations_bulk(
         &self,
         annotation_set_id: AnnotationSetID,
@@ -1905,6 +2085,26 @@ impl Client {
         self.rpc("samples.count".to_owned(), Some(params)).await
     }
 
+    /// Fetches samples from a dataset with optional annotation and file type filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to fetch samples from
+    /// * `annotation_set_id` - Optional annotation set to include annotations from
+    /// * `annotation_types` - Filter by annotation types (box2d, box3d, mask)
+    /// * `groups` - Filter by sample groups (e.g., "train", "val", "test")
+    /// * `types` - File types to include metadata for
+    /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched from the server
+    /// in paginated batches. Progress unit is samples fetched.
+    ///
+    /// # Returns
+    ///
+    /// Vector of [`Sample`] objects with metadata and optionally annotations.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn samples(
         &self,
         dataset_id: DatasetID,
@@ -1953,11 +2153,18 @@ impl Client {
     /// without loading full annotation data.
     ///
     /// # Arguments
+    ///
     /// * `dataset_id` - The dataset to query
     /// * `groups` - Optional group filter (empty = all groups)
     /// * `progress` - Optional progress channel
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as sample names are fetched from the
+    /// server in paginated batches. Progress unit is samples fetched.
+    ///
     /// # Returns
+    ///
     /// A HashSet of sample names (image_name field) that exist in the dataset.
     pub async fn sample_names(
         &self,
@@ -2006,7 +2213,13 @@ impl Client {
             }
 
             if let Some(ref p) = progress {
-                let _ = p.send(Progress { current, total }).await;
+                let _ = p
+                    .send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
 
             match &continue_token {
@@ -2077,7 +2290,13 @@ impl Client {
             );
 
             if let Some(progress) = &progress {
-                let _ = progress.send(Progress { current, total }).await;
+                let _ = progress
+                    .send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
 
             match &continue_token {
@@ -2132,6 +2351,14 @@ impl Client {
     ///   references. For files, use the full local path - it will be uploaded
     ///   automatically. UUIDs and image dimensions will be
     ///   auto-generated/extracted if not provided.
+    /// * `progress` - Optional channel for progress updates
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as each sample's files are uploaded.
+    /// Progress unit is samples (not individual files). Each sample may contain
+    /// multiple files (image, lidar, radar, etc.) which are all uploaded before
+    /// the sample is counted as complete.
     ///
     /// # Returns
     ///
@@ -2181,6 +2408,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples(
         &self,
         dataset_id: DatasetID,
@@ -2204,6 +2432,7 @@ impl Client {
     /// specifying the maximum number of concurrent file uploads. Use this
     /// for bulk imports where higher concurrency can significantly reduce
     /// upload time.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, samples, progress), fields(sample_count = samples.len())))]
     pub async fn populate_samples_with_concurrency(
         &self,
         dataset_id: DatasetID,
@@ -2215,7 +2444,7 @@ impl Client {
         use crate::api::SamplesPopulateParams;
 
         // Track which files need to be uploaded
-        let mut files_to_upload: Vec<(String, String, PathBuf, String)> = Vec::new();
+        let mut files_to_upload: Vec<(String, String, FileSource, String)> = Vec::new();
 
         // Process samples to detect local files and generate UUIDs
         let samples = self.prepare_samples_for_upload(samples, &mut files_to_upload)?;
@@ -2246,7 +2475,7 @@ impl Client {
     fn prepare_samples_for_upload(
         &self,
         samples: Vec<Sample>,
-        files_to_upload: &mut Vec<(String, String, PathBuf, String)>,
+        files_to_upload: &mut Vec<(String, String, FileSource, String)>,
     ) -> Result<Vec<Sample>, Error> {
         Ok(samples
             .into_iter()
@@ -2278,10 +2507,39 @@ impl Client {
         file: &crate::SampleFile,
         sample_uuid: &str,
         sample: &mut Sample,
-        files_to_upload: &mut Vec<(String, String, PathBuf, String)>,
+        files_to_upload: &mut Vec<(String, String, FileSource, String)>,
     ) -> crate::SampleFile {
         use std::path::Path;
 
+        // Handle files with raw bytes (e.g., from ZIP archives)
+        if let Some(bytes) = file.bytes() {
+            if let Some(filename) = file.filename() {
+                // For image files with bytes, try to extract dimensions if not already set
+                if file.file_type() == "image"
+                    && (sample.width.is_none() || sample.height.is_none())
+                    && let Ok(size) = imagesize::blob_size(bytes)
+                {
+                    sample.width = Some(size.width as u32);
+                    sample.height = Some(size.height as u32);
+                }
+
+                // Store the bytes for later upload
+                files_to_upload.push((
+                    sample_uuid.to_string(),
+                    file.file_type().to_string(),
+                    FileSource::Bytes(bytes.to_vec()),
+                    filename.to_string(),
+                ));
+
+                // Return SampleFile with just the filename
+                return crate::SampleFile::with_filename(
+                    file.file_type().to_string(),
+                    filename.to_string(),
+                );
+            }
+        }
+
+        // Handle files with local paths
         if let Some(filename) = file.filename() {
             let path = Path::new(filename);
 
@@ -2303,7 +2561,7 @@ impl Client {
                 files_to_upload.push((
                     sample_uuid.to_string(),
                     file.file_type().to_string(),
-                    path.to_path_buf(),
+                    FileSource::Path(path.to_path_buf()),
                     basename.to_string(),
                 ));
 
@@ -2321,14 +2579,14 @@ impl Client {
     async fn upload_sample_files(
         &self,
         results: &[crate::SamplesPopulateResult],
-        files_to_upload: Vec<(String, String, PathBuf, String)>,
+        files_to_upload: Vec<(String, String, FileSource, String)>,
         progress: Option<Sender<Progress>>,
         concurrency: Option<usize>,
     ) -> Result<(), Error> {
-        // Build a map from (sample_uuid, basename) -> local_path
-        let mut upload_map: HashMap<(String, String), PathBuf> = HashMap::new();
-        for (uuid, _file_type, path, basename) in files_to_upload {
-            upload_map.insert((uuid, basename), path);
+        // Build a map from (sample_uuid, basename) -> file source
+        let mut upload_map: HashMap<(String, String), FileSource> = HashMap::new();
+        for (uuid, _file_type, source, basename) in files_to_upload {
+            upload_map.insert((uuid, basename), source);
         }
 
         let http = self.http.clone();
@@ -2350,16 +2608,28 @@ impl Client {
                 async move {
                     // Upload all files for this sample
                     for url_info in &urls {
-                        if let Some(local_path) =
+                        if let Some(source) =
                             upload_map.get(&(uuid.clone(), url_info.filename.clone()))
                         {
-                            // Upload the file
-                            upload_file_to_presigned_url(
-                                http.clone(),
-                                &url_info.url,
-                                local_path.clone(),
-                            )
-                            .await?;
+                            match source {
+                                FileSource::Path(path) => {
+                                    upload_file_to_presigned_url(
+                                        http.clone(),
+                                        &url_info.url,
+                                        path.clone(),
+                                    )
+                                    .await?;
+                                }
+                                FileSource::Bytes(bytes) => {
+                                    upload_bytes_to_presigned_url(
+                                        http.clone(),
+                                        &url_info.url,
+                                        bytes.clone(),
+                                        &url_info.filename,
+                                    )
+                                    .await?;
+                                }
+                            }
                         }
                     }
 
@@ -2371,6 +2641,14 @@ impl Client {
     }
 
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
+        // Validate URL is absolute (has scheme) to avoid RelativeUrlWithoutBase error
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(Error::InvalidParameters(format!(
+                "Invalid URL (must be absolute): {}",
+                url
+            )));
+        }
+
         // Uses default 120s timeout from client
         let resp = self.http.get(url).send().await?;
 
@@ -2456,6 +2734,12 @@ impl Client {
     /// * `groups` - Dataset groups to include (train, val, test)
     /// * `types` - Annotation types to filter (bbox, box3d, mask)
     /// * `progress` - Optional progress callback
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as samples are fetched from the server
+    /// in paginated batches. Progress unit is samples fetched. This method delegates
+    /// to [`samples()`](Self::samples) and shares its progress behavior.
     ///
     /// # Example
     ///
@@ -2551,6 +2835,12 @@ impl Client {
     ///   EdgeFirst Dataset Format files (Zip/Arrow pairs)
     /// * `progress` - Optional channel to receive upload progress updates
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is uploaded. Progress
+    /// unit is bytes uploaded. For single files, total is the file size. For
+    /// directories, total is the combined size of all files.
+    ///
     /// # Returns
     ///
     /// Returns a `Snapshot` object with ID, description, status, path, and
@@ -2575,9 +2865,15 @@ impl Client {
     /// // Upload MCAP file with progress tracking
     /// let (tx, mut rx) = mpsc::channel(1);
     /// tokio::spawn(async move {
-    ///     while let Some(Progress { current, total }) = rx.recv().await {
+    ///     while let Some(Progress {
+    ///         current,
+    ///         total,
+    ///         status,
+    ///     }) = rx.recv().await
+    ///     {
     ///         println!(
-    ///             "Upload: {}/{} bytes ({:.1}%)",
+    ///             "{}: {}/{} bytes ({:.1}%)",
+    ///             status.as_deref().unwrap_or("Upload"),
     ///             current,
     ///             total,
     ///             (current as f64 / total as f64) * 100.0
@@ -2602,6 +2898,7 @@ impl Client {
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     /// * [Snapshots Guide](https://doc.edgefirst.ai/latest/studio/snapshots/)
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn create_snapshot(
         &self,
         path: &str,
@@ -2629,13 +2926,20 @@ impl Client {
         let current = Arc::new(AtomicUsize::new(0));
 
         if let Some(progress) = &progress {
-            let _ = progress.send(Progress { current: 0, total }).await;
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: None,
+                })
+                .await;
         }
 
         let params = SnapshotCreateMultipartParams {
             snapshot_name: name.to_owned(),
             keys: vec![name.to_owned()],
             file_sizes: vec![total],
+            snapshot_type: None,
         };
         let multipart: HashMap<String, SnapshotCreateMultipartResultField> = self
             .rpc(
@@ -2665,7 +2969,7 @@ impl Client {
         part.key = Some(part_key);
 
         let params = upload_multipart(
-            self.http.clone(),
+            self.upload_http.clone(),
             part.clone(),
             path.to_path_buf(),
             total,
@@ -2725,7 +3029,13 @@ impl Client {
         let current = Arc::new(AtomicUsize::new(0));
 
         if let Some(progress) = &progress {
-            let _ = progress.send(Progress { current: 0, total }).await;
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: None,
+                })
+                .await;
         }
 
         let keys = files
@@ -2742,6 +3052,7 @@ impl Client {
             snapshot_name: name.to_owned(),
             keys,
             file_sizes,
+            snapshot_type: None,
         };
 
         let multipart: HashMap<String, SnapshotCreateMultipartResultField> = self
@@ -2780,7 +3091,7 @@ impl Client {
             part.key = Some(part_key);
 
             let params = upload_multipart(
-                self.http.clone(),
+                self.upload_http.clone(),
                 part.clone(),
                 path.join(file),
                 total,
@@ -2798,6 +3109,216 @@ impl Client {
             debug!("Snapshot Part Complete: {:?}", complete);
         }
 
+        let params = SnapshotStatusParams {
+            snapshot_id,
+            status: "available".to_owned(),
+        };
+        let _: SnapshotStatusResult = self
+            .rpc("snapshots.update".to_owned(), Some(params))
+            .await?;
+
+        if let Some(progress) = progress {
+            drop(progress);
+        }
+
+        self.snapshot(snapshot_id).await
+    }
+
+    /// Create a snapshot from EdgeFirst Dataset Format files (.arrow + .zip).
+    ///
+    /// Uploads a paired Arrow manifest and ZIP archive as a single snapshot.
+    /// This format is the native EdgeFirst Dataset Format used for efficient
+    /// dataset storage and transfer.
+    ///
+    /// # Arguments
+    ///
+    /// * `arrow_path` - Path to the Arrow manifest file (.arrow)
+    /// * `zip_path` - Path to the ZIP archive containing images (.zip)
+    /// * `description` - Optional description for the snapshot
+    /// * `progress` - Optional progress channel for upload tracking
+    ///
+    /// # File Requirements
+    ///
+    /// - Arrow file must have `.arrow` extension
+    /// - ZIP file must have `.zip` extension
+    /// - Both files must exist and be readable
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use edgefirst_client::Client;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    ///
+    /// let snapshot = client
+    ///     .create_snapshot_edgefirst_format(
+    ///         "dataset.arrow",
+    ///         "dataset.zip",
+    ///         Some("My Dataset Snapshot"),
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// println!("Created snapshot: {}", snapshot.id());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload single file or folder
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to dataset
+    pub async fn create_snapshot_edgefirst_format(
+        &self,
+        arrow_path: &str,
+        zip_path: &str,
+        description: Option<&str>,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<Snapshot, Error> {
+        let arrow_path = Path::new(arrow_path);
+        let zip_path = Path::new(zip_path);
+
+        // Validate files exist
+        if !arrow_path.exists() {
+            return Err(Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Arrow file not found: {}", arrow_path.display()),
+            )));
+        }
+        if !zip_path.exists() {
+            return Err(Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("ZIP file not found: {}", zip_path.display()),
+            )));
+        }
+
+        // Get file names
+        let arrow_name = arrow_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Invalid Arrow filename",
+                ))
+            })?;
+        let zip_name = zip_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Invalid ZIP filename",
+                ))
+            })?;
+
+        // Generate snapshot name from arrow file (without extension)
+        let snapshot_name = description
+            .map(|s| s.to_string())
+            .or_else(|| {
+                arrow_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "edgefirst_dataset".to_string());
+
+        // Calculate file sizes
+        let arrow_size = arrow_path.metadata()?.len() as usize;
+        let zip_size = zip_path.metadata()?.len() as usize;
+        let total = arrow_size + zip_size;
+        let current = Arc::new(AtomicUsize::new(0));
+
+        if let Some(progress) = &progress {
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+
+        // Create multipart upload request with "ziparrow" type
+        let params = SnapshotCreateMultipartParams {
+            snapshot_name,
+            keys: vec![arrow_name.to_owned(), zip_name.to_owned()],
+            file_sizes: vec![arrow_size, zip_size],
+            snapshot_type: Some("ziparrow".to_string()),
+        };
+
+        let multipart: HashMap<String, SnapshotCreateMultipartResultField> = self
+            .rpc(
+                "snapshots.create_upload_url_multipart".to_owned(),
+                Some(params),
+            )
+            .await?;
+
+        let snapshot_id = match multipart.get("snapshot_id") {
+            Some(SnapshotCreateMultipartResultField::Id(id)) => SnapshotID::from(*id),
+            _ => return Err(Error::InvalidResponse),
+        };
+
+        let snapshot = self.snapshot(snapshot_id).await?;
+        let part_prefix = snapshot
+            .path()
+            .split("::/")
+            .last()
+            .ok_or(Error::InvalidResponse)?
+            .to_owned();
+
+        // Upload Arrow file
+        let arrow_key = format!("{}/{}", part_prefix, arrow_name);
+        let mut arrow_part = match multipart.get(&arrow_key) {
+            Some(SnapshotCreateMultipartResultField::Part(part)) => part.clone(),
+            _ => return Err(Error::InvalidResponse),
+        };
+        arrow_part.key = Some(arrow_key);
+
+        let params = upload_multipart(
+            self.upload_http.clone(),
+            arrow_part,
+            arrow_path.to_path_buf(),
+            total,
+            current.clone(),
+            progress.clone(),
+        )
+        .await?;
+
+        let _: String = self
+            .rpc(
+                "snapshots.complete_multipart_upload".to_owned(),
+                Some(params),
+            )
+            .await?;
+        debug!("Arrow file upload complete");
+
+        // Upload ZIP file
+        let zip_key = format!("{}/{}", part_prefix, zip_name);
+        let mut zip_part = match multipart.get(&zip_key) {
+            Some(SnapshotCreateMultipartResultField::Part(part)) => part.clone(),
+            _ => return Err(Error::InvalidResponse),
+        };
+        zip_part.key = Some(zip_key);
+
+        let params = upload_multipart(
+            self.upload_http.clone(),
+            zip_part,
+            zip_path.to_path_buf(),
+            total,
+            current.clone(),
+            progress.clone(),
+        )
+        .await?;
+
+        let _: String = self
+            .rpc(
+                "snapshots.complete_multipart_upload".to_owned(),
+                Some(params),
+            )
+            .await?;
+        debug!("ZIP file upload complete");
+
+        // Mark snapshot as available
         let params = SnapshotStatusParams {
             snapshot_id,
             status: "available".to_owned(),
@@ -2956,6 +3477,13 @@ impl Client {
     /// * `output` - Local directory path to save downloaded files
     /// * `progress` - Optional channel to receive download progress updates
     ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded across all files combined. The total accumulates
+    /// as file sizes become known (from HTTP Content-Length headers), so both
+    /// `current` and `total` may increase during download.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -2976,8 +3504,18 @@ impl Client {
     /// // Download with progress tracking
     /// let (tx, mut rx) = mpsc::channel(1);
     /// tokio::spawn(async move {
-    ///     while let Some(Progress { current, total }) = rx.recv().await {
-    ///         println!("Download: {}/{} bytes", current, total);
+    ///     while let Some(Progress {
+    ///         current,
+    ///         total,
+    ///         status,
+    ///     }) = rx.recv().await
+    ///     {
+    ///         println!(
+    ///             "{}: {}/{} bytes",
+    ///             status.as_deref().unwrap_or("Download"),
+    ///             current,
+    ///             total
+    ///         );
     ///     }
     /// });
     /// client
@@ -2993,6 +3531,7 @@ impl Client {
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
     ///   dataset
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, progress)))]
     pub async fn download_snapshot(
         &self,
         snapshot_id: SnapshotID,
@@ -3035,6 +3574,7 @@ impl Client {
                             .send(Progress {
                                 current: current.load(Ordering::SeqCst),
                                 total: total + content_length,
+                                status: None,
                             })
                             .await;
                     }
@@ -3055,6 +3595,7 @@ impl Client {
                                 .send(Progress {
                                     current: current + len,
                                     total,
+                                    status: None,
                                 })
                                 .await;
                         }
@@ -3142,6 +3683,7 @@ impl Client {
     /// * [`download_snapshot`](Self::download_snapshot) - Download snapshot
     /// * [AGTG Documentation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self)))]
     pub async fn restore_snapshot(
         &self,
         project_id: ProjectID,
@@ -3272,9 +3814,13 @@ impl Client {
 
     /// Download the model artifact for the specified trainer session to the
     /// specified file path, if path is not provided it will be downloaded to
-    /// the current directory with the same filename.  A progress callback can
-    /// be provided to monitor the progress of the download over a watch
-    /// channel.
+    /// the current directory with the same filename.
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
+    /// header (may be 0 if server doesn't provide it).
     pub async fn download_artifact(
         &self,
         training_session_id: TrainingSessionID,
@@ -3305,7 +3851,13 @@ impl Client {
 
         if let Some(progress) = progress {
             let total = resp.content_length().unwrap_or(0) as usize;
-            let _ = progress.send(Progress { current: 0, total }).await;
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: None,
+                })
+                .await;
 
             let mut file = File::create(filename).await?;
             let mut current = 0;
@@ -3315,7 +3867,13 @@ impl Client {
                 let chunk = item?;
                 file.write_all(&chunk).await?;
                 current += chunk.len();
-                let _ = progress.send(Progress { current, total }).await;
+                let _ = progress
+                    .send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
         } else {
             let body = resp.bytes().await?;
@@ -3327,13 +3885,17 @@ impl Client {
 
     /// Download the model checkpoint associated with the specified trainer
     /// session to the specified file path, if path is not provided it will be
-    /// downloaded to the current directory with the same filename.  A progress
-    /// callback can be provided to monitor the progress of the download over a
-    /// watch channel.
+    /// downloaded to the current directory with the same filename.
     ///
     /// There is no API for listing checkpoints it is expected that trainers are
     /// aware of possible checkpoints and their names within the checkpoint
     /// folder on the server.
+    ///
+    /// # Progress
+    ///
+    /// Reports progress with `status: None` as file data is received. Progress
+    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
+    /// header (may be 0 if server doesn't provide it).
     pub async fn download_checkpoint(
         &self,
         training_session_id: TrainingSessionID,
@@ -3364,7 +3926,13 @@ impl Client {
 
         if let Some(progress) = progress {
             let total = resp.content_length().unwrap_or(0) as usize;
-            let _ = progress.send(Progress { current: 0, total }).await;
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total,
+                    status: None,
+                })
+                .await;
 
             let mut file = File::create(filename).await?;
             let mut current = 0;
@@ -3374,7 +3942,13 @@ impl Client {
                 let chunk = item?;
                 file.write_all(&chunk).await?;
                 current += chunk.len();
-                let _ = progress.send(Progress { current, total }).await;
+                let _ = progress
+                    .send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    })
+                    .await;
             }
         } else {
             let body = resp.bytes().await?;
@@ -3569,6 +4143,7 @@ impl Client {
     ///
     /// NOTE: This API would generally not be called directly and instead users
     /// should use the higher-level methods provided by the client.
+    #[cfg_attr(feature = "tracy", tracing::instrument(skip(self, params), fields(method = %method)))]
     pub async fn rpc<Params, RpcResult>(
         &self,
         method: String,
@@ -3598,7 +4173,7 @@ impl Client {
         let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(3usize);
+            .unwrap_or(5usize);
 
         let url = format!("{}/api", self.url);
 
@@ -3621,8 +4196,13 @@ impl Client {
 
         for attempt in 0..=max_retries {
             if attempt > 0 {
-                // Exponential backoff: 1s, 2s, 4s, 8s, ...
-                let delay = Duration::from_secs(1 << (attempt - 1).min(4));
+                // Exponential backoff with jitter: base delay * 2^attempt, capped at 30s
+                // Jitter: randomize between 100%-150% of base delay to avoid thundering herd
+                // while ensuring we never retry faster than the base delay
+                let base_delay_secs = (1u64 << (attempt - 1).min(5)).min(30);
+                let jitter_factor = 1.0 + (rand::random::<f64>() * 0.5); // 1.0 to 1.5
+                let delay_ms = (base_delay_secs as f64 * 1000.0 * jitter_factor) as u64;
+                let delay = Duration::from_millis(delay_ms);
                 warn!(
                     "Retry {}/{} for RPC '{}' after {:?}",
                     attempt, max_retries, method, delay
@@ -3816,6 +4396,7 @@ where
                         .send(Progress {
                             current: current + 1,
                             total,
+                            status: None,
                         })
                         .await;
                 }
@@ -3869,17 +4450,18 @@ async fn upload_multipart(
     part: SnapshotPart,
     path: PathBuf,
     total: usize,
-    current: Arc<AtomicUsize>,
+    confirmed_bytes: Arc<AtomicUsize>,
     progress: Option<Sender<Progress>>,
 ) -> Result<SnapshotCompleteMultipartParams, Error> {
     let filesize = path.metadata()?.len() as usize;
     let n_parts = filesize.div_ceil(PART_SIZE);
-    let sem = Arc::new(Semaphore::new(max_tasks()));
+    let sem = Arc::new(Semaphore::new(max_upload_tasks()));
 
     let key = part.key.ok_or(Error::InvalidResponse)?;
     let upload_id = part.upload_id;
 
     let urls = part.urls.clone();
+
     // Pre-allocate ETag slots for all parts
     let etags = Arc::new(tokio::sync::Mutex::new(vec![
         EtagPart {
@@ -3889,39 +4471,74 @@ async fn upload_multipart(
         n_parts
     ]));
 
+    // Per-part byte counters for streaming progress (reset on retry)
+    let part_bytes: Arc<Vec<AtomicUsize>> = Arc::new(
+        (0..n_parts)
+            .map(|_| AtomicUsize::new(0))
+            .collect::<Vec<_>>(),
+    );
+
     // Upload all parts in parallel with concurrency limiting
     let tasks = (0..n_parts)
-        .map(|part| {
+        .map(|part_idx| {
             let http = http.clone();
-            let url = urls[part].clone();
+            let url = urls[part_idx].clone();
             let etags = etags.clone();
             let path = path.to_owned();
             let sem = sem.clone();
             let progress = progress.clone();
-            let current = current.clone();
+            let confirmed_bytes = confirmed_bytes.clone();
+            let part_bytes = part_bytes.clone();
+
+            // Calculate this part's size
+            let part_size = if part_idx + 1 == n_parts && !filesize.is_multiple_of(PART_SIZE) {
+                filesize % PART_SIZE
+            } else {
+                PART_SIZE
+            };
 
             tokio::spawn(async move {
                 // Acquire semaphore permit to limit concurrent uploads
-                let _permit = sem.acquire().await?;
+                let _permit = sem.acquire().await.map_err(|_| {
+                    Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                })?;
 
-                // Upload part (retry is handled by reqwest client)
-                let etag =
-                    upload_part(http.clone(), url.clone(), path.clone(), part, n_parts).await?;
+                // Upload part with streaming progress and retry logic
+                let etag = upload_part_with_progress(
+                    http,
+                    url,
+                    path,
+                    part_idx,
+                    n_parts,
+                    part_size,
+                    total,
+                    confirmed_bytes.clone(),
+                    part_bytes.clone(),
+                    progress.clone(),
+                )
+                .await?;
 
                 // Store ETag for this part (needed to complete multipart upload)
-                let mut etags = etags.lock().await;
-                etags[part] = EtagPart {
+                let mut etags_guard = etags.lock().await;
+                etags_guard[part_idx] = EtagPart {
                     etag,
-                    part_number: part + 1,
+                    part_number: part_idx + 1,
                 };
 
-                // Update progress counter
-                let current = current.fetch_add(PART_SIZE, Ordering::SeqCst);
+                // Part completed successfully - add to confirmed bytes
+                confirmed_bytes.fetch_add(part_size, Ordering::SeqCst);
+                // Reset part counter since it's now confirmed
+                part_bytes[part_idx].store(0, Ordering::SeqCst);
+
+                // Send final progress update for this part
                 if let Some(progress) = &progress {
+                    let current = confirmed_bytes.load(Ordering::SeqCst)
+                        + part_bytes.iter().map(|p| p.load(Ordering::SeqCst)).sum::<usize>();
                     let _ = progress
                         .send(Progress {
-                            current: current + PART_SIZE,
+                            current,
                             total,
+                            status: None,
                         })
                         .await;
                 }
@@ -3931,9 +4548,11 @@ async fn upload_multipart(
         })
         .collect::<Vec<_>>();
 
-    // Wait for all parts to complete
+    // Wait for all parts to complete (double collect to handle both JoinError and inner Error)
     join_all(tasks)
         .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -3944,30 +4563,136 @@ async fn upload_multipart(
     })
 }
 
-async fn upload_part(
+/// Upload a single part with streaming progress tracking and retry logic.
+///
+/// Progress is reported continuously as bytes are sent. On retry, the part's
+/// progress counter is reset to avoid over-reporting.
+async fn upload_part_with_progress(
     http: reqwest::Client,
     url: String,
     path: PathBuf,
-    part: usize,
+    part_idx: usize,
     n_parts: usize,
+    part_size: usize,
+    total: usize,
+    confirmed_bytes: Arc<AtomicUsize>,
+    part_bytes: Arc<Vec<AtomicUsize>>,
+    progress: Option<Sender<Progress>>,
+) -> Result<String, Error> {
+    let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3usize);
+
+    let mut last_error: Option<Error> = None;
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            // Reset this part's progress counter before retry
+            part_bytes[part_idx].store(0, Ordering::SeqCst);
+
+            // Exponential backoff: 1s, 2s, 4s, 8s, ...
+            let delay = Duration::from_secs(1 << (attempt - 1).min(4));
+            warn!(
+                "Retry {}/{} for part {} after {:?}",
+                attempt, max_retries, part_idx, delay
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        match upload_part_streaming(
+            http.clone(),
+            url.clone(),
+            path.clone(),
+            part_idx,
+            n_parts,
+            part_size,
+            total,
+            confirmed_bytes.clone(),
+            part_bytes.clone(),
+            progress.clone(),
+        )
+        .await
+        {
+            Ok(etag) => return Ok(etag),
+            Err(e) => {
+                // Check if error is retryable
+                let is_retryable = matches!(
+                    &e,
+                    Error::HttpError(re) if re.is_timeout() || re.is_connect() ||
+                        re.status().map(|s: reqwest::StatusCode| s.as_u16()).unwrap_or(0) >= 500
+                );
+
+                if is_retryable && attempt < max_retries {
+                    last_error = Some(e);
+                    continue;
+                }
+
+                return Err(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        Error::IoError(std::io::Error::other("Upload failed after retries"))
+    }))
+}
+
+/// Perform the actual upload with streaming progress.
+async fn upload_part_streaming(
+    http: reqwest::Client,
+    url: String,
+    path: PathBuf,
+    part_idx: usize,
+    n_parts: usize,
+    _part_size: usize,
+    total: usize,
+    confirmed_bytes: Arc<AtomicUsize>,
+    part_bytes: Arc<Vec<AtomicUsize>>,
+    progress: Option<Sender<Progress>>,
 ) -> Result<String, Error> {
     let filesize = path.metadata()?.len() as usize;
-    let mut file = File::open(path).await?;
-    file.seek(SeekFrom::Start((part * PART_SIZE) as u64))
+    let mut file = File::open(&path).await?;
+    file.seek(SeekFrom::Start((part_idx * PART_SIZE) as u64))
         .await?;
     let file = file.take(PART_SIZE as u64);
 
-    let body_length = if part + 1 == n_parts {
+    let body_length = if part_idx + 1 == n_parts && !filesize.is_multiple_of(PART_SIZE) {
         filesize % PART_SIZE
     } else {
         PART_SIZE
     };
 
+    // Create stream with progress tracking
     let stream = FramedRead::new(file, BytesCodec::new());
-    let body = Body::wrap_stream(stream);
+
+    // Wrap stream to track bytes sent and report progress
+    let progress_stream = stream.map(move |result| {
+        if let Ok(ref bytes) = result {
+            let bytes_len = bytes.len();
+            part_bytes[part_idx].fetch_add(bytes_len, Ordering::SeqCst);
+
+            // Send progress update (fire-and-forget via try_send to avoid blocking)
+            if let Some(ref progress) = progress {
+                let current = confirmed_bytes.load(Ordering::SeqCst)
+                    + part_bytes.iter().map(|p| p.load(Ordering::SeqCst)).sum::<usize>();
+                // Best-effort progress reporting: use try_send to avoid blocking.
+                // If the channel is full or closed, we intentionally skip this update
+                // to avoid stalling the upload; subsequent updates will still be delivered.
+                let _ = progress.try_send(Progress {
+                    current,
+                    total,
+                    status: None,
+                });
+            }
+        }
+        result.map(|b| b.freeze())
+    });
+
+    let body = Body::wrap_stream(progress_stream);
 
     let resp = http
-        .put(url.clone())
+        .put(url)
         .header(CONTENT_LENGTH, body_length)
         .body(body)
         .send()
@@ -4015,6 +4740,133 @@ async fn upload_file_to_presigned_url(
     let file_size = file_data.len();
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
+    let mut last_error: Option<Error> = None;
+
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            // Exponential backoff: 1s, 2s, 4s, 8s, ...
+            let delay = Duration::from_secs(1 << (attempt - 1).min(4));
+            warn!(
+                "Retry {}/{} for upload '{}' after {:?}",
+                attempt, max_retries, filename, delay
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        // Attempt upload
+        let result = http
+            .put(url)
+            .header(CONTENT_LENGTH, file_size)
+            .body(file_data.clone())
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if attempt > 0 {
+                        debug!(
+                            "Upload '{}' succeeded on retry {} ({} bytes)",
+                            filename, attempt, file_size
+                        );
+                    } else {
+                        debug!(
+                            "Successfully uploaded file: {} ({} bytes)",
+                            filename, file_size
+                        );
+                    }
+                    return Ok(());
+                }
+
+                let status = resp.status();
+                let status_code = status.as_u16();
+
+                // Check if error is retryable
+                let is_retryable =
+                    matches!(status_code, 408 | 429 | 500 | 502 | 503 | 504 | 409 | 423);
+
+                if is_retryable && attempt < max_retries {
+                    let error_text = resp.text().await.unwrap_or_default();
+                    warn!(
+                        "Upload '{}' failed with HTTP {} (retryable): {}",
+                        filename, status_code, error_text
+                    );
+                    last_error = Some(Error::InvalidParameters(format!(
+                        "Upload failed: HTTP {} - {}",
+                        status, error_text
+                    )));
+                    continue;
+                }
+
+                // Non-retryable error or max retries exceeded
+                let error_text = resp.text().await.unwrap_or_default();
+                if attempt > 0 {
+                    error!(
+                        "Upload '{}' failed after {} retries: HTTP {} - {}",
+                        filename, attempt, status, error_text
+                    );
+                }
+                return Err(Error::InvalidParameters(format!(
+                    "Upload failed: HTTP {} - {}",
+                    status, error_text
+                )));
+            }
+            Err(e) => {
+                // Transport error (timeout, connection failure, etc.)
+                let is_timeout = e.is_timeout();
+                let is_connect = e.is_connect();
+
+                if (is_timeout || is_connect) && attempt < max_retries {
+                    warn!(
+                        "Upload '{}' transport error (retrying): {}",
+                        filename,
+                        if is_timeout {
+                            "timeout"
+                        } else {
+                            "connection failed"
+                        }
+                    );
+                    last_error = Some(Error::HttpError(e));
+                    continue;
+                }
+
+                // Non-retryable or max retries exceeded
+                if attempt > 0 {
+                    error!(
+                        "Upload '{}' failed after {} retries: {}",
+                        filename, attempt, e
+                    );
+                }
+                return Err(Error::HttpError(e));
+            }
+        }
+    }
+
+    // Should not reach here, but return last error if we do
+    Err(last_error.unwrap_or_else(|| {
+        Error::InvalidParameters(format!("Upload failed after {} retries", max_retries))
+    }))
+}
+
+/// Upload bytes directly to a presigned S3 URL using HTTP PUT.
+///
+/// This is used for populate_samples to upload file content from memory
+/// (e.g., from ZIP archives) without writing to disk first.
+///
+/// Includes explicit retry logic with exponential backoff for transient
+/// failures.
+async fn upload_bytes_to_presigned_url(
+    http: reqwest::Client,
+    url: &str,
+    file_data: Vec<u8>,
+    filename: &str,
+) -> Result<(), Error> {
+    let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3usize);
+
+    let file_size = file_data.len();
     let mut last_error: Option<Error> = None;
 
     for attempt in 0..=max_retries {

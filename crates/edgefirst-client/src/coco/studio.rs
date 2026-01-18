@@ -266,7 +266,13 @@ fn log_nothing_to_import(skipped: usize) {
 /// Send progress update.
 async fn send_progress(progress: &Option<Sender<Progress>>, current: usize, total: usize) {
     if let Some(p) = progress {
-        let _ = p.send(Progress { current, total }).await;
+        let _ = p
+            .send(Progress {
+                current,
+                total,
+                status: None,
+            })
+            .await;
     }
 }
 
@@ -769,6 +775,7 @@ async fn download_images(
                 .send(Progress {
                     current: i + 1,
                     total,
+                    status: None,
                 })
                 .await;
         }
@@ -1251,6 +1258,7 @@ pub async fn update_coco_annotations(
             .send(Progress {
                 current: 0,
                 total: to_update,
+                status: None,
             })
             .await;
     }
@@ -1279,6 +1287,7 @@ pub async fn update_coco_annotations(
             .send(Progress {
                 current: to_update / 2,
                 total: to_update,
+                status: None,
             })
             .await;
     }
@@ -1300,6 +1309,7 @@ pub async fn update_coco_annotations(
             .send(Progress {
                 current: to_update,
                 total: to_update,
+                status: None,
             })
             .await;
     }

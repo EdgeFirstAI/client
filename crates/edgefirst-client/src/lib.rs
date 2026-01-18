@@ -59,6 +59,8 @@ pub mod coco;
 mod dataset;
 mod error;
 pub mod format;
+#[cfg(feature = "tracy")]
+pub mod instrument;
 mod retry;
 mod storage;
 
