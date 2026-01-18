@@ -4220,7 +4220,7 @@ impl Client {
         self.rpc_without_auth(method, params).await
     }
 
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method, request = tracing::field::Empty, response = tracing::field::Empty)))]
     async fn rpc_without_auth<Params, RpcResult>(
         &self,
         method: String,
@@ -4244,22 +4244,27 @@ impl Client {
             ..Default::default()
         };
 
+        // Log request for debugging (log crate) and profiling (tracing crate)
+        let request_json = if method == "auth.login" {
+            // Redact auth.login params (contains password)
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": &method,
+                "params": "[REDACTED - contains credentials]",
+                "id": request.id
+            })
+            .to_string()
+        } else {
+            serde_json::to_string(&request)?
+        };
+
         if log_enabled!(Level::Trace) {
-            // Redact sensitive data from log output
-            let log_request = if method == "auth.login" {
-                // Don't log auth.login params (contains password)
-                serde_json::json!({
-                    "method": &method,
-                    "params": "[REDACTED - contains credentials]"
-                })
-            } else {
-                serde_json::to_value(&request)?
-            };
-            trace!(
-                "RPC Request: {}",
-                serde_json::ser::to_string_pretty(&log_request)?
-            );
+            trace!("RPC Request: {}", request_json);
         }
+
+        // Record request on current span for Perfetto when profiling is enabled
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("request", &request_json);
 
         let request_body = serde_json::to_vec(&request)?;
         let mut last_error: Option<Error> = None;
@@ -4369,9 +4374,27 @@ impl Client {
         RpcResult: DeserializeOwned,
     {
         let body = res.bytes().await?;
+        let response_str = String::from_utf8_lossy(&body);
 
         if log_enabled!(Level::Trace) {
-            trace!("RPC Response: {}", String::from_utf8_lossy(&body));
+            trace!("RPC Response: {}", response_str);
+        }
+
+        // Record response on current span for Perfetto when profiling is enabled
+        // Truncate large responses to avoid bloating trace files
+        #[cfg(feature = "profiling")]
+        {
+            const MAX_RESPONSE_LEN: usize = 4096;
+            let truncated = if response_str.len() > MAX_RESPONSE_LEN {
+                format!(
+                    "{}...[truncated {} bytes]",
+                    &response_str[..MAX_RESPONSE_LEN],
+                    response_str.len() - MAX_RESPONSE_LEN
+                )
+            } else {
+                response_str.to_string()
+            };
+            tracing::Span::current().record("response", &truncated);
         }
 
         let response: RpcResponse<RpcResult> = match serde_json::from_slice(&body) {
