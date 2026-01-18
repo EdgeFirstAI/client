@@ -1564,7 +1564,7 @@ impl Client {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, groups, file_types, progress), fields(dataset_id = %dataset_id, output = %output.display())))]
     pub async fn download_dataset(
         &self,
         dataset_id: DatasetID,
@@ -2092,7 +2092,7 @@ impl Client {
         }
     }
 
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotation_types, groups, types), fields(dataset_id = %dataset_id, annotation_set_id = ?annotation_set_id)))]
     pub async fn samples_count(
         &self,
         dataset_id: DatasetID,
@@ -2138,7 +2138,7 @@ impl Client {
     /// # Returns
     ///
     /// Vector of [`Sample`] objects with metadata and optionally annotations.
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotation_types, groups, types, progress), fields(dataset_id = %dataset_id, annotation_set_id = ?annotation_set_id)))]
     pub async fn samples(
         &self,
         dataset_id: DatasetID,
@@ -3574,7 +3574,7 @@ impl Client {
     /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
     ///   dataset
     /// * [`delete_snapshot`](Self::delete_snapshot) - Delete snapshot
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(snapshot_id = %snapshot_id, output = %output.display())))]
     pub async fn download_snapshot(
         &self,
         snapshot_id: SnapshotID,
@@ -4220,6 +4220,7 @@ impl Client {
         self.rpc_without_auth(method, params).await
     }
 
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method)))]
     async fn rpc_without_auth<Params, RpcResult>(
         &self,
         method: String,

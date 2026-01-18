@@ -9,7 +9,6 @@
 //! # Features
 //!
 //! - `profiling` - Base feature enabling tracing spans (no backend)
-//! - `tracy` - Tracy real-time profiler backend (includes `profiling`)
 //! - `trace-file` - Trace file output in Chrome JSON (.json) or Perfetto (.pftrace) format
 //!
 //! # Usage

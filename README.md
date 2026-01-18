@@ -124,6 +124,30 @@ cargo build --release
 - **Python**: 3.8+ (for Python bindings)
 - **Network**: Access to EdgeFirst Studio (*.edgefirst.studio)
 
+### Performance Profiling
+
+EdgeFirst Client includes optional profiling instrumentation for performance analysis and debugging.
+
+**Build with tracing support:**
+
+```bash
+cargo build --release --features trace-file
+```
+
+**Generate trace files:**
+
+Use `--trace-file` to capture execution traces. Format is determined by file extension:
+
+```bash
+# Chrome JSON format (viewable in Perfetto UI)
+edgefirst-client --trace-file trace.json download-dataset ds-123 ./output
+
+# Native Perfetto format (smaller files, also viewable in Perfetto UI)
+edgefirst-client --trace-file trace.pftrace download-dataset ds-123 ./output
+```
+
+View traces at https://ui.perfetto.dev/ by dragging the file into the browser. Traces capture function call hierarchy, timing, and parameters like dataset IDs and RPC method names.
+
 ## Quick Start
 
 ### CLI Authentication

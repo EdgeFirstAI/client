@@ -2671,7 +2671,7 @@ fn build_samples_from_directory(
 }
 
 #[cfg(feature = "polars")]
-#[cfg_attr(feature = "tracy", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
+#[cfg_attr(feature = "profiling", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
 async fn handle_upload_dataset(
     client: &Client,
     dataset_id: String,
@@ -2686,7 +2686,7 @@ async fn handle_upload_dataset(
         ));
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _resolve_span = tracing::info_span!("resolve_annotation_set").entered();
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.clone().try_into()?;
@@ -2718,7 +2718,7 @@ async fn handle_upload_dataset(
         None
     };
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_resolve_span);
 
     // Warning: annotation_set_id provided but no annotations
@@ -2731,7 +2731,7 @@ async fn handle_upload_dataset(
     // Determine images path
     let images_path = determine_images_path(&annotations, &images)?;
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _prep_span = tracing::info_span!("preparation").entered();
 
     // Create a spinner for the preparation phase
@@ -2746,19 +2746,19 @@ async fn handle_upload_dataset(
     // Parse annotations from Arrow if provided, or build samples from directory
     let should_upload_annotations = annotations.is_some() && annotation_set_id.is_some();
     let mut samples = if annotations.is_some() {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _arrow_span = tracing::info_span!("parse_arrow").entered();
         prep_bar.set_message("Reading Arrow file...");
         parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations, &prep_bar)?
     } else {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _scan_span = tracing::info_span!("scan_directory").entered();
         prep_bar.set_message("Scanning directory for images...");
         build_samples_from_directory(&images_path, &prep_bar)?
     };
     prep_bar.finish_and_clear();
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_prep_span);
 
     if samples.is_empty() {
@@ -2822,7 +2822,7 @@ async fn handle_upload_dataset(
         batches.len()
     );
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     let _upload_span = tracing::info_span!(
         "upload",
         total_batches = batches.len(),
@@ -2831,12 +2831,12 @@ async fn handle_upload_dataset(
     .entered();
 
     for (_batch_num, batch) in batches.iter().enumerate() {
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let batch_num = _batch_num; // Shadow with non-underscore name for Tracy
 
         let batch_size = batch.len();
 
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "profiling")]
         let _batch_span =
             tracing::info_span!("batch", batch_num = batch_num + 1, size = batch_size).entered();
 
@@ -2855,7 +2855,7 @@ async fn handle_upload_dataset(
         offset.fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "profiling")]
     drop(_upload_span);
 
     drop(tx);
@@ -4522,11 +4522,6 @@ enum TraceGuard {
 
 /// Initialize logging/tracing based on feature flags and runtime configuration.
 ///
-/// When the `tracy` feature is enabled:
-/// - Uses `tracing` crate with a fmt layer for console output
-/// - Adds TracyLayer when `TRACY_ENABLE=1` environment variable is set
-/// - Adds trace layer when `--trace-file` argument or `TRACE_FILE` env is set
-///
 /// Trace file format is determined by extension:
 /// - `.json` → Chrome JSON format (viewable in Perfetto UI and Chrome tracing)
 /// - `.pftrace` → Native Perfetto format (viewable in Perfetto UI)
@@ -4554,102 +4549,45 @@ fn init_tracing(args: &Args) -> Option<TraceGuard> {
         .with_target(false)
         .with_filter(filter);
 
-    // Check for Tracy profiling
-    #[cfg(feature = "tracy")]
-    let tracy_enabled = std::env::var("TRACY_ENABLE")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-    #[cfg(not(feature = "tracy"))]
-    let tracy_enabled = false;
-
     // Check for trace file output and determine format
-    let trace_config = args.trace_file.as_ref().map(|path| {
-        let format = TraceFormat::from_path(path);
-        (path.clone(), format)
-    });
+    match args.trace_file.as_ref() {
+        Some(path) => {
+            match TraceFormat::from_path(path) {
+                TraceFormat::ChromeJson => {
+                    // Chrome JSON trace file
+                    let writer = ChromeJsonWriter::new(path).expect("Failed to create trace file");
+                    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                        .writer(writer)
+                        .include_args(true)
+                        .build();
 
-    // Build subscriber with enabled layers based on configuration
-    match (tracy_enabled, trace_config) {
-        #[cfg(feature = "tracy")]
-        (true, Some((path, TraceFormat::ChromeJson))) => {
-            // Tracy + Chrome JSON trace file
-            let _client = tracy_client::Client::start();
-            let writer = ChromeJsonWriter::new(&path).expect("Failed to create trace file");
-            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                .writer(writer)
-                .include_args(true)
-                .build();
+                    tracing_subscriber::registry()
+                        .with(fmt_layer)
+                        .with(chrome_layer)
+                        .init();
 
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tracing_tracy::TracyLayer::default())
-                .with(chrome_layer)
-                .init();
+                    eprintln!("Trace output (Chrome JSON): {}", path.display());
+                    Some(TraceGuard::Chrome(guard))
+                }
+                TraceFormat::Perfetto => {
+                    // Native Perfetto trace file
+                    let file = std::fs::File::create(path).expect("Failed to create trace file");
+                    let perfetto_layer =
+                        tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file))
+                            .with_debug_annotations(true); // Enable span field capture
 
-            eprintln!("Tracy profiling enabled");
-            eprintln!("Trace output (Chrome JSON): {}", path.display());
-            Some(TraceGuard::Chrome(guard))
+                    tracing_subscriber::registry()
+                        .with(fmt_layer)
+                        .with(perfetto_layer)
+                        .init();
+
+                    eprintln!("Trace output (Perfetto native): {}", path.display());
+                    Some(TraceGuard::Perfetto)
+                }
+            }
         }
-        #[cfg(feature = "tracy")]
-        (true, Some((path, TraceFormat::Perfetto))) => {
-            // Tracy + native Perfetto trace file
-            let _client = tracy_client::Client::start();
-            let file = std::fs::File::create(&path).expect("Failed to create trace file");
-            let perfetto_layer = tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file));
-
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tracing_tracy::TracyLayer::default())
-                .with(perfetto_layer)
-                .init();
-
-            eprintln!("Tracy profiling enabled");
-            eprintln!("Trace output (Perfetto native): {}", path.display());
-            Some(TraceGuard::Perfetto)
-        }
-        #[cfg(feature = "tracy")]
-        (true, None) => {
-            // Tracy only, no trace file
-            let _client = tracy_client::Client::start();
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tracing_tracy::TracyLayer::default())
-                .init();
-
-            eprintln!("Tracy profiling enabled");
-            None
-        }
-        (false, Some((path, TraceFormat::ChromeJson))) => {
-            // Chrome JSON trace file only
-            let writer = ChromeJsonWriter::new(&path).expect("Failed to create trace file");
-            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                .writer(writer)
-                .include_args(true)
-                .build();
-
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(chrome_layer)
-                .init();
-
-            eprintln!("Trace output (Chrome JSON): {}", path.display());
-            Some(TraceGuard::Chrome(guard))
-        }
-        (false, Some((path, TraceFormat::Perfetto))) => {
-            // Native Perfetto trace file only
-            let file = std::fs::File::create(&path).expect("Failed to create trace file");
-            let perfetto_layer = tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file));
-
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(perfetto_layer)
-                .init();
-
-            eprintln!("Trace output (Perfetto native): {}", path.display());
-            Some(TraceGuard::Perfetto)
-        }
-        _ => {
-            // No profiling backends, just fmt layer
+        None => {
+            // No trace file, just fmt layer
             tracing_subscriber::registry().with(fmt_layer).init();
             None
         }
@@ -4676,27 +4614,7 @@ fn init_tracing(args: &Args) -> Option<()> {
         .with_target(false)
         .with_filter(filter);
 
-    // Check for Tracy profiling
-    #[cfg(feature = "tracy")]
-    let tracy_enabled = std::env::var("TRACY_ENABLE")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-    #[cfg(not(feature = "tracy"))]
-    let tracy_enabled = false;
-
-    if tracy_enabled {
-        #[cfg(feature = "tracy")]
-        {
-            let _client = tracy_client::Client::start();
-            tracing_subscriber::registry()
-                .with(fmt_layer)
-                .with(tracing_tracy::TracyLayer::default())
-                .init();
-            eprintln!("Tracy profiling enabled");
-        }
-    } else {
-        tracing_subscriber::registry().with(fmt_layer).init();
-    }
+    tracing_subscriber::registry().with(fmt_layer).init();
 
     None
 }
