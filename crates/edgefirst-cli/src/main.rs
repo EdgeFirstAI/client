@@ -4485,8 +4485,12 @@ impl std::io::Write for ChromeJsonWriter {
 impl Drop for ChromeJsonWriter {
     fn drop(&mut self) {
         // tracing-chrome ends with "\n]", we append the closing brace
-        let _ = std::io::Write::write_all(&mut self.inner, b"}");
-        let _ = std::io::Write::flush(&mut self.inner);
+        if let Err(e) = std::io::Write::write_all(&mut self.inner, b"}") {
+            eprintln!("Warning: Failed to write trace file footer: {e}");
+        }
+        if let Err(e) = std::io::Write::flush(&mut self.inner) {
+            eprintln!("Warning: Failed to flush trace file: {e}");
+        }
     }
 }
 
@@ -4555,34 +4559,56 @@ fn init_tracing(args: &Args) -> Option<TraceGuard> {
             match TraceFormat::from_path(path) {
                 TraceFormat::ChromeJson => {
                     // Chrome JSON trace file
-                    let writer = ChromeJsonWriter::new(path).expect("Failed to create trace file");
-                    let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                        .writer(writer)
-                        .include_args(true)
-                        .build();
+                    match ChromeJsonWriter::new(path) {
+                        Ok(writer) => {
+                            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                                .writer(writer)
+                                .include_args(true)
+                                .build();
 
-                    tracing_subscriber::registry()
-                        .with(fmt_layer)
-                        .with(chrome_layer)
-                        .init();
+                            tracing_subscriber::registry()
+                                .with(fmt_layer)
+                                .with(chrome_layer)
+                                .init();
 
-                    eprintln!("Trace output (Chrome JSON): {}", path.display());
-                    Some(TraceGuard::Chrome(guard))
+                            eprintln!("Trace output (Chrome JSON): {}", path.display());
+                            Some(TraceGuard::Chrome(guard))
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to create trace file '{}': {e}",
+                                path.display()
+                            );
+                            tracing_subscriber::registry().with(fmt_layer).init();
+                            None
+                        }
+                    }
                 }
                 TraceFormat::Perfetto => {
                     // Native Perfetto trace file
-                    let file = std::fs::File::create(path).expect("Failed to create trace file");
-                    let perfetto_layer =
-                        tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file))
-                            .with_debug_annotations(true); // Enable span field capture
+                    match std::fs::File::create(path) {
+                        Ok(file) => {
+                            let perfetto_layer =
+                                tracing_perfetto::PerfettoLayer::new(std::sync::Mutex::new(file))
+                                    .with_debug_annotations(true); // Enable span field capture
 
-                    tracing_subscriber::registry()
-                        .with(fmt_layer)
-                        .with(perfetto_layer)
-                        .init();
+                            tracing_subscriber::registry()
+                                .with(fmt_layer)
+                                .with(perfetto_layer)
+                                .init();
 
-                    eprintln!("Trace output (Perfetto native): {}", path.display());
-                    Some(TraceGuard::Perfetto)
+                            eprintln!("Trace output (Perfetto native): {}", path.display());
+                            Some(TraceGuard::Perfetto)
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to create trace file '{}': {e}",
+                                path.display()
+                            );
+                            tracing_subscriber::registry().with(fmt_layer).init();
+                            None
+                        }
+                    }
                 }
             }
         }

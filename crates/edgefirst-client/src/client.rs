@@ -4386,10 +4386,12 @@ impl Client {
         {
             const MAX_RESPONSE_LEN: usize = 4096;
             let truncated = if response_str.len() > MAX_RESPONSE_LEN {
+                // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 chars
+                let safe_end = response_str.floor_char_boundary(MAX_RESPONSE_LEN);
                 format!(
                     "{}...[truncated {} bytes]",
-                    &response_str[..MAX_RESPONSE_LEN],
-                    response_str.len() - MAX_RESPONSE_LEN
+                    &response_str[..safe_end],
+                    response_str.len() - safe_end
                 )
             } else {
                 response_str.to_string()
