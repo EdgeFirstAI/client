@@ -44,7 +44,7 @@ format: rust-format py-format swift-format
 # Format Rust code
 rust-format:
 	@echo "Formatting Rust code..."
-	cargo +nightly fmt --all
+	cargo fmt --all
 
 # Format Python code
 py-format:
@@ -233,7 +233,7 @@ install-deps:
 	@echo "Installing development dependencies..."
 	@echo "Installing Rust tools..."
 	@rustup component add rustfmt clippy
-	@rustup toolchain install nightly --component rustfmt
+	@echo "  (nightly toolchain no longer required for formatting)"
 	@echo "Installing Python tools..."
 	@if [ -d venv ]; then \
 		venv/bin/pip install --upgrade pip; \

@@ -34,7 +34,7 @@ This document provides a comprehensive overview of the GitHub Actions workflows 
 
 ```
 test.yml
-├── lint-and-test (uses nightly rust)
+├── lint-and-test (uses stable rust)
 │   ├── Check formatting (cargo fmt)
 │   ├── Run clippy linter
 │   ├── Run Rust tests with coverage (cargo nextest)
@@ -54,8 +54,8 @@ test.yml
 
 **Key Features**:
 
-- **Merged lint and test jobs**: Both use nightly rust, share single cache for maximum efficiency
-- **Audit uses stable rust**: Matches distributed binaries for security vulnerability scanning
+- **Merged lint and test jobs**: Both use stable rust, share single cache for maximum efficiency
+- **Audit uses stable rust**: All jobs now use stable toolchain consistently
 - **Intelligent caching**: Swatinem/rust-cache with incremental compilation support
 - **Enhanced test reporting**: cargo-nextest with JUnit XML output
 - **Separate coverage tracking**: Rust (lcov) and Python (XML) uploaded to Codecov
@@ -274,7 +274,7 @@ cache:
 
 **Cache Key Strategy**: Each workflow/job has a unique cache key to avoid conflicts:
 
-- **Lint & Test**: `nightly-lint-test` (nightly toolchain for all checks and tests)
+- **Lint & Test**: `stable-lint-test` (stable toolchain for all checks and tests)
 - **Build (CLI + Python)**: `{target}-build` (per-target architecture, shared between CLI and Python wheel builds)
 
 **Key Features**:
@@ -294,7 +294,7 @@ cache:
 
 **Design Decisions**:
 
-- Merged lint and test jobs since both use nightly toolchain, maximizing cache reuse
+- Merged lint and test jobs since both use stable toolchain, maximizing cache reuse
 - Merged Python wheels into build workflow to share cache with CLI builds (serial execution for incremental benefits)
 - Audit job uses stable rust to match distributed binaries (critical for security audits)
 - Direct triggers (push/PR) instead of workflow_run for simpler pipeline and parallel execution

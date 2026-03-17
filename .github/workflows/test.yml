@@ -756,25 +756,25 @@ jobs:
           path: swift-test-output.txt
           retention-days: 7
 
-  # Code formatting check (uses nightly for latest rustfmt features)
+  # Code formatting check (uses stable Rust)
   formatting:
     name: Code Formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Install nightly Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: nightly
+          toolchain: stable
           components: rustfmt
 
       - name: Check formatting
         id: fmt
         continue-on-error: true
         run: |
-          if ! cargo +nightly fmt --all -- --check; then
-            echo "::warning::Code formatting issues detected. Run 'cargo +nightly fmt --all' to fix."
+          if ! cargo fmt --all -- --check; then
+            echo "::warning::Code formatting issues detected. Run 'cargo fmt --all' to fix."
             exit 1
           fi
 
@@ -789,6 +789,6 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "To fix formatting issues, run:" >> $GITHUB_STEP_SUMMARY
             echo '```bash' >> $GITHUB_STEP_SUMMARY
-            echo "cargo +nightly fmt --all" >> $GITHUB_STEP_SUMMARY
+            echo "cargo fmt --all" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi

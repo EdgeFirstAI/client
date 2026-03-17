@@ -1122,12 +1122,14 @@ mod tests {
 
     #[test]
     fn test_bbox_validation_result_rates() {
-        let mut result = BboxValidationResult::default();
-        result.total_matched = 100;
-        result.total_unmatched = 10;
+        let mut result = BboxValidationResult {
+            total_matched: 100,
+            total_unmatched: 10,
+            sum_iou: 95.0,
+            ..Default::default()
+        };
         result.errors_by_range[0] = 350; // 350/400 = 87.5%
         result.errors_by_range[1] = 40;
-        result.sum_iou = 95.0;
 
         assert!((result.match_rate() - 0.909).abs() < 0.01);
         assert!((result.avg_iou() - 0.95).abs() < 0.01);
@@ -1143,20 +1145,24 @@ mod tests {
 
     #[test]
     fn test_bbox_validation_result_is_valid() {
-        let mut result = BboxValidationResult::default();
-        result.total_matched = 100;
+        let mut result = BboxValidationResult {
+            total_matched: 100,
+            sum_iou: 98.0,
+            ..Default::default()
+        };
         result.errors_by_range[0] = 400; // All within 1px
-        result.sum_iou = 98.0;
         assert!(result.is_valid());
     }
 
     #[test]
     fn test_bbox_validation_result_not_valid() {
-        let mut result = BboxValidationResult::default();
-        result.total_matched = 100;
-        result.total_unmatched = 50; // Low match rate
+        let mut result = BboxValidationResult {
+            total_matched: 100,
+            total_unmatched: 50, // Low match rate
+            sum_iou: 50.0,
+            ..Default::default()
+        };
         result.errors_by_range[0] = 200;
-        result.sum_iou = 50.0;
         assert!(!result.is_valid());
     }
 
@@ -1288,10 +1294,12 @@ mod tests {
             coco_annotation_count: 500,
             studio_annotation_count: 500,
             bbox_validation: {
-                let mut bv = BboxValidationResult::default();
-                bv.total_matched = 500;
+                let mut bv = BboxValidationResult {
+                    total_matched: 500,
+                    sum_iou: 495.0,
+                    ..Default::default()
+                };
                 bv.errors_by_range[0] = 2000; // All within 1px
-                bv.sum_iou = 495.0;
                 bv
             },
             mask_validation: {

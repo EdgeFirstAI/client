@@ -407,7 +407,7 @@ mod tests {
     fn test_polars_error_wrapping() {
         // 1. Create inner error - duplicate column names cause an error
         use polars::prelude::*;
-        let inner_err = DataFrame::new(vec![
+        let inner_err = DataFrame::new_infer_height(vec![
             Series::new("a".into(), &[1, 2, 3]).into(),
             Series::new("a".into(), &[4, 5, 6]).into(),
         ])

@@ -222,6 +222,7 @@ mod integration {
         let max_cost = scale; // Cost for non-matching (IoU = 0)
 
         let mut weights = Vec::with_capacity(size * size);
+        #[allow(clippy::needless_range_loop)]
         for i in 0..size {
             for j in 0..size {
                 let cost = if i < n && j < m {

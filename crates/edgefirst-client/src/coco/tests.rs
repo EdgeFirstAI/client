@@ -343,8 +343,8 @@ mod integration_tests {
 
         // Actually let's make it simpler - 10x10 with a 6x6 filled square
         // Rectangle from row 2, col 2 to row 7, col 7 (6x6 = 36 pixels)
-        let height = 10u32;
-        let width = 10u32;
+        let _height = 10u32;
+        let _width = 10u32;
 
         // Build RLE manually for this pattern
         // Column 0: all bg (10)
@@ -458,8 +458,8 @@ mod integration_tests {
         let index = CocoIndex::from_dataset(&dataset);
 
         // Test image lookup
-        assert!(index.images.get(&1).is_some());
-        assert!(index.images.get(&999).is_none());
+        assert!(index.images.contains_key(&1));
+        assert!(!index.images.contains_key(&999));
 
         // Test category lookup
         assert_eq!(index.label_name(10), Some("zebra"));

@@ -83,7 +83,7 @@ Follow the coding standards below:
 #### Rust Code
 
 - Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- Use `cargo +nightly fmt` for formatting (project uses nightly for formatting features)
+- Use `cargo fmt` for formatting (stable Rust toolchain)
 - Fix all `cargo clippy` warnings
 - Add doc comments for public APIs with runnable examples
 - Include examples in doc comments when helpful
@@ -137,8 +137,8 @@ python -m unittest discover -s . -p "test*.py"
 ### 5. Format Your Code
 
 ```bash
-# Rust (requires nightly)
-cargo +nightly fmt --all
+# Rust
+cargo fmt --all
 
 # Python
 ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi
@@ -256,7 +256,7 @@ Brief summary of what changed and why
 
 ### Rust-Specific
 
-- Use `cargo +nightly fmt --all` for formatting
+- Use `cargo fmt --all` for formatting
 - Run `cargo clippy --fix --allow-dirty --all-features --all-targets` before committing
 - Imports grouped by crate: `imports_granularity = 'Crate'` (rustfmt.toml)
 - Async-first design: All API calls are `async fn` using Tokio

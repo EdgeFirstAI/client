@@ -2217,19 +2217,23 @@ mod tests {
     fn test_build_sample_info_map_with_samples() {
         use crate::{Sample, SampleID};
 
-        let mut sample1 = Sample::default();
-        sample1.image_name = Some("sample1".to_string());
-        sample1.id = Some(SampleID::from(1));
-        sample1.width = Some(640);
-        sample1.height = Some(480);
-        sample1.group = Some("train".to_string());
+        let sample1 = Sample {
+            image_name: Some("sample1".to_string()),
+            id: Some(SampleID::from(1)),
+            width: Some(640),
+            height: Some(480),
+            group: Some("train".to_string()),
+            ..Default::default()
+        };
 
-        let mut sample2 = Sample::default();
-        sample2.image_name = Some("sample2".to_string());
-        sample2.id = Some(SampleID::from(2));
-        sample2.width = Some(1280);
-        sample2.height = Some(720);
-        sample2.group = None;
+        let sample2 = Sample {
+            image_name: Some("sample2".to_string()),
+            id: Some(SampleID::from(2)),
+            width: Some(1280),
+            height: Some(720),
+            group: None,
+            ..Default::default()
+        };
 
         let samples = vec![sample1, sample2];
         let map = build_sample_info_map(&samples);
@@ -2256,21 +2260,27 @@ mod tests {
         use crate::Sample;
 
         // Sample missing id
-        let mut sample_no_id = Sample::default();
-        sample_no_id.image_name = Some("no_id".to_string());
-        sample_no_id.width = Some(640);
-        sample_no_id.height = Some(480);
+        let sample_no_id = Sample {
+            image_name: Some("no_id".to_string()),
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        };
 
         // Sample missing name
-        let mut sample_no_name = Sample::default();
-        sample_no_name.id = Some(crate::SampleID::from(1));
-        sample_no_name.width = Some(640);
-        sample_no_name.height = Some(480);
+        let sample_no_name = Sample {
+            id: Some(crate::SampleID::from(1)),
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        };
 
         // Sample missing dimensions
-        let mut sample_no_dims = Sample::default();
-        sample_no_dims.image_name = Some("no_dims".to_string());
-        sample_no_dims.id = Some(crate::SampleID::from(2));
+        let sample_no_dims = Sample {
+            image_name: Some("no_dims".to_string()),
+            id: Some(crate::SampleID::from(2)),
+            ..Default::default()
+        };
 
         let samples = vec![sample_no_id, sample_no_name, sample_no_dims];
         let map = build_sample_info_map(&samples);

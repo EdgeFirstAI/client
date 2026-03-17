@@ -22,10 +22,10 @@ use polars::prelude::*;
 /// # String Representations
 ///
 /// This enum has two string representations:
-/// - **Display** (`fmt::Display`): Returns the server API type name (e.g., `"lidar.depth"`)
-///   used when making API requests to EdgeFirst Studio.
-/// - **file_extension()**: Returns the file extension for saving (e.g., `"lidar.png"`)
-///   which may differ from the API type name.
+/// - **Display** (`fmt::Display`): Returns the server API type name (e.g.,
+///   `"lidar.depth"`) used when making API requests to EdgeFirst Studio.
+/// - **file_extension()**: Returns the file extension for saving (e.g.,
+///   `"lidar.png"`) which may differ from the API type name.
 ///
 /// # Examples
 ///
@@ -496,10 +496,7 @@ pub struct Sample {
     /// Location data is extracted from the "sensors" field during
     /// deserialization. When uploading samples, this field is serialized
     /// as "sensors" to match the samples.populate2 API format.
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        rename(serialize = "sensors")
-    )]
+    #[serde(skip_serializing_if = "Option::is_none", rename(serialize = "sensors"))]
     pub location: Option<Location>,
     /// Image degradation type (blur, occlusion, weather, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -912,9 +909,10 @@ impl Sample {
         // Handle image type separately (uses image_url field)
         if file_type == FileType::Image {
             if let Some(url) = self.image_url.as_deref()
-                && is_valid_url(url) {
-                    return Ok(Some(client.download(url).await?));
-                }
+                && is_valid_url(url)
+            {
+                return Ok(Some(client.download(url).await?));
+            }
             return Ok(None);
         }
 
@@ -1893,14 +1891,20 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
     let labels = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
             Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::new(u8::MAX as usize)),
+            Arc::new(CategoricalMapping::with_hasher(
+                u8::MAX as usize,
+                Default::default(),
+            )),
         ))?
         .into();
     let label_indices = Series::new("label_index".into(), label_indices).into();
     let groups = Series::new("group".into(), groups)
         .cast(&DataType::Categorical(
             Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::new(u8::MAX as usize)),
+            Arc::new(CategoricalMapping::with_hasher(
+                u8::MAX as usize,
+                Default::default(),
+            )),
         ))?
         .into();
     let masks = Series::new("mask".into(), masks)
@@ -1913,7 +1917,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
         .cast(&DataType::Array(Box::new(DataType::Float32), 6))?
         .into();
 
-    Ok(DataFrame::new(vec![
+    Ok(DataFrame::new_infer_height(vec![
         names,
         frames,
         objects,
@@ -2113,7 +2117,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let labels = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
             Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::new(u8::MAX as usize)),
+            Arc::new(CategoricalMapping::with_hasher(
+                u8::MAX as usize,
+                Default::default(),
+            )),
         ))?
         .into();
 
@@ -2123,7 +2130,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let groups = Series::new("group".into(), groups)
         .cast(&DataType::Categorical(
             Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::new(u8::MAX as usize)),
+            Arc::new(CategoricalMapping::with_hasher(
+                u8::MAX as usize,
+                Default::default(),
+            )),
         ))?
         .into();
 
@@ -2165,7 +2175,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
 
     let degradations = Series::new("degradation".into(), degradations).into();
 
-    Ok(DataFrame::new(vec![
+    Ok(DataFrame::new_infer_height(vec![
         names,
         frames,
         objects,
@@ -2466,7 +2476,6 @@ pub fn unflatten_polygon_coordinates(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
 
     // ============================================================================
     // TEST HELPER FUNCTIONS (Pure Logic for Testing)

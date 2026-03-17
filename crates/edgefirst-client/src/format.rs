@@ -610,7 +610,7 @@ pub fn generate_arrow_from_folder(
     let box3d_series = Series::new("box3d".into(), null_series_vec)
         .cast(&DataType::Array(Box::new(DataType::Float32), 6))?;
 
-    let mut df = DataFrame::new(vec![
+    let mut df = DataFrame::new_infer_height(vec![
         name_series.into(),
         frame_series.into(),
         object_id_series.into(),
@@ -891,7 +891,7 @@ mod tests {
         let frames: Vec<Option<u64>> = vec![None, None, Some(1)];
         let frame_series = Series::new("frame".into(), &frames);
 
-        let mut df = DataFrame::new(vec![names.into(), frame_series.into()]).unwrap();
+        let mut df = DataFrame::new_infer_height(vec![names.into(), frame_series.into()]).unwrap();
 
         let arrow_path = root.join("test.arrow");
         let file = File::create(&arrow_path).unwrap();
@@ -922,7 +922,7 @@ mod tests {
         let frames: Vec<Option<u64>> = vec![None];
         let frame_series = Series::new("frame".into(), &frames);
 
-        let mut df = DataFrame::new(vec![names.into(), frame_series.into()]).unwrap();
+        let mut df = DataFrame::new_infer_height(vec![names.into(), frame_series.into()]).unwrap();
 
         let arrow_path = dataset_dir.join("my_dataset.arrow");
         let file = File::create(&arrow_path).unwrap();

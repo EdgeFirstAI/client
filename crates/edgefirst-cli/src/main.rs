@@ -44,7 +44,7 @@ struct Args {
     /// Write trace output to file. Format is determined by extension:
     /// - .json: Chrome JSON format (viewable in Perfetto UI)
     /// - .pftrace: Native Perfetto format
-    /// Requires build with --features trace-file.
+    ///   Requires build with --features trace-file.
     #[clap(long, global = true, env = "TRACE_FILE")]
     trace_file: Option<PathBuf>,
 
@@ -1339,8 +1339,8 @@ fn parse_mask_from_dataframe(
     Ok(None)
 }
 
-/// Sensor file types and their expected extensions for EdgeFirst Dataset Format.
-/// Maps server API type name to file extension pattern.
+/// Sensor file types and their expected extensions for EdgeFirst Dataset
+/// Format. Maps server API type name to file extension pattern.
 #[cfg(feature = "polars")]
 const SENSOR_FILE_TYPES: &[(&str, &str)] = &[
     ("lidar.pcd", ".lidar.pcd"),
@@ -1350,7 +1350,8 @@ const SENSOR_FILE_TYPES: &[(&str, &str)] = &[
     ("radar.png", ".radar.png"),
 ];
 
-/// Index of sensor files that can be backed by either a directory or a ZIP archive.
+/// Index of sensor files that can be backed by either a directory or a ZIP
+/// archive.
 ///
 /// This abstraction allows the upload workflow to work with both file sources
 /// without extracting ZIP archives to disk.
@@ -1384,8 +1385,9 @@ impl SensorFileIndex {
         }
     }
 
-    /// Find the image entry name without reading bytes (for parallel resolution).
-    /// Returns (entry_name, filename) for ZIP, (path_str, filename) for Directory.
+    /// Find the image entry name without reading bytes (for parallel
+    /// resolution). Returns (entry_name, filename) for ZIP, (path_str,
+    /// filename) for Directory.
     fn find_image_entry(&self, sample_name: &str) -> Result<(String, String), Error> {
         const EXTENSIONS: &[&str] = &[
             ".camera.jpg",
@@ -1457,40 +1459,36 @@ impl SensorFileIndex {
         }
     }
 
-    /// Find a sensor entry name without reading bytes (for parallel resolution).
-    /// Returns Some((entry_name, filename)) if found.
-    fn find_sensor_entry(
-        &self,
-        sample_name: &str,
-        extension: &str,
-    ) -> Option<(String, String)> {
+    /// Find a sensor entry name without reading bytes (for parallel
+    /// resolution). Returns Some((entry_name, filename)) if found.
+    fn find_sensor_entry(&self, sample_name: &str, extension: &str) -> Option<(String, String)> {
         let candidate = format!("{}{}", sample_name, extension);
 
         match self {
             SensorFileIndex::Directory { index } => {
-                if let Some(paths) = index.get(&candidate) {
-                    if paths.len() == 1 {
-                        let path_str = paths[0].to_str().unwrap().to_string();
-                        let filename = paths[0]
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&candidate)
-                            .to_string();
-                        return Some((path_str, filename));
-                    }
+                if let Some(paths) = index.get(&candidate)
+                    && paths.len() == 1
+                {
+                    let path_str = paths[0].to_str().unwrap().to_string();
+                    let filename = paths[0]
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&candidate)
+                        .to_string();
+                    return Some((path_str, filename));
                 }
                 None
             }
             SensorFileIndex::Zip { index, .. } => {
-                if let Some(entries) = index.get(&candidate) {
-                    if entries.len() == 1 {
-                        let filename = std::path::Path::new(&entries[0])
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&entries[0])
-                            .to_string();
-                        return Some((entries[0].clone(), filename));
-                    }
+                if let Some(entries) = index.get(&candidate)
+                    && entries.len() == 1
+                {
+                    let filename = std::path::Path::new(&entries[0])
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&entries[0])
+                        .to_string();
+                    return Some((entries[0].clone(), filename));
                 }
                 None
             }
@@ -1523,12 +1521,7 @@ fn parse_size_from_dataframe(
         }
         // Try f32 and convert
         if let Ok(vals) = series.f32() {
-            return Some(
-                vals.into_iter()
-                    .flatten()
-                    .map(|v| v as u32)
-                    .collect(),
-            );
+            return Some(vals.into_iter().flatten().map(|v| v as u32).collect());
         }
         None
     };
@@ -1551,8 +1544,8 @@ fn parse_size_from_dataframe(
     }
 }
 
-/// Parse the location [lat, lon] and pose [yaw, pitch, roll] columns from an Arrow
-/// DataFrame row into a Location struct.
+/// Parse the location [lat, lon] and pose [yaw, pitch, roll] columns from an
+/// Arrow DataFrame row into a Location struct.
 #[cfg(feature = "polars")]
 fn parse_location_from_dataframe(
     df: &polars::prelude::DataFrame,
@@ -1744,33 +1737,9 @@ fn create_sequence_aware_batches(
 }
 
 #[cfg(feature = "polars")]
-/// Parses annotations from an Arrow file and matches them with image files.
-///
-/// Supports both nested and flattened directory structures:
-/// - **Nested**: Images in sequence subdirectories
-///   (sequence_name/sequence_name_frame.ext)
-/// - **Flattened**: All images in root directory with sequence prefix
-///   (sequence_name_frame.ext)
-///
-/// The function uses the Arrow file's `name` and `frame` columns as the
-/// authoritative source for sequence information, regardless of how files are
-/// organized on disk. The image_index built by walking the directory tree works
-/// for both structures.
-///
-/// # Arguments
-///
-/// * `annotations` - Optional path to Arrow file containing annotations and
-///   metadata
-/// * `images_path` - Path to directory (or ZIP) containing image files
-/// * `should_upload_annotations` - Whether to parse and include annotation
-///   geometries
-///
-/// # Returns
-///
-/// Vector of Sample objects with matched images and parsed annotations
-
 /// Helper struct to store sample metadata during parsing.
-/// Used to collect all annotations for a sample before creating the final Sample object.
+/// Used to collect all annotations for a sample before creating the final
+/// Sample object.
 #[cfg(feature = "polars")]
 struct SampleMetadata {
     group: Option<String>,
@@ -1891,7 +1860,8 @@ fn parse_annotations_from_arrow(
             // Extract optional size [width, height] from Arrow file (2025.10 format)
             let (sample_width, sample_height) = parse_size_from_dataframe(&df, idx);
 
-            // Extract optional location [lat, lon] and pose [yaw, pitch, roll] (2025.10 format)
+            // Extract optional location [lat, lon] and pose [yaw, pitch, roll] (2025.10
+            // format)
             let sample_location = parse_location_from_dataframe(&df, idx);
 
             // Extract optional degradation field (2025.10 format)
@@ -2071,10 +2041,8 @@ fn resolve_samples_sequential(
         progress.set_position(idx as u64);
 
         let (image_path, image_filename) = sensor_index.find_image_entry(&sample_name)?;
-        let image_file = edgefirst_client::SampleFile::with_filename(
-            "image".to_string(),
-            image_path,
-        );
+        let image_file =
+            edgefirst_client::SampleFile::with_filename("image".to_string(), image_path);
 
         let mut annotations = metadata.annotations;
         for annotation in &mut annotations {
@@ -2088,7 +2056,8 @@ fn resolve_samples_sequential(
 
         let mut files = vec![image_file];
         for (sensor_type, extension) in SENSOR_FILE_TYPES {
-            if let Some((sensor_path, _)) = sensor_index.find_sensor_entry(&sample_name, extension) {
+            if let Some((sensor_path, _)) = sensor_index.find_sensor_entry(&sample_name, extension)
+            {
                 files.push(edgefirst_client::SampleFile::with_filename(
                     sensor_type.to_string(),
                     sensor_path,
@@ -2115,7 +2084,8 @@ fn resolve_samples_sequential(
     Ok(samples)
 }
 
-/// Intermediate structure holding resolved entries before parallel byte loading.
+/// Intermediate structure holding resolved entries before parallel byte
+/// loading.
 #[cfg(feature = "polars")]
 struct ResolvedSampleEntries {
     image_entry: String,
@@ -2148,7 +2118,9 @@ fn resolve_samples_parallel_zip(
 
         let mut sensor_entries = Vec::new();
         for (sensor_type, extension) in SENSOR_FILE_TYPES {
-            if let Some((entry_name, filename)) = sensor_index.find_sensor_entry(&sample_name, extension) {
+            if let Some((entry_name, filename)) =
+                sensor_index.find_sensor_entry(&sample_name, extension)
+            {
                 sensor_entries.push((sensor_type.to_string(), entry_name, filename));
             }
         }
@@ -2272,7 +2244,7 @@ fn process_zip_entry(
 
     // Update progress (atomic for thread safety)
     let current = progress_counter.fetch_add(1, Ordering::Relaxed);
-    if current % 50 == 0 || current == total - 1 {
+    if current.is_multiple_of(50) || current == total - 1 {
         progress.set_position(current + 1);
     }
 
@@ -2359,7 +2331,8 @@ fn build_sensor_file_index_from_dir(
     progress.set_message(format!("Scanning directory: {}...", dir_path.display()));
 
     let mut file_count = 0;
-    // Recursively walk directory tree - works for both nested and flattened structures
+    // Recursively walk directory tree - works for both nested and flattened
+    // structures
     for entry in WalkDir::new(dir_path) {
         let entry = entry.map_err(|e| {
             Error::InvalidParameters(format!("Failed to read sensor directory: {}", e))
@@ -2392,7 +2365,10 @@ fn build_sensor_file_index_from_dir(
         }
     }
 
-    progress.set_message(format!("Indexed {} sensor files from directory", file_count));
+    progress.set_message(format!(
+        "Indexed {} sensor files from directory",
+        file_count
+    ));
     Ok(SensorFileIndex::Directory { index })
 }
 
@@ -2401,7 +2377,8 @@ fn build_sensor_file_index_from_dir(
 ///
 /// Files are read directly from the archive on demand, avoiding the need to
 /// extract to a temporary directory. This is efficient because dataset ZIPs
-/// typically use store mode (no compression) since images are already compressed.
+/// typically use store mode (no compression) since images are already
+/// compressed.
 fn build_sensor_file_index_from_zip(
     zip_path: &Path,
     progress: &indicatif::ProgressBar,
@@ -2411,7 +2388,11 @@ fn build_sensor_file_index_from_zip(
     progress.set_message(format!("Opening ZIP archive: {}...", zip_path.display()));
 
     let file = File::open(zip_path).map_err(|e| {
-        Error::InvalidParameters(format!("Failed to open ZIP file {}: {}", zip_path.display(), e))
+        Error::InvalidParameters(format!(
+            "Failed to open ZIP file {}: {}",
+            zip_path.display(),
+            e
+        ))
     })?;
 
     let archive = zip::ZipArchive::new(file).map_err(|e| {
@@ -2486,14 +2467,13 @@ fn build_sensor_file_index_from_zip(
 }
 
 #[cfg(feature = "polars")]
-/// Check if a filename represents a valid sensor file (camera, lidar, radar, etc.)
+/// Check if a filename represents a valid sensor file (camera, lidar, radar,
+/// etc.)
 fn is_valid_sensor_file(file_name: &str) -> bool {
     let name_lower = file_name.to_lowercase();
 
     // Camera images
-    if name_lower.ends_with(".jpg")
-        || name_lower.ends_with(".jpeg")
-        || name_lower.ends_with(".png")
+    if name_lower.ends_with(".jpg") || name_lower.ends_with(".jpeg") || name_lower.ends_with(".png")
     {
         // Exclude sensor-specific PNGs (they're handled separately)
         if name_lower.ends_with(".radar.png") || name_lower.ends_with(".lidar.png") {
@@ -2749,7 +2729,12 @@ async fn handle_upload_dataset(
         #[cfg(feature = "profiling")]
         let _arrow_span = tracing::info_span!("parse_arrow").entered();
         prep_bar.set_message("Reading Arrow file...");
-        parse_annotations_from_arrow(&annotations, &images_path, should_upload_annotations, &prep_bar)?
+        parse_annotations_from_arrow(
+            &annotations,
+            &images_path,
+            should_upload_annotations,
+            &prep_bar,
+        )?
     } else {
         #[cfg(feature = "profiling")]
         let _scan_span = tracing::info_span!("scan_directory").entered();
@@ -2772,7 +2757,10 @@ async fn handle_upload_dataset(
     generate_upload_uuids(&mut samples, &dataset_id);
 
     let total_samples = samples.len();
-    println!("Uploading {} samples to dataset {}...", total_samples, dataset_id);
+    println!(
+        "Uploading {} samples to dataset {}...",
+        total_samples, dataset_id
+    );
 
     let bar = indicatif::ProgressBar::new(total_samples as u64);
     bar.set_style(
@@ -2799,9 +2787,9 @@ async fn handle_upload_dataset(
         bar.finish_with_message("Upload complete");
     });
 
-    // Batch size of 50 chosen for retry resilience: if a batch fails, only 50 samples
-    // need to be retried instead of 500. This adds ~10x more API calls but improves
-    // reliability for large uploads over unreliable connections.
+    // Batch size of 50 chosen for retry resilience: if a batch fails, only 50
+    // samples need to be retried instead of 500. This adds ~10x more API calls
+    // but improves reliability for large uploads over unreliable connections.
     const BATCH_SIZE: usize = 50;
     let mut all_results = Vec::new();
 
@@ -3607,12 +3595,7 @@ async fn handle_create_snapshot(
             );
 
             let snapshot = client
-                .create_snapshot_edgefirst_format(
-                    arrow_str,
-                    zip_str,
-                    Some(&description),
-                    Some(tx),
-                )
+                .create_snapshot_edgefirst_format(arrow_str, zip_str, Some(&description), Some(tx))
                 .await?;
             println!(
                 "Snapshot created: [{}] {}",
@@ -4362,6 +4345,7 @@ async fn handle_coco_import_normal(client: &Client, ctx: &CocoImportContext) -> 
 }
 
 /// Handle Studio export to COCO.
+#[allow(clippy::too_many_arguments)]
 async fn handle_export_coco(
     client: &Client,
     dataset_id: String,
@@ -4444,7 +4428,8 @@ async fn handle_export_coco(
     Ok(())
 }
 
-/// A writer wrapper that outputs Chrome JSON trace format compatible with Perfetto UI.
+/// A writer wrapper that outputs Chrome JSON trace format compatible with
+/// Perfetto UI.
 ///
 /// `tracing-chrome` outputs a raw JSON array `[...]`, but Perfetto prefers
 /// the object format `{"traceEvents": [...]}`. This wrapper adds the required
@@ -4514,8 +4499,8 @@ impl TraceFormat {
     }
 }
 
-/// Guard that must be held until program exit to ensure trace files are flushed.
-/// Wraps either Chrome or Perfetto flush guards.
+/// Guard that must be held until program exit to ensure trace files are
+/// flushed. Wraps either Chrome or Perfetto flush guards.
 #[cfg(feature = "trace-file")]
 #[allow(dead_code)] // Fields are intentionally held for RAII, not read
 enum TraceGuard {
@@ -4533,7 +4518,8 @@ enum TraceGuard {
 /// When `profiling` feature is disabled:
 /// - Falls back to standard `env_logger` for minimal overhead
 ///
-/// Returns a guard that must be held until program exit to ensure trace files are flushed.
+/// Returns a guard that must be held until program exit to ensure trace files
+/// are flushed.
 #[cfg(all(feature = "profiling", feature = "trace-file"))]
 fn init_tracing(args: &Args) -> Option<TraceGuard> {
     use tracing_subscriber::prelude::*;
@@ -4575,10 +4561,7 @@ fn init_tracing(args: &Args) -> Option<TraceGuard> {
                             Some(TraceGuard::Chrome(guard))
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Failed to create trace file '{}': {e}",
-                                path.display()
-                            );
+                            eprintln!("Failed to create trace file '{}': {e}", path.display());
                             tracing_subscriber::registry().with(fmt_layer).init();
                             None
                         }
@@ -4601,10 +4584,7 @@ fn init_tracing(args: &Args) -> Option<TraceGuard> {
                             Some(TraceGuard::Perfetto)
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Failed to create trace file '{}': {e}",
-                                path.display()
-                            );
+                            eprintln!("Failed to create trace file '{}': {e}", path.display());
                             tracing_subscriber::registry().with(fmt_layer).init();
                             None
                         }
@@ -4620,7 +4600,8 @@ fn init_tracing(args: &Args) -> Option<TraceGuard> {
     }
 }
 
-/// Initialize tracing without trace-file support (profiling only, no file output).
+/// Initialize tracing without trace-file support (profiling only, no file
+/// output).
 #[cfg(all(feature = "profiling", not(feature = "trace-file")))]
 fn init_tracing(args: &Args) -> Option<()> {
     use tracing_subscriber::prelude::*;
@@ -5247,7 +5228,7 @@ mod tests {
                 columns.push(series.into_column());
             }
 
-            let mut df = DataFrame::new(columns)?;
+            let mut df = DataFrame::new_infer_height(columns)?;
 
             let mut file = std::fs::File::create(path)?;
             IpcWriter::new(&mut file).finish(&mut df)?;
@@ -5317,7 +5298,7 @@ mod tests {
                 columns.push(series.into_column());
             }
 
-            let mut df = DataFrame::new(columns)?;
+            let mut df = DataFrame::new_infer_height(columns)?;
 
             let mut file = std::fs::File::create(path)?;
             IpcWriter::new(&mut file).finish(&mut df)?;
@@ -5366,7 +5347,12 @@ mod tests {
 
             // Test parsing with annotations
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file.clone()), &images_dir, true, &progress);
+            let result = parse_annotations_from_arrow(
+                &Some(arrow_file.clone()),
+                &images_dir,
+                true,
+                &progress,
+            );
             assert!(result.is_ok());
             let samples = result.unwrap();
             assert_eq!(samples.len(), 3);
@@ -5439,9 +5425,13 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["mask1.png"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let samples =
-                parse_annotations_from_arrow(&Some(arrow_file.clone()), &images_dir, true, &progress)
-                    .expect("Arrow parsing should succeed");
+            let samples = parse_annotations_from_arrow(
+                &Some(arrow_file.clone()),
+                &images_dir,
+                true,
+                &progress,
+            )
+            .expect("Arrow parsing should succeed");
 
             assert_eq!(samples.len(), 1);
             let annotations = &samples[0].annotations;
@@ -5486,7 +5476,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["img1.png", "img2.png"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(result.is_ok());
             let samples = result.unwrap();
             assert_eq!(samples.len(), 2);
@@ -5520,7 +5511,8 @@ mod tests {
 
             // Test parsing WITHOUT uploading annotations
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
             assert!(result.is_ok());
             let samples = result.unwrap();
             assert_eq!(samples.len(), 2);
@@ -5554,7 +5546,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["exists.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
             assert!(result.is_err());
             assert!(
                 result
@@ -5577,7 +5570,8 @@ mod tests {
             std::fs::create_dir_all(&images_dir).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, false, &progress);
             assert!(result.is_ok());
             let samples = result.unwrap();
             assert_eq!(samples.len(), 0);
@@ -5707,7 +5701,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["image1.jpg", "image2.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(result.is_ok());
             let samples = result.unwrap();
 
@@ -5886,7 +5881,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(result.is_err(), "Should fail on inconsistent groups");
             let err_msg = result.unwrap_err().to_string();
             assert!(
@@ -5929,7 +5925,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["image1.jpg", "image2.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(result.is_ok(), "Should succeed with consistent groups");
             let samples = result.unwrap();
             assert_eq!(samples.len(), 2);
@@ -5977,7 +5974,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(
                 result.is_err(),
                 "Should fail when group is null on some rows but not others"
@@ -6017,7 +6015,8 @@ mod tests {
             create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
 
             let progress = indicatif::ProgressBar::hidden();
-            let result = parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
+            let result =
+                parse_annotations_from_arrow(&Some(arrow_file), &images_dir, true, &progress);
             assert!(result.is_ok(), "Should succeed when all groups are null");
             let samples = result.unwrap();
             assert_eq!(samples.len(), 1);

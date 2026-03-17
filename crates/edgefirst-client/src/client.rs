@@ -74,8 +74,8 @@ fn max_tasks() -> usize {
 
 /// Maximum concurrent upload tasks for multipart S3 uploads.
 ///
-/// Higher concurrency improves upload throughput by saturating available bandwidth.
-/// Can be overridden via `MAX_UPLOAD_TASKS` environment variable.
+/// Higher concurrency improves upload throughput by saturating available
+/// bandwidth. Can be overridden via `MAX_UPLOAD_TASKS` environment variable.
 fn max_upload_tasks() -> usize {
     std::env::var("MAX_UPLOAD_TASKS")
         .ok()
@@ -1104,7 +1104,7 @@ impl Client {
             _ => return Err(Error::InvalidToken),
         };
 
-        match DateTime::<Utc>::from_timestamp_secs(ts) {
+        match DateTime::<Utc>::from_timestamp(ts, 0) {
             Some(dt) => Ok(dt),
             None => Err(Error::InvalidToken),
         }
@@ -1511,8 +1511,8 @@ impl Client {
     ///    files to disk. Progress counts samples completed (each sample may
     ///    have multiple files for different sensor types).
     ///
-    /// Applications should detect the status change from `None` to `"Downloading"`
-    /// to reset their progress bar for the second phase.
+    /// Applications should detect the status change from `None` to
+    /// `"Downloading"` to reset their progress bar for the second phase.
     ///
     /// # Returns
     ///
@@ -1850,9 +1850,9 @@ impl Client {
     ///
     /// # Progress
     ///
-    /// Reports progress with `status: None` as samples are fetched and processed
-    /// for their annotations. Progress unit is samples processed (not individual
-    /// annotations).
+    /// Reports progress with `status: None` as samples are fetched and
+    /// processed for their annotations. Progress unit is samples processed
+    /// (not individual annotations).
     ///
     /// To get the annotations as a DataFrame, use the `annotations_dataframe`
     /// method instead.
@@ -2119,12 +2119,14 @@ impl Client {
         self.rpc("samples.count".to_owned(), Some(params)).await
     }
 
-    /// Fetches samples from a dataset with optional annotation and file type filters.
+    /// Fetches samples from a dataset with optional annotation and file type
+    /// filters.
     ///
     /// # Arguments
     ///
     /// * `dataset_id` - The dataset to fetch samples from
-    /// * `annotation_set_id` - Optional annotation set to include annotations from
+    /// * `annotation_set_id` - Optional annotation set to include annotations
+    ///   from
     /// * `annotation_types` - Filter by annotation types (box2d, box3d, mask)
     /// * `groups` - Filter by sample groups (e.g., "train", "val", "test")
     /// * `types` - File types to include metadata for
@@ -2132,8 +2134,8 @@ impl Client {
     ///
     /// # Progress
     ///
-    /// Reports progress with `status: None` as samples are fetched from the server
-    /// in paginated batches. Progress unit is samples fetched.
+    /// Reports progress with `status: None` as samples are fetched from the
+    /// server in paginated batches. Progress unit is samples fetched.
     ///
     /// # Returns
     ///
@@ -2194,8 +2196,8 @@ impl Client {
     ///
     /// # Progress
     ///
-    /// Reports progress with `status: None` as sample names are fetched from the
-    /// server in paginated batches. Progress unit is samples fetched.
+    /// Reports progress with `status: None` as sample names are fetched from
+    /// the server in paginated batches. Progress unit is samples fetched.
     ///
     /// # Returns
     ///
@@ -2390,10 +2392,10 @@ impl Client {
     ///
     /// # Progress
     ///
-    /// Reports progress with `status: None` as each sample's files are uploaded.
-    /// Progress unit is samples (not individual files). Each sample may contain
-    /// multiple files (image, lidar, radar, etc.) which are all uploaded before
-    /// the sample is counted as complete.
+    /// Reports progress with `status: None` as each sample's files are
+    /// uploaded. Progress unit is samples (not individual files). Each
+    /// sample may contain multiple files (image, lidar, radar, etc.) which
+    /// are all uploaded before the sample is counted as complete.
     ///
     /// # Returns
     ///
@@ -2547,31 +2549,31 @@ impl Client {
         use std::path::Path;
 
         // Handle files with raw bytes (e.g., from ZIP archives)
-        if let Some(bytes) = file.bytes() {
-            if let Some(filename) = file.filename() {
-                // For image files with bytes, try to extract dimensions if not already set
-                if file.file_type() == "image"
-                    && (sample.width.is_none() || sample.height.is_none())
-                    && let Ok(size) = imagesize::blob_size(bytes)
-                {
-                    sample.width = Some(size.width as u32);
-                    sample.height = Some(size.height as u32);
-                }
-
-                // Store the bytes for later upload
-                files_to_upload.push((
-                    sample_uuid.to_string(),
-                    file.file_type().to_string(),
-                    FileSource::Bytes(bytes.to_vec()),
-                    filename.to_string(),
-                ));
-
-                // Return SampleFile with just the filename
-                return crate::SampleFile::with_filename(
-                    file.file_type().to_string(),
-                    filename.to_string(),
-                );
+        if let Some(bytes) = file.bytes()
+            && let Some(filename) = file.filename()
+        {
+            // For image files with bytes, try to extract dimensions if not already set
+            if file.file_type() == "image"
+                && (sample.width.is_none() || sample.height.is_none())
+                && let Ok(size) = imagesize::blob_size(bytes)
+            {
+                sample.width = Some(size.width as u32);
+                sample.height = Some(size.height as u32);
             }
+
+            // Store the bytes for later upload
+            files_to_upload.push((
+                sample_uuid.to_string(),
+                file.file_type().to_string(),
+                FileSource::Bytes(bytes.to_vec()),
+                filename.to_string(),
+            ));
+
+            // Return SampleFile with just the filename
+            return crate::SampleFile::with_filename(
+                file.file_type().to_string(),
+                filename.to_string(),
+            );
         }
 
         // Handle files with local paths
@@ -2774,9 +2776,10 @@ impl Client {
     ///
     /// # Progress
     ///
-    /// Reports progress with `status: None` as samples are fetched from the server
-    /// in paginated batches. Progress unit is samples fetched. This method delegates
-    /// to [`samples()`](Self::samples) and shares its progress behavior.
+    /// Reports progress with `status: None` as samples are fetched from the
+    /// server in paginated batches. Progress unit is samples fetched. This
+    /// method delegates to [`samples()`](Self::samples) and shares its
+    /// progress behavior.
     ///
     /// # Example
     ///
@@ -3205,8 +3208,10 @@ impl Client {
     ///
     /// # See Also
     ///
-    /// * [`create_snapshot`](Self::create_snapshot) - Upload single file or folder
-    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to dataset
+    /// * [`create_snapshot`](Self::create_snapshot) - Upload single file or
+    ///   folder
+    /// * [`restore_snapshot`](Self::restore_snapshot) - Restore snapshot to
+    ///   dataset
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress)))]
     pub async fn create_snapshot_edgefirst_format(
         &self,
@@ -3523,9 +3528,10 @@ impl Client {
     /// # Progress
     ///
     /// Reports progress with `status: None` as file data is received. Progress
-    /// unit is bytes downloaded across all files combined. The total accumulates
-    /// as file sizes become known (from HTTP Content-Length headers), so both
-    /// `current` and `total` may increase during download.
+    /// unit is bytes downloaded across all files combined. The total
+    /// accumulates as file sizes become known (from HTTP Content-Length
+    /// headers), so both `current` and `total` may increase during
+    /// download.
     ///
     /// # Errors
     ///
@@ -3869,8 +3875,8 @@ impl Client {
     /// # Progress
     ///
     /// Reports progress with `status: None` as file data is received. Progress
-    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
-    /// header (may be 0 if server doesn't provide it).
+    /// unit is bytes downloaded. Total is determined from the HTTP
+    /// Content-Length header (may be 0 if server doesn't provide it).
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(training_session_id = %training_session_id)))]
     pub async fn download_artifact(
         &self,
@@ -3945,8 +3951,8 @@ impl Client {
     /// # Progress
     ///
     /// Reports progress with `status: None` as file data is received. Progress
-    /// unit is bytes downloaded. Total is determined from the HTTP Content-Length
-    /// header (may be 0 if server doesn't provide it).
+    /// unit is bytes downloaded. Total is determined from the HTTP
+    /// Content-Length header (may be 0 if server doesn't provide it).
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(training_session_id = %training_session_id)))]
     pub async fn download_checkpoint(
         &self,
@@ -4628,7 +4634,10 @@ async fn upload_multipart(
                 // Send final progress update for this part
                 if let Some(progress) = &progress {
                     let current = confirmed_bytes.load(Ordering::SeqCst)
-                        + part_bytes.iter().map(|p| p.load(Ordering::SeqCst)).sum::<usize>();
+                        + part_bytes
+                            .iter()
+                            .map(|p| p.load(Ordering::SeqCst))
+                            .sum::<usize>();
                     let _ = progress
                         .send(Progress {
                             current,
@@ -4643,7 +4652,8 @@ async fn upload_multipart(
         })
         .collect::<Vec<_>>();
 
-    // Wait for all parts to complete (double collect to handle both JoinError and inner Error)
+    // Wait for all parts to complete (double collect to handle both JoinError and
+    // inner Error)
     join_all(tasks)
         .await
         .into_iter()
@@ -4662,6 +4672,7 @@ async fn upload_multipart(
 ///
 /// Progress is reported continuously as bytes are sent. On retry, the part's
 /// progress counter is reset to avoid over-reporting.
+#[allow(clippy::too_many_arguments)]
 async fn upload_part_with_progress(
     http: reqwest::Client,
     url: String,
@@ -4728,12 +4739,12 @@ async fn upload_part_with_progress(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| {
-        Error::IoError(std::io::Error::other("Upload failed after retries"))
-    }))
+    Err(last_error
+        .unwrap_or_else(|| Error::IoError(std::io::Error::other("Upload failed after retries"))))
 }
 
 /// Perform the actual upload with streaming progress.
+#[allow(clippy::too_many_arguments)]
 async fn upload_part_streaming(
     http: reqwest::Client,
     url: String,
@@ -4770,7 +4781,10 @@ async fn upload_part_streaming(
             // Send progress update (fire-and-forget via try_send to avoid blocking)
             if let Some(ref progress) = progress {
                 let current = confirmed_bytes.load(Ordering::SeqCst)
-                    + part_bytes.iter().map(|p| p.load(Ordering::SeqCst)).sum::<usize>();
+                    + part_bytes
+                        .iter()
+                        .map(|p| p.load(Ordering::SeqCst))
+                        .sum::<usize>();
                 // Best-effort progress reporting: use try_send to avoid blocking.
                 // If the channel is full or closed, we intentionally skip this update
                 // to avoid stalling the upload; subsequent updates will still be delivered.

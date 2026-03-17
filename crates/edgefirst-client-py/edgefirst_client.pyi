@@ -851,12 +851,14 @@ class AnnotationSet:
             annotation_types: List of annotation types to filter.
             progress: Optional progress callback. Supports two signatures:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched and processed
-            for their annotations. Progress unit is samples processed (not individual
-            annotations).
+            Reports progress with status=None as samples
+            are fetched and processed for their annotations.
+            Progress unit is samples processed (not
+            individual annotations).
 
         Returns:
             List[Annotation]: Annotations in this set.
@@ -1180,18 +1182,20 @@ class Dataset:
                      sequence subdirectories.
             progress: Optional progress callback. Supports two signatures:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
             This operation has two phases with distinct progress reporting:
 
-            1. **Fetching metadata** (status=None): Retrieves sample information
-               from the server. Progress counts samples fetched.
+            1. **Fetching metadata** (status=None): Retrieves
+               sample information from the server. Progress
+               counts samples fetched.
             2. **Downloading files** (status="Downloading"): Downloads actual
                files to disk. Progress counts samples completed.
 
-            Applications should detect the status change to reset their progress
-            bar for the second phase.
+            Applications should detect the status change to
+            reset their progress bar for the second phase.
 
         Raises:
             TypeError: If dataset has no client reference.
@@ -1234,11 +1238,13 @@ class Dataset:
             types: List of file types. Defaults to [FileType.Image].
             progress: Optional progress callback. Supports two signatures:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched from the server
-            in paginated batches. Progress unit is samples fetched.
+            Reports progress with status=None as samples
+            are fetched from the server in paginated batches.
+            Progress unit is samples fetched.
 
         Returns:
             List[Sample]: Samples matching the criteria.
@@ -4078,20 +4084,23 @@ class Client:
                 with sequence name and optionally frame number (when available)
                 to avoid conflicts.
                 Default: False (preserves sequence directory structure).
-            progress (Optional[Progress]): Optional progress callback. Supports:
+            progress (Optional[Progress]): Optional progress
+                callback. Supports:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
             This operation has two phases with distinct progress reporting:
 
-            1. **Fetching metadata** (status=None): Retrieves sample information
-               from the server. Progress counts samples fetched.
+            1. **Fetching metadata** (status=None): Retrieves
+               sample information from the server. Progress
+               counts samples fetched.
             2. **Downloading files** (status="Downloading"): Downloads actual
                files to disk. Progress counts samples completed.
 
-            Applications should detect the status change to reset their progress
-            bar for the second phase.
+            Applications should detect the status change to
+            reset their progress bar for the second phase.
         """
         ...
 
@@ -4147,13 +4156,16 @@ class Client:
             groups (List[str]): Dataset groups to include.
             annotation_types (List[AnnotationType]): Types of annotations
                                                      to include.
-            progress (Optional[Progress]): Optional progress callback. Supports:
+            progress (Optional[Progress]): Optional progress
+                callback. Supports:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched and processed
-            for their annotations. Progress unit is samples processed.
+            Reports progress with status=None as samples
+            are fetched and processed for their annotations.
+            Progress unit is samples processed.
 
         Returns:
             List[Annotation]: List of annotations.
@@ -4188,13 +4200,16 @@ class Client:
             groups (List[str]): Dataset groups to include.
             annotation_types (List[AnnotationType]): Types of annotations to
                                                      include.
-            progress (Optional[Progress]): Optional progress callback. Supports:
+            progress (Optional[Progress]): Optional progress
+                callback. Supports:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched and processed
-            for their annotations. Progress unit is samples processed.
+            Reports progress with status=None as samples
+            are fetched and processed for their annotations.
+            Progress unit is samples processed.
 
         Returns:
             DataFrame: A Polars DataFrame containing the annotations.
@@ -4224,13 +4239,16 @@ class Client:
             groups (List[str]): Dataset groups to include.
             annotation_types (List[AnnotationType]): Types of annotations to
                                                      include.
-            progress (Optional[Progress]): Optional progress callback. Supports:
+            progress (Optional[Progress]): Optional progress
+                callback. Supports:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched from the server
-            in paginated batches. Progress unit is samples fetched.
+            Reports progress with status=None as samples
+            are fetched from the server in paginated batches.
+            Progress unit is samples fetched.
 
         Returns:
             DataFrame: A Polars DataFrame with 13 columns (name, frame,
@@ -4288,13 +4306,16 @@ class Client:
                                                         to include.
             groups (List[str]): Dataset groups to include.
             types (List[FileType]): Type of files to include.
-            progress (Optional[Progress]): Optional progress callback. Supports:
+            progress (Optional[Progress]): Optional progress
+                callback. Supports:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as samples are fetched from the server
-            in paginated batches. Progress unit is samples fetched.
+            Reports progress with status=None as samples
+            are fetched from the server in paginated batches.
+            Progress unit is samples fetched.
 
         Returns:
             List[Sample]: A list of sample objects.
@@ -4355,13 +4376,16 @@ class Client:
                     and annotations)
             progress: Optional progress callback. Supports two signatures:
                 - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with status message (v2.8.0+)
+                - ``callback(current, total, status)`` - with
+                  status message (v2.8.0+)
 
         Progress:
-            Reports progress with status=None as each sample's files are uploaded.
-            Progress unit is samples (not individual files). Each sample may contain
-            multiple files (image, lidar, radar, etc.) which are all uploaded before
-            the sample is counted as complete.
+            Reports progress with status=None as each
+            sample's files are uploaded. Progress unit is
+            samples (not individual files). Each sample may
+            contain multiple files (image, lidar, radar,
+            etc.) which are all uploaded before the sample
+            is counted as complete.
 
         Returns:
             List[SamplesPopulateResult]: List of results with UUIDs
@@ -4732,8 +4756,9 @@ class Client:
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
-            Reports progress with status=None as file data is received. Progress
-            unit is bytes downloaded. Total is determined from the HTTP
+            Reports progress with status=None as file data
+            is received. Progress unit is bytes downloaded.
+            Total is determined from the HTTP
             Content-Length header (may be 0 if server doesn't provide it).
 
         Raises:
@@ -4763,8 +4788,9 @@ class Client:
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
-            Reports progress with status=None as file data is received. Progress
-            unit is bytes downloaded. Total is determined from the HTTP
+            Reports progress with status=None as file data
+            is received. Progress unit is bytes downloaded.
+            Total is determined from the HTTP
             Content-Length header (may be 0 if server doesn't provide it).
 
         Raises:
