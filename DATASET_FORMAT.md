@@ -1,8 +1,8 @@
 # EdgeFirst Dataset Format Specification
 
-**Version**: 2025.10  
-**Last Updated**: 31 October, 2025  
-**Status**: ACTIVE
+**Version**: 2026.04
+**Last Updated**: 18 March, 2026
+**Status**: DRAFT (pending review)
 
 ---
 
@@ -18,17 +18,21 @@
    - [Radar](#radar)
    - [LiDAR](#lidar)
 5. [Annotation Formats](#annotation-formats)
-   - [DataFrame Format (Arrow/Polars)](#dataframe-format-arrowpolars)
+   - [DataFrame Format (Arrow/Parquet/Polars)](#dataframe-format-arrowparquetpolars)
    - [JSON Format (Nested)](#json-format-nested)
    - [Format Comparison](#format-comparison)
-6. [Annotation Schema](#annotation-schema)
+6. [File-Level Metadata](#file-level-metadata)
+7. [Annotation Schema](#annotation-schema)
    - [Field Definitions](#field-definitions)
    - [Geometry Types](#geometry-types)
+   - [Score Columns](#score-columns)
    - [Sample Metadata](#sample-metadata)
-7. [Format Deviations](#format-deviations)
-8. [Conversion Guidelines](#conversion-guidelines)
-9. [Best Practices](#best-practices)
-10. [Version History](#version-history)
+   - [Instrumentation](#instrumentation)
+8. [Format Deviations](#format-deviations)
+9. [Conversion Guidelines](#conversion-guidelines)
+10. [Migration from 2025.10](#migration-from-202510)
+11. [Best Practices](#best-practices)
+12. [Version History](#version-history)
 
 ---
 
@@ -44,7 +48,7 @@ graph TB
     subgraph Dataset["🗂️ EdgeFirst Dataset"]
         direction TB
         Storage["📦 Storage Container<br/>(ZIP or Directory)"]
-        Annotations["📊 Annotations<br/>(Arrow or JSON)"]
+        Annotations["📊 Annotations<br/>(Arrow, Parquet, or JSON)"]
     end
     
     Storage --> |"Images, PCD, etc."| Sensor["🎥 Sensor Data<br/>(Immutable)"]
@@ -56,7 +60,8 @@ graph TB
     
     Labels --> Box2D["📐 2D Boxes"]
     Labels --> Box3D["📦 3D Boxes"]
-    Labels --> Masks["🎭 Masks"]
+    Labels --> Polygons["🔷 Polygons"]
+    Labels --> Masks["🎭 Raster Masks"]
     
     style Dataset fill:#e1f5ff,stroke:#0277bd,stroke-width:3px
     style Storage fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
@@ -68,7 +73,8 @@ graph TB
 **Key Principles**:
 
 - **Normalized coordinates**: All spatial data uses 0..1 range (resolution-independent)
-- **Two annotation formats**: DataFrame (flat, columnar) and JSON (nested, human-readable)
+- **Three storage formats**: Arrow IPC (local performance), Parquet (transfer/interop), JSON (human-readable)
+- **Self-describing files**: File-level metadata describes schema version, box layouts, and mask interpretation
 - **Both formats contain annotations and sample metadata**: DataFrame and JSON both store complete annotation and sample data
 - **Lossless data representation**: All annotation data and sample metadata converts between formats without loss
 
@@ -85,19 +91,23 @@ graph LR
         Studio["☁️ EdgeFirst Studio<br/>(JSON-RPC API)"]
         Client["🔧 EdgeFirst Client<br/>(Python/Rust SDK)"]
         JSON["📄 JSON Format<br/>(Nested Structure)"]
-        DF["📊 DataFrame Format<br/>(Flat Structure)"]
+        Arrow["📊 Arrow IPC<br/>(Local Performance)"]
+        Parquet["📦 Parquet<br/>(Transfer/Interop)"]
         Custom["⚙️ Custom Format<br/>(User-defined)"]
     end
-    
+
     Studio -->|"JSON-RPC"| Client
     Client -->|"Export"| JSON
-    Client -->|"Export"| DF
+    Client -->|"Export"| Arrow
+    Client -->|"Export"| Parquet
     Client -->|"Direct API"| Custom
-    
-    JSON <-->|"Unnest/Nest"| DF
-    
+
+    JSON <-->|"Unnest/Nest"| Arrow
+    Arrow <-->|"Same Schema"| Parquet
+
     JSON --> ML1["🤖 ML Pipeline<br/>(TensorFlow)"]
-    DF --> ML2["🤖 ML Pipeline<br/>(PyTorch)"]
+    Arrow --> ML2["🤖 ML Pipeline<br/>(PyTorch)"]
+    Parquet --> ML3["🤖 ML Pipeline<br/>(DuckDB/Spark)"]
     Custom --> ML3["🤖 Custom ML<br/>(User Pipeline)"]
     
     style Studio fill:#bbdefb,stroke:#1976d2,stroke-width:2px
@@ -351,57 +361,90 @@ rcs              # Radar cross-section
 
 ### LiDAR
 
-**Format**: PCD (Point Cloud Data)  
+**Format**: PCD (Point Cloud Data)
 **Extension**: `.lidar.pcd`
 
-**Additional formats**:
-
-- `.lidar.png` - Depth map visualization
-- `.lidar.jpeg` - Reflectivity visualization
-
 **Configuration**: Based on Maivin MCAP Recorder settings (specifics TBD)
+
+> **Deprecated in 2026.04**: The `.lidar.png` (depth map) and `.lidar.jpeg` (reflectivity) projected visualization formats have been removed. Consumers should project PCD data to depth/reflectivity images if needed.
 
 ---
 
 ## Annotation Formats
 
-EdgeFirst supports two annotation formats optimized for different use cases.
+EdgeFirst supports three annotation storage formats optimized for different use cases.
 
-### DataFrame Format (Arrow/Polars)
+### DataFrame Format (Arrow/Parquet/Polars)
 
-**Technology**: [Apache Arrow](https://arrow.apache.org/) with [Polars](https://pola.rs/) interface
+**Technology**: [Apache Arrow](https://arrow.apache.org/) IPC or [Apache Parquet](https://parquet.apache.org/) with [Polars](https://pola.rs/) interface
 
-**Structure**: Flat columnar format (one row per annotation)
+**Structure**: Flat columnar format (one row per annotation instance)
 
-**Schema**:
+**Storage Tiers**:
+
+| Format | Extension | Use Case | Characteristics |
+|--------|-----------|----------|-----------------|
+| Arrow IPC | `.arrow` | Local ML training, fast random access | Zero-copy memory mapping, fastest local performance |
+| Parquet | `.parquet` | Transfer, cloud storage, interop | ZSTD columnar compression, compatible with DuckDB/Spark/pandas |
+
+Both formats share the same logical schema. Arrow IPC is optimized for local performance; Parquet is optimized for transfer and interoperability. Use Arrow for training pipelines, Parquet for distribution.
+
+**Schema (2026.04)**:
 
 ```python
 (
+    # ── Identity & Classification ──────────────────────
     ('name', String),
-    ('frame', UInt64),
-  ('object_id', String),
+    ('frame', UInt32),
+    ('object_id', String),
     ('label', Categorical(ordering='physical')),
     ('label_index', UInt64),
     ('group', Categorical(ordering='physical')),
-    ('mask', List(Float32)),
-    ('box2d', Array(Float32, shape=(4,))),  # [cx, cy, w, h]
-    ('box3d', Array(Float32, shape=(6,))),  # [x, y, z, w, h, l]
-    ('size', Array(UInt32, shape=(2,))),  # [width, height] - OPTIONAL
-    ('location', Array(Float32, shape=(2,))),  # [lat, lon] - OPTIONAL
-    ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll] - OPTIONAL
-    ('degradation', String)  # OPTIONAL
+
+    # ── Geometry: Polygon ──────────────────────────────
+    ('polygon', List(List(Float32))),  # interleaved [x1,y1,x2,y2,...] per ring
+    ('polygon_score', Float32),  # OPTIONAL - confidence (0..1)
+
+    # ── Geometry: Raster Mask ──────────────────────────
+    ('mask', List(UInt8)),  # row-major u8 pixels, width*height elements
+    ('mask_score', Float32),  # OPTIONAL - per-instance confidence (0..1)
+
+    # ── Geometry: 2D Bounding Box ──────────────────────
+    ('box2d', Array(Float32, shape=(4,))),  # layout from metadata, default [cx, cy, w, h]
+    ('box2d_score', Float32),  # OPTIONAL - confidence (0..1)
+
+    # ── Geometry: 3D Bounding Box ──────────────────────
+    ('box3d', Array(Float32, shape=(6,))),  # [cx, cy, cz, w, h, l]
+    ('box3d_score', Float32),  # OPTIONAL - confidence (0..1)
+
+    # ── Sample Metadata (optional) ─────────────────────
+    ('size', Array(UInt32, shape=(2,))),  # [width, height] - REQUIRED when mask populated
+    ('location', Array(Float32, shape=(2,))),  # [lat, lon]
+    ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll]
+    ('degradation', String),
+
+    # ── Instrumentation (optional) ─────────────────────
+    ('timing', Struct({  # Int64 nanosecond durations
+        'load': Int64,
+        'preprocess': Int64,
+        'inference': Int64,
+        'decode': Int64,
+    })),
 )
 ```
 
-**Note**: Sample metadata fields (size, location, pose, degradation) are optional columns added in version 2025.10. Files from earlier versions will not have these columns.
+**Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `List(UInt8)` (raster pixel values). Polygon data moved to the new `polygon` column as `List(List(Float32))`. Score columns, timing struct, and Parquet support are new in 2026.04. See [Migration from 2025.10](#migration-from-202510) for details.
 
 **Array formats**:
 
-- **box2d**: `[cx, cy, w, h]` - center coordinates and dimensions
-- **box3d**: `[x, y, z, w, h, l]` - center coordinates and dimensions  
-- **size**: `[width, height]` - image dimensions in pixels (new in 2025.10)
+- **polygon**: `List(List(Float32))` - outer list = rings, inner list = interleaved `[x1, y1, x2, y2, ...]` pairs per ring
+- **mask**: `List(UInt8)` - row-major `u8` pixel values, `width * height` elements. **Requires** `size` column.
+- **box2d**: `[cx, cy, w, h]` - center coordinates and dimensions (default; see [File-Level Metadata](#file-level-metadata) for other layouts)
+- **box3d**: `[cx, cy, cz, w, h, l]` - center coordinates and dimensions
+- **size**: `[width, height]` - image dimensions in pixels
 - **location**: `[lat, lon]` - GPS coordinates (latitude, longitude)
-- **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees (new in 2025.10)
+- **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees
+- **timing**: `Struct{load, preprocess, inference, decode}` - Int64 nanosecond durations
 
 **Characteristics**:
 
@@ -499,10 +542,76 @@ df = pl.read_ipc("dataset.arrow")
 | **Sample Metadata** | Optional columns: size, location, pose arrays (2025.10+) | Nested in sample object |
 | **Unannotated Samples** | Included (one row with null annotations to preserve metadata) | Included (empty array) |
 | **Editing** | Programmatic (Polars API) | Manual or programmatic |
-| **Box2D Format** | `[cx, cy, w, h]` array (center) | `{x, y, w, h}` object (left/top) |
-| **Box3D Format** | `[x, y, z, w, h, l]` array (center) | `{x, y, z, w, h, l}` object (center) |
-| **Mask Format** | Flat list with NaN separators | Nested list of polygons |
+| **Box2D Format** | Array, layout from metadata (default: `[cx, cy, w, h]`) | Object, layout from metadata (default: `{x, y, w, h}`) |
+| **Box3D Format** | `[cx, cy, cz, w, h, l]` array (center) | `{x, y, z, w, h, l}` object (center) |
+| **Polygon Format** | `List(List(Float32))` interleaved xy per ring | Nested list of `[x,y]` point pairs |
+| **Mask Format** | `List(UInt8)` row-major pixels | base64-encoded string |
 | **Best For** | Analysis, training, querying | Editing, API, distribution |
+
+---
+
+## File-Level Metadata
+
+Both Arrow IPC and Parquet support key-value metadata at the schema/file level. This enables self-describing files where readers can determine the schema version, box layout, and mask interpretation without external context.
+
+All metadata values are strings.
+
+| Key | Values | Default (absent) | Description |
+|-----|--------|-------------------|-------------|
+| `schema_version` | `"2026.04"` | `"2025.10"` | Format version. Absent = legacy file. |
+| `box2d_format` | `"cxcywh"`, `"xyxy"`, `"ltwh"` | `"cxcywh"` | Box2D array layout descriptor |
+| `box2d_normalized` | `"true"`, `"false"` | `"true"` | Box2D coordinate system |
+| `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor |
+| `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system |
+| `mask_interpretation` | `"binary"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks |
+
+### Box Format Descriptors
+
+**`box2d_format` values**:
+
+| Value | Array Layout | Description |
+|-------|-------------|-------------|
+| `cxcywh` | `[center_x, center_y, width, height]` | ML standard (YOLO, etc.) |
+| `xyxy` | `[x_min, y_min, x_max, y_max]` | Corner-pair format |
+| `ltwh` | `[left, top, width, height]` | COCO/Studio legacy format |
+
+**`box3d_format` values**:
+
+| Value | Array Layout | Description |
+|-------|-------------|-------------|
+| `cxcyczwhl` | `[center_x, center_y, center_z, width, height, length]` | Center of bounding box |
+
+Box3D coordinates represent the geometric center of the 3D bounding box. Width (w) = X-axis extent, Height (h) = Y-axis extent, Length (l) = Z-axis extent.
+
+### Default Box Format by Storage Type
+
+When metadata is **absent** (backward compatibility with older files):
+
+| Storage Format | Default box2d_format | Reason |
+|---------------|---------------------|--------|
+| Arrow IPC | `cxcywh` | Backward compat with 2025.10 Arrow files |
+| Parquet | `cxcywh` | New format, follows Arrow convention |
+| JSON (file) | `ltwh` | Backward compat with Studio JSON-RPC API |
+| JSON-RPC API | Always `ltwh` | Fixed protocol, cannot be changed |
+
+When metadata **IS** present, it is authoritative regardless of storage format. This resolves the previously-implicit format deviation between Arrow and JSON.
+
+### Mask Interpretation
+
+The `mask_interpretation` metadata describes how to interpret `u8` pixel values in the `mask` column:
+
+| Value | Description |
+|-------|-------------|
+| `binary` | Thresholded 0/1 values (default) |
+| `confidence` | 0-255 quantized confidence scores |
+| `sigmoid` | 0-255 quantized sigmoid outputs |
+| `logits` | 0-255 quantized logit outputs |
+
+### Schema Version Strategy
+
+Version format is `YYYY.MM` with mandatory zero-padding (e.g., `"2025.10"`, `"2026.04"`). Versions are compared lexicographically. The zero-padding ensures lexicographic order matches calendar order.
+
+Readers should handle any version they recognize. Unknown future versions should trigger a warning (not an error) and attempt best-effort reading via Arrow/Parquet schema introspection.
 
 ---
 
@@ -610,28 +719,29 @@ For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instea
 
 ### Geometry Types
 
-#### Mask
+#### Polygon (NEW in 2026.04)
 
-**Purpose**: Pixel-level segmentation boundaries
+**Purpose**: Instance-level segmentation boundaries as vector contours
 
-**Coordinate system**: Normalized (0..1)
+**Coordinate system**: Always normalized (0..1)
 
 ```mermaid
 graph TB
     subgraph JSON["JSON Format"]
         direction LR
-        J1["Polygon 1: [(x1,y1), (x2,y2), ...]"]
-        J2["Polygon 2: [(x3,y3), (x4,y4), ...]"]
+        J1["Ring 1: [[x1,y1], [x2,y2], [x3,y3]]"]
+        J2["Ring 2: [[x4,y4], [x5,y5], [x6,y6]]"]
     end
-    
+
     subgraph DF["DataFrame Format"]
         direction LR
-        D1["[x1, y1, x2, y2, ..., NaN, x3, y3, x4, y4, ...]"]
+        D1["Ring 1: [x1, y1, x2, y2, x3, y3]"]
+        D2["Ring 2: [x4, y4, x5, y5, x6, y6]"]
     end
-    
-    JSON -->|"Flatten"| DF
-    DF -->|"Reconstruct"| JSON
-    
+
+    JSON -->|"Flatten pairs"| DF
+    DF -->|"Pair coordinates"| JSON
+
     style JSON fill:#fff9c4,stroke:#f57f17,stroke-width:2px
     style DF fill:#c8e6c9,stroke:#388e3c,stroke-width:2px
 ```
@@ -640,35 +750,55 @@ graph TB
 
 ```json
 {
-  "mask": {
-    "polygon": [
-      [[0.69, 0.34], [0.69, 0.34], [0.70, 0.35]],
-      [[0.71, 0.36], [0.72, 0.37], [0.73, 0.38]]
-    ]
-  }
+  "polygon": [
+    [[0.69, 0.34], [0.70, 0.35], [0.71, 0.36]],
+    [[0.72, 0.37], [0.73, 0.38], [0.74, 0.35]]
+  ],
+  "polygon_score": 0.92
 }
 ```
 
-- Structure: List of polygons (nested lists)
-- Each polygon: List of `(x, y)` tuples  
-- Multiple polygons: Separate lists in outer array
+- Structure: List of polygon rings, each ring is a list of `[x, y]` point pairs
+- Multiple rings: Separate lists in outer array (disjoint parts, holes)
 - **Studio API**: May receive as RLE (Run-Length Encoding), decoded to polygon vertices by client library
 
 **DataFrame Format**:
 
 ```python
-mask: [0.69, 0.34, 0.69, 0.34, 0.70, 0.35, NaN, 0.71, 0.36, 0.72, 0.37, 0.73, 0.38]
+polygon: [[0.69, 0.34, 0.70, 0.35, 0.71, 0.36], [0.72, 0.37, 0.73, 0.38, 0.74, 0.35]]
 ```
 
-- Type: `List(Float32)`
-- Structure: Flattened coordinates with NaN separators
-- Reason: Polars doesn't support nested list-of-lists
-- Multiple polygons: Separated by `NaN` values
+- Type: `List(List(Float32))`
+- Outer list: Multiple polygon rings per instance
+- Inner list: Interleaved `[x1, y1, x2, y2, ...]` coordinate pairs for one ring
+- **Validity**: Inner lists must have even length (coordinate pairs). Minimum 6 values (3 points) per valid ring.
 
 **Conversion**:
 
-- JSON → DataFrame: Flatten nested structure, insert NaN between polygons
-- DataFrame → JSON: Split on NaN, reconstruct nested lists
+- JSON → DataFrame: Flatten each ring's `[[x,y], ...]` to `[x, y, x, y, ...]`
+- DataFrame → JSON: Pair consecutive floats into `[x, y]` tuples
+
+> **Migration from 2025.10**: The old `mask: List(Float32)` column (NaN-separated polygon coordinates) is replaced by `polygon: List(List(Float32))`. See [Migration from 2025.10](#migration-from-202510).
+
+#### Mask (CHANGED in 2026.04)
+
+**Purpose**: Dense per-pixel raster masks (semantic segmentation, instance masks from inference)
+
+**Type**: `List(UInt8)` — row-major `u8` pixel values
+
+```json
+{
+  "mask": "<base64-encoded u8 pixel data>",
+  "mask_score": 0.89
+}
+```
+
+- **Encoding**: Raw row-major `u8` pixel values, `width * height` elements per mask
+- **Interpretation**: Described by `mask_interpretation` file metadata (see [File-Level Metadata](#file-level-metadata))
+- **Dimensions**: Derived from `size` column. **`size` is required when `mask` is populated.**
+- **JSON representation**: base64-encoded string
+- **Relationship to polygon**: `polygon` and `mask` can coexist (e.g., panoptic segmentation with instance polygons and semantic raster masks). Typically a dataset uses one or the other.
+- **Future type evolution**: In future versions, the list element type may change to `Int8` or `Float32`. Readers should query the actual list element type at runtime.
 
 #### Box2D
 
@@ -702,9 +832,11 @@ graph TB
     style Image fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
 ```
 
-**⚠️ FORMAT DIFFERS BETWEEN JSON AND DATAFRAME**
+**⚠️ Box2D layout is configurable via `box2d_format` metadata (new in 2026.04)**
 
-**JSON Format** (Studio API legacy):
+The array layout and JSON field names depend on the `box2d_format` metadata key. See [File-Level Metadata](#file-level-metadata) for all supported formats and defaults.
+
+**Default JSON Format** (`ltwh` — Studio API legacy, default for JSON when metadata absent):
 
 ```json
 {
@@ -713,15 +845,12 @@ graph TB
     "y": 0.342593,    // top edge
     "w": 0.015104,    // width
     "h": 0.050926     // height
-  }
+  },
+  "box2d_score": 0.97
 }
 ```
 
-- Origin: Top-left corner
-- Fields: `x` (left), `y` (top), `w`, `h`
-- Reason: Legacy Studio RPC API format
-
-**DataFrame Format** (Preferred):
+**Default DataFrame Format** (`cxcywh` — default for Arrow/Parquet when metadata absent):
 
 ```python
 box2d: [0.691406, 0.368056, 0.015104, 0.050926]
@@ -782,8 +911,10 @@ box3d: [0.45, 0.12, 0.03, 0.08, 0.06, 0.15]
 ```
 
 - Type: `Array(Float32, shape=(6,))`
-- Format: `[x, y, z, width, height, length]`
-- All coordinates are center-points
+- Format: `[cx, cy, cz, width, height, length]`
+- All coordinates represent the geometric center of the bounding box (not surface or object centroid)
+- Width (w) = X-axis extent, Height (h) = Y-axis extent, Length (l) = Z-axis extent
+- Use `box3d_normalized` metadata to indicate if coordinates are normalized (0..1) or in absolute units (meters)
 
 **Reference**:
 
@@ -945,246 +1076,231 @@ shape: (3, 13)
 
 ---
 
+### Score Columns (NEW in 2026.04)
+
+Per-geometry confidence scores (0..1), independent for each geometry type on a row.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `box2d_score` | `Float32` (nullable) | Box2D detection confidence |
+| `box3d_score` | `Float32` (nullable) | Box3D detection confidence |
+| `polygon_score` | `Float32` (nullable) | Polygon segmentation confidence |
+| `mask_score` | `Float32` (nullable) | Per-instance raster mask confidence |
+
+- A single row may have different scores for different geometry types
+- Raster masks additionally carry per-pixel scores via `mask_interpretation` metadata — `mask_score` is the per-instance aggregate
+- **Ground truth files**: Score columns should be **omitted entirely** (not filled with nulls). Readers must treat absent score columns as "not applicable."
+
+### Instrumentation (NEW in 2026.04)
+
+**Column**: `timing`
+**Type**: `Struct{load: Int64, preprocess: Int64, inference: Int64, decode: Int64}`
+
+All values are nanosecond durations stored as `Int64`. Optional — present only when instrumentation data exists.
+
+| Field | Description |
+|-------|-------------|
+| `load` | Time to load input data (ns) |
+| `preprocess` | Time for preprocessing transforms (ns) |
+| `inference` | Model inference time (ns) |
+| `decode` | Time for postprocessing/decoding (ns) |
+
+**Example**:
+
+```
+timing: {load: 1500000, preprocess: 3200000, inference: 12500000, decode: 800000}
+# = 1.5ms load, 3.2ms preprocess, 12.5ms inference, 0.8ms decode
+```
+
+---
+
 ## Format Deviations
 
-**CRITICAL**: JSON and DataFrame formats differ in two key areas:
-
-```mermaid
-graph TB
-    subgraph Deviations["Format Deviations"]
-        direction TB
-        
-        subgraph Box2D["Box2D Coordinates"]
-            J_Box["JSON: [left, top, w, h]<br/>Legacy Studio API"]
-            D_Box["DataFrame: [cx, cy, w, h]<br/>ML Framework Standard"]
-        end
-        
-        subgraph Mask["Mask Structure"]
-            J_Mask["JSON: Nested lists<br/>[[(x,y), ...], ...]"]
-            D_Mask["DataFrame: Flat list<br/>[x, y, ..., NaN, ...]"]
-        end
-    end
-    
-    J_Box <-.->|"cx=left+w/2<br/>cy=top+h/2"| D_Box
-    J_Mask <-.->|"Flatten<br/>Insert NaN"| D_Mask
-    
-    style Box2D fill:#ffebee,stroke:#c62828,stroke-width:2px
-    style Mask fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style Deviations fill:#f5f5f5,stroke:#616161,stroke-width:3px
-```
+In 2026.04, format deviations between JSON and DataFrame are now **explicit and configurable** via file-level metadata (see [File-Level Metadata](#file-level-metadata)). The key areas where formats differ:
 
 ### 1. Box2D Representation
 
+**Default behavior** (when `box2d_format` metadata is absent):
+
 | Format | JSON | DataFrame |
 |--------|------|-----------|
-| **Origin** | Top-left corner | Box center |
-| **Coordinates** | `{x, y, w, h}` | `[cx, cy, w, h]` |
-| **x/cx** | Left edge (0..1) | Center X (0..1) |
-| **y/cy** | Top edge (0..1) | Center Y (0..1) |
-| **Conversion** | - | `cx = x + w/2, cy = y + h/2` |
+| **Default Layout** | `ltwh` (left, top, width, height) | `cxcywh` (center x, center y, width, height) |
 | **Reason** | Legacy Studio API | ML framework standard (YOLO) |
+| **Conversion** | - | `cx = left + w/2, cy = top + h/2` |
 
-### 2. Mask Storage
+**With `box2d_format` metadata**: When metadata is present, it is authoritative for both JSON and DataFrame formats. A JSON file with `"box2d_format": "cxcywh"` uses center coordinates.
+
+### 2. Polygon Representation
 
 | Format | JSON | DataFrame |
 |--------|------|-----------|
-| **Structure** | Nested lists | Flat list |
-| **Format** | `[[(x,y), ...], ...]` | `[x, y, ..., NaN, ...]` |
-| **Polygons** | Separate lists | NaN-separated |
-| **Type** | JSON array | `List(Float32)` |
-| **Reason** | Natural nesting | Polars limitation |
+| **Structure** | Nested `[[x,y], ...]` point pairs | Interleaved `[x, y, x, y, ...]` flat list |
+| **Outer list** | List of rings | List of rings |
+| **Type** | JSON array | `List(List(Float32))` |
+
+### 3. Mask Representation
+
+| Format | JSON | DataFrame |
+|--------|------|-----------|
+| **Structure** | base64-encoded string | `List(UInt8)` row-major pixels |
+| **Interpretation** | Same via `mask_interpretation` metadata | Same |
+
+> **2025.10 legacy deviation**: In files without `schema_version` metadata, the old `mask: List(Float32)` column contains NaN-separated polygon coordinates (not raster data). See [Migration from 2025.10](#migration-from-202510).
 
 ---
 
 ## Conversion Guidelines
 
-### JSON → DataFrame
+> **⚠️ WARNING**: The conversion code below is for **2026.04 schema**. Code written for 2025.10 (NaN-separated masks, `mask: List(Float32)`) will produce **corrupt data** when applied to 2026.04 files. Always check `schema_version` before processing.
+
+### Reading Arrow/Parquet Files
 
 ```python
 import polars as pl
 
-# Read JSON samples
-samples = load_json("annotations.json")
+# Arrow IPC
+df = pl.read_ipc("dataset.arrow")
 
-# Convert to DataFrame (unnest annotations)
-annotations = []
+# Parquet
+df = pl.read_ipc("dataset.parquet")
+
+# Version detection
+# (Schema metadata access depends on Polars version — see EdgeFirst Client SDK for robust detection)
+if "polygon" in df.columns:
+    # 2026.04 format
+    polygon_col = df["polygon"]  # List<List<f32>> with interleaved xy pairs per ring
+elif "mask" in df.columns:
+    mask_dtype = df["mask"].dtype
+    if str(mask_dtype).startswith("List(Float32"):
+        # 2025.10 legacy format — NaN-separated polygon coordinates
+        pass
+    elif str(mask_dtype).startswith("List(UInt8"):
+        # 2026.04 raster mask
+        pass
+```
+
+### JSON → DataFrame (2026.04)
+
+```python
+import polars as pl
+import json, base64
+
+# Detect version: 2026.04 JSON is an object, 2025.10 is a bare array
+with open("annotations.json") as f:
+    data = json.load(f)
+
+if isinstance(data, list):
+    samples = data  # 2025.10: bare array
+    box2d_format = "ltwh"  # default for legacy JSON
+else:
+    samples = data["samples"]  # 2026.04: object wrapper
+    box2d_format = data.get("box2d_format", "ltwh")
+
+rows = []
 for sample in samples:
-    # Extract sample metadata once
-    size = [sample.get("width"), sample.get("height")]  # Array [width, height]
-    
-    # GPS: JSON nested object → DataFrame array [lat, lon]
-    location = None
-    if sample.get("sensors", {}).get("gps"):
-        gps_data = sample["sensors"]["gps"]
-        location = [
-            gps_data["latitude"],
-            gps_data["longitude"]
-        ]
-    
-    # IMU: JSON nested object → DataFrame array [yaw, pitch, roll]
-    pose = None
-    if sample.get("sensors", {}).get("imu"):
-        imu_data = sample["sensors"]["imu"]
-        pose = [
-            imu_data["yaw"],
-            imu_data["pitch"],
-            imu_data["roll"]
-        ]
-    
-    degradation = sample.get("degradation")  # Degradation field (new in 2025.10)
-    
-    for ann in sample["annotations"]:
-    row = {
+    size = [sample.get("width"), sample.get("height")]
+    for ann in sample.get("annotations", []):
+        row = {
             "name": extract_name(sample["image_name"]),
             "frame": sample.get("frame_number"),
-      "object_id": ann.get("object_id") or ann.get("object_reference"),
-            "label": ann["label_name"],  # Column name: 'label'
+            "object_id": ann.get("object_id"),
+            "label": ann["label_name"],
             "label_index": ann.get("label_index"),
-            "group": sample.get("group"),  # JSON field 'group' → column 'group'
-            "mask": flatten_mask(ann.get("mask")),  # Flatten with NaN
-            "box2d": [  # Array [cx, cy, w, h]
-                ann["box2d"]["x"] + ann["box2d"]["w"] / 2,  # cx
-                ann["box2d"]["y"] + ann["box2d"]["h"] / 2,  # cy
-                ann["box2d"]["w"],
-                ann["box2d"]["h"]
-            ],
-            "box3d": [  # Array [x, y, z, w, h, l]
-                ann["box3d"]["x"],
-                ann["box3d"]["y"],
-                ann["box3d"]["z"],
-                ann["box3d"]["w"],
-                ann["box3d"]["h"],
-                ann["box3d"]["l"]
-            ] if ann.get("box3d") else None,
-            "size": size,          # Sample metadata (new in 2025.10)
-            "location": location,  # GPS array [lat, lon]
-            "pose": pose,          # IMU array [yaw, pitch, roll]
-            "degradation": degradation,
+            "group": sample.get("group_name"),
         }
-        annotations.append(row)
 
-df = pl.DataFrame(annotations)
-df.write_ipc("annotations.arrow")
+        # Polygon: JSON [[x,y],...] → DataFrame [x,y,x,y,...]
+        if ann.get("polygon"):
+            row["polygon"] = [
+                [coord for pt in ring for coord in pt]  # flatten pairs
+                for ring in ann["polygon"]
+            ]
+            row["polygon_score"] = ann.get("polygon_score")
+
+        # Mask: JSON base64 → DataFrame List<UInt8>
+        if ann.get("mask") and isinstance(ann["mask"], str):
+            row["mask"] = list(base64.b64decode(ann["mask"]))
+            row["mask_score"] = ann.get("mask_score")
+
+        # Box2D: convert based on format
+        if ann.get("box2d"):
+            b = ann["box2d"]
+            if box2d_format == "ltwh":
+                row["box2d"] = [b["x"] + b["w"]/2, b["y"] + b["h"]/2, b["w"], b["h"]]
+            elif box2d_format == "cxcywh":
+                row["box2d"] = [b["cx"], b["cy"], b["w"], b["h"]]
+            row["box2d_score"] = ann.get("box2d_score")
+
+        # Box3D
+        if ann.get("box3d"):
+            b3 = ann["box3d"]
+            row["box3d"] = [b3["x"], b3["y"], b3["z"], b3["w"], b3["h"], b3["l"]]
+            row["box3d_score"] = ann.get("box3d_score")
+
+        row["size"] = size
+        rows.append(row)
+
+df = pl.DataFrame(rows)
+df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 ```
 
 **Key conversions**:
 
-1. **Unnest**: One row per annotation (from nested structure)
-2. **Column names**: JSON `label_name` → DataFrame `label`, JSON `group` → DataFrame `group`
-3. **Sample metadata**: Optional columns added in 2025.10 (size, location, pose, degradation)
-4. **GPS conversion**: `{"latitude": lat, "longitude": lon}` → array `[lat, lon]`
-5. **IMU conversion**: `{"roll": r, "pitch": p, "yaw": y}` → array `[yaw, pitch, roll]`
-6. **Box2D**: `{x, y, w, h}` → array `[cx: x+w/2, cy: y+h/2, w, h]`
-7. **Box3D**: `{x, y, z, w, h, l}` → array `[x, y, z, w, h, l]`
-8. **Mask**: Nested lists → Flat list with NaN separators
-9. **Size**: Separate width/height → array `[width, height]`
+| # | Conversion | Direction |
+|---|------------|-----------|
+| 1 | **Unnest**: One row per annotation | JSON → DataFrame |
+| 2 | **Column names**: `label_name` → `label`, `group_name` → `group` | JSON → DataFrame |
+| 3 | **Polygon**: `[[x,y],...]` point pairs → `[x,y,x,y,...]` interleaved | JSON → DataFrame |
+| 4 | **Mask**: base64 string → `List(UInt8)` | JSON → DataFrame |
+| 5 | **Box2D**: Check `box2d_format` — convert `ltwh` → `cxcywh` if needed | JSON → DataFrame |
+| 6 | **Box3D**: `{x,y,z,w,h,l}` → `[cx,cy,cz,w,h,l]` | JSON → DataFrame |
+| 7 | **GPS**: `{latitude, longitude}` → `[lat, lon]` | JSON → DataFrame |
+| 8 | **IMU**: `{yaw, pitch, roll}` → `[yaw, pitch, roll]` | JSON → DataFrame |
+| 9 | **Score columns**: Omit entirely for ground truth files | Both |
 
-### DataFrame → JSON
+---
 
-```python
-import polars as pl
+## Migration from 2025.10
 
-df = pl.read_ipc("annotations.arrow")
+### Breaking Changes
 
-# Group by sample (name + frame)
-samples = []
-for (name, frame), group_df in df.groupby(["name", "frame"]):
-    # Get sample metadata (same for all rows in group)
-    first_row = group_df.row(0, named=True)
-    
-    # Extract optional metadata columns (new in 2025.10)
-    size_array = first_row.get("size")  # Array [width, height]
-    
-    # GPS: DataFrame array [lat, lon] → JSON nested object
-    gps_data = None
-    if first_row.get("location"):
-        loc = first_row["location"]  # Array [lat, lon]
-        gps_data = {
-            "latitude": loc[0],   # lat
-            "longitude": loc[1]   # lon
-        }
-    
-    # IMU: DataFrame array [yaw, pitch, roll] → JSON nested object
-    imu_data = None
-    if first_row.get("pose"):
-        pose_array = first_row["pose"]  # Array [yaw, pitch, roll]
-        imu_data = {
-            "yaw": pose_array[0],
-            "pitch": pose_array[1],
-            "roll": pose_array[2]
-        }
-    
-    # Build annotations
-    annotations = []
-    for row in group_df.iter_rows(named=True):
-        box2d_array = row["box2d"]  # Array [cx, cy, w, h]
-        ann = {
-            "label_name": row["label"],  # DataFrame column 'label' → JSON 'label_name'
-            "label_index": row["label_index"],
-      "object_id": row.get("object_id") or row.get("object_reference"),
-            "box2d": {  # Array [cx, cy, w, h] → JSON {x, y, w, h}
-                "x": box2d_array[0] - box2d_array[2] / 2,  # cx - w/2
-                "y": box2d_array[1] - box2d_array[3] / 2,  # cy - h/2
-                "w": box2d_array[2],
-                "h": box2d_array[3]
-            },
-            "mask": {"polygon": unflatten_mask(row["mask"])},  # NaN → nested lists
-        }
-        
-        # Box3D: Array [x, y, z, w, h, l] → JSON {x, y, z, w, h, l}
-        if row.get("box3d"):
-            box3d_array = row["box3d"]
-            ann["box3d"] = {
-                "x": box3d_array[0],
-                "y": box3d_array[1],
-                "z": box3d_array[2],
-                "w": box3d_array[3],
-                "h": box3d_array[4],
-                "l": box3d_array[5]
-            }
-        
-  annotations.append(ann)
-    
-    sample = {
-        "image_name": f"{name}_{frame}.camera.jpeg" if frame else f"{name}.jpg",
-        "frame_number": frame,
-        "group": first_row["group"],  # DataFrame column 'group' → JSON 'group'
-        "annotations": annotations,
-    }
-    
-    # Add optional size metadata (new in 2025.10)
-    if size_array:
-        sample["width"] = size_array[0]
-        sample["height"] = size_array[1]
-    
-    # Add degradation if present (new in 2025.10)
-    if first_row.get("degradation"):
-        sample["degradation"] = first_row["degradation"]
-    
-    # Add sensors if present
-    if gps_data or imu_data:
-        sample["sensors"] = {}
-        if gps_data:
-            sample["sensors"]["gps"] = gps_data
-        if imu_data:
-            sample["sensors"]["imu"] = imu_data
-    
-    samples.append(sample)
+| Change | 2025.10 | 2026.04 |
+|--------|---------|---------|
+| Polygon storage | `mask: List(Float32)` with NaN separators | `polygon: List(List(Float32))` nested lists |
+| Mask type | `List(Float32)` (polygon data) | `List(UInt8)` (raster pixel data) |
+| New columns | N/A | `polygon_score`, `mask_score`, `box2d_score`, `box3d_score`, `timing` |
+| File metadata | None | `schema_version`, `box2d_format`, etc. |
+| JSON structure | Bare array `[...]` | Object wrapper `{"schema_version": ..., "samples": [...]}` |
+| LiDAR sensor types | `lidar.png`, `lidar.jpeg` | Removed |
 
-save_json(samples, "annotations.json")
+### Migration Command
+
+```bash
+edgefirst migrate <input.arrow> [--output <output.arrow>]
 ```
 
-**Key conversions**:
+The migration utility:
+1. Reads the 2025.10 `mask: List(Float32)` column with NaN separators
+2. Converts to `polygon: List(List(Float32))` (split on NaN, pair coordinates)
+3. Removes the old `mask` column
+4. Sets `schema_version = "2026.04"` in file metadata
+5. Writes the new file (preserving all other columns unchanged)
 
-1. **Nest**: Group annotations by sample (name, frame)
-2. **Column names**: DataFrame `label` → JSON `label_name`, DataFrame `group` → JSON `group`
-3. **Optional metadata**: Check for size, location, pose, degradation columns (added in 2025.10)
-4. **GPS conversion**: array `[lat, lon]` → `{"latitude": lat, "longitude": lon}`
-5. **IMU conversion**: array `[yaw, pitch, roll]` → `{"yaw": y, "pitch": p, "roll": r}`
-6. **Box2D**: array `[cx, cy, w, h]` → `{x: cx-w/2, y: cy-h/2, w, h}`
-7. **Box3D**: array `[x, y, z, w, h, l]` → `{x, y, z, w, h, l}`
-8. **Mask**: Flat list → Split on NaN, nest into polygon lists
-9. **Size**: array `[width, height]` → separate width/height fields
+### Version Detection
+
+**Arrow/Parquet files**:
+- `schema_version` metadata present → use stated version
+- `schema_version` absent + `mask: List(Float32)` → 2025.10
+- `schema_version` absent + `mask: List(UInt8)` → 2026.04
+- `polygon` column present → 2026.04
+
+**JSON files**:
+- Top-level is a JSON array `[...]` → 2025.10
+- Top-level is a JSON object with `schema_version` → 2026.04
+
+### External Consumers Warning
+
+Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) should be aware that the `mask` column type changed. Code that calls `.list()?.cast(&DataType::Float32)` on the mask column will fail on 2026.04 files. Always check the column type before interpreting mask data.
 
 ---
 
@@ -1192,7 +1308,7 @@ save_json(samples, "annotations.json")
 
 ### Format Selection
 
-**Use DataFrame (Arrow) when**:
+**Use Arrow IPC when**:
 
 - Analyzing annotation statistics
 - Training ML models (PyTorch, TensorFlow)
@@ -1263,13 +1379,70 @@ save_json(samples, "annotations.json")
 - `.radar.pcd` - Radar point cloud
 - `.radar.png` - Radar data cube
 - `.lidar.pcd` - LiDAR point cloud
-- `.depth.png` - Depth map
+
+**Use Parquet when**:
+
+- Distributing datasets to collaborators or cloud storage
+- Querying with DuckDB, Spark, or pandas (Parquet is the standard interchange format)
+- Transferring over bandwidth-constrained networks (ZSTD compression)
+- Archiving datasets for long-term storage
 
 ---
 
 ## Version History
 
-### Version 2025.10 - Current
+### Version 2026.04 - Current
+
+**Major Schema Evolution**
+
+This version introduces significant changes to the annotation schema including new geometry types, configurable box formats, file-level metadata, and Parquet support. Several changes are **breaking** — see [Migration from 2025.10](#migration-from-202510).
+
+#### New Features
+
+**Storage Formats**:
+
+- **Parquet support**: ZSTD-compressed columnar format for transfer/interop with DuckDB, Spark, pandas
+- **File-level metadata**: Schema version, box format descriptors, mask interpretation in Arrow/Parquet metadata
+
+**Geometry Changes**:
+
+- **`polygon` column** (`List(List(Float32))`): Replaces NaN-separated `mask` column for vector polygon data
+- **`mask` column** (`List(UInt8)`): New raster mask type for dense per-pixel data (semantic segmentation, inference outputs)
+- **Configurable box format**: `box2d_format` metadata (`cxcywh`, `xyxy`, `ltwh`) + `box2d_normalized` flag
+- **Score columns**: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score` per-geometry confidence (0..1)
+
+**Instrumentation**:
+
+- **`timing` column**: `Struct{load, preprocess, inference, decode}` with Int64 nanosecond durations
+
+**JSON Format**:
+
+- **2026.04 JSON wrapper**: `{"schema_version": "2026.04", "samples": [...]}` with format metadata
+- **Configurable box field names**: JSON box2d fields change based on `box2d_format` metadata
+
+#### Breaking Changes
+
+| Change | 2025.10 | 2026.04 |
+|--------|---------|---------|
+| `mask` column type | `List(Float32)` NaN-separated polygons | `List(UInt8)` raster pixels |
+| Polygon storage | In `mask` column | In new `polygon` column |
+| JSON file structure | Bare array `[...]` | Object wrapper with metadata |
+| LiDAR sensor types | `lidar.png`, `lidar.jpeg` | **Removed** — use `lidar.pcd` |
+
+#### Backward Compatibility
+
+- The EdgeFirst Client SDK reads both 2025.10 and 2026.04 files transparently
+- Version detection uses `schema_version` metadata (preferred) or column type inspection (fallback)
+- Migration utility: `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
+
+#### Documentation Corrections
+
+- Fixed `box3d` dimension order: authoritative order is `[cx, cy, cz, w, h, l]` (width=X, height=Y, length=Z)
+- Confirmed `pose` array order: `[yaw, pitch, roll]` in degrees
+
+---
+
+### Version 2025.10
 
 **Comprehensive Specification Update**
 
