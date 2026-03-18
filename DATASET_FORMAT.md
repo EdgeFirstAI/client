@@ -366,7 +366,7 @@ rcs              # Radar cross-section
 
 **Configuration**: Based on Maivin MCAP Recorder settings (specifics TBD)
 
-> **Deprecated in 2026.04**: The `.lidar.png` (depth map) and `.lidar.jpeg` (reflectivity) projected visualization formats have been removed. Consumers should project PCD data to depth/reflectivity images if needed.
+> **Removed in 2026.04**: The `.lidar.png` (depth map) and `.lidar.jpeg` (reflectivity) projected visualization formats have been removed from the format specification. The SDK retains read support for backward compatibility but will not write these types. Consumers should project PCD data to depth/reflectivity images if needed.
 
 ---
 
@@ -389,13 +389,15 @@ EdgeFirst supports three annotation storage formats optimized for different use 
 
 Both formats share the same logical schema. Arrow IPC is optimized for local performance; Parquet is optimized for transfer and interoperability. Use Arrow for training pipelines, Parquet for distribution.
 
+> **Note**: This schema is defined for the 2026.04 release. The current SDK (2.x) implements the 2025.10 schema. See the [Version History](#version-history) section for the 2025.10 schema.
+
 **Schema (2026.04)**:
 
 ```python
 (
     # ── Identity & Classification ──────────────────────
     ('name', String),
-    ('frame', UInt32),
+    ('frame', UInt32),  # Corrected from UInt64 in 2025.10 spec — implementation always used UInt32
     ('object_id', String),
     ('label', Categorical(ordering='physical')),
     ('label_index', UInt64),
@@ -1162,7 +1164,7 @@ import polars as pl
 df = pl.read_ipc("dataset.arrow")
 
 # Parquet
-df = pl.read_ipc("dataset.parquet")
+df = pl.read_parquet("dataset.parquet")
 
 # Version detection
 # (Schema metadata access depends on Polars version — see EdgeFirst Client SDK for robust detection)
@@ -1278,6 +1280,8 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 ```bash
 edgefirst migrate <input.arrow> [--output <output.arrow>]
 ```
+
+> **Planned** — the `edgefirst migrate` command will be available in the 2026.04 release.
 
 The migration utility:
 1. Reads the 2025.10 `mask: List(Float32)` column with NaN separators
@@ -1433,7 +1437,7 @@ This version introduces significant changes to the annotation schema including n
 
 - The EdgeFirst Client SDK reads both 2025.10 and 2026.04 files transparently
 - Version detection uses `schema_version` metadata (preferred) or column type inspection (fallback)
-- Migration utility: `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
+- Migration utility (planned — available in 2026.04 release): `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
 
 #### Documentation Corrections
 
