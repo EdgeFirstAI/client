@@ -3,13 +3,14 @@
 
 //! Conditional instrumentation support for profiling.
 //!
-//! This module provides tracing integration when the `profiling` feature is enabled.
-//! When disabled, instrumentation compiles to zero-cost no-ops.
+//! This module provides tracing integration when the `profiling` feature is
+//! enabled. When disabled, instrumentation compiles to zero-cost no-ops.
 //!
 //! # Features
 //!
 //! - `profiling` - Base feature enabling tracing spans (no backend)
-//! - `trace-file` - Trace file output in Chrome JSON (.json) or Perfetto (.pftrace) format
+//! - `trace-file` - Trace file output in Chrome JSON (.json) or Perfetto
+//!   (.pftrace) format
 //!
 //! # Usage
 //!
@@ -40,15 +41,17 @@
 //! - `.json` extension → Chrome JSON format (viewable in Perfetto UI)
 //! - `.pftrace` extension → Native Perfetto format (viewable in Perfetto UI)
 //!
-//! Use `--trace-file path.json` or `--trace-file path.pftrace` to select format.
+//! Use `--trace-file path.json` or `--trace-file path.pftrace` to select
+//! format.
 
 #[cfg(feature = "profiling")]
 pub use tracing::{
-    debug, debug_span, error, error_span, info, info_span, instrument, trace, trace_span, warn,
-    warn_span, Instrument, Level, Span,
+    Instrument, Level, Span, debug, debug_span, error, error_span, info, info_span, instrument,
+    trace, trace_span, warn, warn_span,
 };
 
-/// Conditional span creation macro - compiles to no-op when profiling is disabled.
+/// Conditional span creation macro - compiles to no-op when profiling is
+/// disabled.
 ///
 /// # Example
 ///
@@ -82,7 +85,8 @@ macro_rules! span {
     };
 }
 
-/// Conditional event recording macro - compiles to no-op when profiling is disabled.
+/// Conditional event recording macro - compiles to no-op when profiling is
+/// disabled.
 ///
 /// Use this for recording events within spans without creating new spans.
 ///

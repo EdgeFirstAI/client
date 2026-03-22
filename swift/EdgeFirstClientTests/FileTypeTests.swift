@@ -238,7 +238,9 @@ final class FileTypeTests: XCTestCase {
 
   /// Test FileType grouping.
   func testFileTypeGrouping() {
-    let allTypes: [FileType] = [.image, .lidarPcd, .lidarDepth, .lidarReflect, .radarPcd, .radarCube]
+    let allTypes: [FileType] = [
+      .image, .lidarPcd, .lidarDepth, .lidarReflect, .radarPcd, .radarCube,
+    ]
 
     let grouped = Dictionary(grouping: allTypes) { type -> String in
       switch type {

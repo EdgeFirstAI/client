@@ -116,16 +116,18 @@ final class EntityTests: XCTestCase {
   func testTrainingSessionHashability() {
     var sessionSet: Set<TrainingSession> = []
 
-    sessionSet.insert(TrainingSession(
-      id: TrainingSessionId(value: 1),
-      experimentId: ExperimentId(value: 1),
-      name: "s1", description: "", model: ""
-    ))
-    sessionSet.insert(TrainingSession(
-      id: TrainingSessionId(value: 2),
-      experimentId: ExperimentId(value: 1),
-      name: "s2", description: "", model: ""
-    ))
+    sessionSet.insert(
+      TrainingSession(
+        id: TrainingSessionId(value: 1),
+        experimentId: ExperimentId(value: 1),
+        name: "s1", description: "", model: ""
+      ))
+    sessionSet.insert(
+      TrainingSession(
+        id: TrainingSessionId(value: 2),
+        experimentId: ExperimentId(value: 1),
+        name: "s2", description: "", model: ""
+      ))
 
     XCTAssertEqual(sessionSet.count, 2)
   }
