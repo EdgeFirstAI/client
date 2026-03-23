@@ -76,7 +76,7 @@ pub use reader::{
     CocoReadOptions, CocoReader, infer_group_from_filename, infer_group_from_folder,
     read_coco_directory,
 };
-pub use writer::{CocoWriteOptions, CocoWriter};
+pub use writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter};
 
 // Re-export conversion functions
 pub use convert::{
@@ -87,7 +87,9 @@ pub use convert::{
 
 // Re-export Arrow conversions (feature-gated)
 #[cfg(feature = "polars")]
-pub use arrow::{ArrowToCocoOptions, CocoToArrowOptions, arrow_to_coco, coco_to_arrow};
+pub use arrow::{
+    ArrowToCocoOptions, CocoToArrowOptions, SCHEMA_VERSION, arrow_to_coco, coco_to_arrow,
+};
 
 // Re-export Studio integration (feature-gated)
 #[cfg(feature = "polars")]

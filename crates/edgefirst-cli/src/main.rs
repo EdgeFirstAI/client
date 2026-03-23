@@ -3888,7 +3888,7 @@ async fn handle_coco_to_arrow(
     let count = task.await??;
     pb.finish_with_message("done");
 
-    println!("\n✓ Converted {} annotations to Arrow format", count);
+    println!("\n✓ Converted {} samples to Arrow format", count);
 
     Ok(())
 }

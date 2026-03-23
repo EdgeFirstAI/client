@@ -1398,11 +1398,13 @@ mod tests {
                     id: 1,
                     name: "cat".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "dog".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1414,11 +1416,13 @@ mod tests {
                     id: 1,
                     name: "cat".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "dog".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1438,11 +1442,13 @@ mod tests {
                     id: 1,
                     name: "cat".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "dog".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1454,11 +1460,13 @@ mod tests {
                     id: 1,
                     name: "cat".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 3,
                     name: "bird".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

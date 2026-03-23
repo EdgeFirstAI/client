@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `label_index` now preserves source `category_id` from COCO/LVIS (non-contiguous, may have gaps)
+
+### Added
+- LVIS extension columns: `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`
+- `category_metadata` file-level metadata for LVIS category taxonomy (synset, synonyms, definition)
+- `schema_version` metadata written to all new Arrow IPC files
+- COCO importer/exporter handles LVIS-extended fields automatically
+
 ## [2.8.0] - 2026-01-04
 
 ### Added

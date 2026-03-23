@@ -92,6 +92,12 @@ pub struct CocoImage {
     /// Date the image was captured.
     #[serde(default)]
     pub date_captured: Option<String>,
+    /// LVIS: Categories verified as absent from this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neg_category_ids: Option<Vec<u32>>,
+    /// LVIS: Categories with possibly incomplete annotation in this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_exhaustive_category_ids: Option<Vec<u32>>,
 }
 
 /// Category definition.
@@ -106,6 +112,24 @@ pub struct CocoCategory {
     /// Parent category name (e.g., "human" for "person").
     #[serde(default)]
     pub supercategory: Option<String>,
+    /// LVIS: WordNet synset identifier (e.g., "aerosol.n.02").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synset: Option<String>,
+    /// LVIS: Frequency group — "f" (frequent), "c" (common), "r" (rare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency: Option<String>,
+    /// LVIS: Alternate names for this category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synonyms: Option<Vec<String>>,
+    /// LVIS: Natural language definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub def: Option<String>,
+    /// LVIS: Number of images containing this category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_count: Option<u32>,
+    /// LVIS: Total annotated instances of this category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_count: Option<u32>,
 }
 
 /// Annotation for object detection and instance segmentation.
@@ -185,10 +209,12 @@ pub struct CocoIndex {
     pub images: HashMap<u64, CocoImage>,
     /// `category_id` → `CocoCategory`
     pub categories: HashMap<u32, CocoCategory>,
-    /// `category_id` → `label_index` (0-based, alphabetical order by name)
+    /// `category_id` → `label_index` (source-faithful, preserves original category_id)
     pub label_indices: HashMap<u32, u64>,
     /// `image_id` → `Vec<CocoAnnotation>`
     pub annotations_by_image: HashMap<u64, Vec<CocoAnnotation>>,
+    /// `category_id` → frequency group ("f", "c", "r")
+    pub frequencies: HashMap<u32, String>,
 }
 
 impl CocoIndex {
@@ -209,17 +235,17 @@ impl CocoIndex {
             .map(|cat| (cat.id, cat.clone()))
             .collect();
 
-        // Build alphabetically-sorted label indices for consistent ordering
-        let mut category_names: Vec<_> = dataset
+        // Preserve source category_id as label_index (source-faithful)
+        let label_indices: HashMap<_, _> = dataset
             .categories
             .iter()
-            .map(|c| (c.id, c.name.clone()))
+            .map(|c| (c.id, c.id as u64))
             .collect();
-        category_names.sort_by(|a, b| a.1.cmp(&b.1));
-        let label_indices: HashMap<_, _> = category_names
+
+        let frequencies: HashMap<_, _> = dataset
+            .categories
             .iter()
-            .enumerate()
-            .map(|(idx, (cat_id, _))| (*cat_id, idx as u64))
+            .filter_map(|c| c.frequency.as_ref().map(|f| (c.id, f.clone())))
             .collect();
 
         let mut annotations_by_image: HashMap<u64, Vec<CocoAnnotation>> = HashMap::new();
@@ -235,6 +261,7 @@ impl CocoIndex {
             categories,
             label_indices,
             annotations_by_image,
+            frequencies,
         }
     }
 
@@ -254,6 +281,11 @@ impl CocoIndex {
             .get(&image_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Get the frequency group for a category ID.
+    pub fn frequency(&self, category_id: u32) -> Option<&str> {
+        self.frequencies.get(&category_id).map(|s| s.as_str())
     }
 }
 
@@ -293,11 +325,13 @@ mod tests {
                     id: 1,
                     name: "person".to_string(),
                     supercategory: Some("human".to_string()),
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "car".to_string(),
                     supercategory: Some("vehicle".to_string()),
+                    ..Default::default()
                 },
             ],
             annotations: vec![
@@ -334,8 +368,8 @@ mod tests {
         assert_eq!(index.label_name(1), Some("person"));
         assert_eq!(index.label_name(2), Some("car"));
 
-        // Check alphabetical label indices (car=0, person=1)
-        assert_eq!(index.label_index(2), Some(0)); // car
+        // Check source-faithful label indices (category_id preserved)
+        assert_eq!(index.label_index(2), Some(2)); // car
         assert_eq!(index.label_index(1), Some(1)); // person
 
         // Check annotations by image
@@ -395,5 +429,105 @@ mod tests {
         assert_eq!(restored.image_id, ann.image_id);
         assert_eq!(restored.category_id, ann.category_id);
         assert_eq!(restored.bbox, ann.bbox);
+    }
+
+    #[test]
+    fn test_coco_index_preserves_category_id() {
+        // Non-contiguous category IDs (typical of COCO/LVIS datasets)
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "img.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    supercategory: None,
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 3,
+                    name: "car".to_string(),
+                    supercategory: None,
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 90,
+                    name: "toothbrush".to_string(),
+                    supercategory: None,
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+
+        // label_index must equal original category_id, NOT alphabetical order
+        assert_eq!(index.label_index(1), Some(1)); // person
+        assert_eq!(index.label_index(3), Some(3)); // car
+        assert_eq!(index.label_index(90), Some(90)); // toothbrush
+
+        // Unknown category returns None
+        assert_eq!(index.label_index(2), None);
+        assert_eq!(index.label_index(50), None);
+    }
+
+    #[test]
+    fn test_lvis_image_deserialize() {
+        let json = r#"{
+            "id": 397133,
+            "width": 640,
+            "height": 480,
+            "file_name": "000000397133.jpg",
+            "neg_category_ids": [5, 12, 87],
+            "not_exhaustive_category_ids": [3, 45]
+        }"#;
+        let image: CocoImage = serde_json::from_str(json).unwrap();
+        assert_eq!(image.neg_category_ids, Some(vec![5, 12, 87]));
+        assert_eq!(image.not_exhaustive_category_ids, Some(vec![3, 45]));
+    }
+
+    #[test]
+    fn test_lvis_category_deserialize() {
+        let json = r#"{
+            "id": 1,
+            "name": "aerosol_can",
+            "synset": "aerosol.n.02",
+            "frequency": "c",
+            "synonyms": ["aerosol_can", "spray_can"],
+            "def": "a dispenser that holds a substance under pressure",
+            "image_count": 57,
+            "instance_count": 98
+        }"#;
+        let cat: CocoCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(cat.synset, Some("aerosol.n.02".to_string()));
+        assert_eq!(cat.frequency, Some("c".to_string()));
+        assert_eq!(
+            cat.synonyms,
+            Some(vec!["aerosol_can".to_string(), "spray_can".to_string()])
+        );
+        assert_eq!(
+            cat.def,
+            Some("a dispenser that holds a substance under pressure".to_string())
+        );
+        assert_eq!(cat.image_count, Some(57));
+        assert_eq!(cat.instance_count, Some(98));
+    }
+
+    #[test]
+    fn test_standard_coco_still_parses() {
+        let json = r#"{"id": 1, "name": "person", "supercategory": "human"}"#;
+        let cat: CocoCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(cat.name, "person");
+        assert_eq!(cat.synset, None);
+        assert_eq!(cat.frequency, None);
+        assert_eq!(cat.synonyms, None);
+        assert_eq!(cat.def, None);
     }
 }

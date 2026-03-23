@@ -22,6 +22,7 @@
    - [JSON Format (Nested)](#json-format-nested)
    - [Format Comparison](#format-comparison)
 6. [File-Level Metadata](#file-level-metadata)
+   - [Category Metadata](#category-metadata)
 7. [Annotation Schema](#annotation-schema)
    - [Field Definitions](#field-definitions)
    - [Geometry Types](#geometry-types)
@@ -419,11 +420,17 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('box3d', Array(Float32, shape=(6,))),  # [cx, cy, cz, w, h, l]
     ('box3d_score', Float32),  # OPTIONAL - confidence (0..1)
 
+    # ── Annotation Metadata (optional) ────────────────
+    ('iscrowd', UInt8),  # OPTIONAL - 1 = crowd region, 0 = single instance (COCO)
+    ('category_frequency', Categorical(ordering='physical')),  # OPTIONAL - "f", "c", "r" (LVIS)
+
     # ── Sample Metadata (optional) ─────────────────────
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - REQUIRED when mask populated
     ('location', Array(Float32, shape=(2,))),  # [lat, lon]
     ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll]
     ('degradation', String),
+    ('neg_label_indices', List(UInt32)),  # OPTIONAL - label_index values verified absent (LVIS)
+    ('not_exhaustive_label_indices', List(UInt32)),  # OPTIONAL - label_index values with incomplete annotation (LVIS)
 
     # ── Instrumentation (optional) ─────────────────────
     ('timing', Struct({  # Int64 nanosecond durations
@@ -435,7 +442,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
 )
 ```
 
-**Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `List(UInt8)` (raster pixel values). Polygon data moved to the new `polygon` column as `List(List(Float32))`. Score columns, timing struct, and Parquet support are new in 2026.04. See [Migration from 2025.10](#migration-from-202510) for details.
+**Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `List(UInt8)` (raster pixel values). Polygon data moved to the new `polygon` column as `List(List(Float32))`. Score columns, timing struct, Parquet support, COCO/LVIS extension columns (`iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`), and `category_metadata` file-level metadata are new in 2026.04. The `label_index` column now preserves source category IDs (non-contiguous). See [Migration from 2025.10](#migration-from-202510) for details.
 
 **Array formats**:
 
@@ -566,6 +573,44 @@ All metadata values are strings.
 | `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor |
 | `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system |
 | `mask_interpretation` | `"binary"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks |
+| `category_metadata` | JSON string | absent | Per-label metadata (synset, synonyms, definition) |
+
+### Category Metadata
+
+The `category_metadata` key stores per-label reference data as a JSON-encoded string. This is optional metadata that enriches label semantics without adding per-row columns for data that is constant across all annotations sharing the same label.
+
+**Structure**: JSON object keyed by `label_name`, with optional fields per label:
+
+```json
+{
+  "aerosol_can": {
+    "id": 1,
+    "supercategory": "accessory",
+    "synset": "aerosol.n.02",
+    "synonyms": ["aerosol_can", "spray_can"],
+    "definition": "a dispenser that holds a substance under pressure"
+  },
+  "person": {
+    "id": 1,
+    "supercategory": "human",
+    "synset": "person.n.01",
+    "synonyms": ["person", "individual"],
+    "definition": "a human being"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Source category ID (used to reconstruct `category_id` for categories with no annotations) |
+| `supercategory` | string | Parent category name (e.g., `"vehicle"`, `"animal"`) |
+| `synset` | string | WordNet synset identifier (e.g., `"aerosol.n.02"`) |
+| `synonyms` | array of strings | Alternate names for the category |
+| `definition` | string | Natural language definition (LVIS `def` field, renamed for clarity) |
+
+**Source**: When importing from COCO with LVIS extensions, these fields are populated from the LVIS `categories` array. Other datasets with taxonomic metadata can populate the same fields.
+
+**Note**: The `frequency` field from LVIS is stored as the `category_frequency` column (not in this metadata) because it is directly useful for DataFrame filtering and disaggregated metrics (AP_r/AP_c/AP_f). The `image_count` and `instance_count` fields from LVIS are intentionally not stored — they are recomputable statistics.
 
 ### Box Format Descriptors
 
@@ -640,7 +685,7 @@ Readers should handle any version they recognize. Unknown future versions should
 
 #### frame
 
-**Type**: `UInt64` (nullable)  
+**Type**: `UInt32` (nullable)
 **Description**: Frame number within a sequence
 
 - **Sequences**: Extracted from `frame_number` field
@@ -673,32 +718,52 @@ Readers should handle any version they recognize. Unknown future versions should
 
 > **Compatibility note**: Prior documentation referred to this field as `object_reference`. The client now uses `object_id` while still accepting `object_reference` when parsing older data.
 
-#### label_name
+#### label / label_name
 
-**Type**: `Categorical` (String)  
+**Type**: `Categorical` (String)
 **Description**: Object class or category
 
 **Examples**: `person`, `deer`, `car`, `tree`
 
-**Note**: Named `label_name` (not `label`) to distinguish from `label_index`
+**Column name**: `label` in Arrow/Parquet DataFrames. The JSON-RPC API uses `label_name` for the same field. When converting between formats, map `label_name` ↔ `label`.
 
 #### label_index
 
-**Type**: `UInt64`  
-**Description**: Numeric index for custom label ordering
+**Type**: `UInt64`
+**Description**: Source category index, preserved from the originating dataset or annotation tool
 
-**Use case**: Pre-trained models (e.g., COCO) require specific indices
+**Semantics**: `label_index` is the **source-faithful** category identifier. When importing from COCO, LVIS, or EdgeFirst Studio, the original `category_id` is stored directly as `label_index`. This value:
 
-**Example**: COCO indices are non-alphabetical:
+- **May be non-contiguous** — COCO uses IDs 1–90 for 80 categories (gaps at 12, 26, 29, 30, etc.). LVIS uses IDs up to ~1723 for 1,203 categories.
+- **May not start at zero** — COCO starts at 1, not 0.
+- **Must be preserved on round-trip** — exporting back to COCO/LVIS must reconstruct the original `category_id` from `label_index`.
+
+**Studio compatibility**: EdgeFirst Studio must accept and return non-contiguous `label_index` values. Clients must not assume contiguous or zero-based indices.
+
+**Model training note**: Models are typically trained with a dense remapping (e.g., 80 contiguous class indices for COCO). This remapping is a model-specific concern handled in the training pipeline, not in the dataset format. Some legacy models (notably older SSDs) are trained with the original gaps and produce 91 outputs (90 categories + background); this is likewise a model-specific convention.
+
+**Example**: COCO 80-category indices (showing gaps):
 
 ```
-0: person
-1: bicycle
-2: car
+ 1: person
+ 2: bicycle
+ 3: car
+...
+11: fire hydrant
+    (no 12)
+13: stop sign
+14: parking meter
+...
+25: umbrella
+    (no 26)
+27: handbag
+28: tie
+    (no 29, 30)
+31: skis
 ...
 ```
 
-For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instead of `1` (alphabetical)
+For a dataset with labels `[person, car, tree]` imported from COCO, `label_index` values would be `1` (person), `3` (car), and whatever index the source assigns to `tree` — NOT alphabetically re-indexed.
 
 #### group
 
@@ -716,6 +781,44 @@ For labels `[person, car, tree]`, "car" might have `label_index=2` (COCO) instea
 - When converting between JSON and DataFrame, map `group_name` ↔ `group`
 
 **Typical values**: `train`, `val`, `test`
+
+#### iscrowd (NEW in 2026.04)
+
+**Type**: `UInt8` (nullable)
+**Description**: Whether this annotation represents a crowd region or a single instance
+
+**Values**:
+
+- `0` — Single object instance (default when absent)
+- `1` — Crowd region containing multiple overlapping instances of the same category
+
+**Source**: COCO `iscrowd` field. LVIS does not use crowd annotations — this column will be absent or null for LVIS-sourced data.
+
+**Use cases**:
+
+- Evaluation protocols treat crowd regions differently (matched but not penalized as false negatives)
+- Training pipelines may exclude crowd annotations
+- Round-trip fidelity with COCO format
+
+#### category_frequency (NEW in 2026.04)
+
+**Type**: `Categorical` (String, nullable)
+**Description**: Long-tail frequency group for the annotation's category
+
+**Values**:
+
+- `"f"` — **Frequent**: category appears in >100 training images
+- `"c"` — **Common**: category appears in 11–100 training images
+- `"r"` — **Rare**: category appears in 1–10 training images
+
+**Source**: LVIS `categories[].frequency` field. Absent for datasets without frequency metadata.
+
+**Use cases**:
+
+- Disaggregated evaluation metrics (AP_r, AP_c, AP_f)
+- Long-tail distribution analysis
+- Oversampling rare categories during training
+- Filtering: `df.filter(pl.col("category_frequency") == "r")` to analyze rare-class performance
 
 ---
 
@@ -1076,6 +1179,40 @@ shape: (3, 13)
 
 **Note**: This field is implemented in EdgeFirst Client. Studio support will be added in a future release.
 
+#### neg_label_indices (NEW in 2026.04)
+
+**Type**: `List(UInt32)` (nullable)
+**Description**: List of `label_index` values for categories that have been **verified as absent** from this image
+
+**Semantics**: A sample-level field (repeated per annotation row). If a category's `label_index` appears in this list, that category is confirmed to not exist in the image. During evaluation, a model prediction for one of these categories on this image is a valid false positive.
+
+**Source**: LVIS `images[].neg_category_ids`, translated to `label_index` values using the category mapping.
+
+**Example**:
+
+```python
+# This image has been verified to NOT contain categories with label_index 5, 12, 87
+neg_label_indices: [5, 12, 87]
+```
+
+#### not_exhaustive_label_indices (NEW in 2026.04)
+
+**Type**: `List(UInt32)` (nullable)
+**Description**: List of `label_index` values for categories where annotation may be **incomplete** in this image
+
+**Semantics**: A sample-level field (repeated per annotation row). If a category's `label_index` appears in this list, there may be unlabeled instances of that category in the image. During evaluation, unmatched model predictions for these categories should **not** be penalized as false positives (they are ignored).
+
+**Source**: LVIS `images[].not_exhaustive_category_ids`, translated to `label_index` values using the category mapping.
+
+**Background**: This arises from LVIS's federated annotation design. Rather than exhaustively annotating all 1,203 categories in every image (which would be prohibitively expensive), each image is annotated for a subset of categories. Categories outside that subset have unknown annotation status, tracked by this field.
+
+**Example**:
+
+```python
+# Annotation for categories 3 and 45 may be incomplete in this image
+not_exhaustive_label_indices: [3, 45]
+```
+
 ---
 
 ### Score Columns (NEW in 2026.04)
@@ -1259,6 +1396,10 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | 7 | **GPS**: `{latitude, longitude}` → `[lat, lon]` | JSON → DataFrame |
 | 8 | **IMU**: `{yaw, pitch, roll}` → `[yaw, pitch, roll]` | JSON → DataFrame |
 | 9 | **Score columns**: Omit entirely for ground truth files | Both |
+| 10 | **`iscrowd`**: Annotation-level, same value in both formats | JSON → DataFrame |
+| 11 | **`category_frequency`**: Annotation-level, same value in both formats | JSON → DataFrame |
+| 12 | **`neg_label_indices`** / **`not_exhaustive_label_indices`**: Sample-level, repeated per annotation row | JSON → DataFrame |
+| 13 | **`label_index`**: Preserved as-is (source-faithful, non-contiguous) | Both |
 
 ---
 
@@ -1270,7 +1411,8 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 |--------|---------|---------|
 | Polygon storage | `mask: List(Float32)` with NaN separators | `polygon: List(List(Float32))` nested lists |
 | Mask type | `List(Float32)` (polygon data) | `List(UInt8)` (raster pixel data) |
-| New columns | N/A | `polygon_score`, `mask_score`, `box2d_score`, `box3d_score`, `timing` |
+| `label_index` semantics | Alphabetically re-indexed (0-based, contiguous) | Source-faithful `category_id` (may be non-contiguous, may not start at 0) |
+| New columns | N/A | `polygon_score`, `mask_score`, `box2d_score`, `box3d_score`, `timing`, `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices` |
 | File metadata | None | `schema_version`, `box2d_format`, etc. |
 | JSON structure | Bare array `[...]` | Object wrapper `{"schema_version": ..., "samples": [...]}` |
 | LiDAR sensor types | `lidar.png`, `lidar.jpeg` | Removed |
@@ -1415,6 +1557,15 @@ This version introduces significant changes to the annotation schema including n
 - **Configurable box format**: `box2d_format` metadata (`cxcywh`, `xyxy`, `ltwh`) + `box2d_normalized` flag
 - **Score columns**: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score` per-geometry confidence (0..1)
 
+**COCO/LVIS Extensions**:
+
+- **`iscrowd` column** (`UInt8`, optional): Crowd region flag from COCO annotations (0 = single instance, 1 = crowd). Absent for LVIS-sourced data.
+- **`category_frequency` column** (`Categorical`, optional): Long-tail frequency group (`"f"`, `"c"`, `"r"`) from LVIS. Enables disaggregated AP metrics (AP_r/AP_c/AP_f).
+- **`neg_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories verified as absent. From LVIS federated annotation protocol.
+- **`not_exhaustive_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories with possibly incomplete annotation. From LVIS federated annotation protocol.
+- **`category_metadata`** (file-level metadata): JSON-encoded per-label reference data (WordNet synset, synonyms, definition) from LVIS categories.
+- **`label_index` semantics**: Now source-faithful — preserves original `category_id` from COCO/LVIS. Values may be non-contiguous (gaps expected). See [label_index](#label_index) for details.
+
 **Instrumentation**:
 
 - **`timing` column**: `Struct{load, preprocess, inference, decode}` with Int64 nanosecond durations
@@ -1430,6 +1581,7 @@ This version introduces significant changes to the annotation schema including n
 |--------|---------|---------|
 | `mask` column type | `List(Float32)` NaN-separated polygons | `List(UInt8)` raster pixels |
 | Polygon storage | In `mask` column | In new `polygon` column |
+| `label_index` semantics | Alphabetically re-indexed (0-based, contiguous) | Source-faithful `category_id` (non-contiguous, preserves gaps) |
 | JSON file structure | Bare array `[...]` | Object wrapper with metadata |
 | LiDAR sensor types | `lidar.png`, `lidar.jpeg` | **Removed** — use `lidar.pcd` |
 
@@ -1438,11 +1590,14 @@ This version introduces significant changes to the annotation schema including n
 - The EdgeFirst Client SDK reads both 2025.10 and 2026.04 files transparently
 - Version detection uses `schema_version` metadata (preferred) or column type inspection (fallback)
 - Migration utility (planned — available in 2026.04 release): `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
+- **`label_index` migration**: 2025.10 files with alphabetically re-indexed `label_index` values remain valid. The SDK will read them as-is. New files written by 2026.04 will use source-faithful indices. Round-tripping a 2025.10 file through a 2026.04 import/export may change `label_index` values if the source format provides explicit category IDs.
+- **`supercategory` and `category_metadata`**: Arrow files written before 2026.04 do not contain `category_metadata` file-level metadata. When these files are exported to COCO via `arrow_to_coco`, `supercategory`, `synset`, `synonyms`, and `definition` will not be present on categories. The planned `edgefirst migrate` command will not add `category_metadata` (it cannot recover information that was never stored). To preserve these fields, re-import from the original COCO/LVIS JSON source.
 
 #### Documentation Corrections
 
 - Fixed `box3d` dimension order: authoritative order is `[cx, cy, cz, w, h, l]` (width=X, height=Y, length=Z)
 - Confirmed `pose` array order: `[yaw, pitch, roll]` in degrees
+- Clarified `label_index` semantics: source-faithful, non-contiguous, not alphabetically derived
 
 ---
 
@@ -1552,7 +1707,7 @@ Baseline format with core annotation fields. Sample metadata (width, height, GPS
 ```python
 (
     ('name', String),
-    ('frame', UInt64),
+    ('frame', UInt32),
     ('object_id', String),
     ('label', Categorical),
     ('label_index', UInt64),

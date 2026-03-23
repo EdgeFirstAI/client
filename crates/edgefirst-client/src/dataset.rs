@@ -501,6 +501,12 @@ pub struct Sample {
     /// Image degradation type (blur, occlusion, weather, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub degradation: Option<String>,
+    /// LVIS: label_index values for categories verified absent from this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neg_label_indices: Option<Vec<u32>>,
+    /// LVIS: label_index values for categories with incomplete annotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_exhaustive_label_indices: Option<Vec<u32>>,
     /// Additional sensor files (LiDAR, radar, depth maps, etc.).
     /// Deserialization is handled by custom Deserialize impl which extracts
     /// files from the "sensors" field. Serialization converts to HashMap for
@@ -729,6 +735,10 @@ struct SampleRaw {
     date: Option<DateTime<Utc>>,
     source: Option<String>,
     degradation: Option<String>,
+    #[serde(default)]
+    neg_label_indices: Option<Vec<u32>>,
+    #[serde(default)]
+    not_exhaustive_label_indices: Option<Vec<u32>>,
     /// Raw sensors JSON - will be processed into files + location
     #[serde(default, alias = "sensors")]
     sensors: Option<serde_json::Value>,
@@ -756,6 +766,8 @@ impl From<SampleRaw> for Sample {
             source: raw.source,
             location: sensors_data.location,
             degradation: raw.degradation,
+            neg_label_indices: raw.neg_label_indices,
+            not_exhaustive_label_indices: raw.not_exhaustive_label_indices,
             files: sensors_data.files,
             annotations: raw.annotations,
         }
@@ -810,6 +822,8 @@ impl Sample {
             source: None,
             location: None,
             degradation: None,
+            neg_label_indices: None,
+            not_exhaustive_label_indices: None,
             files: vec![],
             annotations: vec![],
         }
@@ -1447,6 +1461,10 @@ struct AnnotationRaw {
     label_name: Option<String>,
     #[serde(default)]
     label_index: Option<u64>,
+    #[serde(default)]
+    iscrowd: Option<u8>,
+    #[serde(default)]
+    category_frequency: Option<String>,
     // Nested box2d format (if server sends it this way)
     #[serde(default)]
     box2d: Option<Box2d>,
@@ -1493,6 +1511,12 @@ pub struct Annotation {
     label_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label_index: Option<u64>,
+    /// COCO crowd flag: 1 = crowd region, 0 = single instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iscrowd: Option<u8>,
+    /// LVIS frequency group: "f" (frequent), "c" (common), "r" (rare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category_frequency: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box2d: Option<Box2d>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1526,6 +1550,8 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             object_id: raw.object_id,
             label_name: raw.label_name,
             label_index: raw.label_index,
+            iscrowd: raw.iscrowd,
+            category_frequency: raw.category_frequency,
             box2d,
             box3d: raw.box3d,
             mask: raw.mask,
@@ -1550,6 +1576,8 @@ impl Annotation {
             object_id: None,
             label_name: None,
             label_index: None,
+            iscrowd: None,
+            category_frequency: None,
             box2d: None,
             box3d: None,
             mask: None,
@@ -1628,6 +1656,22 @@ impl Annotation {
 
     pub fn set_label_index(&mut self, label_index: Option<u64>) {
         self.label_index = label_index;
+    }
+
+    pub fn iscrowd(&self) -> Option<u8> {
+        self.iscrowd
+    }
+
+    pub fn set_iscrowd(&mut self, iscrowd: Option<u8>) {
+        self.iscrowd = iscrowd;
+    }
+
+    pub fn category_frequency(&self) -> Option<&String> {
+        self.category_frequency.as_ref()
+    }
+
+    pub fn set_category_frequency(&mut self, category_frequency: Option<String>) {
+        self.category_frequency = category_frequency;
     }
 
     pub fn box2d(&self) -> Option<&Box2d> {
@@ -1936,7 +1980,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
 /// sample metadata (size, location, pose, degradation). Each annotation in
 /// each sample becomes one row in the DataFrame.
 ///
-/// # Schema (2025.10)
+/// # Schema (2026.04)
 ///
 /// - `name`: Sample name (String)
 /// - `frame`: Frame number (UInt64)
@@ -1951,6 +1995,10 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
 /// - `location`: GPS [lat, lon] (Array<Float32, 2>) - OPTIONAL
 /// - `pose`: IMU [yaw, pitch, roll] (Array<Float32, 3>) - OPTIONAL
 /// - `degradation`: Image degradation (String) - OPTIONAL
+/// - `iscrowd`: COCO crowd flag (UInt32) - OPTIONAL
+/// - `category_frequency`: LVIS frequency group (Categorical) - OPTIONAL
+/// - `neg_label_indices`: Verified-absent label indices (List<UInt32>) - OPTIONAL
+/// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>) - OPTIONAL
 ///
 /// # Example
 ///
@@ -2016,6 +2064,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                     location.clone(),
                     pose.clone(),
                     degradation.clone(),
+                    None,                                        // iscrowd
+                    None,                                        // category_frequency
+                    sample.neg_label_indices.clone(),            // neg_label_indices
+                    sample.not_exhaustive_label_indices.clone(), // not_exhaustive_label_indices
                 )];
             }
 
@@ -2056,6 +2108,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                         location.clone(),
                         pose.clone(),
                         degradation.clone(),
+                        ann.iscrowd,
+                        ann.category_frequency.clone(),
+                        sample.neg_label_indices.clone(),
+                        sample.not_exhaustive_label_indices.clone(),
                     ))
                 })
                 .collect::<Vec<_>>()
@@ -2076,6 +2132,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let mut locations = Vec::new();
     let mut poses = Vec::new();
     let mut degradations = Vec::new();
+    let mut iscrowds = Vec::new();
+    let mut category_frequencies = Vec::new();
+    let mut neg_label_indices_vec = Vec::new();
+    let mut not_exhaustive_label_indices_vec = Vec::new();
 
     for (
         name,
@@ -2091,6 +2151,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         location,
         pose,
         degradation,
+        iscrowd,
+        category_frequency,
+        neg_label_indices,
+        not_exhaustive_label_indices,
     ) in rows
     {
         names.push(name);
@@ -2106,6 +2170,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         locations.push(location);
         poses.push(pose);
         degradations.push(degradation);
+        iscrowds.push(iscrowd);
+        category_frequencies.push(category_frequency);
+        neg_label_indices_vec.push(neg_label_indices);
+        not_exhaustive_label_indices_vec.push(not_exhaustive_label_indices);
     }
 
     // Build DataFrame columns
@@ -2175,6 +2243,45 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
 
     let degradations = Series::new("degradation".into(), degradations).into();
 
+    // LVIS extension columns (2026.04)
+    // Note: stored as UInt32 because Polars doesn't fully support UInt8 for
+    // nullable operations. Values are 0 or 1 (COCO crowd flag).
+    let iscrowds: Vec<Option<u32>> = iscrowds.into_iter().map(|v| v.map(|x| x as u32)).collect();
+    let iscrowds = Series::new("iscrowd".into(), iscrowds).into();
+
+    let category_frequencies = Series::new("category_frequency".into(), category_frequencies)
+        .cast(&DataType::Categorical(
+            Categories::new(
+                "cat_freq".into(),
+                "cat_freq".into(),
+                CategoricalPhysical::U8,
+            ),
+            Arc::new(CategoricalMapping::with_hasher(
+                u8::MAX as usize,
+                Default::default(),
+            )),
+        ))?
+        .into();
+
+    let neg_label_indices_series: Vec<Option<Series>> = neg_label_indices_vec
+        .into_iter()
+        .map(|opt_vec| opt_vec.map(|vec| Series::new("neg_label_indices".into(), vec)))
+        .collect();
+    let neg_label_indices_col = Series::new("neg_label_indices".into(), neg_label_indices_series)
+        .cast(&DataType::List(Box::new(DataType::UInt32)))?
+        .into();
+
+    let not_exhaustive_label_indices_series: Vec<Option<Series>> = not_exhaustive_label_indices_vec
+        .into_iter()
+        .map(|opt_vec| opt_vec.map(|vec| Series::new("not_exhaustive_label_indices".into(), vec)))
+        .collect();
+    let not_exhaustive_label_indices_col = Series::new(
+        "not_exhaustive_label_indices".into(),
+        not_exhaustive_label_indices_series,
+    )
+    .cast(&DataType::List(Box::new(DataType::UInt32)))?
+    .into();
+
     Ok(DataFrame::new_infer_height(vec![
         names,
         frames,
@@ -2189,6 +2296,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         locations,
         poses,
         degradations,
+        iscrowds,
+        category_frequencies,
+        neg_label_indices_col,
+        not_exhaustive_label_indices_col,
     ])?)
 }
 
@@ -3728,5 +3839,78 @@ mod tests {
                 group
             );
         }
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_lvis_columns() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+        ann.set_label_index(Some(1));
+        ann.set_iscrowd(Some(0));
+        ann.set_category_frequency(Some("f".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            width: Some(640),
+            height: Some(480),
+            annotations: vec![ann],
+            neg_label_indices: Some(vec![5, 12]),
+            not_exhaustive_label_indices: Some(vec![3]),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Verify new columns exist
+        assert!(df.column("iscrowd").is_ok(), "iscrowd column missing");
+        assert!(
+            df.column("category_frequency").is_ok(),
+            "category_frequency column missing"
+        );
+        assert!(
+            df.column("neg_label_indices").is_ok(),
+            "neg_label_indices column missing"
+        );
+        assert!(
+            df.column("not_exhaustive_label_indices").is_ok(),
+            "not_exhaustive_label_indices column missing"
+        );
+
+        // Verify column count increased
+        assert!(
+            df.width() >= 17,
+            "Expected at least 17 columns, got {}",
+            df.width()
+        );
+    }
+
+    #[test]
+    fn test_annotation_serialization_skips_lvis_fields() {
+        let ann = Annotation::new();
+        let json = serde_json::to_string(&ann).unwrap();
+        assert!(
+            !json.contains("iscrowd"),
+            "iscrowd should be omitted when None"
+        );
+        assert!(
+            !json.contains("category_frequency"),
+            "category_frequency should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_sample_serialization_skips_lvis_fields() {
+        let sample = Sample::new();
+        let json = serde_json::to_string(&sample).unwrap();
+        assert!(
+            !json.contains("neg_label_indices"),
+            "neg_label_indices should be omitted when None"
+        );
+        assert!(
+            !json.contains("not_exhaustive_label_indices"),
+            "not_exhaustive_label_indices should be omitted when None"
+        );
     }
 }

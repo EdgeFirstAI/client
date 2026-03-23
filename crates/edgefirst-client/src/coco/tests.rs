@@ -43,11 +43,13 @@ mod integration_tests {
                     id: 1,
                     name: "person".to_string(),
                     supercategory: Some("human".to_string()),
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "car".to_string(),
                     supercategory: Some("vehicle".to_string()),
+                    ..Default::default()
                 },
             ],
             annotations: vec![
@@ -422,11 +424,13 @@ mod integration_tests {
                     id: 10,
                     name: "zebra".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 20,
                     name: "apple".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             annotations: vec![
@@ -466,13 +470,328 @@ mod integration_tests {
         assert_eq!(index.label_name(20), Some("apple"));
         assert_eq!(index.label_name(999), None);
 
-        // Test alphabetical label indices (apple=0, zebra=1)
-        assert_eq!(index.label_index(20), Some(0)); // apple
-        assert_eq!(index.label_index(10), Some(1)); // zebra
+        // Test source-faithful label indices (category_id preserved)
+        assert_eq!(index.label_index(20), Some(20)); // apple
+        assert_eq!(index.label_index(10), Some(10)); // zebra
 
         // Test annotations by image
         assert_eq!(index.annotations_for_image(1).len(), 2);
         assert_eq!(index.annotations_for_image(2).len(), 1);
         assert_eq!(index.annotations_for_image(999).len(), 0);
+    }
+
+    /// Test that COCO→Arrow→COCO round-trip preserves non-contiguous category IDs.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_arrow_roundtrip_preserves_category_id() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a COCO dataset with non-contiguous category IDs (gap at 2)
+        let original = CocoDataset {
+            info: CocoInfo {
+                year: Some(2025),
+                version: Some("1.0".to_string()),
+                description: Some("Category ID preservation test".to_string()),
+                ..Default::default()
+            },
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "test_image.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    supercategory: Some("human".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 3,
+                    name: "car".to_string(),
+                    supercategory: Some("vehicle".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 90,
+                    name: "toothbrush".to_string(),
+                    supercategory: Some("indoor".to_string()),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [100.0, 50.0, 200.0, 300.0],
+                    area: 60000.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                },
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 1,
+                    category_id: 3,
+                    bbox: [400.0, 200.0, 150.0, 100.0],
+                    area: 15000.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                },
+                CocoAnnotation {
+                    id: 3,
+                    image_id: 1,
+                    category_id: 90,
+                    bbox: [10.0, 10.0, 30.0, 80.0],
+                    area: 2400.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                },
+            ],
+            licenses: vec![],
+        };
+
+        // Write original COCO JSON
+        let original_path = temp_dir.path().join("original.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &original_path).unwrap();
+
+        // Convert COCO JSON → Arrow
+        let arrow_path = temp_dir.path().join("converted.arrow");
+        let coco_options = CocoToArrowOptions {
+            include_masks: false,
+            group: Some("train".to_string()),
+            ..Default::default()
+        };
+
+        let count = coco_to_arrow(&original_path, &arrow_path, &coco_options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
+
+        // Convert Arrow → COCO JSON
+        let restored_path = temp_dir.path().join("restored.json");
+        let arrow_options = ArrowToCocoOptions {
+            include_masks: false,
+            ..Default::default()
+        };
+
+        arrow_to_coco(&arrow_path, &restored_path, &arrow_options, None)
+            .await
+            .unwrap();
+
+        // Read the round-tripped JSON
+        let reader = CocoReader::new();
+        let restored = reader.read_json(&restored_path).unwrap();
+
+        // Verify counts
+        assert_eq!(restored.categories.len(), 3);
+        assert_eq!(restored.annotations.len(), 3);
+
+        // Verify category IDs are preserved (not renumbered to 1, 2, 3)
+        let restored_cat_ids: std::collections::HashSet<u32> =
+            restored.categories.iter().map(|c| c.id).collect();
+        assert!(
+            restored_cat_ids.contains(&1),
+            "Category ID 1 should be preserved"
+        );
+        assert!(
+            restored_cat_ids.contains(&3),
+            "Category ID 3 should be preserved (not renumbered to 2)"
+        );
+        assert!(
+            restored_cat_ids.contains(&90),
+            "Category ID 90 should be preserved (not renumbered to 3)"
+        );
+
+        // Verify category names map to correct IDs
+        for cat in &restored.categories {
+            match cat.name.as_str() {
+                "person" => assert_eq!(cat.id, 1, "person should have category_id 1"),
+                "car" => assert_eq!(cat.id, 3, "car should have category_id 3"),
+                "toothbrush" => assert_eq!(cat.id, 90, "toothbrush should have category_id 90"),
+                other => panic!("Unexpected category name: {other}"),
+            }
+        }
+
+        // Verify annotations reference the correct (preserved) category IDs
+        let ann_cat_ids: std::collections::HashSet<u32> =
+            restored.annotations.iter().map(|a| a.category_id).collect();
+        assert!(
+            ann_cat_ids.contains(&1),
+            "Annotation should reference category_id 1"
+        );
+        assert!(
+            ann_cat_ids.contains(&3),
+            "Annotation should reference category_id 3"
+        );
+        assert!(
+            ann_cat_ids.contains(&90),
+            "Annotation should reference category_id 90"
+        );
+    }
+
+    /// Test CocoIndex frequency lookup for LVIS category frequency groups.
+    #[test]
+    fn test_coco_index_frequency_lookup() {
+        let dataset = CocoDataset {
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    frequency: Some("f".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 3,
+                    name: "car".to_string(),
+                    frequency: Some("c".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 90,
+                    name: "toothbrush".to_string(),
+                    frequency: Some("r".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+        assert_eq!(index.frequency(1), Some("f"));
+        assert_eq!(index.frequency(3), Some("c"));
+        assert_eq!(index.frequency(90), Some("r"));
+        assert_eq!(index.frequency(999), None); // unknown category
+    }
+
+    /// Test that old Arrow files (2025.10 schema without LVIS columns) can be
+    /// read without error. New columns are simply absent — not an error.
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_read_old_arrow_without_lvis_columns() {
+        use polars::prelude::*;
+        use tempfile::TempDir;
+
+        // Build minimal 2025.10-style DataFrame (no LVIS columns)
+        let df = DataFrame::new_infer_height(vec![
+            Series::new("name".into(), vec!["test"]).into(),
+            Series::new("label".into(), vec![Some("person")]).into(),
+            Series::new("label_index".into(), vec![Some(1u64)]).into(),
+        ])
+        .unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("old_format.arrow");
+
+        // Write without metadata (simulating old file)
+        let mut file = std::fs::File::create(&path).unwrap();
+        IpcWriter::new(&mut file).finish(&mut df.clone()).unwrap();
+
+        // Read back — should succeed, new columns are just absent
+        let mut file = std::fs::File::open(&path).unwrap();
+        let read_df = IpcReader::new(&mut file).finish().unwrap();
+
+        assert!(read_df.column("name").is_ok());
+        assert!(read_df.column("label").is_ok());
+        // New LVIS columns should be absent (not error, just not present)
+        assert!(read_df.column("iscrowd").is_err());
+        assert!(read_df.column("category_frequency").is_err());
+        assert!(read_df.column("neg_label_indices").is_err());
+        assert!(read_df.column("not_exhaustive_label_indices").is_err());
+    }
+
+    /// Test full round-trip of LVIS fields: COCO JSON → Arrow → COCO JSON
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_arrow_roundtrip_lvis_fields() {
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "test.jpg".to_string(),
+                neg_category_ids: Some(vec![3]),
+                not_exhaustive_category_ids: Some(vec![90]),
+                ..Default::default()
+            }],
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    frequency: Some("f".to_string()),
+                    synset: Some("person.n.01".to_string()),
+                    def: Some("a human being".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 3,
+                    name: "car".to_string(),
+                    frequency: Some("c".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 90,
+                    name: "toothbrush".to_string(),
+                    frequency: Some("r".to_string()),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [10.0, 20.0, 100.0, 200.0],
+                area: 20000.0,
+                iscrowd: 0,
+                segmentation: None,
+            }],
+            ..Default::default()
+        };
+
+        let dir = TempDir::new().unwrap();
+        let json_in = dir.path().join("input.json");
+        let arrow_path = dir.path().join("output.arrow");
+        let json_out = dir.path().join("roundtrip.json");
+
+        // Write source COCO with LVIS fields
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &json_in).unwrap();
+
+        // COCO -> Arrow
+        let options = CocoToArrowOptions::default();
+        coco_to_arrow(&json_in, &arrow_path, &options, None)
+            .await
+            .unwrap();
+
+        // Arrow -> COCO
+        let export_options = ArrowToCocoOptions::default();
+        arrow_to_coco(&arrow_path, &json_out, &export_options, None)
+            .await
+            .unwrap();
+
+        // Read round-tripped COCO
+        let reader = CocoReader::new();
+        let result = reader.read_json(&json_out).unwrap();
+
+        // Verify LVIS image fields
+        let img = &result.images[0];
+        assert_eq!(img.neg_category_ids, Some(vec![3]));
+        assert_eq!(img.not_exhaustive_category_ids, Some(vec![90]));
+
+        // Verify LVIS category fields
+        let person = result
+            .categories
+            .iter()
+            .find(|c| c.name == "person")
+            .unwrap();
+        assert_eq!(person.frequency, Some("f".to_string()));
+        assert_eq!(person.synset, Some("person.n.01".to_string()));
+        assert_eq!(person.def, Some("a human being".to_string()));
+
+        let car = result.categories.iter().find(|c| c.name == "car").unwrap();
+        assert_eq!(car.frequency, Some("c".to_string()));
     }
 }

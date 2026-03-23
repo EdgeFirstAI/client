@@ -551,7 +551,15 @@ fn merge_coco_datasets(target: &mut CocoDataset, source: CocoDataset) {
     }
 }
 
-/// Convert a COCO image with annotations to an EdgeFirst Sample.
+/// Convert a COCO image and its annotations to an EdgeFirst Sample for Studio upload.
+///
+/// LVIS extension fields (`iscrowd`, `category_frequency`, `neg_label_indices`,
+/// `not_exhaustive_label_indices`) are set on the returned Sample/Annotations when
+/// present in the source data. However, Studio's backend currently drops these fields
+/// during import because it re-marshals annotations through typed Go structs (see
+/// DE-2509). These fields will round-trip correctly once the backend adds JSONB
+/// pass-through support. Until then, they are harmlessly omitted from the stored data
+/// via `skip_serializing_if = "Option::is_none"`.
 fn convert_coco_image_to_sample(
     image: &CocoImage,
     index: &CocoIndex,
@@ -570,14 +578,15 @@ fn convert_coco_image_to_sample(
     let annotations = index
         .annotations_for_image(image.id)
         .iter()
-        .filter_map(|ann| {
-            let label = index.label_name(ann.category_id)?;
-            let label_index = index.label_index(ann.category_id);
+        .filter_map(|coco_ann| {
+            let label = index.label_name(coco_ann.category_id)?;
+            let label_index = index.label_index(coco_ann.category_id);
 
-            let box2d = coco_bbox_to_box2d(&ann.bbox, image.width, image.height);
+            let box2d = coco_bbox_to_box2d(&coco_ann.bbox, image.width, image.height);
 
             let mask = if include_masks {
-                ann.segmentation
+                coco_ann
+                    .segmentation
                     .as_ref()
                     .and_then(|seg| coco_segmentation_to_mask(seg, image.width, image.height).ok())
             } else {
@@ -592,10 +601,24 @@ fn convert_coco_image_to_sample(
                 ann.set_box2d(Some(box2d));
                 ann.set_mask(mask);
                 ann.set_group(group.map(String::from));
+                ann.set_iscrowd(Some(coco_ann.iscrowd));
+                ann.set_category_frequency(index.frequency(coco_ann.category_id).map(String::from));
                 Some(ann)
             }
         })
         .collect();
+
+    // Translate LVIS image-level fields to label_index lists
+    let neg_label_indices = image.neg_category_ids.as_ref().map(|ids| {
+        ids.iter()
+            .filter_map(|&id| index.label_index(id).map(|idx| idx as u32))
+            .collect::<Vec<u32>>()
+    });
+    let not_exhaustive_label_indices = image.not_exhaustive_category_ids.as_ref().map(|ids| {
+        ids.iter()
+            .filter_map(|&id| index.label_index(id).map(|idx| idx as u32))
+            .collect::<Vec<u32>>()
+    });
 
     // Create sample files
     let mut files = Vec::new();
@@ -611,6 +634,8 @@ fn convert_coco_image_to_sample(
         width: Some(image.width),
         height: Some(image.height),
         group: group.map(String::from),
+        neg_label_indices,
+        not_exhaustive_label_indices,
         files,
         annotations,
         ..Default::default()
@@ -1740,6 +1765,7 @@ mod tests {
                 id: 1,
                 name: "cat".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -1760,6 +1786,7 @@ mod tests {
                 id: 2,
                 name: "dog".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 2,
@@ -1817,6 +1844,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1827,11 +1855,13 @@ mod tests {
                     id: 1, // Duplicate
                     name: "person_dup".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "car".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1880,6 +1910,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -1956,6 +1987,7 @@ mod tests {
                 id: 1,
                 name: "object".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
