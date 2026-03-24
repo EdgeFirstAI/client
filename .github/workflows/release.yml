@@ -22,7 +22,7 @@ env:
   CARGO_TERM_COLOR: always
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
   # This ensures consistent builds and allows testing before upgrading
-  RUST_STABLE_VERSION: "1.90"
+  RUST_STABLE_VERSION: "1.94"
 
 jobs:
   # ==========================================================================
@@ -34,7 +34,7 @@ jobs:
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Get version from tag
         id: get_version
@@ -51,7 +51,7 @@ jobs:
           echo "Version verified: $CARGO_VERSION"
 
       - name: Create Release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           name: Release ${{ steps.get_version.outputs.version }}
           draft: false
@@ -105,7 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for Build workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@74049309dfeff245fe8009a0137eacf28136cb3c # v1.5.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Verify Builds'
@@ -113,7 +113,7 @@ jobs:
           wait-interval: 10
 
       - name: Wait for Mobile SDK workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@74049309dfeff245fe8009a0137eacf28136cb3c # v1.5.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Generate Swift Bindings'
@@ -121,7 +121,7 @@ jobs:
           wait-interval: 10
 
       - name: Wait for SBOM workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@74049309dfeff245fe8009a0137eacf28136cb3c # v1.5.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Generate SBOM & Check License Compliance'
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download SBOM artifact
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: sbom.yml
           commit: ${{ github.sha }}
@@ -154,7 +154,7 @@ jobs:
           ls -la sbom.json
 
       - name: Upload sbom.json to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: sbom.json
@@ -167,7 +167,7 @@ jobs:
     needs: [create-release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install pandoc
         run: |
@@ -179,7 +179,7 @@ jobs:
           pandoc CLI.md --standalone --to man --output edgefirst-client.1
 
       - name: Upload man page to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: edgefirst-client.1
@@ -206,7 +206,7 @@ jobs:
             extension: zip
     steps:
       - name: Download CLI artifact
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: build.yml
           commit: ${{ github.sha }}
@@ -224,7 +224,7 @@ jobs:
           fi
 
       - name: Upload CLI to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: ${{ matrix.artifact }}-${{ needs.create-release.outputs.version }}.${{ matrix.extension }}
@@ -238,7 +238,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all wheel artifacts
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: build.yml
           commit: ${{ github.sha }}
@@ -254,7 +254,7 @@ jobs:
           ls -lh wheels/
 
       - name: Upload wheels to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: wheels/**/*.whl
@@ -269,10 +269,10 @@ jobs:
     outputs:
       xcframework_checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Download Android SDK artifact
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: mobile.yml
           commit: ${{ github.sha }}
@@ -280,7 +280,7 @@ jobs:
           path: android-sdk/
 
       - name: Download Swift SDK artifact
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: mobile.yml
           commit: ${{ github.sha }}
@@ -319,7 +319,7 @@ jobs:
           echo "XCFramework checksum: ${CHECKSUM}"
 
       - name: Upload Mobile SDKs to release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: |
@@ -338,12 +338,12 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: main
 
       - name: Download Swift SDK artifact
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: mobile.yml
           commit: ${{ github.sha }}
@@ -372,7 +372,7 @@ jobs:
           head -50 swift/EdgeFirstClient.swift
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
         with:
           # Requires "Allow GitHub Actions to create and approve pull requests" enabled in repo settings
           commit-message: "automation: update Swift package for v${{ needs.create-release.outputs.version }} release [skip ci]"
@@ -407,7 +407,7 @@ jobs:
       id-token: write
     steps:
       - name: Download all wheel artifacts
-        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
         with:
           workflow: build.yml
           commit: ${{ github.sha }}
@@ -439,10 +439,10 @@ jobs:
     needs: [create-release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 

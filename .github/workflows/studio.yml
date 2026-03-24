@@ -28,7 +28,7 @@ run-name: Studio Tests - ${{ inputs.studio_server }}${{ inputs.include_ignored &
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUST_STABLE_VERSION: "1.90"
+  RUST_STABLE_VERSION: "1.94"
   RUST_LOG: "edgefirst_client=trace"
 
 jobs:
@@ -52,22 +52,22 @@ jobs:
           remove-large-packages: 'true'
           verbose: 'true'
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: studio-rust-client
           shared-key: "stable"
           save-if: false
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@6f9c7cc51aa54b13cbcbd12f8bbf69d8ba405b4b # v2.62.47
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
         with:
           tool: nextest
 
@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: rust-client-lib-results-${{ inputs.studio_server }}
           path: |
@@ -215,22 +215,22 @@ jobs:
           remove-large-packages: 'true'
           verbose: 'true'
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: studio-rust-cli
           shared-key: "stable"
           save-if: false
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@6f9c7cc51aa54b13cbcbd12f8bbf69d8ba405b4b # v2.62.47
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
         with:
           tool: nextest
 
@@ -320,7 +320,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: rust-cli-results-${{ inputs.studio_server }}
           path: |
@@ -376,15 +376,15 @@ jobs:
           remove-large-packages: 'true'
           verbose: 'true'
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: studio-rust-doc
           shared-key: "stable"
@@ -470,7 +470,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: rust-doc-results-${{ inputs.studio_server }}
           path: |
@@ -526,22 +526,22 @@ jobs:
           remove-large-packages: 'true'
           verbose: 'true'
 
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: studio-python-lib
           shared-key: "stable"
           save-if: false
 
       - name: Install Python
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
 
@@ -621,7 +621,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: python-lib-results-${{ inputs.studio_server }}
           path: |
