@@ -78,13 +78,7 @@ jobs:
       - name: Set up coverage environment
         if: success() || failure()
         run: |
-          source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
-          echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
-          echo "RUSTDOCFLAGS=$RUSTDOCFLAGS" >> $GITHUB_ENV
-          echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_SHOW_ENV=$CARGO_LLVM_COV_SHOW_ENV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
+          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> $GITHUB_ENV
 
       - name: Build with coverage
         if: success() || failure()
@@ -485,14 +479,7 @@ jobs:
 
       - name: Set up Rust FFI coverage environment
         run: |
-          # Set up coverage environment variables (same pattern as Python)
-          # Use eval instead of source <(...) for better macOS compatibility
-          eval "$(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)"
-          echo "RUSTFLAGS=$RUSTFLAGS" >> $GITHUB_ENV
-          echo "LLVM_PROFILE_FILE=$LLVM_PROFILE_FILE" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV=$CARGO_LLVM_COV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_SHOW_ENV=$CARGO_LLVM_COV_SHOW_ENV" >> $GITHUB_ENV
-          echo "CARGO_LLVM_COV_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR" >> $GITHUB_ENV
+          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> $GITHUB_ENV
 
       - name: Build FFI Library with coverage instrumentation
         run: |
