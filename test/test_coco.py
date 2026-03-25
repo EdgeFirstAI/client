@@ -219,11 +219,11 @@ class TestCOCO(unittest.TestCase):
             [],
             None)
 
-        # Verify new schema has 13 columns
+        # Verify new schema has 17 columns (2026.04 schema)
         self.assertEqual(
             df.shape[1],
-            13,
-            "Should have 13 columns in 2025.10 schema")
+            17,
+            "Should have 17 columns in 2026.04 schema")
 
         # Verify column names
         expected_columns = {
@@ -239,12 +239,16 @@ class TestCOCO(unittest.TestCase):
             "size",
             "location",
             "pose",
-            "degradation"}
+            "degradation",
+            "iscrowd",
+            "category_frequency",
+            "neg_label_indices",
+            "not_exhaustive_label_indices"}
         actual_columns = set(df.columns)
         self.assertEqual(
             actual_columns,
             expected_columns,
-            "Column names should match 2025.10 schema")
+            "Column names should match 2026.04 schema")
 
         # Get unique by name
         df = df.unique(subset=["name"], keep="first", maintain_order=True)
