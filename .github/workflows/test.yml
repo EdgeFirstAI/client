@@ -608,7 +608,7 @@ jobs:
 
           # Merge profraw files into profdata
           echo "=== Merging profraw into profdata ==="
-          xcrun llvm-profdata merge \
+          $(rustc --print target-libdir)/../bin/llvm-profdata merge \
             -sparse \
             "$PROFRAW_DIR"/*.profraw \
             -o "$PROFRAW_DIR/merged.profdata"
@@ -635,7 +635,7 @@ jobs:
           # Export Swift coverage in lcov format
           # Filter out .build directory and test files, keep swift/EdgeFirstClient.swift
           echo "=== Generating lcov report ==="
-          xcrun llvm-cov export \
+          $(rustc --print target-libdir)/../bin/llvm-cov export \
             -format=lcov \
             -instr-profile="$PROFDATA" \
             -ignore-filename-regex="\.build|Tests/" \
