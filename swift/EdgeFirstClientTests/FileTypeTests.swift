@@ -180,6 +180,8 @@ final class FileTypeTests: XCTestCase {
         matchedCases.append("radarPcd")
       case .radarCube:
         matchedCases.append("radarCube")
+      case .all:
+        matchedCases.append("all")
       }
     }
 
@@ -208,6 +210,8 @@ final class FileTypeTests: XCTestCase {
         return "Radar point cloud"
       case .radarCube:
         return "Radar cube data"
+      case .all:
+        return "All sensor types"
       }
     }
 
@@ -250,6 +254,8 @@ final class FileTypeTests: XCTestCase {
         return "lidar"
       case .radarPcd, .radarCube:
         return "radar"
+      case .all:
+        return "all"
       }
     }
 
