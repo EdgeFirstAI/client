@@ -557,7 +557,7 @@ jobs:
         run: |
           # Rebuild without Rust coverage instrumentation to avoid conflicts with Swift coverage
           # Unset coverage environment variables
-          unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR
+          unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS __CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES
 
           # Clean and rebuild
           cargo clean -p edgefirst-client-ffi
@@ -578,6 +578,8 @@ jobs:
           # Explicitly unset Rust coverage variables to prevent interference
           RUSTFLAGS: ""
           LLVM_PROFILE_FILE: ""
+          RUSTC_WRAPPER: ""
+          __CARGO_LLVM_COV_RUSTC_WRAPPER: ""
         run: |
           # Clean Swift build to ensure fresh compilation with coverage
           rm -rf .build
@@ -608,7 +610,7 @@ jobs:
 
           # Merge profraw files into profdata
           echo "=== Merging profraw into profdata ==="
-          $(rustc --print target-libdir)/../bin/llvm-profdata merge \
+          xcrun llvm-profdata merge \
             -sparse \
             "$PROFRAW_DIR"/*.profraw \
             -o "$PROFRAW_DIR/merged.profdata"
@@ -635,7 +637,7 @@ jobs:
           # Export Swift coverage in lcov format
           # Filter out .build directory and test files, keep swift/EdgeFirstClient.swift
           echo "=== Generating lcov report ==="
-          $(rustc --print target-libdir)/../bin/llvm-cov export \
+          xcrun llvm-cov export \
             -format=lcov \
             -instr-profile="$PROFDATA" \
             -ignore-filename-regex="\.build|Tests/" \
