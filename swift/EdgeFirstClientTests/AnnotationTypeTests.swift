@@ -10,9 +10,6 @@ import XCTest
 
 @testable import EdgeFirstClient
 
-// Disambiguate from ApplicationServices.Polygon (macOS system type)
-typealias Polygon = EdgeFirstClient.Polygon
-
 final class AnnotationTypeTests: XCTestCase {
 
   // MARK: - Box2d Tests
