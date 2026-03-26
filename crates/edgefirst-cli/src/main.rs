@@ -5212,6 +5212,10 @@ async fn main() -> Result<(), Error> {
         Command::ArrowToCoco { .. } => unreachable!(),
         #[cfg(feature = "polars")]
         Command::Migrate { .. } => unreachable!(),
+        #[cfg(not(feature = "polars"))]
+        Command::Migrate { .. } => {
+            return Err(Error::FeatureNotEnabled("polars".to_owned()));
+        }
         Command::ImportCoco {
             coco_path,
             project,

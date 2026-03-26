@@ -50,7 +50,7 @@ impl MaskData {
     /// Creates a `MaskData` from raw PNG bytes with validation.
     ///
     /// Validates that the bytes represent a valid grayscale PNG:
-    /// - Length >= 29 bytes (signature + IHDR chunk)
+    /// - Length >= 33 bytes (signature + IHDR chunk including CRC)
     /// - PNG magic bytes at offset 0
     /// - Color type byte (offset 25) is 0 (grayscale)
     ///

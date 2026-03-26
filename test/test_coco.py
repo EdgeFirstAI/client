@@ -230,10 +230,7 @@ class TestCOCO(unittest.TestCase):
 
         # Verify key data columns are present (these exist in the Deer test dataset)
         for col in ["name", "label", "label_index", "group"]:
-            if col in actual_columns:
-                self.assertGreater(
-                    df.get_column(col).null_count(), -1,
-                    f"{col} column should be accessible")
+            self.assertIn(col, actual_columns, f"{col} should be present")
 
         # Get unique by name
         df = df.unique(subset=["name"], keep="first", maintain_order=True)
