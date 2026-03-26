@@ -8,13 +8,14 @@
 
 use super::{
     convert::{
-        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask, mask_to_coco_polygon,
+        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_polygon,
+        polygon_to_coco_polygon,
     },
     reader::CocoReader,
     types::{CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
     writer::{CocoDatasetBuilder, CocoWriter},
 };
-use crate::{Annotation, Box2d, Error, Mask, Progress, Sample};
+use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample};
 use polars::prelude::*;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -323,11 +324,11 @@ fn convert_image_annotations(
             // Convert bbox
             let box2d = coco_bbox_to_box2d(&ann.bbox, image.width, image.height);
 
-            // Convert mask if present and requested
-            let mask = if include_masks {
-                ann.segmentation
-                    .as_ref()
-                    .and_then(|seg| coco_segmentation_to_mask(seg, image.width, image.height).ok())
+            // Convert polygon if present and requested
+            let polygon = if include_masks {
+                ann.segmentation.as_ref().and_then(|seg| {
+                    coco_segmentation_to_polygon(seg, image.width, image.height).ok()
+                })
             } else {
                 None
             };
@@ -337,9 +338,9 @@ fn convert_image_annotations(
             annotation.set_label(Some(label.to_string()));
             annotation.set_label_index(label_index);
             annotation.set_box2d(Some(box2d));
-            annotation.set_mask(mask);
+            annotation.set_polygon(polygon);
             annotation.set_group(group.map(String::from));
-            annotation.set_iscrowd(Some(ann.iscrowd));
+            annotation.set_iscrowd(Some(ann.iscrowd != 0));
             annotation.set_category_frequency(index.frequency(ann.category_id).map(String::from));
 
             let mut sample = Sample {
@@ -500,15 +501,23 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .ok()
         .and_then(|c| extract_all_sizes(c).ok());
 
-    // Extract iscrowd column (optional, UInt32 in Arrow)
+    // Extract iscrowd column (optional, Boolean in 2026.04, UInt32 in older schemas)
     let iscrowds: Vec<u8> = df
         .column("iscrowd")
         .ok()
         .map(|c| {
-            c.u32()
-                .ok()
-                .map(|s| s.into_iter().map(|v| v.unwrap_or(0) as u8).collect())
-                .unwrap_or_else(|| vec![0; total_rows])
+            // Try Boolean first (2026.04 schema), then fall back to UInt32 (older schemas)
+            if let Ok(bool_ca) = c.bool() {
+                bool_ca
+                    .into_iter()
+                    .map(|v| if v.unwrap_or(false) { 1 } else { 0 })
+                    .collect()
+            } else {
+                c.u32()
+                    .ok()
+                    .map(|s| s.into_iter().map(|v| v.unwrap_or(0) as u8).collect())
+                    .unwrap_or_else(|| vec![0; total_rows])
+            }
         })
         .unwrap_or_else(|| vec![0; total_rows]);
 
@@ -617,16 +626,16 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             box2d_to_coco_bbox(&ef_box2d, width, height)
         });
 
-        // Convert mask if present
+        // Convert polygon if present
         let segmentation = if options.include_masks {
             masks.as_ref().and_then(|m| {
                 m.get(i).and_then(|coords| {
                     if coords.is_empty() {
                         None
                     } else {
-                        let polygons = unflatten_polygon_coords(coords);
-                        let mask = Mask::new(polygons);
-                        let coco_poly = mask_to_coco_polygon(&mask, width, height);
+                        let rings = unflatten_polygon_coords(coords);
+                        let polygon = Polygon::new(rings);
+                        let coco_poly = polygon_to_coco_polygon(&polygon, width, height);
                         if coco_poly.is_empty() {
                             None
                         } else {
@@ -1052,11 +1061,11 @@ mod tests {
 
         // With masks enabled
         let samples_with_mask = convert_image_annotations(&image, &index, true, None);
-        assert!(samples_with_mask[0].annotations[0].mask().is_some());
+        assert!(samples_with_mask[0].annotations[0].polygon().is_some());
 
         // With masks disabled
         let samples_no_mask = convert_image_annotations(&image, &index, false, None);
-        assert!(samples_no_mask[0].annotations[0].mask().is_none());
+        assert!(samples_no_mask[0].annotations[0].polygon().is_none());
     }
 
     #[test]

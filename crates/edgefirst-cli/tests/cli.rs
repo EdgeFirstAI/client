@@ -3736,7 +3736,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
         &[
             AnnotationType::Box2d,
             AnnotationType::Box3d,
-            AnnotationType::Mask,
+            AnnotationType::Polygon,
         ],
         &[], // All groups
         &[], // No file type filter

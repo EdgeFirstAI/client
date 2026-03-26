@@ -1296,10 +1296,10 @@ fn parse_box3d_from_dataframe(
 /// Returns Ok(None) if the column doesn't exist, has wrong type, or
 /// insufficient data.
 #[cfg(feature = "polars")]
-fn parse_mask_from_dataframe(
+fn parse_polygon_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
-) -> Result<Option<edgefirst_client::Mask>, Error> {
+) -> Result<Option<edgefirst_client::Polygon>, Error> {
     // Try to get the mask column
     let mask_col = match df.column("mask") {
         Ok(col) => col,
@@ -1327,12 +1327,12 @@ fn parse_mask_from_dataframe(
     };
     if !coords.is_empty() {
         // Use the unflatten helper to convert flat coords with NaN separators back to
-        // nested polygons
-        let polygons = edgefirst_client::unflatten_polygon_coordinates(&coords);
+        // nested rings
+        let rings = edgefirst_client::unflatten_polygon_coordinates(&coords);
 
-        if !polygons.is_empty() {
-            let mask = edgefirst_client::Mask::new(polygons);
-            return Ok(Some(mask));
+        if !rings.is_empty() {
+            let polygon = edgefirst_client::Polygon::new(rings);
+            return Ok(Some(polygon));
         }
     }
 
@@ -1968,8 +1968,8 @@ fn parse_annotations_from_arrow(
                     geometry_count += 1;
                 }
 
-                if let Some(mask) = parse_mask_from_dataframe(&df, idx)? {
-                    annotation.set_mask(Some(mask));
+                if let Some(polygon) = parse_polygon_from_dataframe(&df, idx)? {
+                    annotation.set_polygon(Some(polygon));
                     has_annotation = true;
                     geometry_count += 1;
                 }
@@ -5435,13 +5435,17 @@ mod tests {
 
             assert_eq!(samples.len(), 1);
             let annotations = &samples[0].annotations;
-            assert_eq!(annotations.len(), 1, "Mask annotation should be preserved");
+            assert_eq!(
+                annotations.len(),
+                1,
+                "Polygon annotation should be preserved"
+            );
 
-            let mask = annotations[0]
-                .mask()
-                .expect("Annotation should include mask geometry");
-            assert_eq!(mask.polygon.len(), 1);
-            let ring = &mask.polygon[0];
+            let polygon = annotations[0]
+                .polygon()
+                .expect("Annotation should include polygon geometry");
+            assert_eq!(polygon.rings.len(), 1);
+            let ring = &polygon.rings[0];
             assert_eq!(ring.len(), 4);
             assert_eq!(
                 ring,

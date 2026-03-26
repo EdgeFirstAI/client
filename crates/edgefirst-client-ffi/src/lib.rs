@@ -476,7 +476,9 @@ pub enum AnnotationType {
     Box2d,
     /// 3D bounding boxes for object detection in 3D space
     Box3d,
-    /// Pixel-level segmentation masks
+    /// Vector polygon contours for instance segmentation
+    Polygon,
+    /// Raster pixel masks for semantic/instance segmentation
     Mask,
 }
 
@@ -485,6 +487,7 @@ impl From<core::AnnotationType> for AnnotationType {
         match at {
             core::AnnotationType::Box2d => AnnotationType::Box2d,
             core::AnnotationType::Box3d => AnnotationType::Box3d,
+            core::AnnotationType::Polygon => AnnotationType::Polygon,
             core::AnnotationType::Mask => AnnotationType::Mask,
         }
     }
@@ -495,6 +498,7 @@ impl From<AnnotationType> for core::AnnotationType {
         match at {
             AnnotationType::Box2d => core::AnnotationType::Box2d,
             AnnotationType::Box3d => core::AnnotationType::Box3d,
+            AnnotationType::Polygon => core::AnnotationType::Polygon,
             AnnotationType::Mask => core::AnnotationType::Mask,
         }
     }
@@ -941,15 +945,15 @@ pub struct PolygonRing {
 /// Each ring is a closed polygon defined by a sequence of (x, y) coordinates.
 /// Multiple rings allow for complex shapes with holes.
 #[derive(uniffi::Record, Clone, Debug)]
-pub struct Mask {
-    pub polygon: Vec<PolygonRing>,
+pub struct Polygon {
+    pub rings: Vec<PolygonRing>,
 }
 
-impl From<core::Mask> for Mask {
-    fn from(m: core::Mask) -> Self {
+impl From<core::Polygon> for Polygon {
+    fn from(p: core::Polygon) -> Self {
         Self {
-            polygon: m
-                .polygon
+            rings: p
+                .rings
                 .into_iter()
                 .map(|ring| PolygonRing {
                     points: ring.into_iter().map(|(x, y)| Point2d { x, y }).collect(),
@@ -959,10 +963,10 @@ impl From<core::Mask> for Mask {
     }
 }
 
-impl From<Mask> for core::Mask {
-    fn from(m: Mask) -> Self {
-        core::Mask::new(
-            m.polygon
+impl From<Polygon> for core::Polygon {
+    fn from(p: Polygon) -> Self {
+        core::Polygon::new(
+            p.rings
                 .into_iter()
                 .map(|ring| ring.points.into_iter().map(|p| (p.x, p.y)).collect())
                 .collect(),
@@ -1061,8 +1065,8 @@ pub struct Annotation {
     pub box2d: Option<Box2d>,
     /// 3D bounding box.
     pub box3d: Option<Box3d>,
-    /// Segmentation mask.
-    pub mask: Option<Mask>,
+    /// Polygon contours.
+    pub polygon: Option<Polygon>,
 }
 
 impl From<core::Annotation> for Annotation {
@@ -1078,7 +1082,7 @@ impl From<core::Annotation> for Annotation {
             label_index: a.label_index(),
             box2d: a.box2d().map(|b| Box2d::from(b.clone())),
             box3d: a.box3d().map(|b| Box3d::from(b.clone())),
-            mask: a.mask().map(|m| Mask::from(m.clone())),
+            polygon: a.polygon().map(|p| Polygon::from(p.clone())),
         }
     }
 }
@@ -1104,7 +1108,7 @@ impl From<Annotation> for core::Annotation {
         }
         ann.set_box2d(a.box2d.map(core::Box2d::from));
         ann.set_box3d(a.box3d.map(core::Box3d::from));
-        ann.set_mask(a.mask.map(core::Mask::from));
+        ann.set_polygon(a.polygon.map(core::Polygon::from));
         ann
     }
 }

@@ -179,8 +179,8 @@ mod integration_tests {
         let image_w = 400;
         let image_h = 400;
 
-        let mask = coco_polygon_to_mask(&original, image_w, image_h);
-        let restored = mask_to_coco_polygon(&mask, image_w, image_h);
+        let polygon = coco_polygon_to_polygon(&original, image_w, image_h);
+        let restored = polygon_to_coco_polygon(&polygon, image_w, image_h);
 
         // Verify structure preserved
         assert_eq!(original.len(), restored.len());
@@ -381,17 +381,17 @@ mod integration_tests {
             size: [4, 4],
         };
 
-        let mask_result = coco_rle_to_mask(&rle, 4, 4);
-        assert!(mask_result.is_ok(), "RLE to mask should succeed");
+        let polygon_result = coco_rle_to_polygon(&rle, 4, 4);
+        assert!(polygon_result.is_ok(), "RLE to polygon should succeed");
 
-        let mask = mask_result.unwrap();
+        let polygon = polygon_result.unwrap();
         assert!(
-            !mask.polygon.is_empty(),
-            "Should extract at least one polygon from RLE"
+            !polygon.rings.is_empty(),
+            "Should extract at least one ring from RLE"
         );
 
         // Check polygon has reasonable number of points
-        let total_points: usize = mask.polygon.iter().map(|p| p.len()).sum();
+        let total_points: usize = polygon.rings.iter().map(|p| p.len()).sum();
         assert!(
             total_points >= 3,
             "Should have at least 3 points, got {}",

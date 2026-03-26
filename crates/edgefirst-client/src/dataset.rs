@@ -214,11 +214,11 @@ impl FileType {
 ///
 /// // Create annotation types from strings (using TryFrom)
 /// let box_2d: AnnotationType = "box2d".try_into().unwrap();
-/// let segmentation: AnnotationType = "mask".try_into().unwrap();
+/// let segmentation: AnnotationType = "polygon".try_into().unwrap();
 ///
 /// // Or use From with String
 /// let box_2d = AnnotationType::from("box2d".to_string());
-/// let segmentation = AnnotationType::from("mask".to_string());
+/// let segmentation = AnnotationType::from("polygon".to_string());
 ///
 /// // Display annotation types
 /// println!("Annotation type: {}", box_2d); // "Annotation type: box2d"
@@ -228,7 +228,8 @@ impl FileType {
 /// match annotation_type {
 ///     AnnotationType::Box2d => println!("Processing 2D bounding boxes"),
 ///     AnnotationType::Box3d => println!("Processing 3D bounding boxes"),
-///     AnnotationType::Mask => println!("Processing segmentation masks"),
+///     AnnotationType::Polygon => println!("Processing polygon contours"),
+///     AnnotationType::Mask => println!("Processing raster pixel masks"),
 /// }
 /// ```
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -237,7 +238,9 @@ pub enum AnnotationType {
     Box2d,
     /// 3D bounding boxes for object detection in 3D space (LiDAR, etc.)
     Box3d,
-    /// Pixel-level segmentation masks for semantic/instance segmentation
+    /// Vector polygon contours for instance segmentation
+    Polygon,
+    /// Raster pixel masks for semantic/instance segmentation
     Mask,
 }
 
@@ -248,7 +251,9 @@ impl TryFrom<&str> for AnnotationType {
         match s {
             "box2d" => Ok(AnnotationType::Box2d),
             "box3d" => Ok(AnnotationType::Box3d),
-            "mask" => Ok(AnnotationType::Mask),
+            "polygon" => Ok(AnnotationType::Polygon),
+            "mask" => Ok(AnnotationType::Polygon), // backward compat
+            "raster" => Ok(AnnotationType::Mask),
             _ => Err(crate::Error::InvalidAnnotationType(s.to_string())),
         }
     }
@@ -274,11 +279,13 @@ impl AnnotationType {
     /// The server uses different naming conventions than the client:
     /// - `Box2d` → `"box"` (server) vs `"box2d"` (client display)
     /// - `Box3d` → `"box3d"` (same)
+    /// - `Polygon` → `"seg"` (server) vs `"polygon"` (client display)
     /// - `Mask` → `"seg"` (server) vs `"mask"` (client display)
     pub fn as_server_type(&self) -> &'static str {
         match self {
             AnnotationType::Box2d => "box",
             AnnotationType::Box3d => "box3d",
+            AnnotationType::Polygon => "seg",
             AnnotationType::Mask => "seg",
         }
     }
@@ -289,6 +296,7 @@ impl std::fmt::Display for AnnotationType {
         let value = match self {
             AnnotationType::Box2d => "box2d",
             AnnotationType::Box3d => "box3d",
+            AnnotationType::Polygon => "polygon",
             AnnotationType::Mask => "mask",
         };
         write!(f, "{}", value)
@@ -1315,32 +1323,32 @@ impl Box2d {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Mask {
-    pub polygon: Vec<Vec<(f32, f32)>>,
+pub struct Polygon {
+    pub rings: Vec<Vec<(f32, f32)>>,
 }
 
-impl TypeName for Mask {
+impl TypeName for Polygon {
     fn type_name() -> String {
-        "mask".to_owned()
+        "polygon".to_owned()
     }
 }
 
-impl Mask {
-    pub fn new(polygon: Vec<Vec<(f32, f32)>>) -> Self {
-        Self { polygon }
+impl Polygon {
+    pub fn new(rings: Vec<Vec<(f32, f32)>>) -> Self {
+        Self { rings }
     }
 }
 
-impl serde::Serialize for Mask {
+impl serde::Serialize for Polygon {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serde::Serialize::serialize(&self.polygon, serializer)
+        serde::Serialize::serialize(&self.rings, serializer)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Mask {
+impl<'de> serde::Deserialize<'de> for Polygon {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -1350,8 +1358,9 @@ impl<'de> serde::Deserialize<'de> for Mask {
 
         // Try to extract polygon data from various formats
         let polygon_value = if let Some(obj) = value.as_object() {
-            // Format: {"polygon": [...]}
-            obj.get("polygon")
+            // Format: {"polygon": [...]} or {"rings": [...]}
+            obj.get("rings")
+                .or_else(|| obj.get("polygon"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null)
         } else {
@@ -1360,9 +1369,9 @@ impl<'de> serde::Deserialize<'de> for Mask {
         };
 
         // Parse the polygon array, filtering out null/invalid values
-        let polygon = parse_polygon_value(&polygon_value);
+        let rings = parse_polygon_value(&polygon_value);
 
-        Ok(Self { polygon })
+        Ok(Self { rings })
     }
 }
 
@@ -1462,7 +1471,7 @@ struct AnnotationRaw {
     #[serde(default)]
     label_index: Option<u64>,
     #[serde(default)]
-    iscrowd: Option<u8>,
+    iscrowd: Option<bool>,
     #[serde(default)]
     category_frequency: Option<String>,
     // Nested box2d format (if server sends it this way)
@@ -1470,8 +1479,8 @@ struct AnnotationRaw {
     box2d: Option<Box2d>,
     #[serde(default)]
     box3d: Option<Box3d>,
-    #[serde(default)]
-    mask: Option<Mask>,
+    #[serde(default, alias = "mask")]
+    polygon: Option<Polygon>,
     // Flat box2d fields from server (x, y, w, h at annotation level)
     #[serde(default)]
     x: Option<f64>,
@@ -1511,9 +1520,9 @@ pub struct Annotation {
     label_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label_index: Option<u64>,
-    /// COCO crowd flag: 1 = crowd region, 0 = single instance.
+    /// COCO crowd flag: true = crowd region, false = single instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    iscrowd: Option<u8>,
+    iscrowd: Option<bool>,
     /// LVIS frequency group: "f" (frequent), "c" (common), "r" (rare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category_frequency: Option<String>,
@@ -1522,7 +1531,7 @@ pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     box3d: Option<Box3d>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mask: Option<Mask>,
+    polygon: Option<Polygon>,
 }
 
 impl<'de> serde::Deserialize<'de> for Annotation {
@@ -1554,7 +1563,7 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             category_frequency: raw.category_frequency,
             box2d,
             box3d: raw.box3d,
-            mask: raw.mask,
+            polygon: raw.polygon,
         })
     }
 }
@@ -1580,7 +1589,7 @@ impl Annotation {
             category_frequency: None,
             box2d: None,
             box3d: None,
-            mask: None,
+            polygon: None,
         }
     }
 
@@ -1658,11 +1667,11 @@ impl Annotation {
         self.label_index = label_index;
     }
 
-    pub fn iscrowd(&self) -> Option<u8> {
+    pub fn iscrowd(&self) -> Option<bool> {
         self.iscrowd
     }
 
-    pub fn set_iscrowd(&mut self, iscrowd: Option<u8>) {
+    pub fn set_iscrowd(&mut self, iscrowd: Option<bool>) {
         self.iscrowd = iscrowd;
     }
 
@@ -1690,12 +1699,12 @@ impl Annotation {
         self.box3d = box3d;
     }
 
-    pub fn mask(&self) -> Option<&Mask> {
-        self.mask.as_ref()
+    pub fn polygon(&self) -> Option<&Polygon> {
+        self.polygon.as_ref()
     }
 
-    pub fn set_mask(&mut self, mask: Option<Mask>) {
-        self.mask = mask;
+    pub fn set_polygon(&mut self, polygon: Option<Polygon>) {
+        self.polygon = polygon;
     }
 }
 
@@ -1815,10 +1824,10 @@ fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
 }
 
 #[cfg(feature = "polars")]
-fn convert_mask_to_series(mask: &Mask) -> Series {
+fn convert_polygon_to_series(polygon: &Polygon) -> Series {
     use polars::series::Series;
 
-    let list = flatten_polygon_coordinates(&mask.polygon);
+    let list = flatten_polygon_coordinates(&polygon.rings);
     Series::new("mask".into(), list)
 }
 
@@ -1890,7 +1899,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
             .filter_map(|ann| {
                 let (name, frame) = extract_annotation_name(ann)?;
 
-                let masks = ann.mask.as_ref().map(convert_mask_to_series);
+                let masks = ann.polygon.as_ref().map(convert_polygon_to_series);
 
                 let box2d = ann.box2d.as_ref().map(|box2d| {
                     Series::new(
@@ -1995,7 +2004,7 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
 /// - `location`: GPS [lat, lon] (Array<Float32, 2>) - OPTIONAL
 /// - `pose`: IMU [yaw, pitch, roll] (Array<Float32, 3>) - OPTIONAL
 /// - `degradation`: Image degradation (String) - OPTIONAL
-/// - `iscrowd`: COCO crowd flag (UInt32) - OPTIONAL
+/// - `iscrowd`: COCO crowd flag (Boolean) - OPTIONAL
 /// - `category_frequency`: LVIS frequency group (Categorical) - OPTIONAL
 /// - `neg_label_indices`: Verified-absent label indices (List<UInt32>) - OPTIONAL
 /// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>) - OPTIONAL
@@ -2078,7 +2087,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                 .filter_map(|ann| {
                     let (name, frame) = extract_annotation_name(ann)?;
 
-                    let mask = ann.mask.as_ref().map(convert_mask_to_series);
+                    let mask = ann.polygon.as_ref().map(convert_polygon_to_series);
 
                     let box2d = ann.box2d.as_ref().map(|box2d| {
                         Series::new(
@@ -2244,9 +2253,6 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let degradations = Series::new("degradation".into(), degradations).into();
 
     // LVIS extension columns (2026.04)
-    // Note: stored as UInt32 because Polars doesn't fully support UInt8 for
-    // nullable operations. Values are 0 or 1 (COCO crowd flag).
-    let iscrowds: Vec<Option<u32>> = iscrowds.into_iter().map(|v| v.map(|x| x as u32)).collect();
     let iscrowds = Series::new("iscrowd".into(), iscrowds).into();
 
     let category_frequencies = Series::new("category_frequency".into(), category_frequencies)
@@ -2718,6 +2724,7 @@ mod tests {
         let cases = vec![
             (AnnotationType::Box2d, "box2d"),
             (AnnotationType::Box3d, "box3d"),
+            (AnnotationType::Polygon, "polygon"),
             (AnnotationType::Mask, "mask"),
         ];
 
@@ -2727,9 +2734,28 @@ mod tests {
         }
 
         // Test: try_from() string parsing
-        for (ann_type, type_str) in &cases {
-            assert_eq!(AnnotationType::try_from(*type_str).unwrap(), *ann_type);
-        }
+        assert_eq!(
+            AnnotationType::try_from("box2d").unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::try_from("box3d").unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::try_from("polygon").unwrap(),
+            AnnotationType::Polygon
+        );
+        // "mask" maps to Polygon for backward compat
+        assert_eq!(
+            AnnotationType::try_from("mask").unwrap(),
+            AnnotationType::Polygon
+        );
+        // "raster" maps to Mask
+        assert_eq!(
+            AnnotationType::try_from("raster").unwrap(),
+            AnnotationType::Mask
+        );
 
         // Test: From<String> (backward compatibility)
         assert_eq!(
@@ -2741,8 +2767,13 @@ mod tests {
             AnnotationType::Box3d
         );
         assert_eq!(
+            AnnotationType::from("polygon".to_string()),
+            AnnotationType::Polygon
+        );
+        // "mask" string maps to Polygon for backward compat
+        assert_eq!(
             AnnotationType::from("mask".to_string()),
-            AnnotationType::Mask
+            AnnotationType::Polygon
         );
 
         // Invalid defaults to Box2d for backward compatibility
@@ -2755,11 +2786,21 @@ mod tests {
         assert!(AnnotationType::try_from("invalid").is_err());
 
         // Test: Round-trip (Display → try_from)
-        for (ann_type, _) in &cases {
-            let s = ann_type.to_string();
-            let parsed = AnnotationType::try_from(s.as_str()).unwrap();
-            assert_eq!(parsed, *ann_type);
-        }
+        // Note: Polygon round-trips ("polygon" → Polygon), but Mask does not
+        // because "mask" → Polygon (backward compat). Mask displays as "mask"
+        // but parses to Polygon.
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Box2d.to_string().as_str()).unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Box3d.to_string().as_str()).unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Polygon.to_string().as_str()).unwrap(),
+            AnnotationType::Polygon
+        );
     }
 
     // ==== Pure Function: extract_sample_name Tests ====
@@ -3317,17 +3358,17 @@ mod tests {
         );
     }
 
-    // ==== Mask Tests ====
+    // ==== Polygon Tests ====
     #[test]
-    fn test_mask_creation_and_deserialization() {
+    fn test_polygon_creation_and_deserialization() {
         // Test case 1: Direct construction
-        let polygon = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
-        let mask = Mask::new(polygon.clone());
-        assert_eq!(mask.polygon, polygon);
+        let rings = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+        let polygon = Polygon::new(rings.clone());
+        assert_eq!(polygon.rings, rings);
 
-        // Test case 2: Deserialization from legacy format
+        // Test case 2: Deserialization from legacy format (field name "polygon")
         let legacy = serde_json::json!({
-            "mask": {
+            "polygon": {
                 "polygon": [[
                     [0.0_f32, 0.0_f32],
                     [1.0_f32, 0.0_f32],
@@ -3338,12 +3379,12 @@ mod tests {
 
         #[derive(serde::Deserialize)]
         struct Wrapper {
-            mask: Mask,
+            polygon: Polygon,
         }
 
         let parsed: Wrapper = serde_json::from_value(legacy).unwrap();
-        assert_eq!(parsed.mask.polygon.len(), 1);
-        assert_eq!(parsed.mask.polygon[0].len(), 3);
+        assert_eq!(parsed.polygon.rings.len(), 1);
+        assert_eq!(parsed.polygon.rings[0].len(), 3);
     }
 
     // ==== Sample Tests ====
@@ -3395,7 +3436,7 @@ mod tests {
         assert_eq!(ann.label(), None);
         assert_eq!(ann.box2d(), None);
         assert_eq!(ann.box3d(), None);
-        assert_eq!(ann.mask(), None);
+        assert_eq!(ann.polygon(), None);
 
         // Test case 2: Setting annotation fields
         let mut ann = Annotation::new();
@@ -3563,7 +3604,7 @@ mod tests {
         let mut annotation = Annotation::new();
         annotation.set_label(Some("test".to_string()));
         annotation.set_box2d(Some(Box2d::new(10.0, 20.0, 30.0, 40.0)));
-        annotation.set_mask(Some(Mask::new(polygon)));
+        annotation.set_polygon(Some(Polygon::new(polygon)));
 
         let mut sample = Sample::new();
         sample.annotations.push(annotation);
@@ -3577,11 +3618,11 @@ mod tests {
 
         let annotation_json = annotations[0].as_object().expect("annotation object");
         assert!(annotation_json.contains_key("box2d"));
-        assert!(annotation_json.contains_key("mask"));
+        assert!(annotation_json.contains_key("polygon"));
         assert!(!annotation_json.contains_key("x"));
         assert!(
             annotation_json
-                .get("mask")
+                .get("polygon")
                 .and_then(|value| value.as_array())
                 .is_some()
         );
@@ -3848,7 +3889,7 @@ mod tests {
         ann.set_name(Some("test".to_string()));
         ann.set_label(Some("person".to_string()));
         ann.set_label_index(Some(1));
-        ann.set_iscrowd(Some(0));
+        ann.set_iscrowd(Some(false));
         ann.set_category_frequency(Some("f".to_string()));
 
         let sample = Sample {

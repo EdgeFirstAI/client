@@ -1455,6 +1455,7 @@ pub enum FileType {
 pub enum AnnotationType {
     Box2d,
     Box3d,
+    Polygon,
     Mask,
 }
 
@@ -1558,18 +1559,18 @@ impl Box3d {
 }
 
 #[pyclass(module = "edgefirst_client")]
-pub struct Mask(edgefirst_client::Mask);
+pub struct Polygon(edgefirst_client::Polygon);
 
 #[pymethods]
-impl Mask {
+impl Polygon {
     #[new]
-    pub fn new(polygon: Vec<Vec<(f32, f32)>>) -> Self {
-        Mask(edgefirst_client::Mask::new(polygon))
+    pub fn new(rings: Vec<Vec<(f32, f32)>>) -> Self {
+        Polygon(edgefirst_client::Polygon::new(rings))
     }
 
     #[getter]
-    pub fn polygon(&self) -> &Vec<Vec<(f32, f32)>> {
-        &self.0.polygon
+    pub fn rings(&self) -> &Vec<Vec<(f32, f32)>> {
+        &self.0.rings
     }
 }
 
@@ -2161,6 +2162,7 @@ impl Dataset {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect();
@@ -2316,6 +2318,7 @@ impl Dataset {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect();
@@ -2562,6 +2565,7 @@ impl AnnotationSet {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect();
@@ -4596,6 +4600,7 @@ impl Client {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect::<Vec<_>>();
@@ -4658,6 +4663,7 @@ impl Client {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect::<Vec<_>>();
@@ -4749,6 +4755,7 @@ impl Client {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect::<Vec<_>>();
@@ -4817,6 +4824,7 @@ impl Client {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect::<Vec<_>>();
@@ -4889,6 +4897,7 @@ impl Client {
             .map(|x| match x {
                 AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
                 AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
+                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
                 AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
             })
             .collect::<Vec<_>>();
@@ -5804,9 +5813,9 @@ impl Annotation {
         self.0.set_box3d(box3d.map(|b| b.0.clone()));
     }
 
-    /// Sets the mask for this annotation.
-    pub fn set_mask(&mut self, mask: Option<&Mask>) {
-        self.0.set_mask(mask.map(|m| m.0.clone()));
+    /// Sets the polygon for this annotation.
+    pub fn set_polygon(&mut self, polygon: Option<&Polygon>) {
+        self.0.set_polygon(polygon.map(|p| p.0.clone()));
     }
 
     #[getter]
@@ -5862,8 +5871,8 @@ impl Annotation {
     }
 
     #[getter]
-    pub fn mask(&self) -> Option<Mask> {
-        self.0.mask().map(|x| Mask(x.clone()))
+    pub fn polygon(&self) -> Option<Polygon> {
+        self.0.polygon().map(|x| Polygon(x.clone()))
     }
 }
 
@@ -6168,7 +6177,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dataset>()?;
     m.add_class::<Box2d>()?;
     m.add_class::<Box3d>()?;
-    m.add_class::<Mask>()?;
+    m.add_class::<Polygon>()?;
     m.add_class::<Sample>()?;
     m.add_class::<SampleFile>()?;
     m.add_class::<FileType>()?;
