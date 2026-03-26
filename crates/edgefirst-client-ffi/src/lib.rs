@@ -1061,12 +1061,24 @@ pub struct Annotation {
     pub label_name: Option<String>,
     /// Label/class index.
     pub label_index: Option<u64>,
+    /// Whether this annotation marks a crowd region (COCO `iscrowd`).
+    pub iscrowd: Option<bool>,
     /// 2D bounding box.
     pub box2d: Option<Box2d>,
     /// 3D bounding box.
     pub box3d: Option<Box3d>,
     /// Polygon contours.
     pub polygon: Option<Polygon>,
+    /// Raster mask as raw PNG bytes.
+    pub mask: Option<Vec<u8>>,
+    /// Confidence score for the 2D bounding box prediction.
+    pub box2d_score: Option<f32>,
+    /// Confidence score for the 3D bounding box prediction.
+    pub box3d_score: Option<f32>,
+    /// Confidence score for the polygon prediction.
+    pub polygon_score: Option<f32>,
+    /// Confidence score for the mask prediction.
+    pub mask_score: Option<f32>,
 }
 
 impl From<core::Annotation> for Annotation {
@@ -1080,9 +1092,15 @@ impl From<core::Annotation> for Annotation {
             object_id: a.object_id().cloned(),
             label_name: a.label().cloned(),
             label_index: a.label_index(),
+            iscrowd: a.iscrowd(),
             box2d: a.box2d().map(|b| Box2d::from(b.clone())),
             box3d: a.box3d().map(|b| Box3d::from(b.clone())),
             polygon: a.polygon().map(|p| Polygon::from(p.clone())),
+            mask: a.mask().map(|m| m.as_bytes().to_vec()),
+            box2d_score: a.box2d_score(),
+            box3d_score: a.box3d_score(),
+            polygon_score: a.polygon_score(),
+            mask_score: a.mask_score(),
         }
     }
 }
@@ -1106,10 +1124,53 @@ impl From<Annotation> for core::Annotation {
         if let Some(idx) = a.label_index {
             ann.set_label_index(Some(idx));
         }
+        ann.set_iscrowd(a.iscrowd);
         ann.set_box2d(a.box2d.map(core::Box2d::from));
         ann.set_box3d(a.box3d.map(core::Box3d::from));
         ann.set_polygon(a.polygon.map(core::Polygon::from));
+        ann.set_mask(a.mask.map(core::MaskData::from_png));
+        ann.set_box2d_score(a.box2d_score);
+        ann.set_box3d_score(a.box3d_score);
+        ann.set_polygon_score(a.polygon_score);
+        ann.set_mask_score(a.mask_score);
         ann
+    }
+}
+
+/// Pipeline timing measurements for a sample, in nanoseconds.
+///
+/// Each field records the wall-clock duration of one pipeline stage.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct Timing {
+    /// Duration of the data-loading stage (nanoseconds).
+    pub load: Option<i64>,
+    /// Duration of the preprocessing stage (nanoseconds).
+    pub preprocess: Option<i64>,
+    /// Duration of the inference stage (nanoseconds).
+    pub inference: Option<i64>,
+    /// Duration of the decoding / postprocessing stage (nanoseconds).
+    pub decode: Option<i64>,
+}
+
+impl From<core::Timing> for Timing {
+    fn from(t: core::Timing) -> Self {
+        Self {
+            load: t.load,
+            preprocess: t.preprocess,
+            inference: t.inference,
+            decode: t.decode,
+        }
+    }
+}
+
+impl From<Timing> for core::Timing {
+    fn from(t: Timing) -> Self {
+        core::Timing {
+            load: t.load,
+            preprocess: t.preprocess,
+            inference: t.inference,
+            decode: t.decode,
+        }
     }
 }
 
@@ -1150,10 +1211,13 @@ pub struct Sample {
     pub files: Vec<SampleFile>,
     /// Annotations on this sample.
     pub annotations: Vec<Annotation>,
+    /// Pipeline timing measurements (nanoseconds per stage).
+    pub timing: Option<Timing>,
 }
 
 impl From<core::Sample> for Sample {
     fn from(s: core::Sample) -> Self {
+        let timing = s.timing.clone().map(Timing::from);
         Self {
             id: s.id().map(SampleId::from),
             group: s.group().cloned(),
@@ -1177,6 +1241,7 @@ impl From<core::Sample> for Sample {
                 .cloned()
                 .map(Annotation::from)
                 .collect(),
+            timing,
         }
     }
 }

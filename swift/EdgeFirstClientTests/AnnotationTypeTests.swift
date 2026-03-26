@@ -3,7 +3,7 @@
 
 /// Tests for annotation data types.
 ///
-/// These tests verify Box2d, Box3d, Point2d, PolygonRing, Mask, Location,
+/// These tests verify Box2d, Box3d, Point2d, PolygonRing, Polygon, Location,
 /// and Annotation struct construction, equality, and hashability.
 
 import XCTest
@@ -239,24 +239,24 @@ final class AnnotationTypeTests: XCTestCase {
     XCTAssertNotEqual(ring1, ring3)
   }
 
-  // MARK: - Mask Tests
+  // MARK: - Polygon Tests
 
-  /// Test Mask construction with single polygon.
-  func testMaskConstruction() {
+  /// Test Polygon construction with single ring.
+  func testPolygonConstruction() {
     let ring = PolygonRing(points: [
       Point2d(x: 0.0, y: 0.0),
       Point2d(x: 100.0, y: 0.0),
       Point2d(x: 100.0, y: 100.0),
       Point2d(x: 0.0, y: 100.0),
     ])
-    let mask = Mask(polygon: [ring])
+    let polygon = Polygon(rings: [ring])
 
-    XCTAssertEqual(mask.polygon.count, 1)
-    XCTAssertEqual(mask.polygon[0].points.count, 4)
+    XCTAssertEqual(polygon.rings.count, 1)
+    XCTAssertEqual(polygon.rings[0].points.count, 4)
   }
 
-  /// Test Mask with multiple polygon rings.
-  func testMaskMultipleRings() {
+  /// Test Polygon with multiple rings.
+  func testPolygonMultipleRings() {
     let outerRing = PolygonRing(points: [
       Point2d(x: 0.0, y: 0.0),
       Point2d(x: 200.0, y: 0.0),
@@ -269,41 +269,41 @@ final class AnnotationTypeTests: XCTestCase {
       Point2d(x: 150.0, y: 150.0),
       Point2d(x: 50.0, y: 150.0),
     ])
-    let mask = Mask(polygon: [outerRing, innerRing])
+    let polygon = Polygon(rings: [outerRing, innerRing])
 
-    XCTAssertEqual(mask.polygon.count, 2)
+    XCTAssertEqual(polygon.rings.count, 2)
   }
 
-  /// Test Mask with empty polygon.
-  func testMaskEmpty() {
-    let mask = Mask(polygon: [])
+  /// Test Polygon with empty rings.
+  func testPolygonEmpty() {
+    let polygon = Polygon(rings: [])
 
-    XCTAssertTrue(mask.polygon.isEmpty)
+    XCTAssertTrue(polygon.rings.isEmpty)
   }
 
-  /// Test Mask equality.
-  func testMaskEquality() {
+  /// Test Polygon equality.
+  func testPolygonEquality() {
     let ring = PolygonRing(points: [Point2d(x: 0.0, y: 0.0)])
-    let mask1 = Mask(polygon: [ring])
-    let mask2 = Mask(polygon: [ring])
-    let mask3 = Mask(polygon: [])
+    let polygon1 = Polygon(rings: [ring])
+    let polygon2 = Polygon(rings: [ring])
+    let polygon3 = Polygon(rings: [])
 
-    XCTAssertEqual(mask1, mask2)
-    XCTAssertNotEqual(mask1, mask3)
+    XCTAssertEqual(polygon1, polygon2)
+    XCTAssertNotEqual(polygon1, polygon3)
   }
 
-  /// Test Mask hashability.
-  func testMaskHashability() {
-    var maskSet: Set<Mask> = []
+  /// Test Polygon hashability.
+  func testPolygonHashability() {
+    var polygonSet: Set<Polygon> = []
 
     let ring1 = PolygonRing(points: [Point2d(x: 0.0, y: 0.0)])
     let ring2 = PolygonRing(points: [Point2d(x: 100.0, y: 100.0)])
 
-    maskSet.insert(Mask(polygon: [ring1]))
-    maskSet.insert(Mask(polygon: [ring2]))
-    maskSet.insert(Mask(polygon: [ring1]))  // Duplicate
+    polygonSet.insert(Polygon(rings: [ring1]))
+    polygonSet.insert(Polygon(rings: [ring2]))
+    polygonSet.insert(Polygon(rings: [ring1]))  // Duplicate
 
-    XCTAssertEqual(maskSet.count, 2)
+    XCTAssertEqual(polygonSet.count, 2)
   }
 
   // MARK: - GpsData Tests
@@ -500,6 +500,16 @@ final class AnnotationTypeTests: XCTestCase {
     }
   }
 
+  /// Test AnnotationType polygon case.
+  func testAnnotationTypePolygon() {
+    let type = AnnotationType.polygon
+    if case .polygon = type {
+      // Success
+    } else {
+      XCTFail("Expected polygon")
+    }
+  }
+
   /// Test AnnotationType mask case.
   func testAnnotationTypeMask() {
     let type = AnnotationType.mask
@@ -514,9 +524,11 @@ final class AnnotationTypeTests: XCTestCase {
   func testAnnotationTypeEquality() {
     XCTAssertEqual(AnnotationType.box2d, AnnotationType.box2d)
     XCTAssertEqual(AnnotationType.box3d, AnnotationType.box3d)
+    XCTAssertEqual(AnnotationType.polygon, AnnotationType.polygon)
     XCTAssertEqual(AnnotationType.mask, AnnotationType.mask)
     XCTAssertNotEqual(AnnotationType.box2d, AnnotationType.box3d)
     XCTAssertNotEqual(AnnotationType.box2d, AnnotationType.mask)
+    XCTAssertNotEqual(AnnotationType.polygon, AnnotationType.mask)
   }
 
   // MARK: - Annotation Tests
@@ -533,15 +545,22 @@ final class AnnotationTypeTests: XCTestCase {
       objectId: "obj-1",
       labelName: "car",
       labelIndex: 0,
+      iscrowd: nil,
       box2d: box,
       box3d: nil,
-      mask: nil
+      polygon: nil,
+      mask: nil,
+      box2dScore: nil,
+      box3dScore: nil,
+      polygonScore: nil,
+      maskScore: nil
     )
 
     XCTAssertEqual(annotation.name, "image001.jpg")
     XCTAssertEqual(annotation.labelName, "car")
     XCTAssertNotNil(annotation.box2d)
     XCTAssertNil(annotation.box3d)
+    XCTAssertNil(annotation.polygon)
     XCTAssertNil(annotation.mask)
   }
 
@@ -557,9 +576,15 @@ final class AnnotationTypeTests: XCTestCase {
       objectId: "obj-2",
       labelName: "pedestrian",
       labelIndex: 1,
+      iscrowd: nil,
       box2d: nil,
       box3d: box,
-      mask: nil
+      polygon: nil,
+      mask: nil,
+      box2dScore: nil,
+      box3dScore: nil,
+      polygonScore: nil,
+      maskScore: nil
     )
 
     XCTAssertEqual(annotation.sequenceName, "sequence1")
@@ -568,14 +593,14 @@ final class AnnotationTypeTests: XCTestCase {
     XCTAssertEqual(annotation.box3d?.cx, 1.0)
   }
 
-  /// Test Annotation construction with Mask.
-  func testAnnotationWithMask() {
+  /// Test Annotation construction with Polygon.
+  func testAnnotationWithPolygon() {
     let ring = PolygonRing(points: [
       Point2d(x: 0.0, y: 0.0),
       Point2d(x: 100.0, y: 0.0),
       Point2d(x: 100.0, y: 100.0),
     ])
-    let mask = Mask(polygon: [ring])
+    let polygon = Polygon(rings: [ring])
     let annotation = Annotation(
       sampleId: nil,
       name: "image002.jpg",
@@ -585,13 +610,19 @@ final class AnnotationTypeTests: XCTestCase {
       objectId: "obj-3",
       labelName: "road",
       labelIndex: 2,
+      iscrowd: nil,
       box2d: nil,
       box3d: nil,
-      mask: mask
+      polygon: polygon,
+      mask: nil,
+      box2dScore: nil,
+      box3dScore: nil,
+      polygonScore: nil,
+      maskScore: nil
     )
 
-    XCTAssertNotNil(annotation.mask)
-    XCTAssertEqual(annotation.mask?.polygon.count, 1)
+    XCTAssertNotNil(annotation.polygon)
+    XCTAssertEqual(annotation.polygon?.rings.count, 1)
   }
 
   /// Test Annotation with minimal fields.
@@ -605,9 +636,15 @@ final class AnnotationTypeTests: XCTestCase {
       objectId: nil,
       labelName: nil,
       labelIndex: nil,
+      iscrowd: nil,
       box2d: nil,
       box3d: nil,
-      mask: nil
+      polygon: nil,
+      mask: nil,
+      box2dScore: nil,
+      box3dScore: nil,
+      polygonScore: nil,
+      maskScore: nil
     )
 
     XCTAssertNil(annotation.name)
@@ -621,17 +658,20 @@ final class AnnotationTypeTests: XCTestCase {
     let ann1 = Annotation(
       sampleId: nil, name: "test.jpg", sequenceName: nil, frameNumber: nil,
       group: nil, objectId: nil, labelName: "car", labelIndex: 0,
-      box2d: box, box3d: nil, mask: nil
+      iscrowd: nil, box2d: box, box3d: nil, polygon: nil, mask: nil,
+      box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
     )
     let ann2 = Annotation(
       sampleId: nil, name: "test.jpg", sequenceName: nil, frameNumber: nil,
       group: nil, objectId: nil, labelName: "car", labelIndex: 0,
-      box2d: box, box3d: nil, mask: nil
+      iscrowd: nil, box2d: box, box3d: nil, polygon: nil, mask: nil,
+      box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
     )
     let ann3 = Annotation(
       sampleId: nil, name: "test.jpg", sequenceName: nil, frameNumber: nil,
       group: nil, objectId: nil, labelName: "truck", labelIndex: 1,
-      box2d: box, box3d: nil, mask: nil
+      iscrowd: nil, box2d: box, box3d: nil, polygon: nil, mask: nil,
+      box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
     )
 
     XCTAssertEqual(ann1, ann2)
