@@ -61,6 +61,7 @@ mod error;
 pub mod format;
 #[cfg(feature = "profiling")]
 pub mod instrument;
+mod mask;
 mod retry;
 mod storage;
 
@@ -79,6 +80,7 @@ pub use crate::{
         ImuData, Label, Location, Mask, Sample, SampleFile,
     },
     error::Error,
+    mask::MaskData,
     retry::{RetryScope, classify_url},
     storage::{FileTokenStorage, MemoryTokenStorage, StorageError, TokenStorage},
 };
