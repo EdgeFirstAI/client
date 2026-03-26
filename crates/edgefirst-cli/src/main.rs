@@ -1305,52 +1305,68 @@ fn parse_box3d_from_dataframe(
     Ok(None)
 }
 
-/// Extract a polygon mask from a DataFrame row.
+/// Extract a polygon from a DataFrame row.
 ///
-/// Attempts to read the "mask" column as a list of f32 coordinates at the
-/// specified row index. Coordinates are pairs of (x, y) values, with NaN
-/// values used as separators between multiple polygons in the same mask.
+/// Reads polygon data in two formats, trying the newer format first:
 ///
-/// Returns Ok(None) if the column doesn't exist, has wrong type, or
-/// insufficient data.
+/// 1. **2026.04 format** (`polygon` column): `List(List(Float32))` where the
+///    outer list contains rings and each inner list has interleaved
+///    `[x1, y1, x2, y2, ...]` coordinates.
+/// 2. **2025.10 legacy format** (`mask` column): `List(Float32)` with
+///    NaN-separated flat coordinates (`x1, y1, x2, y2, NaN, x3, y3, ...`).
+///
+/// Returns `Ok(None)` if neither column exists, has the wrong type, or
+/// contains insufficient data.
 #[cfg(feature = "polars")]
 fn parse_polygon_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
 ) -> Result<Option<edgefirst_client::Polygon>, Error> {
-    // Try to get the mask column
-    let mask_col = match df.column("mask") {
-        Ok(col) => col,
-        Err(_) => return Ok(None),
-    };
-
-    // Convert to list type
-    let list_chunked = match mask_col.list() {
-        Ok(list) => list,
-        Err(_) => return Ok(None),
-    };
-
-    // Get the series at the specified index
-    let mask_series = match list_chunked.get_as_series(idx) {
-        Some(series) => series,
-        None => return Ok(None),
-    };
-
-    let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
-        values.into_iter().flatten().collect()
-    } else if let Ok(values) = mask_series.f64() {
-        values.into_iter().flatten().map(|val| val as f32).collect()
-    } else {
-        return Ok(None);
-    };
-    if !coords.is_empty() {
-        // Use the unflatten helper to convert flat coords with NaN separators back to
-        // nested rings
-        let rings = edgefirst_client::unflatten_polygon_coordinates(&coords);
-
+    // 1. Try the 2026.04 "polygon" column: List(List(Float32))
+    if let Ok(polygon_col) = df.column("polygon")
+        && let Ok(outer_list) = polygon_col.list()
+        && let Some(rings_series) = outer_list.get_as_series(idx)
+        && let Ok(inner_list) = rings_series.list()
+    {
+        let mut rings: Vec<Vec<(f32, f32)>> = Vec::new();
+        for ring_idx in 0..inner_list.len() {
+            if let Some(ring_series) = inner_list.get_as_series(ring_idx) {
+                let coords: Vec<f32> = if let Ok(v) = ring_series.f32() {
+                    v.into_iter().flatten().collect()
+                } else if let Ok(v) = ring_series.f64() {
+                    v.into_iter().flatten().map(|val| val as f32).collect()
+                } else {
+                    continue;
+                };
+                let points: Vec<(f32, f32)> =
+                    coords.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+                if !points.is_empty() {
+                    rings.push(points);
+                }
+            }
+        }
         if !rings.is_empty() {
-            let polygon = edgefirst_client::Polygon::new(rings);
-            return Ok(Some(polygon));
+            return Ok(Some(edgefirst_client::Polygon::new(rings)));
+        }
+    }
+
+    // 2. Fall back to 2025.10 legacy "mask" column: List(Float32) with NaN separators
+    if let Ok(mask_col) = df.column("mask")
+        && let Ok(list_chunked) = mask_col.list()
+        && let Some(mask_series) = list_chunked.get_as_series(idx)
+    {
+        let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
+            values.into_iter().flatten().collect()
+        } else if let Ok(values) = mask_series.f64() {
+            values.into_iter().flatten().map(|val| val as f32).collect()
+        } else {
+            return Ok(None);
+        };
+        if !coords.is_empty() {
+            let rings = edgefirst_client::unflatten_polygon_coordinates(&coords);
+            if !rings.is_empty() {
+                return Ok(Some(edgefirst_client::Polygon::new(rings)));
+            }
         }
     }
 

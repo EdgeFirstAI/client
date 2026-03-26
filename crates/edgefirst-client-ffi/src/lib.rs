@@ -1130,7 +1130,13 @@ impl From<Annotation> for core::Annotation {
         ann.set_polygon(a.polygon.map(core::Polygon::from));
         ann.set_mask(
             a.mask
-                .and_then(|bytes| core::MaskData::from_png_checked(bytes).ok()),
+                .and_then(|bytes| match core::MaskData::from_png_checked(bytes) {
+                    Ok(mask) => Some(mask),
+                    Err(e) => {
+                        eprintln!("edgefirst-client-ffi: invalid PNG mask data: {e}");
+                        None
+                    }
+                }),
         );
         ann.set_box2d_score(a.box2d_score);
         ann.set_box3d_score(a.box3d_score);

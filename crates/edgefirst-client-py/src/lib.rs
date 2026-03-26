@@ -1994,7 +1994,7 @@ impl Dataset {
     ///     types: File types to download (default: [FileType.Image])
     ///     flatten: If True, download all files to a flat directory structure
     ///     progress: Optional callback for download progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -2117,11 +2117,12 @@ impl Dataset {
     ///
     /// Args:
     ///     annotation_set_id: Optional annotation set to include annotations
-    /// from     annotation_types: Filter by annotation types
+    ///         from
+    ///     annotation_types: Filter by annotation types
     ///     groups: Filter by sample groups (e.g., ["train", "val"])
     ///     types: File types to include (default: [FileType.Image])
     ///     progress: Optional callback for fetch progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -2129,7 +2130,7 @@ impl Dataset {
     ///
     /// Progress:
     ///     Reports progress with status=None as samples are fetched from the
-    /// server     in paginated batches. Progress unit is samples fetched.
+    ///     server in paginated batches. Progress unit is samples fetched.
     ///
     /// Returns:
     ///     List of Sample objects
@@ -2532,7 +2533,7 @@ impl AnnotationSet {
     ///     groups: List of dataset groups (train, val, test)
     ///     annotation_types: List of annotation types to filter
     ///     progress: Optional callback for fetch progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -2540,8 +2541,8 @@ impl AnnotationSet {
     ///
     /// Progress:
     ///     Reports progress with status=None as samples are fetched and
-    /// processed     for their annotations. Progress unit is samples
-    /// processed (not individual     annotations).
+    ///     processed for their annotations. Progress unit is samples
+    ///     processed (not individual annotations).
     ///
     /// Returns:
     ///     List[Annotation]: Annotations in this set
@@ -4573,7 +4574,7 @@ impl Client {
     ///     groups: List of dataset groups (train, val, test)
     ///     annotation_types: List of annotation types to filter
     ///     progress: Optional callback for fetch progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -4581,8 +4582,8 @@ impl Client {
     ///
     /// Progress:
     ///     Reports progress with status=None as samples are fetched and
-    /// processed     for their annotations. Progress unit is samples
-    /// processed (not individual     annotations).
+    ///     processed for their annotations. Progress unit is samples
+    ///     processed (not individual annotations).
     ///
     /// Returns:
     ///     List of Annotation objects
@@ -4715,7 +4716,7 @@ impl Client {
     ///     groups: List of dataset groups (train, val, test)
     ///     annotation_types: List of annotation types (bbox, box3d, mask)
     ///     progress: Optional callback for fetch progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -4723,7 +4724,7 @@ impl Client {
     ///
     /// Progress:
     ///     Reports progress with status=None as samples are fetched from the
-    /// server     in paginated batches. Progress unit is samples fetched.
+    ///     server in paginated batches. Progress unit is samples fetched.
     ///
     /// Returns:
     ///     Polars DataFrame with 13 columns (2025.10 schema)
@@ -4861,11 +4862,12 @@ impl Client {
     /// Args:
     ///     dataset_id: Dataset identifier
     ///     annotation_set_id: Optional annotation set to include annotations
-    /// from     annotation_types: Filter by annotation types
+    ///         from
+    ///     annotation_types: Filter by annotation types
     ///     groups: Filter by sample groups (e.g., ["train", "val"])
     ///     types: File types to include (default: [FileType.Image])
     ///     progress: Optional callback for fetch progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -4873,7 +4875,7 @@ impl Client {
     ///
     /// Progress:
     ///     Reports progress with status=None as samples are fetched from the
-    /// server     in paginated batches. Progress unit is samples fetched.
+    ///     server in paginated batches. Progress unit is samples fetched.
     ///
     /// Returns:
     ///     List of Sample objects
@@ -5366,7 +5368,7 @@ impl Client {
     ///     modelname: Name of the model artifact to download
     ///     filename: Optional local filename (defaults to modelname)
     ///     progress: Optional callback for download progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -5374,8 +5376,8 @@ impl Client {
     ///
     /// Progress:
     ///     Reports progress with status=None as file data is received. Progress
-    /// unit     is bytes downloaded. Total is determined from the HTTP
-    /// Content-Length     header (may be 0 if server doesn't provide it).
+    ///     unit is bytes downloaded. Total is determined from the HTTP
+    ///     Content-Length header (may be 0 if server doesn't provide it).
     #[pyo3(signature = (training_session_id, modelname, filename = None, progress = None))]
     pub fn download_artifact<'py>(
         &self,
@@ -5431,7 +5433,7 @@ impl Client {
     ///     checkpoint: Name of the checkpoint to download
     ///     filename: Optional local filename (defaults to checkpoint name)
     ///     progress: Optional callback for download progress. Supports two
-    /// signatures:
+    ///         signatures:
     ///         - `callback(current, total)` - basic progress (backwards
     ///           compatible)
     ///         - `callback(current, total, status)` - with status message
@@ -5439,8 +5441,8 @@ impl Client {
     ///
     /// Progress:
     ///     Reports progress with status=None as file data is received. Progress
-    /// unit     is bytes downloaded. Total is determined from the HTTP
-    /// Content-Length     header (may be 0 if server doesn't provide it).
+    ///     unit is bytes downloaded. Total is determined from the HTTP
+    ///     Content-Length header (may be 0 if server doesn't provide it).
     #[pyo3(signature = (training_session_id, checkpoint, filename = None, progress = None))]
     pub fn download_checkpoint<'py>(
         &self,

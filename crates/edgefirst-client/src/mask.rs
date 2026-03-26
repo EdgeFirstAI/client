@@ -76,6 +76,15 @@ impl MaskData {
                 color_type
             )));
         }
+
+        // Try to parse PNG header to catch truncated/malformed data
+        let decoder = png::Decoder::new(std::io::Cursor::new(&png));
+        if decoder.read_info().is_err() {
+            return Err(crate::Error::InvalidParameters(
+                "PNG data is malformed or truncated".to_string(),
+            ));
+        }
+
         Ok(Self { png })
     }
 
