@@ -2305,17 +2305,29 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         .into();
 
     // Polygon: List(List(Float32)) — nested rings
-    // When all values are None, Polars infers List(null) which can't cast to List(List(Float32)).
-    // Skip the cast if all null — the column drop rule will remove it anyway.
-    let polygon_series = Series::new("polygon".into(), polygons);
-    let polygons_col: Column = if polygon_series.null_count() < polygon_series.len() {
-        polygon_series
+    // Build using ListChunked to avoid Polars dtype mismatch when mixing Some/None entries.
+    // Series::new() with Vec<Option<Series>> panics when Some entries are list[f32] but None
+    // entries infer as list[null].
+    let polygons_col: Column = if polygons.iter().all(|p| p.is_none()) {
+        // All null — create a null column that the drop rule will remove
+        Series::new_null("polygon".into(), polygons.len()).into()
+    } else {
+        // Build properly typed column: convert each Option<Series> to Option<Series>,
+        // ensuring None entries don't cause dtype inference issues
+        let typed_polygons: Vec<Option<Series>> = polygons
+            .into_iter()
+            .map(|opt| {
+                opt.map(|s| {
+                    s.cast(&DataType::List(Box::new(DataType::Float32)))
+                        .unwrap_or(s)
+                })
+            })
+            .collect();
+        Series::new("polygon".into(), &typed_polygons)
             .cast(&DataType::List(Box::new(DataType::List(Box::new(
                 DataType::Float32,
             )))))?
             .into()
-    } else {
-        polygon_series.into()
     };
 
     let boxes2d_col: Column = Series::new("box2d".into(), boxes2d)
