@@ -506,6 +506,18 @@ impl CocoDatasetBuilder {
         id
     }
 
+    /// Set the score on an annotation by ID.
+    pub fn set_annotation_score(&mut self, annotation_id: u64, score: f64) {
+        if let Some(ann) = self
+            .dataset
+            .annotations
+            .iter_mut()
+            .find(|a| a.id == annotation_id)
+        {
+            ann.score = Some(score);
+        }
+    }
+
     /// Set LVIS annotation metadata on an image.
     pub fn set_image_neg_categories(
         &mut self,

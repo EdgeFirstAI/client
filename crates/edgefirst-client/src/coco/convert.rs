@@ -510,6 +510,56 @@ pub fn coco_segmentation_to_mask_data(seg: &CocoSegmentation) -> Result<Option<M
 }
 
 // =============================================================================
+// RLE Encoding
+// =============================================================================
+
+/// Encode a binary mask (row-major, 0/1 values) as COCO RLE.
+///
+/// COCO RLE uses column-major (Fortran) order, starting with a background
+/// count. This function transposes the input from row-major to column-major
+/// before run-length encoding.
+///
+/// # Arguments
+/// * `mask` - Binary mask in row-major order (0 = background, nonzero = foreground)
+/// * `width` - Image width in pixels
+/// * `height` - Image height in pixels
+///
+/// # Returns
+/// A `CocoRle` with counts and size fields.
+pub fn encode_rle(mask: &[u8], width: u32, height: u32) -> CocoRle {
+    let total = (width as usize) * (height as usize);
+
+    // Convert row-major to column-major
+    let mut column_major = vec![0u8; total];
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            column_major[col * height as usize + row] = mask[row * width as usize + col];
+        }
+    }
+
+    // Run-length encode (starts with background count)
+    let mut counts = Vec::new();
+    let mut current = 0u8; // start with background
+    let mut run = 0u32;
+    for &pixel in &column_major {
+        let val = if pixel != 0 { 1 } else { 0 };
+        if val == current {
+            run += 1;
+        } else {
+            counts.push(run);
+            current = val;
+            run = 1;
+        }
+    }
+    counts.push(run);
+
+    CocoRle {
+        counts,
+        size: [height, width],
+    }
+}
+
+// =============================================================================
 // Area Calculation
 // =============================================================================
 
@@ -809,5 +859,65 @@ mod tests {
             CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
         let area = calculate_coco_area(&seg).unwrap();
         assert!((area - 10000.0).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // RLE Encoding Tests
+    // =========================================================================
+
+    #[test]
+    fn test_encode_rle_all_background() {
+        let mask = vec![0u8; 100];
+        let rle = encode_rle(&mask, 10, 10);
+        assert_eq!(rle.size, [10, 10]);
+        // All background → single count of 100
+        assert_eq!(rle.counts, vec![100]);
+    }
+
+    #[test]
+    fn test_encode_rle_all_foreground() {
+        let mask = vec![1u8; 100];
+        let rle = encode_rle(&mask, 10, 10);
+        assert_eq!(rle.size, [10, 10]);
+        // All foreground → [0 bg, 100 fg]
+        assert_eq!(rle.counts, vec![0, 100]);
+    }
+
+    #[test]
+    fn test_encode_decode_rle_roundtrip() {
+        // Create a known mask: 2x2 square in top-left of 4x4 image
+        #[rustfmt::skip]
+        let mask = vec![
+            1, 1, 0, 0,
+            1, 1, 0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+        ];
+
+        let rle = encode_rle(&mask, 4, 4);
+        assert_eq!(rle.size, [4, 4]);
+        let counts_sum: u32 = rle.counts.iter().sum();
+        assert_eq!(counts_sum, 16, "RLE counts should sum to total pixels");
+
+        // Decode back and verify pixel-for-pixel match
+        let (decoded, height, width) = decode_rle(&rle).unwrap();
+        assert_eq!(height, 4);
+        assert_eq!(width, 4);
+        assert_eq!(decoded, mask);
+    }
+
+    #[test]
+    fn test_encode_rle_single_pixel_foreground() {
+        // Only pixel (0,0) is foreground in 3x3 image
+        #[rustfmt::skip]
+        let mask = vec![
+            1, 0, 0,
+            0, 0, 0,
+            0, 0, 0,
+        ];
+
+        let rle = encode_rle(&mask, 3, 3);
+        let (decoded, _, _) = decode_rle(&rle).unwrap();
+        assert_eq!(decoded, mask);
     }
 }

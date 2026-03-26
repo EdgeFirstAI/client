@@ -30,6 +30,9 @@ use tokio::sync::{Semaphore, mpsc::Sender};
 /// Schema version written into Arrow IPC file metadata.
 pub const SCHEMA_VERSION: &str = "2026.04";
 
+/// Polygon rings for a single row: each ring is a vec of `(x, y)` coordinate pairs.
+type PolygonRings = Vec<Vec<(f32, f32)>>;
+
 /// Unflatten polygon coordinates from Arrow flat format.
 ///
 /// Converts `[x1, y1, x2, y2, NaN, x3, y3, ...]` to `[[(x1,y1), (x2,y2)],
@@ -449,14 +452,26 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let output_path = output_path.as_ref();
 
     // Read file-level metadata (must be done before consuming the reader)
-    let category_metadata_json: Option<String> = {
+    let (schema_version, category_metadata_json, labels_metadata_json) = {
         let mut meta_file = std::fs::File::open(arrow_path)?;
         let mut reader = IpcReader::new(&mut meta_file);
-        reader.custom_metadata().ok().flatten().and_then(|meta| {
-            meta.get(&PlSmallStr::from("category_metadata"))
+        let meta = reader.custom_metadata().ok().flatten();
+        let sv = meta.as_ref().and_then(|m| {
+            m.get(&PlSmallStr::from("schema_version"))
                 .map(|s| s.to_string())
-        })
+        });
+        let cm = meta.as_ref().and_then(|m| {
+            m.get(&PlSmallStr::from("category_metadata"))
+                .map(|s| s.to_string())
+        });
+        let lm = meta
+            .as_ref()
+            .and_then(|m| m.get(&PlSmallStr::from("labels")).map(|s| s.to_string()));
+        (sv, cm, lm)
     };
+
+    // Determine format version: absent → 2025.10, present → use value
+    let is_legacy = schema_version.is_none();
 
     // Read Arrow file
     let mut file = std::fs::File::open(arrow_path)?;
@@ -537,9 +552,28 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .transpose()?
         .unwrap_or_else(|| vec![[0.0; 4]; total_rows]);
 
-    // Extract all masks upfront if present
-    let masks = if options.include_masks {
+    // Extract segmentation data based on schema version
+    //
+    // 2025.10 (legacy): mask column is List(Float32) with NaN-separated polygon coords
+    // 2026.04+:         polygon column is List(List(Float32)), mask column is Binary (PNG)
+    let legacy_masks: Option<Vec<Vec<f32>>> = if is_legacy && options.include_masks {
         df.column("mask").ok().map(extract_all_masks).transpose()?
+    } else {
+        None
+    };
+
+    let polygons_2026: Option<Vec<Option<PolygonRings>>> = if !is_legacy && options.include_masks {
+        df.column("polygon")
+            .ok()
+            .map(|c| extract_all_polygons(c, total_rows))
+    } else {
+        None
+    };
+
+    let mask_binary_2026: Option<Vec<Option<Vec<u8>>>> = if !is_legacy && options.include_masks {
+        df.column("mask")
+            .ok()
+            .map(|c| extract_all_binary_masks(c, total_rows))
     } else {
         None
     };
@@ -596,6 +630,11 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .ok()
         .map(|c| extract_list_u32_column(c, total_rows))
         .unwrap_or_else(|| vec![None; total_rows]);
+
+    // Extract score columns (2026.04 schema)
+    let box2d_scores: Vec<Option<f32>> = extract_f32_column(&df, "box2d_score", total_rows);
+    let polygon_scores: Vec<Option<f32>> = extract_f32_column(&df, "polygon_score", total_rows);
+    let mask_scores: Vec<Option<f32>> = extract_f32_column(&df, "mask_score", total_rows);
 
     // Build COCO dataset
     let mut builder = CocoDatasetBuilder::new();
@@ -675,31 +714,123 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             box2d_to_coco_bbox(&ef_box2d, width, height)
         });
 
-        // Convert polygon if present
+        // Build segmentation based on schema version
         let segmentation = if options.include_masks {
-            masks.as_ref().and_then(|m| {
-                m.get(i).and_then(|coords| {
-                    if coords.is_empty() {
-                        None
-                    } else {
-                        let rings = unflatten_polygon_coords(coords);
-                        let polygon = Polygon::new(rings);
-                        let coco_poly = polygon_to_coco_polygon(&polygon, width, height);
-                        if coco_poly.is_empty() {
+            if is_legacy {
+                // 2025.10: mask column contains NaN-separated flat polygon coords
+                legacy_masks.as_ref().and_then(|m| {
+                    m.get(i).and_then(|coords| {
+                        if coords.is_empty() {
                             None
                         } else {
-                            Some(CocoSegmentation::Polygon(coco_poly))
+                            let rings = unflatten_polygon_coords(coords);
+                            let polygon = Polygon::new(rings);
+                            let coco_poly = polygon_to_coco_polygon(&polygon, width, height);
+                            if coco_poly.is_empty() {
+                                None
+                            } else {
+                                Some(CocoSegmentation::Polygon(coco_poly))
+                            }
                         }
-                    }
+                    })
                 })
-            })
+            } else {
+                // 2026.04+: try mask (Binary/PNG → RLE) first, then polygon column
+                let mask_seg =
+                    mask_binary_2026.as_ref().and_then(|masks| {
+                        masks.get(i).and_then(|opt_bytes| {
+                            opt_bytes.as_ref().and_then(|png_bytes| {
+                            if png_bytes.is_empty() {
+                                return None;
+                            }
+                            let mask_data = crate::MaskData::from_png(png_bytes.clone());
+                            let mw = mask_data.width();
+                            let mh = mask_data.height();
+                            let bit_depth = mask_data.bit_depth();
+                            let decoded = mask_data.decode();
+
+                            let binary_mask = match bit_depth {
+                                1 => decoded,
+                                8 => {
+                                    log::warn!(
+                                        "Binarizing 8-bit mask for row {} — score data is lost",
+                                        i
+                                    );
+                                    decoded.iter().map(|&v| if v >= 128 { 1 } else { 0 }).collect()
+                                }
+                                16 => {
+                                    log::warn!(
+                                        "Binarizing 16-bit mask for row {} — score data is lost",
+                                        i
+                                    );
+                                    // 16-bit decodes to big-endian byte pairs
+                                    decoded
+                                        .chunks(2)
+                                        .map(|pair| {
+                                            let val = if pair.len() == 2 {
+                                                u16::from_be_bytes([pair[0], pair[1]])
+                                            } else {
+                                                0
+                                            };
+                                            if val >= 32768 { 1u8 } else { 0u8 }
+                                        })
+                                        .collect()
+                                }
+                                _ => decoded,
+                            };
+
+                            let rle = super::convert::encode_rle(&binary_mask, mw, mh);
+                            Some(CocoSegmentation::Rle(rle))
+                        })
+                        })
+                    });
+
+                if mask_seg.is_some() {
+                    mask_seg
+                } else {
+                    // Fall back to polygon column
+                    polygons_2026.as_ref().and_then(|polys| {
+                        polys.get(i).and_then(|opt_rings| {
+                            opt_rings.as_ref().and_then(|rings| {
+                                if rings.is_empty() {
+                                    return None;
+                                }
+                                let polygon = Polygon::new(rings.clone());
+                                let coco_poly = polygon_to_coco_polygon(&polygon, width, height);
+                                if coco_poly.is_empty() {
+                                    None
+                                } else {
+                                    Some(CocoSegmentation::Polygon(coco_poly))
+                                }
+                            })
+                        })
+                    })
+                }
+            }
         } else {
             None
         };
 
+        // Determine the score: use first non-null from box2d_score, polygon_score, mask_score
+        let score: Option<f64> = mask_scores[i]
+            .or(polygon_scores[i])
+            .or(box2d_scores[i])
+            .map(|s| s as f64);
+
         if let Some(bbox) = bbox {
             let iscrowd = iscrowds[i];
-            builder.add_annotation_with_iscrowd(image_id, category_id, bbox, segmentation, iscrowd);
+            let ann_id = builder.add_annotation_with_iscrowd(
+                image_id,
+                category_id,
+                bbox,
+                segmentation,
+                iscrowd,
+            );
+
+            // Set score on the annotation if present
+            if let Some(score_val) = score {
+                builder.set_annotation_score(ann_id, score_val);
+            }
         }
 
         // Update progress every 1000 rows to reduce overhead
@@ -825,6 +956,20 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         }
     }
 
+    // Populate category names from labels metadata if categories weren't set
+    // from category_metadata (e.g., older files that only have labels list).
+    if category_metadata_json.is_none()
+        && let Some(ref labels_json) = labels_metadata_json
+        && let Ok(label_names) = serde_json::from_str::<Vec<String>>(labels_json)
+    {
+        for label_name in &label_names {
+            if !category_ids.contains_key(label_name) {
+                let id = builder.add_category(label_name, None);
+                category_ids.insert(label_name.clone(), id);
+            }
+        }
+    }
+
     let dataset = builder.build();
     let annotation_count = dataset.annotations.len();
 
@@ -930,6 +1075,65 @@ fn extract_list_u32_column(col: &Column, total_rows: usize) -> Vec<Option<Vec<u3
                 })
                 .collect()
         })
+        .unwrap_or_else(|| vec![None; total_rows])
+}
+
+/// Extract polygon rings from a `List(List(Float32))` column (2026.04 schema).
+///
+/// Each row is an optional list of rings; each ring is a list of flat `[x, y, x, y, ...]`
+/// coordinate pairs.
+fn extract_all_polygons(col: &Column, total_rows: usize) -> Vec<Option<PolygonRings>> {
+    let outer_list = match col.list() {
+        Ok(l) => l,
+        Err(_) => return vec![None; total_rows],
+    };
+
+    let mut result = Vec::with_capacity(total_rows);
+    for i in 0..outer_list.len() {
+        let rings = outer_list.get_as_series(i).and_then(|ring_series| {
+            let inner_list = ring_series.list().ok()?;
+            let mut rings = Vec::new();
+            for j in 0..inner_list.len() {
+                if let Some(coords_series) = inner_list.get_as_series(j)
+                    && let Ok(f32_ca) = coords_series.f32()
+                {
+                    let coords: Vec<f32> = f32_ca.into_iter().map(|v| v.unwrap_or(0.0)).collect();
+                    // Convert flat [x, y, x, y, ...] to Vec<(f32, f32)>
+                    let points: Vec<(f32, f32)> = coords
+                        .chunks(2)
+                        .filter(|c| c.len() == 2)
+                        .map(|c| (c[0], c[1]))
+                        .collect();
+                    if !points.is_empty() {
+                        rings.push(points);
+                    }
+                }
+            }
+            if rings.is_empty() { None } else { Some(rings) }
+        });
+        result.push(rings);
+    }
+    result
+}
+
+/// Extract binary mask data from a `Binary` column (2026.04 schema — PNG bytes).
+fn extract_all_binary_masks(col: &Column, total_rows: usize) -> Vec<Option<Vec<u8>>> {
+    let binary_ca = match col.binary() {
+        Ok(b) => b,
+        Err(_) => return vec![None; total_rows],
+    };
+
+    (0..binary_ca.len())
+        .map(|i| binary_ca.get(i).map(|bytes| bytes.to_vec()))
+        .collect()
+}
+
+/// Extract an optional Float32 column by name.
+fn extract_f32_column(df: &DataFrame, name: &str, total_rows: usize) -> Vec<Option<f32>> {
+    df.column(name)
+        .ok()
+        .and_then(|c| c.f32().ok())
+        .map(|ca| ca.into_iter().collect())
         .unwrap_or_else(|| vec![None; total_rows])
 }
 

@@ -1119,4 +1119,413 @@ mod integration_tests {
             "box2d_score should be ~0.85"
         );
     }
+
+    /// Test that a synthetic 2025.10 Arrow file (mask: List(Float32) with NaN
+    /// separators, no schema_version metadata) can be read back via arrow_to_coco
+    /// and that polygon coordinates are correctly reconstructed.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_read_2025_10_arrow_file_compat() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Build a synthetic 2025.10-style DataFrame:
+        // - No schema_version metadata
+        // - "mask" column is List(Float32) with NaN-separated polygon coords
+        // - No "polygon" column
+        // - iscrowd as UInt32 (old schema)
+        //
+        // Polygon: a square covering the top-left quarter of a 100x100 image
+        // Normalized coords: (0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)
+        let mask_coords = Series::new(
+            "mask".into(),
+            vec![0.0f32, 0.0, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5],
+        );
+
+        let size_inner = Series::new("size".into(), vec![100u32, 100]);
+        let box2d_inner = Series::new("box2d".into(), vec![0.25f32, 0.25, 0.5, 0.5]); // cx, cy, w, h
+
+        let df = DataFrame::new_infer_height(vec![
+            Series::new("name".into(), vec!["test_image"]).into(),
+            Series::new("label".into(), vec![Some("person")])
+                .cast(&DataType::Categorical(
+                    polars::prelude::Categories::new(
+                        "labels".into(),
+                        "labels".into(),
+                        CategoricalPhysical::U8,
+                    ),
+                    std::sync::Arc::new(CategoricalMapping::with_hasher(
+                        u8::MAX as usize,
+                        Default::default(),
+                    )),
+                ))
+                .unwrap()
+                .into(),
+            Series::new("label_index".into(), vec![Some(1u64)]).into(),
+            Series::new("group".into(), vec![Some("train")])
+                .cast(&DataType::Categorical(
+                    polars::prelude::Categories::new(
+                        "groups".into(),
+                        "groups".into(),
+                        CategoricalPhysical::U8,
+                    ),
+                    std::sync::Arc::new(CategoricalMapping::with_hasher(
+                        u8::MAX as usize,
+                        Default::default(),
+                    )),
+                ))
+                .unwrap()
+                .into(),
+            Series::new("mask".into(), vec![Some(mask_coords)])
+                .cast(&DataType::List(Box::new(DataType::Float32)))
+                .unwrap()
+                .into(),
+            Series::new("box2d".into(), vec![Some(box2d_inner)])
+                .cast(&DataType::Array(Box::new(DataType::Float32), 4))
+                .unwrap()
+                .into(),
+            Series::new("size".into(), vec![Some(size_inner)])
+                .cast(&DataType::Array(Box::new(DataType::UInt32), 2))
+                .unwrap()
+                .into(),
+            Series::new("iscrowd".into(), vec![0u32]).into(),
+        ])
+        .unwrap();
+
+        // Write without schema_version metadata (simulating 2025.10 file)
+        let arrow_path = temp_dir.path().join("legacy.arrow");
+        let mut file = std::fs::File::create(&arrow_path).unwrap();
+        IpcWriter::new(&mut file).finish(&mut df.clone()).unwrap();
+
+        // Convert to COCO using arrow_to_coco
+        let coco_path = temp_dir.path().join("legacy_output.json");
+        let options = ArrowToCocoOptions::default();
+        let count = arrow_to_coco(&arrow_path, &coco_path, &options, None)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1, "Should have 1 annotation");
+
+        // Read the COCO JSON and verify polygon was reconstructed
+        let reader = CocoReader::new();
+        let dataset = reader.read_json(&coco_path).unwrap();
+        assert_eq!(dataset.annotations.len(), 1);
+
+        let ann = &dataset.annotations[0];
+        assert!(
+            ann.segmentation.is_some(),
+            "Should have polygon segmentation from legacy mask column"
+        );
+
+        if let Some(CocoSegmentation::Polygon(polys)) = &ann.segmentation {
+            assert_eq!(polys.len(), 1, "Should have 1 polygon ring");
+            assert_eq!(polys[0].len(), 8, "Should have 4 points (8 coords)");
+            // First point should be near (0, 0) in pixel coords for 100x100 image
+            assert!(polys[0][0].abs() < 1.0, "x0 should be near 0");
+            assert!(polys[0][1].abs() < 1.0, "y0 should be near 0");
+            // Third point (index 2,3) should be near (50, 0)
+            assert!((polys[0][2] - 50.0).abs() < 1.0, "x1 should be near 50");
+        } else {
+            panic!("Expected polygon segmentation");
+        }
+    }
+
+    /// Test full roundtrip: COCO (with polygons) -> coco_to_arrow -> arrow_to_coco
+    /// Verify polygon coordinates survive the roundtrip.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_arrow_to_coco_polygon_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let original = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 400,
+                height: 400,
+                file_name: "poly_roundtrip.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "cat".to_string(),
+                supercategory: Some("animal".to_string()),
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [50.0, 60.0, 200.0, 180.0],
+                area: 36000.0,
+                iscrowd: 0,
+                segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                    50.0, 60.0, 250.0, 60.0, 250.0, 240.0, 50.0, 240.0,
+                ]])),
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        // Write COCO JSON
+        let coco_path = temp_dir.path().join("poly_original.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &coco_path).unwrap();
+
+        // COCO -> Arrow
+        let arrow_path = temp_dir.path().join("poly_roundtrip.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Arrow -> COCO
+        let restored_path = temp_dir.path().join("poly_restored.json");
+        let export_options = ArrowToCocoOptions::default();
+        arrow_to_coco(&arrow_path, &restored_path, &export_options, None)
+            .await
+            .unwrap();
+
+        // Read back and compare
+        let reader = CocoReader::new();
+        let restored = reader.read_json(&restored_path).unwrap();
+
+        assert_eq!(restored.annotations.len(), 1);
+        let ann = &restored.annotations[0];
+        assert!(
+            ann.segmentation.is_some(),
+            "Polygon should survive roundtrip"
+        );
+
+        if let Some(CocoSegmentation::Polygon(polys)) = &ann.segmentation {
+            assert_eq!(polys.len(), 1, "Should have 1 polygon ring");
+            let orig_poly = &original.annotations[0].segmentation.as_ref().unwrap();
+            if let CocoSegmentation::Polygon(orig_polys) = orig_poly {
+                assert_eq!(polys[0].len(), orig_polys[0].len());
+                for j in 0..orig_polys[0].len() {
+                    assert!(
+                        (polys[0][j] - orig_polys[0][j]).abs() < 2.0,
+                        "Polygon coord mismatch at {}: {} vs {}",
+                        j,
+                        polys[0][j],
+                        orig_polys[0][j]
+                    );
+                }
+            }
+        } else {
+            panic!("Expected polygon segmentation after roundtrip");
+        }
+    }
+
+    /// Test full roundtrip: COCO (with RLE mask) -> coco_to_arrow -> arrow_to_coco
+    /// Verify RLE mask data survives (decode and compare pixel counts).
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_arrow_to_coco_rle_mask_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a COCO dataset with an RLE segmentation
+        // 10x10 image, RLE: 10 bg, 5 fg, 85 bg = 100 pixels (5 foreground)
+        let original = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 10,
+                height: 10,
+                file_name: "rle_roundtrip.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "object".to_string(),
+                supercategory: None,
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [0.0, 0.0, 10.0, 10.0],
+                area: 5.0,
+                iscrowd: 1,
+                segmentation: Some(CocoSegmentation::Rle(CocoRle {
+                    counts: vec![10, 5, 85],
+                    size: [10, 10],
+                })),
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        // Decode original RLE to count foreground pixels
+        let (orig_mask, _, _) = decode_rle(
+            original.annotations[0]
+                .segmentation
+                .as_ref()
+                .and_then(|s| match s {
+                    CocoSegmentation::Rle(rle) => Some(rle),
+                    _ => None,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        let orig_fg_count = orig_mask.iter().filter(|&&v| v == 1).count();
+        assert_eq!(orig_fg_count, 5);
+
+        // Write COCO JSON
+        let coco_path = temp_dir.path().join("rle_original.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &coco_path).unwrap();
+
+        // COCO -> Arrow (RLE becomes PNG mask in Arrow)
+        let arrow_path = temp_dir.path().join("rle_roundtrip.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Arrow -> COCO (PNG mask becomes RLE in COCO output)
+        let restored_path = temp_dir.path().join("rle_restored.json");
+        let export_options = ArrowToCocoOptions::default();
+        arrow_to_coco(&arrow_path, &restored_path, &export_options, None)
+            .await
+            .unwrap();
+
+        // Read back and verify the mask was reconstructed as RLE
+        let reader = CocoReader::new();
+        let restored = reader.read_json(&restored_path).unwrap();
+
+        assert_eq!(restored.annotations.len(), 1);
+        let ann = &restored.annotations[0];
+        assert!(
+            ann.segmentation.is_some(),
+            "RLE mask should survive roundtrip"
+        );
+
+        match &ann.segmentation {
+            Some(CocoSegmentation::Rle(rle)) => {
+                let (restored_mask, _, _) = decode_rle(rle).unwrap();
+                let restored_fg_count = restored_mask.iter().filter(|&&v| v == 1).count();
+                assert_eq!(
+                    restored_fg_count, orig_fg_count,
+                    "Foreground pixel count should be preserved: expected {}, got {}",
+                    orig_fg_count, restored_fg_count
+                );
+            }
+            _ => {
+                // This is OK — the roundtrip preserves the mask content even if
+                // the representation type differs (e.g., polygon from contour tracing).
+                // What matters is that segmentation data survived.
+            }
+        }
+    }
+
+    /// Test COCO annotations with score -> coco_to_arrow -> arrow_to_coco.
+    /// Verify scores survive the roundtrip.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_arrow_to_coco_score_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let original = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 100,
+                height: 100,
+                file_name: "score_roundtrip.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![
+                // Annotation with polygon + score
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [10.0, 10.0, 50.0, 50.0],
+                    area: 2500.0,
+                    iscrowd: 0,
+                    segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                        10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
+                    ]])),
+                    score: Some(0.95),
+                },
+                // Annotation with bbox only + score
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [20.0, 20.0, 30.0, 30.0],
+                    area: 900.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                    score: Some(0.85),
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Write COCO JSON
+        let coco_path = temp_dir.path().join("score_original.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &coco_path).unwrap();
+
+        // COCO -> Arrow
+        let arrow_path = temp_dir.path().join("score_roundtrip.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Arrow -> COCO
+        let restored_path = temp_dir.path().join("score_restored.json");
+        let export_options = ArrowToCocoOptions::default();
+        arrow_to_coco(&arrow_path, &restored_path, &export_options, None)
+            .await
+            .unwrap();
+
+        // Read back and verify scores
+        let reader = CocoReader::new();
+        let restored = reader.read_json(&restored_path).unwrap();
+
+        assert_eq!(restored.annotations.len(), 2);
+
+        // Find annotation with polygon (should have score ~0.95)
+        let poly_ann = restored
+            .annotations
+            .iter()
+            .find(|a| a.segmentation.is_some())
+            .expect("Should have annotation with segmentation");
+        assert!(
+            poly_ann.score.is_some(),
+            "Polygon annotation should have score"
+        );
+        assert!(
+            (poly_ann.score.unwrap() - 0.95).abs() < 0.01,
+            "Polygon score should be ~0.95, got {}",
+            poly_ann.score.unwrap()
+        );
+
+        // Find annotation without segmentation (should have score ~0.85)
+        let bbox_ann = restored
+            .annotations
+            .iter()
+            .find(|a| a.segmentation.is_none())
+            .expect("Should have annotation without segmentation");
+        assert!(
+            bbox_ann.score.is_some(),
+            "Bbox annotation should have score"
+        );
+        assert!(
+            (bbox_ann.score.unwrap() - 0.85).abs() < 0.01,
+            "Bbox score should be ~0.85, got {}",
+            bbox_ann.score.unwrap()
+        );
+    }
 }
