@@ -6,6 +6,7 @@ use std::{collections::HashMap, fmt::Display};
 use crate::{
     Client, Error,
     api::{AnnotationSetID, DatasetID, ProjectID, SampleID},
+    mask::MaskData,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -454,6 +455,22 @@ impl AnnotationSet {
     }
 }
 
+/// Pipeline timing measurements for a sample, in nanoseconds.
+///
+/// Each field records the wall-clock duration of one pipeline stage.
+/// Populated from Arrow metadata; not part of the Studio JSON-RPC API.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Timing {
+    /// Duration of the data-loading stage (nanoseconds).
+    pub load: Option<i64>,
+    /// Duration of the preprocessing stage (nanoseconds).
+    pub preprocess: Option<i64>,
+    /// Duration of the inference stage (nanoseconds).
+    pub inference: Option<i64>,
+    /// Duration of the decoding / postprocessing stage (nanoseconds).
+    pub decode: Option<i64>,
+}
+
 /// A sample in a dataset, typically representing a single image with metadata
 /// and optional sensor data.
 ///
@@ -533,6 +550,10 @@ pub struct Sample {
         serialize_with = "serialize_annotations"
     )]
     pub annotations: Vec<Annotation>,
+    /// Pipeline timing measurements (populated from Arrow, not from Studio
+    /// JSON-RPC).
+    #[serde(skip)]
+    pub timing: Option<Timing>,
 }
 
 // Custom deserializer for frame_number - converts -1 to None
@@ -778,6 +799,7 @@ impl From<SampleRaw> for Sample {
             not_exhaustive_label_indices: raw.not_exhaustive_label_indices,
             files: sensors_data.files,
             annotations: raw.annotations,
+            timing: None,
         }
     }
 }
@@ -834,6 +856,7 @@ impl Sample {
             not_exhaustive_label_indices: None,
             files: vec![],
             annotations: vec![],
+            timing: None,
         }
     }
 
@@ -1532,6 +1555,21 @@ pub struct Annotation {
     box3d: Option<Box3d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     polygon: Option<Polygon>,
+    /// PNG-encoded raster mask (populated from Arrow, not from Studio JSON-RPC).
+    #[serde(skip)]
+    mask: Option<MaskData>,
+    /// Detection confidence score for box2d (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box2d_score: Option<f32>,
+    /// Detection confidence score for box3d (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box3d_score: Option<f32>,
+    /// Confidence score for polygon (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    polygon_score: Option<f32>,
+    /// Confidence score for mask (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mask_score: Option<f32>,
 }
 
 impl<'de> serde::Deserialize<'de> for Annotation {
@@ -1564,6 +1602,11 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             box2d,
             box3d: raw.box3d,
             polygon: raw.polygon,
+            mask: None,
+            box2d_score: None,
+            box3d_score: None,
+            polygon_score: None,
+            mask_score: None,
         })
     }
 }
@@ -1590,6 +1633,11 @@ impl Annotation {
             box2d: None,
             box3d: None,
             polygon: None,
+            mask: None,
+            box2d_score: None,
+            box3d_score: None,
+            polygon_score: None,
+            mask_score: None,
         }
     }
 
@@ -1705,6 +1753,46 @@ impl Annotation {
 
     pub fn set_polygon(&mut self, polygon: Option<Polygon>) {
         self.polygon = polygon;
+    }
+
+    pub fn mask(&self) -> Option<&MaskData> {
+        self.mask.as_ref()
+    }
+
+    pub fn set_mask(&mut self, mask: Option<MaskData>) {
+        self.mask = mask;
+    }
+
+    pub fn box2d_score(&self) -> Option<f32> {
+        self.box2d_score
+    }
+
+    pub fn set_box2d_score(&mut self, score: Option<f32>) {
+        self.box2d_score = score;
+    }
+
+    pub fn box3d_score(&self) -> Option<f32> {
+        self.box3d_score
+    }
+
+    pub fn set_box3d_score(&mut self, score: Option<f32>) {
+        self.box3d_score = score;
+    }
+
+    pub fn polygon_score(&self) -> Option<f32> {
+        self.polygon_score
+    }
+
+    pub fn set_polygon_score(&mut self, score: Option<f32>) {
+        self.polygon_score = score;
+    }
+
+    pub fn mask_score(&self) -> Option<f32> {
+        self.mask_score
+    }
+
+    pub fn set_mask_score(&mut self, score: Option<f32>) {
+        self.mask_score = score;
     }
 }
 
@@ -3953,5 +4041,44 @@ mod tests {
             !json.contains("not_exhaustive_label_indices"),
             "not_exhaustive_label_indices should be omitted when None"
         );
+    }
+
+    #[test]
+    fn test_annotation_score_fields() {
+        let mut ann = Annotation::default();
+        assert!(ann.box2d_score.is_none());
+        assert!(ann.polygon_score.is_none());
+        assert!(ann.mask_score.is_none());
+        ann.box2d_score = Some(0.95);
+        ann.polygon_score = Some(0.87);
+        ann.mask_score = Some(0.42);
+        assert_eq!(ann.box2d_score, Some(0.95));
+        assert_eq!(ann.polygon_score, Some(0.87));
+        assert_eq!(ann.mask_score, Some(0.42));
+    }
+
+    #[test]
+    fn test_timing_struct() {
+        let timing = Timing {
+            load: Some(1_000_000),
+            preprocess: Some(2_000_000),
+            inference: Some(50_000_000),
+            decode: Some(3_000_000),
+        };
+        assert_eq!(timing.inference, Some(50_000_000));
+
+        let default = Timing::default();
+        assert!(default.load.is_none());
+    }
+
+    #[test]
+    fn test_sample_timing() {
+        let mut sample = Sample::default();
+        assert!(sample.timing.is_none());
+        sample.timing = Some(Timing {
+            load: Some(1_000_000),
+            ..Default::default()
+        });
+        assert!(sample.timing.is_some());
     }
 }

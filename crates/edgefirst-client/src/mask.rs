@@ -26,6 +26,7 @@
 /// [25]     color_type
 /// ...
 /// ```
+#[derive(Clone, Debug)]
 pub struct MaskData {
     png: Vec<u8>,
 }
