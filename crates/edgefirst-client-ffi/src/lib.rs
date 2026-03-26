@@ -1105,8 +1105,10 @@ impl From<core::Annotation> for Annotation {
     }
 }
 
-impl From<Annotation> for core::Annotation {
-    fn from(a: Annotation) -> Self {
+impl TryFrom<Annotation> for core::Annotation {
+    type Error = ClientError;
+
+    fn try_from(a: Annotation) -> Result<Self, Self::Error> {
         let mut ann = core::Annotation::new();
         ann.set_sample_id(a.sample_id.map(core::SampleID::from));
         ann.set_name(a.name);
@@ -1128,22 +1130,36 @@ impl From<Annotation> for core::Annotation {
         ann.set_box2d(a.box2d.map(core::Box2d::from));
         ann.set_box3d(a.box3d.map(core::Box3d::from));
         ann.set_polygon(a.polygon.map(core::Polygon::from));
-        ann.set_mask(
-            a.mask
-                .and_then(|bytes| match core::MaskData::from_png_checked(bytes) {
-                    Ok(mask) => Some(mask),
-                    Err(e) => {
-                        eprintln!("edgefirst-client-ffi: invalid PNG mask data: {e}");
-                        None
-                    }
-                }),
-        );
+        if let Some(bytes) = a.mask {
+            let mask = core::MaskData::from_png_checked(bytes).map_err(|e| {
+                ClientError::InvalidParameters {
+                    message: format!("Invalid PNG mask data: {e}"),
+                }
+            })?;
+            ann.set_mask(Some(mask));
+        }
         ann.set_box2d_score(a.box2d_score);
         ann.set_box3d_score(a.box3d_score);
         ann.set_polygon_score(a.polygon_score);
         ann.set_mask_score(a.mask_score);
-        ann
+        Ok(ann)
     }
+}
+
+/// Validate an FFI annotation, returning an error if mask data is invalid.
+///
+/// Swift/Kotlin callers should use this function to validate annotations
+/// with mask data before passing them to API methods.
+#[uniffi::export]
+pub fn validate_annotation(annotation: &Annotation) -> Result<(), ClientError> {
+    if let Some(ref bytes) = annotation.mask {
+        core::MaskData::from_png_checked(bytes.clone()).map_err(|e| {
+            ClientError::InvalidParameters {
+                message: format!("Invalid PNG mask data: {e}"),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 /// Pipeline timing measurements for a sample, in nanoseconds.

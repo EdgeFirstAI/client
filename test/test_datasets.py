@@ -438,7 +438,12 @@ class DatasetTest(TestCase):
             return True
         if "box3d" in types and annotation.box3d is not None:
             return True
-        if "mask" in types and annotation.polygon is not None:
+        if "polygon" in types and annotation.polygon is not None:
+            return True
+        if "mask" in types and (
+            annotation.polygon is not None
+            or annotation.mask is not None
+        ):
             return True
         return False
 

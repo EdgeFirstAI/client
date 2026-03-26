@@ -703,11 +703,18 @@ pub async fn export_studio_to_coco(
         let image_id = builder.add_image(&file_name, width, height);
 
         for ann in &sample.annotations {
-            if let Some(box2d) = ann.box2d() {
+            // Get bbox from box2d if present, otherwise compute from polygon
+            let bbox = if let Some(box2d) = ann.box2d() {
+                Some(box2d_to_coco_bbox(box2d, width, height))
+            } else if let Some(polygon) = ann.polygon() {
+                compute_bbox_from_polygon(polygon, width, height)
+            } else {
+                None
+            };
+
+            if let Some(bbox) = bbox {
                 let label = ann.label().map(|s| s.as_str()).unwrap_or("unknown");
                 let category_id = builder.add_category(label, None);
-
-                let bbox = box2d_to_coco_bbox(box2d, width, height);
 
                 let segmentation = if options.include_masks {
                     ann.polygon().map(|polygon| {

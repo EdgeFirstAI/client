@@ -11,8 +11,9 @@
 /// PNG magic bytes (first 8 bytes of every valid PNG file).
 const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
-/// Minimum length of a valid PNG with an IHDR chunk (signature + IHDR).
-const MIN_PNG_LEN: usize = 29;
+/// Minimum length of a valid PNG file with IHDR chunk.
+/// 8 (signature) + 4 (length) + 4 (type "IHDR") + 13 (IHDR data) + 4 (IHDR CRC) = 33
+const MIN_PNG_LEN: usize = 33;
 
 /// A raster mask stored as PNG-encoded bytes.
 ///
@@ -262,6 +263,18 @@ impl MaskData {
         let mut reader = decoder
             .read_info()
             .map_err(|e| crate::Error::InvalidParameters(format!("PNG info read failed: {}", e)))?;
+
+        // Guard against decompression bombs
+        let info = reader.info();
+        let total_pixels = info.width as u64 * info.height as u64;
+        const MAX_PIXELS: u64 = 100_000_000; // 100 megapixels
+        if total_pixels > MAX_PIXELS {
+            return Err(crate::Error::InvalidParameters(format!(
+                "PNG dimensions {}x{} exceed maximum of {} pixels",
+                info.width, info.height, MAX_PIXELS
+            )));
+        }
+
         let mut raw = vec![0u8; reader.output_buffer_size()];
         let info = reader.next_frame(&mut raw).map_err(|e| {
             crate::Error::InvalidParameters(format!("PNG frame read failed: {}", e))
