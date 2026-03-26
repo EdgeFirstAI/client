@@ -33,47 +33,6 @@ pub const SCHEMA_VERSION: &str = "2026.04";
 /// Polygon rings for a single row: each ring is a vec of `(x, y)` coordinate pairs.
 type PolygonRings = Vec<Vec<(f32, f32)>>;
 
-/// Unflatten polygon coordinates from Arrow flat format.
-///
-/// Converts `[x1, y1, x2, y2, NaN, x3, y3, ...]` to `[[(x1,y1), (x2,y2)],
-/// [(x3,y3), ...]]`
-///
-/// **IMPORTANT**: The separator is a SINGLE NaN, not a pair. We must process
-/// elements one at a time, not in chunks of 2, to correctly handle the
-/// separator.
-fn unflatten_polygon_coords(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
-    let mut polygons = Vec::new();
-    let mut current = Vec::new();
-    let mut i = 0;
-
-    while i < coords.len() {
-        if coords[i].is_nan() {
-            // Single NaN separator - save current polygon and start new one
-            if !current.is_empty() {
-                polygons.push(std::mem::take(&mut current));
-            }
-            i += 1;
-        } else if i + 1 < coords.len() && !coords[i + 1].is_nan() {
-            // Have both x and y coordinates (neither is NaN)
-            current.push((coords[i], coords[i + 1]));
-            i += 2;
-        } else if i + 1 < coords.len() && coords[i + 1].is_nan() {
-            // x is valid but y is NaN - this shouldn't happen in well-formed data
-            // but handle it gracefully: skip x, process NaN on next iteration
-            i += 1;
-        } else {
-            // Odd trailing value - skip
-            i += 1;
-        }
-    }
-
-    if !current.is_empty() {
-        polygons.push(current);
-    }
-
-    polygons
-}
-
 /// Options for COCO to Arrow conversion.
 #[derive(Debug, Clone)]
 pub struct CocoToArrowOptions {
@@ -633,6 +592,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
 
     // Extract score columns (2026.04 schema)
     let box2d_scores: Vec<Option<f32>> = extract_f32_column(&df, "box2d_score", total_rows);
+    let box3d_scores: Vec<Option<f32>> = extract_f32_column(&df, "box3d_score", total_rows);
     let polygon_scores: Vec<Option<f32>> = extract_f32_column(&df, "polygon_score", total_rows);
     let mask_scores: Vec<Option<f32>> = extract_f32_column(&df, "mask_score", total_rows);
 
@@ -643,6 +603,11 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         builder = builder.info(info.clone());
     }
 
+    // Group-filter predicate: returns true if this row should be skipped
+    let skip_row = |i: usize| -> bool {
+        !groups_to_filter.is_empty() && !groups_to_filter.contains(&groups[i])
+    };
+
     // Track unique images and categories
     let mut image_dimensions: HashMap<String, (u32, u32)> = HashMap::new();
     let mut image_ids: HashMap<String, u64> = HashMap::new();
@@ -650,8 +615,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
 
     // First pass: collect unique images and categories
     for i in 0..total_rows {
-        // Skip if group filtering is active and this row doesn't match
-        if !groups_to_filter.is_empty() && !groups_to_filter.contains(&groups[i]) {
+        if skip_row(i) {
             continue;
         }
 
@@ -683,8 +647,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     // Second pass: create annotations
     let mut last_progress_update = 0;
     for i in 0..total_rows {
-        // Skip if group filtering is active and this row doesn't match
-        if !groups_to_filter.is_empty() && !groups_to_filter.contains(&groups[i]) {
+        if skip_row(i) {
             continue;
         }
 
@@ -723,7 +686,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                         if coords.is_empty() {
                             None
                         } else {
-                            let rings = unflatten_polygon_coords(coords);
+                            let rings = crate::unflatten_polygon_coordinates(coords);
                             let polygon = Polygon::new(rings);
                             let coco_poly = polygon_to_coco_polygon(&polygon, width, height);
                             if coco_poly.is_empty() {
@@ -736,54 +699,13 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                 })
             } else {
                 // 2026.04+: try mask (Binary/PNG → RLE) first, then polygon column
-                let mask_seg =
-                    mask_binary_2026.as_ref().and_then(|masks| {
-                        masks.get(i).and_then(|opt_bytes| {
-                            opt_bytes.as_ref().and_then(|png_bytes| {
-                            if png_bytes.is_empty() {
-                                return None;
-                            }
-                            let mask_data = crate::MaskData::from_png(png_bytes.clone());
-                            let mw = mask_data.width();
-                            let mh = mask_data.height();
-                            let bit_depth = mask_data.bit_depth();
-                            let decoded = mask_data.decode();
-
-                            let binary_mask = match bit_depth {
-                                1 => decoded,
-                                8 => {
-                                    log::warn!(
-                                        "Binarizing 8-bit mask for row {} — score data is lost",
-                                        i
-                                    );
-                                    decoded.iter().map(|&v| if v >= 128 { 1 } else { 0 }).collect()
-                                }
-                                16 => {
-                                    log::warn!(
-                                        "Binarizing 16-bit mask for row {} — score data is lost",
-                                        i
-                                    );
-                                    // 16-bit decodes to big-endian byte pairs
-                                    decoded
-                                        .chunks(2)
-                                        .map(|pair| {
-                                            let val = if pair.len() == 2 {
-                                                u16::from_be_bytes([pair[0], pair[1]])
-                                            } else {
-                                                0
-                                            };
-                                            if val >= 32768 { 1u8 } else { 0u8 }
-                                        })
-                                        .collect()
-                                }
-                                _ => decoded,
-                            };
-
-                            let rle = super::convert::encode_rle(&binary_mask, mw, mh);
-                            Some(CocoSegmentation::Rle(rle))
-                        })
-                        })
-                    });
+                let mask_seg = mask_binary_2026.as_ref().and_then(|masks| {
+                    masks.get(i).and_then(|opt_bytes| {
+                        opt_bytes
+                            .as_ref()
+                            .and_then(|png_bytes| png_to_rle_segmentation(png_bytes, i))
+                    })
+                });
 
                 if mask_seg.is_some() {
                     mask_seg
@@ -811,9 +733,10 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             None
         };
 
-        // Determine the score: use first non-null from box2d_score, polygon_score, mask_score
+        // Determine the score: use first non-null from available score columns
         let score: Option<f64> = mask_scores[i]
             .or(polygon_scores[i])
+            .or(box3d_scores[i])
             .or(box2d_scores[i])
             .map(|s| s as f64);
 
@@ -866,7 +789,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     {
         let mut processed_images: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for i in 0..total_rows {
-            if !groups_to_filter.is_empty() && !groups_to_filter.contains(&groups[i]) {
+            if skip_row(i) {
                 continue;
             }
             let name = &names[i];
@@ -888,7 +811,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     {
         let mut freq_map: HashMap<String, String> = HashMap::new();
         for i in 0..total_rows {
-            if !groups_to_filter.is_empty() && !groups_to_filter.contains(&groups[i]) {
+            if skip_row(i) {
                 continue;
             }
             let label = &labels[i];
@@ -1137,6 +1060,77 @@ fn extract_f32_column(df: &DataFrame, name: &str, total_rows: usize) -> Vec<Opti
         .unwrap_or_else(|| vec![None; total_rows])
 }
 
+/// Decode a PNG mask (Binary column bytes) into COCO RLE segmentation.
+///
+/// Validates the PNG, decodes pixels, binarizes if needed (8-bit or 16-bit),
+/// and encodes as COCO RLE. Returns `None` for empty or invalid data (with
+/// a warning log for invalid cases).
+fn png_to_rle_segmentation(png_bytes: &[u8], row_index: usize) -> Option<CocoSegmentation> {
+    if png_bytes.is_empty() {
+        return None;
+    }
+
+    let mask_data = match crate::MaskData::from_png_checked(png_bytes.to_vec()) {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Skipping invalid PNG mask at row {}: {}", row_index, e);
+            return None;
+        }
+    };
+
+    let mw = mask_data.width();
+    let mh = mask_data.height();
+    let bit_depth = mask_data.bit_depth();
+
+    let decoded = match mask_data.decode() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Failed to decode PNG mask at row {}: {}", row_index, e);
+            return None;
+        }
+    };
+
+    let binary_mask = match bit_depth {
+        1 => decoded,
+        8 => {
+            log::warn!(
+                "Binarizing 8-bit mask for row {} — score data is lost",
+                row_index
+            );
+            decoded
+                .iter()
+                .map(|&v| if v >= 128 { 1 } else { 0 })
+                .collect()
+        }
+        16 => {
+            log::warn!(
+                "Binarizing 16-bit mask for row {} — score data is lost",
+                row_index
+            );
+            decoded
+                .chunks(2)
+                .map(|pair| {
+                    let val = if pair.len() == 2 {
+                        u16::from_be_bytes([pair[0], pair[1]])
+                    } else {
+                        0
+                    };
+                    if val >= 32768 { 1u8 } else { 0u8 }
+                })
+                .collect()
+        }
+        _ => decoded,
+    };
+
+    match super::convert::encode_rle(&binary_mask, mw, mh) {
+        Ok(rle) => Some(CocoSegmentation::Rle(rle)),
+        Err(e) => {
+            log::warn!("Failed to encode RLE for row {}: {}", row_index, e);
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,7 +1144,7 @@ mod tests {
     #[test]
     fn test_unflatten_polygon_coords_empty() {
         let coords: Vec<f32> = vec![];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
         assert!(result.is_empty());
     }
 
@@ -1158,7 +1152,7 @@ mod tests {
     fn test_unflatten_polygon_coords_single_polygon() {
         // Simple rectangle: 4 points
         let coords = vec![0.1, 0.2, 0.3, 0.2, 0.3, 0.4, 0.1, 0.4];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 4);
@@ -1184,7 +1178,7 @@ mod tests {
             0.55,
             0.6, // Second triangle
         ];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].len(), 3);
@@ -1197,7 +1191,7 @@ mod tests {
     fn test_unflatten_polygon_coords_leading_nan() {
         // NaN at the start should be handled gracefully
         let coords = vec![f32::NAN, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 3);
@@ -1207,7 +1201,7 @@ mod tests {
     fn test_unflatten_polygon_coords_trailing_nan() {
         // NaN at the end
         let coords = vec![0.1, 0.2, 0.3, 0.4, f32::NAN];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 2);
@@ -1217,7 +1211,7 @@ mod tests {
     fn test_unflatten_polygon_coords_consecutive_nans() {
         // Multiple NaNs in a row
         let coords = vec![0.1, 0.2, f32::NAN, f32::NAN, 0.3, 0.4];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].len(), 1);
@@ -1228,7 +1222,7 @@ mod tests {
     fn test_unflatten_polygon_coords_odd_values() {
         // Odd number of coordinates (trailing x without y)
         let coords = vec![0.1, 0.2, 0.3, 0.4, 0.5];
-        let result = unflatten_polygon_coords(&coords);
+        let result = crate::unflatten_polygon_coordinates(&coords);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 2); // Only complete pairs

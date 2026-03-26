@@ -1128,7 +1128,10 @@ impl From<Annotation> for core::Annotation {
         ann.set_box2d(a.box2d.map(core::Box2d::from));
         ann.set_box3d(a.box3d.map(core::Box3d::from));
         ann.set_polygon(a.polygon.map(core::Polygon::from));
-        ann.set_mask(a.mask.map(core::MaskData::from_png));
+        ann.set_mask(
+            a.mask
+                .and_then(|bytes| core::MaskData::from_png_checked(bytes).ok()),
+        );
         ann.set_box2d_score(a.box2d_score);
         ann.set_box3d_score(a.box3d_score);
         ann.set_polygon_score(a.polygon_score);

@@ -253,6 +253,7 @@ impl TryFrom<&str> for AnnotationType {
             "box2d" => Ok(AnnotationType::Box2d),
             "box3d" => Ok(AnnotationType::Box3d),
             "polygon" => Ok(AnnotationType::Polygon),
+            "seg" => Ok(AnnotationType::Polygon),
             "mask" => Ok(AnnotationType::Polygon), // backward compat
             "raster" => Ok(AnnotationType::Mask),
             _ => Err(crate::Error::InvalidAnnotationType(s.to_string())),
@@ -2678,8 +2679,8 @@ fn flatten_polygon_coordinates(polygons: &[Vec<(f32, f32)>]) -> Vec<f32> {
             list.push(x);
             list.push(y);
         }
-        // Separate polygons with NaN
-        if !polygons.is_empty() {
+        // Separate polygons with NaN (only add separator if this ring was non-empty)
+        if !polygon.is_empty() {
             list.push(f32::NAN);
         }
     }
@@ -2725,16 +2726,19 @@ pub fn unflatten_polygon_coordinates(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
         if coords[i].is_nan() {
             // NaN separator - save current polygon and start new one
             if !current_polygon.is_empty() {
-                polygons.push(current_polygon.clone());
-                current_polygon.clear();
+                polygons.push(std::mem::take(&mut current_polygon));
             }
             i += 1;
-        } else if i + 1 < coords.len() {
-            // Have both x and y coordinates
+        } else if i + 1 < coords.len() && !coords[i + 1].is_nan() {
+            // Have both x and y coordinates (neither is NaN)
             current_polygon.push((coords[i], coords[i + 1]));
             i += 2;
+        } else if i + 1 < coords.len() && coords[i + 1].is_nan() {
+            // x is valid but y is NaN - malformed data; skip x, process NaN on
+            // next iteration
+            i += 1;
         } else {
-            // Odd number of coordinates (malformed data) - skip last value
+            // Odd trailing value - skip
             i += 1;
         }
     }
@@ -4321,7 +4325,7 @@ mod tests {
         ann.set_name(Some("test".to_string()));
         // Create a small valid PNG via MaskData::encode
         let pixels = vec![0u8, 255, 128, 64];
-        let mask_data = MaskData::encode(&pixels, 2, 2, 8);
+        let mask_data = MaskData::encode(&pixels, 2, 2, 8).unwrap();
         ann.set_mask(Some(mask_data));
 
         let sample = Sample {
@@ -4340,5 +4344,119 @@ mod tests {
             "mask column should be Binary"
         );
         assert_eq!(mask_col.null_count(), 0, "mask value should not be null");
+    }
+
+    // =========================================================================
+    // AnnotationType "seg" alias test
+    // =========================================================================
+
+    #[test]
+    fn test_annotation_type_seg_alias() {
+        assert_eq!(
+            AnnotationType::try_from("seg").unwrap(),
+            AnnotationType::Polygon,
+            "\"seg\" should map to Polygon for server round-trip"
+        );
+    }
+
+    // =========================================================================
+    // Timing edge case tests
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_timing_partial() {
+        // Timing with only load set; other fields None
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            timing: Some(Timing {
+                load: Some(1000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Timing column should be present because at least one field is non-null
+        assert!(
+            df.column("timing").is_ok(),
+            "timing column should be present when partial data exists"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_timing_all_none_omitted() {
+        // All samples have timing: None — timing column should be omitted
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            timing: None,
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        assert!(
+            df.column("timing").is_err(),
+            "timing column should be omitted when all samples have timing: None"
+        );
+    }
+
+    // =========================================================================
+    // Score boundary tests
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_score_zero_survives() {
+        // score = 0.0 must be non-null in the output (not confused with None)
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann.set_box2d_score(Some(0.0));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        let scores = df.column("box2d_score").unwrap();
+        let val = scores.f32().unwrap().get(0);
+        assert_eq!(val, Some(0.0), "score of 0.0 should survive as non-null");
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_score_one_survives() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann.set_box2d_score(Some(1.0));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        let scores = df.column("box2d_score").unwrap();
+        let val = scores.f32().unwrap().get(0);
+        assert_eq!(val, Some(1.0), "score of 1.0 should survive as non-null");
     }
 }

@@ -5819,9 +5819,22 @@ impl Annotation {
     }
 
     /// Sets the raster mask (PNG bytes) for this annotation.
-    pub fn set_mask(&mut self, mask: Option<Vec<u8>>) {
-        self.0
-            .set_mask(mask.map(edgefirst_client::MaskData::from_png));
+    ///
+    /// Validates that the bytes are a valid grayscale PNG before storing.
+    ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` if the bytes are not a valid grayscale PNG.
+    pub fn set_mask(&mut self, mask: Option<Vec<u8>>) -> PyResult<()> {
+        let mask_data = mask
+            .map(|bytes| {
+                edgefirst_client::MaskData::from_png_checked(bytes).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("invalid mask PNG data: {}", e))
+                })
+            })
+            .transpose()?;
+        self.0.set_mask(mask_data);
+        Ok(())
     }
 
     /// Sets the iscrowd flag for this annotation.

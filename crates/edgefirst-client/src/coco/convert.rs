@@ -186,7 +186,7 @@ pub fn polygon_to_coco_polygon(
         .filter(|poly| poly.len() >= 3) // Need at least 3 points
         .map(|ring| {
             ring.iter()
-                .flat_map(|(x, y)| vec![(*x as f64) * img_w, (*y as f64) * img_h])
+                .flat_map(|(x, y)| [(*x as f64) * img_w, (*y as f64) * img_h])
                 .collect()
         })
         .collect()
@@ -491,7 +491,7 @@ pub fn coco_segmentation_to_polygon(
 /// Convert COCO RLE segmentation to PNG-encoded MaskData (1-bit binary).
 pub fn rle_to_mask_data(rle: &CocoRle) -> Result<MaskData, Error> {
     let (pixels, height, width) = decode_rle(rle)?;
-    Ok(MaskData::encode(&pixels, width, height, 1))
+    MaskData::encode(&pixels, width, height, 1)
 }
 
 /// Convert any COCO segmentation to MaskData for RLE variants.
@@ -504,7 +504,7 @@ pub fn coco_segmentation_to_mask_data(seg: &CocoSegmentation) -> Result<Option<M
         CocoSegmentation::Rle(rle) => Ok(Some(rle_to_mask_data(rle)?)),
         CocoSegmentation::CompressedRle(crle) => {
             let (pixels, height, width) = decode_compressed_rle(crle)?;
-            Ok(Some(MaskData::encode(&pixels, width, height, 1)))
+            Ok(Some(MaskData::encode(&pixels, width, height, 1)?))
         }
     }
 }
@@ -526,8 +526,18 @@ pub fn coco_segmentation_to_mask_data(seg: &CocoSegmentation) -> Result<Option<M
 ///
 /// # Returns
 /// A `CocoRle` with counts and size fields.
-pub fn encode_rle(mask: &[u8], width: u32, height: u32) -> CocoRle {
+pub fn encode_rle(mask: &[u8], width: u32, height: u32) -> Result<CocoRle, Error> {
     let total = (width as usize) * (height as usize);
+
+    if mask.len() != total {
+        return Err(Error::CocoError(format!(
+            "mask length {} does not match {}x{} = {}",
+            mask.len(),
+            width,
+            height,
+            total
+        )));
+    }
 
     // Convert row-major to column-major
     let mut column_major = vec![0u8; total];
@@ -553,10 +563,10 @@ pub fn encode_rle(mask: &[u8], width: u32, height: u32) -> CocoRle {
     }
     counts.push(run);
 
-    CocoRle {
+    Ok(CocoRle {
         counts,
         size: [height, width],
-    }
+    })
 }
 
 // =============================================================================
@@ -762,6 +772,17 @@ mod tests {
         assert_eq!(polygon.rings.len(), 1);
     }
 
+    #[test]
+    fn test_polygon_empty_ring_handled() {
+        // Empty segmentation polygon vec![] should be handled gracefully
+        let polygons: Vec<Vec<f64>> = vec![vec![]];
+        let polygon = coco_polygon_to_polygon(&polygons, 100, 100);
+        assert!(
+            polygon.rings.is_empty(),
+            "Empty polygon ring should be filtered out"
+        );
+    }
+
     // =========================================================================
     // RLE Tests
     // =========================================================================
@@ -868,7 +889,7 @@ mod tests {
     #[test]
     fn test_encode_rle_all_background() {
         let mask = vec![0u8; 100];
-        let rle = encode_rle(&mask, 10, 10);
+        let rle = encode_rle(&mask, 10, 10).unwrap();
         assert_eq!(rle.size, [10, 10]);
         // All background → single count of 100
         assert_eq!(rle.counts, vec![100]);
@@ -877,7 +898,7 @@ mod tests {
     #[test]
     fn test_encode_rle_all_foreground() {
         let mask = vec![1u8; 100];
-        let rle = encode_rle(&mask, 10, 10);
+        let rle = encode_rle(&mask, 10, 10).unwrap();
         assert_eq!(rle.size, [10, 10]);
         // All foreground → [0 bg, 100 fg]
         assert_eq!(rle.counts, vec![0, 100]);
@@ -894,7 +915,7 @@ mod tests {
             0, 0, 0, 0,
         ];
 
-        let rle = encode_rle(&mask, 4, 4);
+        let rle = encode_rle(&mask, 4, 4).unwrap();
         assert_eq!(rle.size, [4, 4]);
         let counts_sum: u32 = rle.counts.iter().sum();
         assert_eq!(counts_sum, 16, "RLE counts should sum to total pixels");
@@ -916,8 +937,17 @@ mod tests {
             0, 0, 0,
         ];
 
-        let rle = encode_rle(&mask, 3, 3);
+        let rle = encode_rle(&mask, 3, 3).unwrap();
         let (decoded, _, _) = decode_rle(&rle).unwrap();
         assert_eq!(decoded, mask);
+    }
+
+    #[test]
+    fn test_encode_rle_size_mismatch() {
+        let mask = vec![0u8; 50];
+        assert!(
+            encode_rle(&mask, 10, 10).is_err(),
+            "Should reject mask length != width * height"
+        );
     }
 }

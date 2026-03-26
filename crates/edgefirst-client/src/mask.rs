@@ -8,6 +8,12 @@
 //! bit_depth) without decoding pixels, and can encode from raw pixels at
 //! various bit depths (1-bit binary, 8-bit scores, 16-bit precision).
 
+/// PNG magic bytes (first 8 bytes of every valid PNG file).
+const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+/// Minimum length of a valid PNG with an IHDR chunk (signature + IHDR).
+const MIN_PNG_LEN: usize = 29;
+
 /// A raster mask stored as PNG-encoded bytes.
 ///
 /// `MaskData` provides zero-copy access to PNG metadata (width, height,
@@ -35,8 +41,48 @@ impl MaskData {
     /// Creates a `MaskData` from raw PNG bytes.
     ///
     /// The caller is responsible for ensuring the bytes represent a valid PNG.
+    /// For validated construction, use [`from_png_checked`](Self::from_png_checked).
     pub fn from_png(png: Vec<u8>) -> Self {
         Self { png }
+    }
+
+    /// Creates a `MaskData` from raw PNG bytes with validation.
+    ///
+    /// Validates that the bytes represent a valid grayscale PNG:
+    /// - Length >= 29 bytes (signature + IHDR chunk)
+    /// - PNG magic bytes at offset 0
+    /// - Color type byte (offset 25) is 0 (grayscale)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are not a valid grayscale PNG.
+    pub fn from_png_checked(png: Vec<u8>) -> Result<Self, crate::Error> {
+        if png.len() < MIN_PNG_LEN {
+            return Err(crate::Error::InvalidParameters(format!(
+                "PNG data too short: {} bytes, minimum {} required",
+                png.len(),
+                MIN_PNG_LEN
+            )));
+        }
+        if png[..8] != PNG_SIGNATURE {
+            return Err(crate::Error::InvalidParameters(
+                "invalid PNG signature: not a PNG file".to_string(),
+            ));
+        }
+        let color_type = png[25];
+        if color_type != 0 {
+            return Err(crate::Error::InvalidParameters(format!(
+                "PNG color type must be 0 (grayscale), got {}",
+                color_type
+            )));
+        }
+        Ok(Self { png })
+    }
+
+    /// Returns `true` if the underlying bytes contain a valid PNG signature
+    /// and are long enough to have an IHDR chunk.
+    pub fn is_valid(&self) -> bool {
+        self.png.len() >= MIN_PNG_LEN && self.png[..8] == PNG_SIGNATURE
     }
 
     /// Returns a reference to the underlying PNG bytes.
@@ -51,37 +97,31 @@ impl MaskData {
 
     /// Returns the image width by reading the PNG IHDR chunk (bytes 16..20).
     ///
-    /// # Panics
-    ///
-    /// Panics if the PNG data is too short to contain a valid IHDR chunk.
+    /// Returns 0 if the PNG data is too short or invalid.
     pub fn width(&self) -> u32 {
-        u32::from_be_bytes(
-            self.png[16..20]
-                .try_into()
-                .expect("PNG IHDR should contain width at bytes 16..20"),
-        )
+        self.png
+            .get(16..20)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+            .unwrap_or(0)
     }
 
     /// Returns the image height by reading the PNG IHDR chunk (bytes 20..24).
     ///
-    /// # Panics
-    ///
-    /// Panics if the PNG data is too short to contain a valid IHDR chunk.
+    /// Returns 0 if the PNG data is too short or invalid.
     pub fn height(&self) -> u32 {
-        u32::from_be_bytes(
-            self.png[20..24]
-                .try_into()
-                .expect("PNG IHDR should contain height at bytes 20..24"),
-        )
+        self.png
+            .get(20..24)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+            .unwrap_or(0)
     }
 
     /// Returns the bit depth by reading the PNG IHDR chunk (byte 24).
     ///
-    /// # Panics
-    ///
-    /// Panics if the PNG data is too short to contain a valid IHDR chunk.
+    /// Returns 0 if the PNG data is too short or invalid.
     pub fn bit_depth(&self) -> u8 {
-        self.png[24]
+        self.png.get(24).copied().unwrap_or(0)
     }
 
     /// Encodes raw 8-bit grayscale pixels into a PNG.
@@ -92,22 +132,30 @@ impl MaskData {
     ///
     /// For `bit_depth == 8`, pixels are encoded directly as 8-bit grayscale.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `bit_depth` is not 1 or 8, or if `pixels.len()` does not
-    /// equal `width * height`.
-    pub fn encode(pixels: &[u8], width: u32, height: u32, bit_depth: u8) -> Self {
-        assert!(
-            bit_depth == 1 || bit_depth == 8,
-            "bit_depth must be 1 or 8, got {bit_depth}"
-        );
+    /// Returns an error if `bit_depth` is not 1 or 8, or if `pixels.len()`
+    /// does not equal `width * height`.
+    pub fn encode(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+    ) -> Result<Self, crate::Error> {
+        if bit_depth != 1 && bit_depth != 8 {
+            return Err(crate::Error::InvalidParameters(format!(
+                "bit_depth must be 1 or 8, got {}",
+                bit_depth
+            )));
+        }
         let expected = (width as usize) * (height as usize);
-        assert_eq!(
-            pixels.len(),
-            expected,
-            "pixel count mismatch: expected {expected}, got {}",
-            pixels.len()
-        );
+        if pixels.len() != expected {
+            return Err(crate::Error::InvalidParameters(format!(
+                "pixel count mismatch: expected {}, got {}",
+                expected,
+                pixels.len()
+            )));
+        }
 
         let mut buf = Vec::new();
         {
@@ -119,7 +167,9 @@ impl MaskData {
                 _ => unreachable!(),
             });
 
-            let mut writer = encoder.write_header().expect("PNG header write failed");
+            let mut writer = encoder.write_header().map_err(|e| {
+                crate::Error::InvalidParameters(format!("PNG header write failed: {}", e))
+            })?;
 
             match bit_depth {
                 1 => {
@@ -132,19 +182,25 @@ impl MaskData {
                             }
                         }
                     }
-                    writer
-                        .write_image_data(&packed)
-                        .expect("PNG image data write failed");
+                    writer.write_image_data(&packed).map_err(|e| {
+                        crate::Error::InvalidParameters(format!(
+                            "PNG image data write failed: {}",
+                            e
+                        ))
+                    })?;
                 }
                 8 => {
-                    writer
-                        .write_image_data(pixels)
-                        .expect("PNG image data write failed");
+                    writer.write_image_data(pixels).map_err(|e| {
+                        crate::Error::InvalidParameters(format!(
+                            "PNG image data write failed: {}",
+                            e
+                        ))
+                    })?;
                 }
                 _ => unreachable!(),
             }
         }
-        Self { png: buf }
+        Ok(Self { png: buf })
     }
 
     /// Encodes raw 16-bit grayscale pixels into a PNG.
@@ -152,17 +208,18 @@ impl MaskData {
     /// Each `u16` value is written as two bytes in big-endian order, matching
     /// the PNG 16-bit grayscale format.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `pixels.len()` does not equal `width * height`.
-    pub fn encode_16bit(pixels: &[u16], width: u32, height: u32) -> Self {
+    /// Returns an error if `pixels.len()` does not equal `width * height`.
+    pub fn encode_16bit(pixels: &[u16], width: u32, height: u32) -> Result<Self, crate::Error> {
         let expected = (width as usize) * (height as usize);
-        assert_eq!(
-            pixels.len(),
-            expected,
-            "pixel count mismatch: expected {expected}, got {}",
-            pixels.len()
-        );
+        if pixels.len() != expected {
+            return Err(crate::Error::InvalidParameters(format!(
+                "pixel count mismatch: expected {}, got {}",
+                expected,
+                pixels.len()
+            )));
+        }
 
         let mut buf = Vec::new();
         {
@@ -170,14 +227,16 @@ impl MaskData {
             encoder.set_color(png::ColorType::Grayscale);
             encoder.set_depth(png::BitDepth::Sixteen);
 
-            let mut writer = encoder.write_header().expect("PNG header write failed");
+            let mut writer = encoder.write_header().map_err(|e| {
+                crate::Error::InvalidParameters(format!("PNG header write failed: {}", e))
+            })?;
 
             let raw: Vec<u8> = pixels.iter().flat_map(|&v| v.to_be_bytes()).collect();
-            writer
-                .write_image_data(&raw)
-                .expect("PNG image data write failed");
+            writer.write_image_data(&raw).map_err(|e| {
+                crate::Error::InvalidParameters(format!("PNG image data write failed: {}", e))
+            })?;
         }
-        Self { png: buf }
+        Ok(Self { png: buf })
     }
 
     /// Decodes the PNG image to raw pixel bytes.
@@ -185,11 +244,19 @@ impl MaskData {
     /// For 1-bit PNGs, each pixel is unpacked to a single byte (`0` or `1`).
     /// For 8-bit PNGs, pixel bytes are returned directly.
     /// For 16-bit PNGs, each pixel yields two bytes in big-endian order.
-    pub fn decode(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PNG data is malformed or cannot be decoded.
+    pub fn decode(&self) -> Result<Vec<u8>, crate::Error> {
         let decoder = png::Decoder::new(self.png.as_slice());
-        let mut reader = decoder.read_info().expect("PNG info read failed");
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| crate::Error::InvalidParameters(format!("PNG info read failed: {}", e)))?;
         let mut raw = vec![0u8; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut raw).expect("PNG frame read failed");
+        let info = reader.next_frame(&mut raw).map_err(|e| {
+            crate::Error::InvalidParameters(format!("PNG frame read failed: {}", e))
+        })?;
         raw.truncate(info.buffer_size());
 
         if info.bit_depth == png::BitDepth::One {
@@ -204,9 +271,9 @@ impl MaskData {
                     unpacked.push(bit);
                 }
             }
-            unpacked
+            Ok(unpacked)
         } else {
-            raw
+            Ok(raw)
         }
     }
 }
@@ -219,13 +286,13 @@ mod tests {
     fn test_encode_decode_8bit() {
         // 3x3 image with varied grayscale values
         let pixels: Vec<u8> = vec![0, 64, 128, 192, 255, 1, 100, 200, 50];
-        let mask = MaskData::encode(&pixels, 3, 3, 8);
+        let mask = MaskData::encode(&pixels, 3, 3, 8).unwrap();
 
         assert_eq!(mask.width(), 3);
         assert_eq!(mask.height(), 3);
         assert_eq!(mask.bit_depth(), 8);
 
-        let decoded = mask.decode();
+        let decoded = mask.decode().unwrap();
         assert_eq!(decoded, pixels);
     }
 
@@ -236,13 +303,13 @@ mod tests {
             1, 0, 1, 0, 1, 0, 1, 0, // row 0
             0, 1, 0, 1, 0, 1, 0, 1, // row 1
         ];
-        let mask = MaskData::encode(&pixels, 8, 2, 1);
+        let mask = MaskData::encode(&pixels, 8, 2, 1).unwrap();
 
         assert_eq!(mask.width(), 8);
         assert_eq!(mask.height(), 2);
         assert_eq!(mask.bit_depth(), 1);
 
-        let decoded = mask.decode();
+        let decoded = mask.decode().unwrap();
         assert_eq!(decoded, pixels);
     }
 
@@ -250,13 +317,13 @@ mod tests {
     fn test_encode_decode_16bit() {
         // 2x2 image with u16 values
         let pixels: Vec<u16> = vec![0, 256, 65535, 1024];
-        let mask = MaskData::encode_16bit(&pixels, 2, 2);
+        let mask = MaskData::encode_16bit(&pixels, 2, 2).unwrap();
 
         assert_eq!(mask.width(), 2);
         assert_eq!(mask.height(), 2);
         assert_eq!(mask.bit_depth(), 16);
 
-        let decoded = mask.decode();
+        let decoded = mask.decode().unwrap();
         // 16-bit PNG decodes to big-endian byte pairs
         let expected: Vec<u8> = pixels.iter().flat_map(|&v| v.to_be_bytes()).collect();
         assert_eq!(decoded, expected);
@@ -268,7 +335,7 @@ mod tests {
         let width = 640u32;
         let height = 480u32;
         let pixels = vec![0u8; (width * height) as usize];
-        let mask = MaskData::encode(&pixels, width, height, 8);
+        let mask = MaskData::encode(&pixels, width, height, 8).unwrap();
 
         assert_eq!(mask.width(), width);
         assert_eq!(mask.height(), height);
@@ -288,7 +355,7 @@ mod tests {
     fn test_from_png_bytes() {
         // Encode, extract bytes, reconstruct, verify roundtrip
         let pixels: Vec<u8> = vec![10, 20, 30, 40, 50, 60];
-        let original = MaskData::encode(&pixels, 3, 2, 8);
+        let original = MaskData::encode(&pixels, 3, 2, 8).unwrap();
 
         let bytes = original.into_bytes();
         let reconstructed = MaskData::from_png(bytes);
@@ -296,7 +363,7 @@ mod tests {
         assert_eq!(reconstructed.width(), 3);
         assert_eq!(reconstructed.height(), 2);
         assert_eq!(reconstructed.bit_depth(), 8);
-        assert_eq!(reconstructed.decode(), pixels);
+        assert_eq!(reconstructed.decode().unwrap(), pixels);
     }
 
     #[test]
@@ -307,13 +374,100 @@ mod tests {
             0, 1, 0, 0, 1, // row 1
             1, 1, 1, 0, 0, // row 2
         ];
-        let mask = MaskData::encode(&pixels, 5, 3, 1);
+        let mask = MaskData::encode(&pixels, 5, 3, 1).unwrap();
 
         assert_eq!(mask.width(), 5);
         assert_eq!(mask.height(), 3);
         assert_eq!(mask.bit_depth(), 1);
 
-        let decoded = mask.decode();
+        let decoded = mask.decode().unwrap();
         assert_eq!(decoded, pixels);
+    }
+
+    // =========================================================================
+    // from_png_checked validation tests
+    // =========================================================================
+
+    #[test]
+    fn test_from_png_empty_bytes() {
+        let result = MaskData::from_png_checked(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_png_truncated() {
+        // Just the magic bytes, no IHDR
+        let result = MaskData::from_png_checked(PNG_SIGNATURE.to_vec());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_png_garbage() {
+        let result = MaskData::from_png_checked(vec![0u8; 64]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_png_wrong_color_type() {
+        // Build a valid-length buffer with correct signature but wrong color type
+        let mut fake_png = vec![0u8; MIN_PNG_LEN];
+        fake_png[..8].copy_from_slice(&PNG_SIGNATURE);
+        fake_png[25] = 2; // RGB instead of grayscale
+        let result = MaskData::from_png_checked(fake_png);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_png_checked_valid() {
+        let pixels: Vec<u8> = vec![0, 128, 255, 64];
+        let mask = MaskData::encode(&pixels, 2, 2, 8).unwrap();
+        let bytes = mask.into_bytes();
+        let result = MaskData::from_png_checked(bytes);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_valid() {
+        let pixels: Vec<u8> = vec![0, 128, 255, 64];
+        let mask = MaskData::encode(&pixels, 2, 2, 8).unwrap();
+        assert!(mask.is_valid());
+
+        let invalid = MaskData::from_png(vec![1, 2, 3]);
+        assert!(!invalid.is_valid());
+    }
+
+    // =========================================================================
+    // Header reads on invalid data return 0 instead of panicking
+    // =========================================================================
+
+    #[test]
+    fn test_width_height_bit_depth_short_data() {
+        let mask = MaskData::from_png(vec![]);
+        assert_eq!(mask.width(), 0);
+        assert_eq!(mask.height(), 0);
+        assert_eq!(mask.bit_depth(), 0);
+
+        let mask2 = MaskData::from_png(vec![0; 10]);
+        assert_eq!(mask2.width(), 0);
+        assert_eq!(mask2.height(), 0);
+        assert_eq!(mask2.bit_depth(), 0);
+    }
+
+    #[test]
+    fn test_decode_invalid_data_returns_error() {
+        let mask = MaskData::from_png(vec![1, 2, 3]);
+        assert!(mask.decode().is_err());
+    }
+
+    #[test]
+    fn test_encode_invalid_bit_depth() {
+        let result = MaskData::encode(&[0; 4], 2, 2, 4);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encode_pixel_count_mismatch() {
+        let result = MaskData::encode(&[0; 3], 2, 2, 8);
+        assert!(result.is_err());
     }
 }

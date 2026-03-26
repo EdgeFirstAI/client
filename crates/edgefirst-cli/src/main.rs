@@ -3998,6 +3998,15 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         df
     };
 
+    // Convert iscrowd from UInt32/UInt8 to Boolean if present
+    if let Ok(col) = df.column("iscrowd")
+        && col.dtype() != &DataType::Boolean
+    {
+        let bool_col = col.cast(&DataType::Boolean)?;
+        df.replace("iscrowd", bool_col)?;
+        println!("  Converted 'iscrowd' column to Boolean type");
+    }
+
     // Prepare metadata: preserve existing, update schema_version
     let mut metadata: std::collections::BTreeMap<PlSmallStr, PlSmallStr> = existing_metadata
         .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())

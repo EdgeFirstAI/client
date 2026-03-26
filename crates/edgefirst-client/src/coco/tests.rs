@@ -961,7 +961,7 @@ mod integration_tests {
         assert_eq!(mask_data.bit_depth(), 1, "mask should be 1-bit binary");
 
         // Verify foreground pixel count: RLE had 5 foreground pixels
-        let decoded = mask_data.decode();
+        let decoded = mask_data.decode().unwrap();
         let fg_count = decoded.iter().filter(|&&v| v == 1).count();
         assert_eq!(fg_count, 5, "should have 5 foreground pixels from RLE");
 
@@ -1712,7 +1712,7 @@ mod integration_tests {
             1,
             "RLE mask should produce 1-bit PNG"
         );
-        let decoded = mask_data.decode();
+        let decoded = mask_data.decode().unwrap();
         let arrow_fg_count = decoded.iter().filter(|&&v| v == 1).count();
         assert_eq!(
             arrow_fg_count, orig_fg_count,
