@@ -1690,16 +1690,6 @@ impl Annotation {
         self.object_id = object_id;
     }
 
-    #[deprecated(note = "renamed to object_id")]
-    pub fn object_reference(&self) -> Option<&String> {
-        self.object_id()
-    }
-
-    #[deprecated(note = "renamed to set_object_id")]
-    pub fn set_object_reference(&mut self, object_reference: Option<String>) {
-        self.set_object_id(object_reference);
-    }
-
     pub fn label(&self) -> Option<&String> {
         self.label_name.as_ref()
     }
@@ -1912,14 +1902,6 @@ fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
     }
 }
 
-#[cfg(feature = "polars")]
-fn convert_polygon_to_series(polygon: &Polygon) -> Series {
-    use polars::series::Series;
-
-    let list = flatten_polygon_coordinates(&polygon.rings);
-    Series::new("mask".into(), list)
-}
-
 /// Convert a polygon into a nested `List(List(Float32))` Series for the
 /// 2026.04 schema. Each ring becomes an inner list of interleaved
 /// `[x1, y1, x2, y2, ...]` floats.
@@ -1934,158 +1916,6 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
         })
         .collect();
     Series::new("".into(), ring_series)
-}
-
-/// Create a DataFrame from a slice of annotations (2025.01 schema).
-///
-/// **DEPRECATED**: Use [`samples_dataframe()`] instead for full 2025.10 schema
-/// support including optional metadata columns (size, location, pose,
-/// degradation).
-///
-/// This function generates a DataFrame with the original 9-column schema.
-/// It remains functional for backward compatibility but does not include
-/// new optional columns added in version 2025.10.
-///
-/// # Schema (2025.01)
-///
-/// - `name`: Sample name (String)
-/// - `frame`: Frame number (UInt64)
-/// - `object_id`: Object tracking ID (String)
-/// - `label`: Object label (Categorical)
-/// - `label_index`: Label index (UInt64)
-/// - `group`: Dataset group (Categorical)
-/// - `mask`: Segmentation mask (List<Float32>)
-/// - `box2d`: 2D bounding box [cx, cy, w, h] (Array<Float32, 4>)
-/// - `box3d`: 3D bounding box [x, y, z, w, h, l] (Array<Float32, 6>)
-///
-/// # Migration
-///
-/// ```rust,no_run
-/// use edgefirst_client::{Client, samples_dataframe};
-///
-/// # async fn example() -> Result<(), edgefirst_client::Error> {
-/// # let client = Client::new()?;
-/// # let dataset_id = 1.into();
-/// # let annotation_set_id = 1.into();
-/// # let groups = vec![];
-/// # let types = vec![];
-/// // OLD (deprecated):
-/// let annotations = client
-///     .annotations(annotation_set_id, &groups, &types, None)
-///     .await?;
-/// let df = edgefirst_client::annotations_dataframe(&annotations)?;
-///
-/// // NEW (recommended):
-/// let samples = client
-///     .samples(
-///         dataset_id,
-///         Some(annotation_set_id),
-///         &types,
-///         &groups,
-///         &[],
-///         None,
-///     )
-///     .await?;
-/// let df = samples_dataframe(&samples)?;
-/// # Ok(())
-/// # }
-/// ```
-#[deprecated(
-    since = "0.8.0",
-    note = "Use `samples_dataframe()` for complete 2025.10 schema support"
-)]
-#[cfg(feature = "polars")]
-pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Error> {
-    use itertools::Itertools;
-
-    let (names, frames, objects, labels, label_indices, groups, masks, boxes2d, boxes3d) =
-        annotations
-            .iter()
-            .filter_map(|ann| {
-                let (name, frame) = extract_annotation_name(ann)?;
-
-                let masks = ann.polygon.as_ref().map(convert_polygon_to_series);
-
-                let box2d = ann.box2d.as_ref().map(|box2d| {
-                    Series::new(
-                        "box2d".into(),
-                        [box2d.cx(), box2d.cy(), box2d.width(), box2d.height()],
-                    )
-                });
-
-                let box3d = ann.box3d.as_ref().map(|box3d| {
-                    Series::new(
-                        "box3d".into(),
-                        [box3d.x, box3d.y, box3d.z, box3d.w, box3d.h, box3d.l],
-                    )
-                });
-
-                Some((
-                    name,
-                    frame,
-                    ann.object_id().cloned(),
-                    ann.label_name.clone(),
-                    ann.label_index,
-                    ann.group.clone(),
-                    masks,
-                    box2d,
-                    box3d,
-                ))
-            })
-            .multiunzip::<(
-                Vec<_>, // names
-                Vec<_>, // frames
-                Vec<_>, // objects
-                Vec<_>, // labels
-                Vec<_>, // label_indices
-                Vec<_>, // groups
-                Vec<_>, // masks
-                Vec<_>, // boxes2d
-                Vec<_>, // boxes3d
-            )>();
-    let names = Series::new("name".into(), names).into();
-    let frames = Series::new("frame".into(), frames).into();
-    let objects = Series::new("object_id".into(), objects).into();
-    let labels = Series::new("label".into(), labels)
-        .cast(&DataType::Categorical(
-            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
-                Default::default(),
-            )),
-        ))?
-        .into();
-    let label_indices = Series::new("label_index".into(), label_indices).into();
-    let groups = Series::new("group".into(), groups)
-        .cast(&DataType::Categorical(
-            Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
-                Default::default(),
-            )),
-        ))?
-        .into();
-    let masks = Series::new("mask".into(), masks)
-        .cast(&DataType::List(Box::new(DataType::Float32)))?
-        .into();
-    let boxes2d = Series::new("box2d".into(), boxes2d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 4))?
-        .into();
-    let boxes3d = Series::new("box3d".into(), boxes3d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 6))?
-        .into();
-
-    Ok(DataFrame::new_infer_height(vec![
-        names,
-        frames,
-        objects,
-        labels,
-        label_indices,
-        groups,
-        masks,
-        boxes2d,
-        boxes3d,
-    ])?)
 }
 
 /// Create a DataFrame from a slice of samples with the 2026.04 schema.
@@ -2682,41 +2512,11 @@ fn validate_imu_orientation(roll: f64, pitch: f64, yaw: f64) -> Result<(), Strin
 // MASK POLYGON CONVERSION HELPERS
 // ============================================================================
 
-/// Flatten polygon coordinates into a flat vector of f32 values for Polars
-/// Series.
-///
-/// Converts nested polygon structure into a flat list of coordinates with
-/// NaN separators between polygons:
-/// - Input: [[(x1, y1), (x2, y2)], [(x3, y3)]]
-/// - Output: [x1, y1, x2, y2, NaN, x3, y3]
-#[cfg(feature = "polars")]
-fn flatten_polygon_coordinates(polygons: &[Vec<(f32, f32)>]) -> Vec<f32> {
-    let mut list = Vec::new();
-
-    for polygon in polygons {
-        for &(x, y) in polygon {
-            list.push(x);
-            list.push(y);
-        }
-        // Separate polygons with NaN (only add separator if this ring was non-empty)
-        if !polygon.is_empty() {
-            list.push(f32::NAN);
-        }
-    }
-
-    // Remove the last NaN if it exists (trailing separator not needed)
-    if !list.is_empty() && list[list.len() - 1].is_nan() {
-        list.pop();
-    }
-
-    list
-}
-
 /// Unflatten coordinates with NaN separators back to nested polygon
 /// structure.
 ///
 /// Converts flat list of coordinates with NaN separators back to nested
-/// polygon structure (inverse of flatten_polygon_coordinates):
+/// polygon structure:
 /// - Input: [x1, y1, x2, y2, NaN, x3, y3]
 /// - Output: [[(x1, y1), (x2, y2)], [(x3, y3)]]
 ///
@@ -3270,40 +3070,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ==== Polygon Flattening Tests ====
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_single_polygon() {
-        let polygons = vec![vec![(1.0, 2.0), (3.0, 4.0)]];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        // Should have x1, y1, x2, y2 (no trailing NaN)
-        assert_eq!(result.len(), 4);
-        assert_eq!(&result[..4], &[1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_multiple_polygons() {
-        let polygons = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        // x1, y1, x2, y2, NaN, x3, y3, x4, y4 (no trailing NaN)
-        assert_eq!(result.len(), 9);
-        assert_eq!(&result[..4], &[1.0, 2.0, 3.0, 4.0]);
-        assert!(result[4].is_nan()); // NaN separator
-        assert_eq!(&result[5..9], &[5.0, 6.0, 7.0, 8.0]);
-    }
-
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_empty() {
-        let polygons: Vec<Vec<(f32, f32)>> = vec![];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        assert_eq!(result.len(), 0);
-    }
-
     // ==== Polygon Unflattening Tests ====
     #[test]
     #[cfg(feature = "polars")]
@@ -3335,12 +3101,12 @@ mod tests {
     #[test]
     #[cfg(feature = "polars")]
     fn test_unflatten_polygon_coordinates_roundtrip() {
-        // Test that flatten -> unflatten produces the same result
-        let original = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
-        let flattened = flatten_polygon_coordinates(&original);
-        let result = unflatten_polygon_coordinates(&flattened);
+        // Test that unflatten correctly reconstructs from NaN-separated flat coords
+        let flat = vec![1.0, 2.0, 3.0, 4.0, f32::NAN, 5.0, 6.0, 7.0, 8.0];
+        let result = unflatten_polygon_coordinates(&flat);
 
-        assert_eq!(result, original);
+        let expected = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
+        assert_eq!(result, expected);
     }
 
     // ==== Annotation Format Flattening Tests ====

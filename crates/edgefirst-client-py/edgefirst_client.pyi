@@ -1723,10 +1723,6 @@ class Annotation:
         """Set the object identifier for this annotation."""
         ...
 
-    def set_object_reference(self, object_reference: Optional[str]) -> None:
-        """Legacy alias for :meth:`set_object_id`."""
-        ...
-
     def set_box2d(self, box2d: Optional[Box2d]) -> None:
         """Set the 2D bounding box for this annotation."""
         ...
@@ -1816,11 +1812,6 @@ class Annotation:
         Returns:
             Optional[str]: The object identifier or None.
         """
-        ...
-
-    @property
-    def object_reference(self) -> Optional[str]:
-        """Legacy alias for :attr:`object_id`."""
         ...
 
     @property
@@ -4249,7 +4240,7 @@ class Client:
         The result is a vector of Annotations objects which contain the
         full dataset along with the annotations for the specified types.
 
-        To get the annotations as a DataFrame, use the `annotations_dataframe`
+        To get the annotations as a DataFrame, use the `samples_dataframe`
         method instead.
 
         Args:
@@ -4270,50 +4261,6 @@ class Client:
 
         Returns:
             List[Annotation]: List of annotations.
-        """
-        ...
-
-    def annotations_dataframe(
-        self,
-        annotation_set_id: AnnotationSetUID,
-        groups: List[str] = [],
-        annotation_types: List[AnnotationType] = [AnnotationType.Box2d],
-        progress: Optional[Progress] = None,
-    ) -> DataFrame:
-        """
-        Get the AnnotationGroup for the specified annotation set with the
-        requested annotation types.  The annotation type is used to filter
-        the annotations returned.  Images which do not have any annotations
-        are included in the result.
-
-        The result is a DataFrame following the EdgeFirst Dataset Format
-        definition.
-
-        To get the annotations as a vector of AnnotationGroup objects, use the
-        `annotations` method instead.
-
-        .. deprecated::
-            Use ``samples_dataframe()`` for complete 2025.10 schema support.
-            This method will be removed in a future version.
-
-        Args:
-            annotation_set_id (AnnotationSetUID): ID of the annotation set.
-            groups (List[str]): Dataset groups to include.
-            annotation_types (List[AnnotationType]): Types of annotations to
-                                                     include.
-            progress (Optional[Progress]): Optional progress
-                callback. Supports:
-                - ``callback(current, total)`` - basic progress
-                - ``callback(current, total, status)`` - with
-                  status message (v2.8.0+)
-
-        Progress:
-            Reports progress with status=None as samples
-            are fetched and processed for their annotations.
-            Progress unit is samples processed.
-
-        Returns:
-            DataFrame: A Polars DataFrame containing the annotations.
         """
         ...
 
@@ -5035,7 +4982,7 @@ def is_polars_enabled() -> bool:
     Examples:
         >>> import edgefirst_client as ec
         >>> if ec.is_polars_enabled():
-        ...     df = client.annotations_dataframe(annotation_set_id)
+        ...     df = client.samples_dataframe(dataset_id)
         ... else:
         ...     annotations = client.annotations(annotation_set_id)
     """

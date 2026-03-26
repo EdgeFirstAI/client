@@ -585,42 +585,13 @@ pub fn generate_arrow_from_folder(
         frames.push(frame);
     }
 
-    // Build the DataFrame with the 2025.10 schema
+    // Build the DataFrame with the 2026.04 schema — only emit name and frame
+    // columns (no null geometry columns; per the column-presence = data-intent
+    // rule, absent columns mean no data of that type).
     let name_series = Series::new("name".into(), &names);
     let frame_series = Series::new("frame".into(), &frames);
 
-    // Create null columns for annotations
-    let null_strings: Vec<Option<&str>> = vec![None; names.len()];
-    let null_u64s: Vec<Option<u64>> = vec![None; names.len()];
-
-    let object_id_series = Series::new("object_id".into(), &null_strings);
-    let label_series = Series::new("label".into(), &null_strings);
-    let label_index_series = Series::new("label_index".into(), &null_u64s);
-    let group_series = Series::new("group".into(), &null_strings);
-
-    // Null geometry columns - use Option<Series> like annotations_dataframe does
-    let null_series_vec: Vec<Option<Series>> = vec![None; names.len()];
-
-    let mask_series = Series::new("mask".into(), null_series_vec.clone())
-        .cast(&DataType::List(Box::new(DataType::Float32)))?;
-
-    let box2d_series = Series::new("box2d".into(), null_series_vec.clone())
-        .cast(&DataType::Array(Box::new(DataType::Float32), 4))?;
-
-    let box3d_series = Series::new("box3d".into(), null_series_vec)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 6))?;
-
-    let mut df = DataFrame::new_infer_height(vec![
-        name_series.into(),
-        frame_series.into(),
-        object_id_series.into(),
-        label_series.into(),
-        label_index_series.into(),
-        group_series.into(),
-        mask_series.into(),
-        box2d_series.into(),
-        box3d_series.into(),
-    ])?;
+    let mut df = DataFrame::new_infer_height(vec![name_series.into(), frame_series.into()])?;
 
     // Create output directory if needed
     if let Some(parent) = output.parent() {
@@ -872,9 +843,9 @@ mod tests {
         let df = IpcReader::new(&mut file).finish().unwrap();
 
         assert_eq!(df.height(), 4);
+        assert_eq!(df.width(), 2); // 2026.04 schema: only name + frame
         assert!(df.column("name").is_ok());
         assert!(df.column("frame").is_ok());
-        assert!(df.column("label").is_ok());
     }
 
     #[cfg(feature = "polars")]

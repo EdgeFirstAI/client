@@ -4638,76 +4638,6 @@ impl Client {
         Ok(annotations.into_iter().map(Annotation).collect::<Vec<_>>())
     }
 
-    #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None))]
-    pub fn annotations_dataframe<'py>(
-        &self,
-        py: Python<'py>,
-        annotation_set_id: Bound<'py, PyAny>,
-        groups: Vec<String>,
-        annotation_types: Vec<AnnotationType>,
-        progress: Option<Py<PyAny>>,
-    ) -> Result<PyDataFrame, Error> {
-        // Emit deprecation warning
-        let warnings = py.import("warnings")?;
-        warnings.call_method1(
-            "warn",
-            (
-                "Client.annotations_dataframe is deprecated and will be removed in a future version. \
-                 Use Client.samples_dataframe instead for complete 2025.10 schema support.",
-                py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
-            ),
-        )?;
-
-        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
-        let annotation_types = annotation_types
-            .into_iter()
-            .map(|x| match x {
-                AnnotationType::Box2d => edgefirst_client::AnnotationType::Box2d,
-                AnnotationType::Box3d => edgefirst_client::AnnotationType::Box3d,
-                AnnotationType::Polygon => edgefirst_client::AnnotationType::Polygon,
-                AnnotationType::Mask => edgefirst_client::AnnotationType::Mask,
-            })
-            .collect::<Vec<_>>();
-
-        let df = match progress {
-            Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
-
-                let client = Client(self.0.clone());
-                let task = std::thread::spawn(move || {
-                    client.annotations_dataframe_sync(
-                        annotation_set_id,
-                        &groups,
-                        &annotation_types,
-                        Some(tx),
-                    )
-                });
-
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()
-            }
-            None => {
-                self.annotations_dataframe_sync(annotation_set_id, &groups, &annotation_types, None)
-            }
-        }?;
-
-        Ok(df)
-    }
-
     /// Get samples as a DataFrame with complete 2025.10 schema.
     ///
     /// Args:
@@ -5572,22 +5502,6 @@ impl Client {
             .await
     }
 
-    #[allow(deprecated)]
-    #[tokio_wrap::sync]
-    fn annotations_dataframe_sync<'py>(
-        &self,
-        annotation_set_id: AnnotationSetID,
-        groups: &[String],
-        annotation_types: &[edgefirst_client::AnnotationType],
-        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
-    ) -> Result<PyDataFrame, edgefirst_client::Error> {
-        let df = self
-            .0
-            .annotations_dataframe(annotation_set_id.0, groups, annotation_types, progress)
-            .await?;
-        Ok(PyDataFrame(df))
-    }
-
     #[tokio_wrap::sync]
     fn samples_dataframe_sync<'py>(
         &self,
@@ -5799,12 +5713,6 @@ impl Annotation {
         self.0.set_object_id(object_id);
     }
 
-    /// Legacy alias for :meth:`set_object_id`.
-    #[pyo3(name = "set_object_reference")]
-    pub fn set_object_reference_alias(&mut self, object_id: Option<String>) {
-        self.0.set_object_id(object_id);
-    }
-
     /// Sets the 2D bounding box for this annotation.
     pub fn set_box2d(&mut self, box2d: Option<&Box2d>) {
         self.0.set_box2d(box2d.map(|b| b.0.clone()));
@@ -5887,13 +5795,6 @@ impl Annotation {
     #[getter]
     pub fn object_id(&self) -> Option<String> {
         self.0.object_id().cloned()
-    }
-
-    /// Legacy accessor for ``object_id``.
-    #[getter]
-    #[pyo3(name = "object_reference")]
-    pub fn object_reference_alias(&self) -> Option<String> {
-        self.object_id()
     }
 
     #[getter]

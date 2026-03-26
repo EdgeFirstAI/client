@@ -1854,7 +1854,7 @@ impl Client {
     /// processed for their annotations. Progress unit is samples processed
     /// (not individual annotations).
     ///
-    /// To get the annotations as a DataFrame, use the `annotations_dataframe`
+    /// To get the annotations as a DataFrame, use the `samples_dataframe`
     /// method instead.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
     pub async fn annotations(
@@ -2696,68 +2696,6 @@ impl Client {
 
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
-    }
-
-    /// Get the AnnotationGroup for the specified annotation set with the
-    /// requested annotation types.  The annotation type is used to filter
-    /// the annotations returned.  Images which do not have any annotations
-    /// are included in the result.
-    ///
-    /// Get annotations as a DataFrame (2025.01 schema).
-    ///
-    /// **DEPRECATED**: Use [`Client::samples_dataframe()`] instead for full
-    /// 2025.10 schema support including optional metadata columns.
-    ///
-    /// The result is a DataFrame following the EdgeFirst Dataset Format
-    /// definition with 9 columns (original schema). Does not include new
-    /// optional columns added in 2025.10.
-    ///
-    /// # Migration
-    ///
-    /// ```rust,no_run
-    /// # use edgefirst_client::Client;
-    /// # async fn example() -> Result<(), edgefirst_client::Error> {
-    /// # let client = Client::new()?;
-    /// # let dataset_id = 1.into();
-    /// # let annotation_set_id = 1.into();
-    /// # let groups = vec![];
-    /// # let types = vec![];
-    /// // OLD (deprecated):
-    /// let df = client
-    ///     .annotations_dataframe(annotation_set_id, &groups, &types, None)
-    ///     .await?;
-    ///
-    /// // NEW (recommended):
-    /// let df = client
-    ///     .samples_dataframe(dataset_id, Some(annotation_set_id), &groups, &types, None)
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// To get the annotations as a vector of Annotation objects, use the
-    /// `annotations` method instead.
-    #[deprecated(
-        since = "0.8.0",
-        note = "Use `samples_dataframe()` for complete 2025.10 schema support"
-    )]
-    #[cfg(feature = "polars")]
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(annotation_set_id = %annotation_set_id)))]
-    pub async fn annotations_dataframe(
-        &self,
-        annotation_set_id: AnnotationSetID,
-        groups: &[String],
-        types: &[AnnotationType],
-        progress: Option<Sender<Progress>>,
-    ) -> Result<DataFrame, Error> {
-        #[allow(deprecated)]
-        use crate::dataset::annotations_dataframe;
-
-        let annotations = self
-            .annotations(annotation_set_id, groups, types, progress)
-            .await?;
-        #[allow(deprecated)]
-        annotations_dataframe(&annotations)
     }
 
     /// Get samples as a DataFrame with complete 2025.10 schema.
