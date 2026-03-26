@@ -9,12 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `label_index` now preserves source `category_id` from COCO/LVIS (non-contiguous, may have gaps)
+- **BREAKING**: Renamed `Mask` struct to `Polygon` with field `rings` (was `polygon`)
+- **BREAKING**: Split `AnnotationType::Mask` into `Polygon` (vector contours) and `Mask` (raster pixels)
+- **BREAKING**: `iscrowd` column type changed from UInt8/UInt32 to Boolean
+- `mask` Arrow column now stores PNG-encoded raster pixels (`Binary` type)
+- `polygon` Arrow column replaces old NaN-separated `mask: List(Float32)` for vector data
 
 ### Added
 - LVIS extension columns: `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`
 - `category_metadata` file-level metadata for LVIS category taxonomy (synset, synonyms, definition)
 - `schema_version` metadata written to all new Arrow IPC files
 - COCO importer/exporter handles LVIS-extended fields automatically
+- `MaskData` struct for PNG-encoded raster masks with zero-copy header reading
+- Score columns: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score`
+- `Timing` struct with `load`, `preprocess`, `inference`, `decode` (nanoseconds)
+- COCO RLE masks imported as PNG 1-bit binary masks
+- `edgefirst migrate` CLI command for 2025.10 → 2026.04 Arrow file migration
+- `labels` file-level metadata for semantic segmentation class names
+- 2025.10 backward compatibility: old Arrow files read transparently
 
 ## [2.8.0] - 2026-01-04
 

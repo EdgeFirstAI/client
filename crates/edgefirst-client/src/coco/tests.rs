@@ -1528,4 +1528,286 @@ mod integration_tests {
             bbox_ann.score.unwrap()
         );
     }
+
+    /// End-to-end integration test: COCO dataset with BOTH polygon AND RLE
+    /// mask annotations in the same file → coco_to_arrow → verify Arrow
+    /// columns → arrow_to_coco → verify both geometry types survive.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_full_roundtrip_polygon_and_rle_mask() {
+        use crate::MaskData;
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a COCO dataset with mixed geometry types:
+        // - Image 1: polygon annotation (person) + bbox-only annotation (car)
+        // - Image 2: RLE mask annotation (crowd of people, iscrowd=1)
+        let original = CocoDataset {
+            info: CocoInfo {
+                year: Some(2026),
+                version: Some("1.0".to_string()),
+                description: Some("Mixed polygon+RLE integration test".to_string()),
+                ..Default::default()
+            },
+            images: vec![
+                CocoImage {
+                    id: 1,
+                    width: 200,
+                    height: 200,
+                    file_name: "image_polygon.jpg".to_string(),
+                    ..Default::default()
+                },
+                CocoImage {
+                    id: 2,
+                    width: 10,
+                    height: 10,
+                    file_name: "image_rle.jpg".to_string(),
+                    ..Default::default()
+                },
+            ],
+            categories: vec![
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    supercategory: Some("human".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 2,
+                    name: "car".to_string(),
+                    supercategory: Some("vehicle".to_string()),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![
+                // Annotation 1: polygon segmentation on image 1
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [30.0, 40.0, 100.0, 120.0],
+                    area: 12000.0,
+                    iscrowd: 0,
+                    segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                        30.0, 40.0, 130.0, 40.0, 130.0, 160.0, 30.0, 160.0,
+                    ]])),
+                    score: None,
+                },
+                // Annotation 2: bbox only on image 1 (no segmentation)
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 1,
+                    category_id: 2,
+                    bbox: [150.0, 150.0, 40.0, 30.0],
+                    area: 1200.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                    score: None,
+                },
+                // Annotation 3: RLE mask on image 2 (crowd annotation)
+                // 10x10 image, RLE: 10 bg, 5 fg, 85 bg = 100 pixels (5 fg)
+                CocoAnnotation {
+                    id: 3,
+                    image_id: 2,
+                    category_id: 1,
+                    bbox: [0.0, 0.0, 10.0, 10.0],
+                    area: 5.0,
+                    iscrowd: 1,
+                    segmentation: Some(CocoSegmentation::Rle(CocoRle {
+                        counts: vec![10, 5, 85],
+                        size: [10, 10],
+                    })),
+                    score: None,
+                },
+            ],
+            licenses: vec![],
+        };
+
+        // Decode original RLE foreground count for later comparison
+        let orig_rle = match &original.annotations[2].segmentation {
+            Some(CocoSegmentation::Rle(rle)) => rle,
+            _ => panic!("Expected RLE segmentation on annotation 3"),
+        };
+        let (orig_mask_pixels, _, _) = decode_rle(orig_rle).unwrap();
+        let orig_fg_count = orig_mask_pixels.iter().filter(|&&v| v == 1).count();
+        assert_eq!(
+            orig_fg_count, 5,
+            "Original RLE should have 5 foreground pixels"
+        );
+
+        // Step 1: Write COCO JSON
+        let coco_path = temp_dir.path().join("mixed_input.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &coco_path).unwrap();
+
+        // Step 2: COCO -> Arrow
+        let arrow_path = temp_dir.path().join("mixed.arrow");
+        let coco_options = CocoToArrowOptions {
+            include_masks: true,
+            group: Some("val".to_string()),
+            ..Default::default()
+        };
+        let count = coco_to_arrow(&coco_path, &arrow_path, &coco_options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 3, "Should convert all 3 annotations");
+
+        // Step 3: Verify Arrow file has both polygon and mask columns
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+
+        // polygon column should exist
+        let polygon_col = df.column("polygon").expect("polygon column should exist");
+        assert!(
+            matches!(polygon_col.dtype(), DataType::List(_)),
+            "polygon column should be List type, got {:?}",
+            polygon_col.dtype()
+        );
+
+        // mask column should exist and be Binary
+        let mask_col = df.column("mask").expect("mask column should exist");
+        assert!(
+            matches!(mask_col.dtype(), DataType::Binary),
+            "mask column should be Binary type, got {:?}",
+            mask_col.dtype()
+        );
+
+        // Verify polygon column has at least one non-null value (from annotation 1)
+        assert!(
+            polygon_col.null_count() < polygon_col.len(),
+            "polygon column should have at least one non-null entry"
+        );
+
+        // Verify mask column has at least one non-null value (from annotation 3)
+        assert!(
+            mask_col.null_count() < mask_col.len(),
+            "mask column should have at least one non-null entry"
+        );
+
+        // Verify schema_version metadata is written
+        let mut meta_file = std::fs::File::open(&arrow_path).unwrap();
+        let mut meta_reader = IpcReader::new(&mut meta_file);
+        let custom_meta = meta_reader.custom_metadata().unwrap().unwrap();
+        assert_eq!(
+            custom_meta
+                .get(&PlSmallStr::from("schema_version"))
+                .map(|s| s.to_string()),
+            Some("2026.04".to_string()),
+            "schema_version should be 2026.04"
+        );
+
+        // Verify the mask Binary data is valid PNG
+        let binary_ca = mask_col.binary().unwrap();
+        // Find the row with non-null mask (annotation 3 = RLE)
+        let mask_row = (0..binary_ca.len())
+            .find(|&i| binary_ca.get(i).is_some())
+            .expect("Should have at least one non-null mask row");
+        let png_bytes = binary_ca.get(mask_row).unwrap();
+        let mask_data = MaskData::from_png(png_bytes.to_vec());
+        assert_eq!(mask_data.width(), 10);
+        assert_eq!(mask_data.height(), 10);
+        assert_eq!(
+            mask_data.bit_depth(),
+            1,
+            "RLE mask should produce 1-bit PNG"
+        );
+        let decoded = mask_data.decode();
+        let arrow_fg_count = decoded.iter().filter(|&&v| v == 1).count();
+        assert_eq!(
+            arrow_fg_count, orig_fg_count,
+            "PNG mask in Arrow should preserve foreground pixel count"
+        );
+
+        // Step 4: Arrow -> COCO
+        let restored_path = temp_dir.path().join("mixed_restored.json");
+        let export_options = ArrowToCocoOptions::default();
+        let ann_count = arrow_to_coco(&arrow_path, &restored_path, &export_options, None)
+            .await
+            .unwrap();
+        assert_eq!(ann_count, 3, "Should export all 3 annotations");
+
+        // Step 5: Read restored COCO and verify both geometry types survive
+        let reader = CocoReader::new();
+        let restored = reader.read_json(&restored_path).unwrap();
+
+        assert_eq!(restored.annotations.len(), 3);
+        assert_eq!(restored.categories.len(), 2);
+        assert_eq!(restored.images.len(), 2);
+
+        // Verify category names survived
+        let cat_names: std::collections::HashSet<_> = restored
+            .categories
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(cat_names.contains("person"));
+        assert!(cat_names.contains("car"));
+
+        // Find annotations by their characteristics
+        let polygon_anns: Vec<_> = restored
+            .annotations
+            .iter()
+            .filter(|a| matches!(&a.segmentation, Some(CocoSegmentation::Polygon(_))))
+            .collect();
+        let rle_anns: Vec<_> = restored
+            .annotations
+            .iter()
+            .filter(|a| matches!(&a.segmentation, Some(CocoSegmentation::Rle(_))))
+            .collect();
+        let no_seg_anns: Vec<_> = restored
+            .annotations
+            .iter()
+            .filter(|a| a.segmentation.is_none())
+            .collect();
+
+        // Polygon annotation should survive as polygon
+        assert_eq!(
+            polygon_anns.len(),
+            1,
+            "Should have exactly 1 polygon annotation after roundtrip"
+        );
+        if let Some(CocoSegmentation::Polygon(polys)) = &polygon_anns[0].segmentation {
+            assert_eq!(polys.len(), 1, "Polygon should have 1 ring");
+            assert_eq!(
+                polys[0].len(),
+                8,
+                "Polygon ring should have 8 coords (4 points)"
+            );
+            // Verify coordinates are approximately correct (within 2px tolerance)
+            let orig_coords = [30.0, 40.0, 130.0, 40.0, 130.0, 160.0, 30.0, 160.0];
+            for (j, &orig_val) in orig_coords.iter().enumerate() {
+                assert!(
+                    (polys[0][j] - orig_val).abs() < 2.0,
+                    "Polygon coord [{}] mismatch: {} vs {} (tolerance 2.0)",
+                    j,
+                    polys[0][j],
+                    orig_val
+                );
+            }
+        }
+
+        // RLE mask annotation should survive (as RLE)
+        assert_eq!(
+            rle_anns.len(),
+            1,
+            "Should have exactly 1 RLE annotation after roundtrip"
+        );
+        if let Some(CocoSegmentation::Rle(rle)) = &rle_anns[0].segmentation {
+            let (restored_mask, _, _) = decode_rle(rle).unwrap();
+            let restored_fg = restored_mask.iter().filter(|&&v| v == 1).count();
+            assert_eq!(
+                restored_fg, orig_fg_count,
+                "RLE foreground pixel count should be preserved: expected {}, got {}",
+                orig_fg_count, restored_fg
+            );
+        }
+
+        // Bbox-only annotation should have no segmentation
+        assert_eq!(
+            no_seg_anns.len(),
+            1,
+            "Should have exactly 1 annotation without segmentation"
+        );
+    }
 }
