@@ -1,7 +1,7 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.04
-**Last Updated**: 18 March, 2026
+**Last Updated**: 25 March, 2026
 **Status**: DRAFT (pending review)
 
 ---
@@ -409,7 +409,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('polygon_score', Float32),  # OPTIONAL - confidence (0..1)
 
     # ── Geometry: Raster Mask ──────────────────────────
-    ('mask', List(UInt8)),  # row-major u8 pixels, width*height elements
+    ('mask', Binary),  # PNG-encoded grayscale raster pixels
     ('mask_score', Float32),  # OPTIONAL - per-instance confidence (0..1)
 
     # ── Geometry: 2D Bounding Box ──────────────────────
@@ -421,11 +421,11 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('box3d_score', Float32),  # OPTIONAL - confidence (0..1)
 
     # ── Annotation Metadata (optional) ────────────────
-    ('iscrowd', UInt8),  # OPTIONAL - 1 = crowd region, 0 = single instance (COCO)
+    ('iscrowd', Boolean),  # OPTIONAL - true = crowd region, false or absent = single instance (COCO)
     ('category_frequency', Categorical(ordering='physical')),  # OPTIONAL - "f", "c", "r" (LVIS)
 
     # ── Sample Metadata (optional) ─────────────────────
-    ('size', Array(UInt32, shape=(2,))),  # [width, height] - REQUIRED when mask populated
+    ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
     ('location', Array(Float32, shape=(2,))),  # [lat, lon]
     ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll]
     ('degradation', String),
@@ -442,12 +442,12 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
 )
 ```
 
-**Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `List(UInt8)` (raster pixel values). Polygon data moved to the new `polygon` column as `List(List(Float32))`. Score columns, timing struct, Parquet support, COCO/LVIS extension columns (`iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`), and `category_metadata` file-level metadata are new in 2026.04. The `label_index` column now preserves source category IDs (non-contiguous). See [Migration from 2025.10](#migration-from-202510) for details.
+**Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `Binary` (PNG-encoded raster pixels). Polygon data moved to the new `polygon` column as `List(List(Float32))`. The `iscrowd` column changed from `UInt8` to `Boolean`. Score columns, timing struct, Parquet support, COCO/LVIS extension columns (`iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`), and `category_metadata` file-level metadata are new in 2026.04. The `label_index` column now preserves source category IDs (non-contiguous). See [Migration from 2025.10](#migration-from-202510) for details.
 
 **Array formats**:
 
 - **polygon**: `List(List(Float32))` - outer list = rings, inner list = interleaved `[x1, y1, x2, y2, ...]` pairs per ring
-- **mask**: `List(UInt8)` - row-major `u8` pixel values, `width * height` elements. **Requires** `size` column.
+- **mask**: `Binary` - PNG-encoded grayscale raster pixels (self-describing dimensions from PNG header)
 - **box2d**: `[cx, cy, w, h]` - center coordinates and dimensions (default; see [File-Level Metadata](#file-level-metadata) for other layouts)
 - **box3d**: `[cx, cy, cz, w, h, l]` - center coordinates and dimensions
 - **size**: `[width, height]` - image dimensions in pixels
@@ -554,7 +554,7 @@ df = pl.read_ipc("dataset.arrow")
 | **Box2D Format** | Array, layout from metadata (default: `[cx, cy, w, h]`) | Object, layout from metadata (default: `{x, y, w, h}`) |
 | **Box3D Format** | `[cx, cy, cz, w, h, l]` array (center) | `{x, y, z, w, h, l}` object (center) |
 | **Polygon Format** | `List(List(Float32))` interleaved xy per ring | Nested list of `[x,y]` point pairs |
-| **Mask Format** | `List(UInt8)` row-major pixels | base64-encoded string |
+| **Mask Format** | `Binary` PNG-encoded raster | base64-encoded PNG bytes |
 | **Best For** | Analysis, training, querying | Editing, API, distribution |
 
 ---
@@ -574,6 +574,7 @@ All metadata values are strings.
 | `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system |
 | `mask_interpretation` | `"binary"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks |
 | `category_metadata` | JSON string | absent | Per-label metadata (synset, synonyms, definition) |
+| `labels` | JSON array `["person", "car", ...]` | absent | Ordered class names for semantic segmentation masks. `labels[i]` = class name for argmax pixel value `i`. |
 
 ### Category Metadata
 
@@ -612,6 +613,22 @@ The `category_metadata` key stores per-label reference data as a JSON-encoded st
 
 **Note**: The `frequency` field from LVIS is stored as the `category_frequency` column (not in this metadata) because it is directly useful for DataFrame filtering and disaggregated metrics (AP_r/AP_c/AP_f). The `image_count` and `instance_count` fields from LVIS are intentionally not stored — they are recomputable statistics.
 
+### Labels Metadata (NEW in 2026.04)
+
+The `labels` key stores an ordered array of class names as a JSON-encoded string. This metadata provides the index-to-name mapping for semantic segmentation masks where each pixel value is an argmax class index.
+
+**Structure**: JSON array where `labels[i]` is the class name for pixel value `i`:
+
+```json
+["background", "person", "car", "bicycle", "dog"]
+```
+
+In this example, pixel value `0` = `"background"`, pixel value `1` = `"person"`, pixel value `2` = `"car"`, etc.
+
+**When written**: Optional — only written when the source dataset provides an ordered category list (e.g., COCO categories sorted by ID).
+
+**Relationship to `category_metadata`**: The `labels` array provides index ordering for mask pixel interpretation. The `category_metadata` object provides rich per-label reference data (synset, synonyms, definition). Both may be present; they complement each other.
+
 ### Box Format Descriptors
 
 **`box2d_format` values**:
@@ -645,14 +662,14 @@ When metadata **IS** present, it is authoritative regardless of storage format. 
 
 ### Mask Interpretation
 
-The `mask_interpretation` metadata describes how to interpret `u8` pixel values in the `mask` column:
+The `mask_interpretation` metadata describes how to interpret pixel values in the `mask` column (PNG-encoded raster data). The PNG bit depth determines the value range:
 
 | Value | Description |
 |-------|-------------|
-| `binary` | Thresholded 0/1 values (default) |
-| `confidence` | 0-255 quantized confidence scores |
-| `sigmoid` | 0-255 quantized sigmoid outputs |
-| `logits` | 0-255 quantized logit outputs |
+| `binary` | 0/1 values — use 1-bit PNG (default) |
+| `confidence` | Quantized confidence scores — use 8-bit (0–255) or 16-bit (0–65535) PNG |
+| `sigmoid` | Quantized sigmoid outputs — use 8-bit or 16-bit PNG |
+| `logits` | Quantized logit outputs — use 8-bit or 16-bit PNG |
 
 ### Schema Version Strategy
 
@@ -784,13 +801,13 @@ For a dataset with labels `[person, car, tree]` imported from COCO, `label_index
 
 #### iscrowd (NEW in 2026.04)
 
-**Type**: `UInt8` (nullable)
+**Type**: `Boolean` (nullable)
 **Description**: Whether this annotation represents a crowd region or a single instance
 
 **Values**:
 
-- `0` — Single object instance (default when absent)
-- `1` — Crowd region containing multiple overlapping instances of the same category
+- `true` — Crowd region containing multiple overlapping instances of the same category
+- `false` or absent — Single object instance
 
 **Source**: COCO `iscrowd` field. LVIS does not use crowd annotations — this column will be absent or null for LVIS-sourced data.
 
@@ -883,27 +900,63 @@ polygon: [[0.69, 0.34, 0.70, 0.35, 0.71, 0.36], [0.72, 0.37, 0.73, 0.38, 0.74, 0
 - JSON → DataFrame: Flatten each ring's `[[x,y], ...]` to `[x, y, x, y, ...]`
 - DataFrame → JSON: Pair consecutive floats into `[x, y]` tuples
 
+**Coordinate space**: Polygon coordinates are **always** image-space normalized (0..1), regardless of whether `box2d` coexists on the same row. The box provides object location; the polygon provides the boundary in absolute image coordinates.
+
+**Coexistence with mask**: `polygon` and `mask` can coexist on different rows in the same dataset (e.g., some annotations have polygon contours, others have raster masks). They can also coexist on the same row (polygon gives the boundary, mask gives dense pixel data).
+
 > **Migration from 2025.10**: The old `mask: List(Float32)` column (NaN-separated polygon coordinates) is replaced by `polygon: List(List(Float32))`. See [Migration from 2025.10](#migration-from-202510).
 
 #### Mask (CHANGED in 2026.04)
 
 **Purpose**: Dense per-pixel raster masks (semantic segmentation, instance masks from inference)
 
-**Type**: `List(UInt8)` — row-major `u8` pixel values
+**Type**: `Binary` — PNG-encoded grayscale raster pixels
 
 ```json
 {
-  "mask": "<base64-encoded u8 pixel data>",
+  "mask": "<base64-encoded PNG bytes>",
   "mask_score": 0.89
 }
 ```
 
-- **Encoding**: Raw row-major `u8` pixel values, `width * height` elements per mask
-- **Interpretation**: Described by `mask_interpretation` file metadata (see [File-Level Metadata](#file-level-metadata))
-- **Dimensions**: Derived from `size` column. **`size` is required when `mask` is populated.**
-- **JSON representation**: base64-encoded string
+**Encoding**: Masks are stored as single-channel (grayscale) PNG images within the `Binary` column. The PNG format provides:
+
+- **Self-describing dimensions** — width and height in the PNG header (first 24 bytes), readable without full decode
+- **Lossless compression** — PNG's filtering + DEFLATE handles sparse masks efficiently
+- **Bit depth flexibility** — PNG supports 1, 2, 4, 8, and 16-bit grayscale
+
+| Source | PNG bit depth | Pixel values | Use case |
+|--------|--------------|--------------|----------|
+| Binary mask (any source) | **1-bit (preferred)** | 0/1 | Ground truth, thresholded output, COCO RLE import. Always use 1-bit for binary masks — unambiguous and most compact. |
+| Sigmoid scores | 8-bit | 0–255 (quantized) | Model confidence per-pixel |
+| High-precision scores | 16-bit | 0–65535 | When 8-bit quantization is insufficient |
+
+**1-bit is the preferred encoding for all binary masks**, regardless of source (COCO RLE, thresholded model output, ground truth annotations). Alternatives like 8-bit with 0/255 are valid but wasteful and ambiguous — a reader cannot distinguish "binary mask stored as 8-bit" from "8-bit score data." 1-bit encoding is self-documenting: if the PNG is 1-bit, the mask is binary.
+
+PNG does not support floating-point pixel values. If float precision is needed in the future, a different encoding would be introduced as a new column type.
+
+**Dimensions**: Mask dimensions are defined by the PNG image itself, not by the `size` column or `box2d`. The producer determines the resolution:
+
+- **Model output resolution** (e.g., 256x256 from the model head)
+- **Model input resolution** (e.g., 640x640 after preprocessing)
+- **Image resolution** (original sensor dimensions)
+
+Consumers rescale to the target coordinate space as needed. The `size` column (image dimensions) can be used as the target when rescaling to image space.
+
+**Interpretation by context**:
+
+| Context | Pixel values | Label source |
+|---------|-------------|-------------|
+| `mask` + `box2d` (instance seg) | Sigmoid confidence (0–255) or binary (0/1) for a single instance | `label` column on the row |
+| `mask` without `box2d` (semantic seg) | Argmax class indices | Optional file-level `labels` metadata; index ordering is model-specific |
+
+- **Instance segmentation**: The mask covers the **full image** (not cropped to the box). Most pixels are 0 (background); the object region has confidence scores or binary 1 values. This avoids lossy cropping and handles interpolation that extends beyond box bounds.
+- **Semantic segmentation**: Each pixel value is a class index. The mapping from index to class name is provided by the optional `labels` file-level metadata.
+
+The mask is **always image-sized** (or model-output-sized). Never box-cropped.
+
+- **JSON representation**: base64-encoded PNG bytes
 - **Relationship to polygon**: `polygon` and `mask` can coexist (e.g., panoptic segmentation with instance polygons and semantic raster masks). Typically a dataset uses one or the other.
-- **Future type evolution**: In future versions, the list element type may change to `Int8` or `Float32`. Readers should query the actual list element type at runtime.
 
 #### Box2D
 
@@ -1025,6 +1078,19 @@ box3d: [0.45, 0.12, 0.03, 0.08, 0.06, 0.15]
 
 - [ROS Coordinate Conventions](https://www.ros.org/reps/rep-0103.html#coordinate-frame-conventions)
 - [Ouster Sensor Frame](https://static.ouster.dev/sensor-docs/image_route1/image_route2/sensor_data/sensor-data.html#sensor-coordinate-frame)
+
+#### Annotation Types (SDK)
+
+The EdgeFirst Client SDK distinguishes four annotation geometry types:
+
+| Type | Column(s) | Description |
+|------|-----------|-------------|
+| `Box2d` | `box2d` | 2D bounding box |
+| `Box3d` | `box3d` | 3D bounding box |
+| `Polygon` | `polygon` | Vector polygon contours (was `Mask` in SDK 2025.10) |
+| `Mask` | `mask` | Raster pixel masks (new in 2026.04) |
+
+Both `Polygon` and `Mask` represent segmentation data and map to `"seg"` in the EdgeFirst Studio API (which has no concept of raster masks — it only stores polygon data). The distinction is client-side, for Arrow/DataFrame handling.
 
 ---
 
@@ -1281,7 +1347,7 @@ In 2026.04, format deviations between JSON and DataFrame are now **explicit and 
 
 | Format | JSON | DataFrame |
 |--------|------|-----------|
-| **Structure** | base64-encoded string | `List(UInt8)` row-major pixels |
+| **Structure** | base64-encoded PNG bytes | `Binary` PNG-encoded raster |
 | **Interpretation** | Same via `mask_interpretation` metadata | Same |
 
 > **2025.10 legacy deviation**: In files without `schema_version` metadata, the old `mask: List(Float32)` column contains NaN-separated polygon coordinates (not raster data). See [Migration from 2025.10](#migration-from-202510).
@@ -1313,8 +1379,8 @@ elif "mask" in df.columns:
     if str(mask_dtype).startswith("List(Float32"):
         # 2025.10 legacy format — NaN-separated polygon coordinates
         pass
-    elif str(mask_dtype).startswith("List(UInt8"):
-        # 2026.04 raster mask
+    elif str(mask_dtype) == "Binary":
+        # 2026.04 raster mask — PNG-encoded bytes
         pass
 ```
 
@@ -1356,9 +1422,9 @@ for sample in samples:
             ]
             row["polygon_score"] = ann.get("polygon_score")
 
-        # Mask: JSON base64 → DataFrame List<UInt8>
+        # Mask: JSON base64 PNG → DataFrame Binary (PNG bytes)
         if ann.get("mask") and isinstance(ann["mask"], str):
-            row["mask"] = list(base64.b64decode(ann["mask"]))
+            row["mask"] = base64.b64decode(ann["mask"])  # PNG bytes
             row["mask_score"] = ann.get("mask_score")
 
         # Box2D: convert based on format
@@ -1390,13 +1456,13 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | 1 | **Unnest**: One row per annotation | JSON → DataFrame |
 | 2 | **Column names**: `label_name` → `label`, `group_name` → `group` | JSON → DataFrame |
 | 3 | **Polygon**: `[[x,y],...]` point pairs → `[x,y,x,y,...]` interleaved | JSON → DataFrame |
-| 4 | **Mask**: base64 string → `List(UInt8)` | JSON → DataFrame |
+| 4 | **Mask**: base64 PNG string → `Binary` (PNG bytes) | JSON → DataFrame |
 | 5 | **Box2D**: Check `box2d_format` — convert `ltwh` → `cxcywh` if needed | JSON → DataFrame |
 | 6 | **Box3D**: `{x,y,z,w,h,l}` → `[cx,cy,cz,w,h,l]` | JSON → DataFrame |
 | 7 | **GPS**: `{latitude, longitude}` → `[lat, lon]` | JSON → DataFrame |
 | 8 | **IMU**: `{yaw, pitch, roll}` → `[yaw, pitch, roll]` | JSON → DataFrame |
 | 9 | **Score columns**: Omit entirely for ground truth files | Both |
-| 10 | **`iscrowd`**: Annotation-level, same value in both formats | JSON → DataFrame |
+| 10 | **`iscrowd`**: Annotation-level `Boolean` (`true`/`false`), same semantics in both formats | JSON → DataFrame |
 | 11 | **`category_frequency`**: Annotation-level, same value in both formats | JSON → DataFrame |
 | 12 | **`neg_label_indices`** / **`not_exhaustive_label_indices`**: Sample-level, repeated per annotation row | JSON → DataFrame |
 | 13 | **`label_index`**: Preserved as-is (source-faithful, non-contiguous) | Both |
@@ -1410,10 +1476,11 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | Change | 2025.10 | 2026.04 |
 |--------|---------|---------|
 | Polygon storage | `mask: List(Float32)` with NaN separators | `polygon: List(List(Float32))` nested lists |
-| Mask type | `List(Float32)` (polygon data) | `List(UInt8)` (raster pixel data) |
+| Mask column type | `List(Float32)` (polygon data) | `Binary` (PNG-encoded raster pixels) |
+| `iscrowd` type | `UInt8` (0/1) | `Boolean` (true/false) |
 | `label_index` semantics | Alphabetically re-indexed (0-based, contiguous) | Source-faithful `category_id` (may be non-contiguous, may not start at 0) |
 | New columns | N/A | `polygon_score`, `mask_score`, `box2d_score`, `box3d_score`, `timing`, `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices` |
-| File metadata | None | `schema_version`, `box2d_format`, etc. |
+| File metadata | None | `schema_version`, `box2d_format`, `labels`, etc. |
 | JSON structure | Bare array `[...]` | Object wrapper `{"schema_version": ..., "samples": [...]}` |
 | LiDAR sensor types | `lidar.png`, `lidar.jpeg` | Removed |
 
@@ -1423,21 +1490,24 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 edgefirst migrate <input.arrow> [--output <output.arrow>]
 ```
 
-> **Planned** — the `edgefirst migrate` command will be available in the 2026.04 release.
+The `edgefirst migrate` command converts 2025.10 Arrow files to 2026.04 format:
 
-The migration utility:
-1. Reads the 2025.10 `mask: List(Float32)` column with NaN separators
-2. Converts to `polygon: List(List(Float32))` (split on NaN, pair coordinates)
-3. Removes the old `mask` column
-4. Sets `schema_version = "2026.04"` in file metadata
-5. Writes the new file (preserving all other columns unchanged)
+1. Reads the Arrow IPC file and checks `schema_version` — if already `"2026.04"` or later, prints a message and exits
+2. Reads the 2025.10 `mask: List(Float32)` column with NaN separators
+3. Converts to `polygon: List(List(Float32))` (split on NaN, pair coordinates into rings)
+4. Drops the old `mask` column, adds `polygon` column with converted data
+5. Sets `schema_version = "2026.04"` in file metadata
+6. Writes to `--output` path, or overwrites in-place if not specified
+7. Reports the number of polygon annotations converted
+
+No new columns are synthesized. Columns not present in the original file (scores, timing, LVIS fields) are not added.
 
 ### Version Detection
 
 **Arrow/Parquet files**:
 - `schema_version` metadata present → use stated version
 - `schema_version` absent + `mask: List(Float32)` → 2025.10
-- `schema_version` absent + `mask: List(UInt8)` → 2026.04
+- `schema_version` absent + `mask: Binary` → 2026.04
 - `polygon` column present → 2026.04
 
 **JSON files**:
@@ -1446,7 +1516,7 @@ The migration utility:
 
 ### External Consumers Warning
 
-Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) should be aware that the `mask` column type changed. Code that calls `.list()?.cast(&DataType::Float32)` on the mask column will fail on 2026.04 files. Always check the column type before interpreting mask data.
+Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) should be aware that the `mask` column type changed from `List(Float32)` to `Binary` (PNG bytes). Code that calls `.list()?.cast(&DataType::Float32)` on the mask column will fail on 2026.04 files. In 2026.04, the `mask` column contains raw PNG bytes — use a PNG decoder to read the pixel data. Additionally, `iscrowd` changed from `UInt8` to `Boolean`. Always check column types before interpreting data.
 
 ---
 
@@ -1553,13 +1623,13 @@ This version introduces significant changes to the annotation schema including n
 **Geometry Changes**:
 
 - **`polygon` column** (`List(List(Float32))`): Replaces NaN-separated `mask` column for vector polygon data
-- **`mask` column** (`List(UInt8)`): New raster mask type for dense per-pixel data (semantic segmentation, inference outputs)
+- **`mask` column** (`Binary`): PNG-encoded raster masks for dense per-pixel data (semantic segmentation, instance masks). Self-describing dimensions from PNG header; supports 1-bit (binary), 8-bit, and 16-bit grayscale.
 - **Configurable box format**: `box2d_format` metadata (`cxcywh`, `xyxy`, `ltwh`) + `box2d_normalized` flag
 - **Score columns**: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score` per-geometry confidence (0..1)
 
 **COCO/LVIS Extensions**:
 
-- **`iscrowd` column** (`UInt8`, optional): Crowd region flag from COCO annotations (0 = single instance, 1 = crowd). Absent for LVIS-sourced data.
+- **`iscrowd` column** (`Boolean`, optional): Crowd region flag from COCO annotations (`true` = crowd, `false` or absent = single instance). Absent for LVIS-sourced data.
 - **`category_frequency` column** (`Categorical`, optional): Long-tail frequency group (`"f"`, `"c"`, `"r"`) from LVIS. Enables disaggregated AP metrics (AP_r/AP_c/AP_f).
 - **`neg_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories verified as absent. From LVIS federated annotation protocol.
 - **`not_exhaustive_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories with possibly incomplete annotation. From LVIS federated annotation protocol.
@@ -1579,8 +1649,9 @@ This version introduces significant changes to the annotation schema including n
 
 | Change | 2025.10 | 2026.04 |
 |--------|---------|---------|
-| `mask` column type | `List(Float32)` NaN-separated polygons | `List(UInt8)` raster pixels |
+| `mask` column type | `List(Float32)` NaN-separated polygons | `Binary` (PNG-encoded raster pixels) |
 | Polygon storage | In `mask` column | In new `polygon` column |
+| `iscrowd` type | `UInt8` (0/1) | `Boolean` (true/false) |
 | `label_index` semantics | Alphabetically re-indexed (0-based, contiguous) | Source-faithful `category_id` (non-contiguous, preserves gaps) |
 | JSON file structure | Bare array `[...]` | Object wrapper with metadata |
 | LiDAR sensor types | `lidar.png`, `lidar.jpeg` | **Removed** — use `lidar.pcd` |
@@ -1589,7 +1660,7 @@ This version introduces significant changes to the annotation schema including n
 
 - The EdgeFirst Client SDK reads both 2025.10 and 2026.04 files transparently
 - Version detection uses `schema_version` metadata (preferred) or column type inspection (fallback)
-- Migration utility (planned — available in 2026.04 release): `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
+- Migration utility: `edgefirst migrate <file.arrow>` converts 2025.10 → 2026.04
 - **`label_index` migration**: 2025.10 files with alphabetically re-indexed `label_index` values remain valid. The SDK will read them as-is. New files written by 2026.04 will use source-faithful indices. Round-tripping a 2025.10 file through a 2026.04 import/export may change `label_index` values if the source format provides explicit category IDs.
 - **`supercategory` and `category_metadata`**: Arrow files written before 2026.04 do not contain `category_metadata` file-level metadata. When these files are exported to COCO via `arrow_to_coco`, `supercategory`, `synset`, `synonyms`, and `definition` will not be present on categories. The planned `edgefirst migrate` command will not add `category_metadata` (it cannot recover information that was never stored). To preserve these fields, re-import from the original COCO/LVIS JSON source.
 
