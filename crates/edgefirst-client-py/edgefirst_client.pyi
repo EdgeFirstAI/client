@@ -1345,20 +1345,23 @@ class AnnotationType(Enum):
     Examples:
         >>> # Create annotation types
         >>> box_2d = AnnotationType.Box2d
-        >>> segmentation = AnnotationType.Mask
+        >>> polygon = AnnotationType.Polygon
 
         >>> # Use in dataset queries
         >>> annotations = dataset.get_annotations_by_type(AnnotationType.Box2d)
 
     Members:
-        Box2d: 2D bounding boxes for object detection in images
-        Box3d: 3D bounding boxes for object detection in 3D space (LiDAR, etc.)
-        Mask:  Pixel-level segmentation masks for semantic/instance
-               segmentation
+        Box2d:   2D bounding boxes for object detection in images
+        Box3d:   3D bounding boxes for object detection in 3D space
+                 (LiDAR, etc.)
+        Polygon: Polygonal segmentation boundaries for
+                 semantic/instance segmentation
+        Mask:    Pixel-level raster segmentation masks (PNG-encoded)
     """
 
     Box2d: "AnnotationType"
     Box3d: "AnnotationType"
+    Polygon: "AnnotationType"
     Mask: "AnnotationType"
 
 class Box2d:
@@ -1580,36 +1583,36 @@ class Box3d:
         """
         ...
 
-class Mask:
+class Polygon:
     """
-    Represents a segmentation mask using polygonal annotations.
+    Represents a polygonal segmentation annotation.
 
-    The mask is defined by one or more polygons, where each polygon is
-    a list of [x, y] coordinates normalized to the image dimensions.
+    A polygon is defined by one or more rings, where each ring is a
+    list of (x, y) coordinate tuples normalized to the image dimensions.
     All coordinates are float32 values between 0 and 1.
     """
 
-    def __init__(self, polygon: List[List[float]]) -> None:
+    def __init__(self, rings: List[List[Tuple[float, float]]]) -> None:
         """
-        Initializes a new Mask instance from a list of polygons.
+        Initializes a new Polygon from a list of rings.
 
         Args:
-            polygon (List[List[float]]): A list of polygons, where each polygon
-                                         is a list of [x, y] float coordinates
-                                         normalized to the image dimensions.
+            rings: A list of rings, where each ring is a list of
+                   (x, y) float tuples normalized to the image
+                   dimensions.
         """
         ...
 
     @property
-    def polygon(self) -> List[List[float]]:
+    def rings(self) -> List[List[Tuple[float, float]]]:
         """
-        Returns the polygon data defining the mask.
+        Returns the ring data defining the polygon.
 
-        Each polygon is a list of [x, y] coordinates, with values
+        Each ring is a list of (x, y) coordinate tuples, with values
         normalized to the image dimensions.
 
         Returns:
-            List[List[float]]: A list of polygons representing the mask.
+            List[List[Tuple[float, float]]]: The polygon rings.
         """
         ...
 
@@ -1732,8 +1735,32 @@ class Annotation:
         """Set the 3D bounding box for this annotation."""
         ...
 
-    def set_mask(self, mask: Optional[Mask]) -> None:
-        """Set the segmentation mask for this annotation."""
+    def set_polygon(self, polygon: Optional[Polygon]) -> None:
+        """Set the polygon segmentation for this annotation."""
+        ...
+
+    def set_mask(self, mask: Optional[bytes]) -> None:
+        """Set the raster mask (PNG bytes) for this annotation."""
+        ...
+
+    def set_iscrowd(self, iscrowd: Optional[bool]) -> None:
+        """Set the iscrowd flag for this annotation."""
+        ...
+
+    def set_box2d_score(self, score: Optional[float]) -> None:
+        """Set the 2D bounding box confidence score."""
+        ...
+
+    def set_box3d_score(self, score: Optional[float]) -> None:
+        """Set the 3D bounding box confidence score."""
+        ...
+
+    def set_polygon_score(self, score: Optional[float]) -> None:
+        """Set the polygon confidence score."""
+        ...
+
+    def set_mask_score(self, score: Optional[float]) -> None:
+        """Set the mask confidence score."""
         ...
 
     @property
@@ -1837,12 +1864,73 @@ class Annotation:
         ...
 
     @property
-    def mask(self) -> Optional[Mask]:
+    def polygon(self) -> Optional[Polygon]:
         """
-        The segmentation mask associated with this annotation, if available.
+        The polygon segmentation associated with this annotation,
+        if available.
 
         Returns:
-            Optional[Mask]: The segmentation mask or None.
+            Optional[Polygon]: The polygon or None.
+        """
+        ...
+
+    @property
+    def mask(self) -> Optional[bytes]:
+        """
+        The raster mask as raw PNG bytes, if available.
+
+        Returns:
+            Optional[bytes]: PNG-encoded mask data or None.
+        """
+        ...
+
+    @property
+    def iscrowd(self) -> Optional[bool]:
+        """
+        Whether this annotation marks a crowd region.
+
+        Returns:
+            Optional[bool]: The iscrowd flag or None.
+        """
+        ...
+
+    @property
+    def box2d_score(self) -> Optional[float]:
+        """
+        Confidence score for the 2D bounding box.
+
+        Returns:
+            Optional[float]: The score or None.
+        """
+        ...
+
+    @property
+    def box3d_score(self) -> Optional[float]:
+        """
+        Confidence score for the 3D bounding box.
+
+        Returns:
+            Optional[float]: The score or None.
+        """
+        ...
+
+    @property
+    def polygon_score(self) -> Optional[float]:
+        """
+        Confidence score for the polygon segmentation.
+
+        Returns:
+            Optional[float]: The score or None.
+        """
+        ...
+
+    @property
+    def mask_score(self) -> Optional[float]:
+        """
+        Confidence score for the raster mask.
+
+        Returns:
+            Optional[float]: The score or None.
         """
         ...
 
@@ -2063,6 +2151,19 @@ class Sample:
 
         Returns:
             List[Annotation]: A list of annotation objects.
+        """
+        ...
+
+    @property
+    def timing(self) -> Optional[Dict[str, Optional[int]]]:
+        """
+        Pipeline timing measurements in nanoseconds, if available.
+
+        Returns a dict with keys ``load``, ``preprocess``,
+        ``inference``, ``decode``, each ``Optional[int]``.
+
+        Returns:
+            Optional[Dict[str, Optional[int]]]: Timing dict or None.
         """
         ...
 

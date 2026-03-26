@@ -5818,6 +5818,37 @@ impl Annotation {
         self.0.set_polygon(polygon.map(|p| p.0.clone()));
     }
 
+    /// Sets the raster mask (PNG bytes) for this annotation.
+    pub fn set_mask(&mut self, mask: Option<Vec<u8>>) {
+        self.0
+            .set_mask(mask.map(edgefirst_client::MaskData::from_png));
+    }
+
+    /// Sets the iscrowd flag for this annotation.
+    pub fn set_iscrowd(&mut self, iscrowd: Option<bool>) {
+        self.0.set_iscrowd(iscrowd);
+    }
+
+    /// Sets the 2D bounding box confidence score.
+    pub fn set_box2d_score(&mut self, score: Option<f32>) {
+        self.0.set_box2d_score(score);
+    }
+
+    /// Sets the 3D bounding box confidence score.
+    pub fn set_box3d_score(&mut self, score: Option<f32>) {
+        self.0.set_box3d_score(score);
+    }
+
+    /// Sets the polygon confidence score.
+    pub fn set_polygon_score(&mut self, score: Option<f32>) {
+        self.0.set_polygon_score(score);
+    }
+
+    /// Sets the mask confidence score.
+    pub fn set_mask_score(&mut self, score: Option<f32>) {
+        self.0.set_mask_score(score);
+    }
+
     #[getter]
     pub fn sample_id(&self) -> Option<SampleID> {
         self.0.sample_id().map(SampleID)
@@ -5873,6 +5904,42 @@ impl Annotation {
     #[getter]
     pub fn polygon(&self) -> Option<Polygon> {
         self.0.polygon().map(|x| Polygon(x.clone()))
+    }
+
+    /// The raster mask as raw PNG bytes, if available.
+    #[getter]
+    pub fn mask(&self) -> Option<Vec<u8>> {
+        self.0.mask().map(|m| m.as_bytes().to_vec())
+    }
+
+    /// Whether this annotation marks a crowd region.
+    #[getter]
+    pub fn iscrowd(&self) -> Option<bool> {
+        self.0.iscrowd()
+    }
+
+    /// Confidence score for the 2D bounding box.
+    #[getter]
+    pub fn box2d_score(&self) -> Option<f32> {
+        self.0.box2d_score()
+    }
+
+    /// Confidence score for the 3D bounding box.
+    #[getter]
+    pub fn box3d_score(&self) -> Option<f32> {
+        self.0.box3d_score()
+    }
+
+    /// Confidence score for the polygon segmentation.
+    #[getter]
+    pub fn polygon_score(&self) -> Option<f32> {
+        self.0.polygon_score()
+    }
+
+    /// Confidence score for the raster mask.
+    #[getter]
+    pub fn mask_score(&self) -> Option<f32> {
+        self.0.mask_score()
     }
 }
 
@@ -6040,6 +6107,25 @@ impl Sample {
             .iter()
             .map(|x| Annotation(x.clone()))
             .collect()
+    }
+
+    /// Pipeline timing measurements (nanoseconds), if available.
+    ///
+    /// Returns a dict with keys ``load``, ``preprocess``, ``inference``,
+    /// ``decode``, each ``Optional[int]`` in nanoseconds.
+    #[getter]
+    pub fn timing<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        match &self.inner.timing {
+            Some(t) => {
+                let dict = PyDict::new(py);
+                dict.set_item("load", t.load)?;
+                dict.set_item("preprocess", t.preprocess)?;
+                dict.set_item("inference", t.inference)?;
+                dict.set_item("decode", t.decode)?;
+                Ok(Some(dict))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Download sample file data.
