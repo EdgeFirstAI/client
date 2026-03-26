@@ -232,7 +232,7 @@ class TestCOCO(unittest.TestCase):
         for col in ["name", "label", "label_index", "group"]:
             if col in actual_columns:
                 self.assertGreater(
-                    df.column(col).null_count(), -1,
+                    df.get_column(col).null_count(), -1,
                     f"{col} column should be accessible")
 
         # Get unique by name
