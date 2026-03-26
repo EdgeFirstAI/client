@@ -325,11 +325,11 @@ class DatasetTest(TestCase):
         else:
             bbox_sig = None
 
-        mask = annotation.mask
-        if mask is not None:
+        polygon_data = annotation.polygon
+        if polygon_data is not None:
             mask_sig = tuple(
-                tuple((round(point[0], 6), round(point[1], 6)) for point in polygon)
-                for polygon in mask.polygon
+                tuple((round(point[0], 6), round(point[1], 6)) for point in ring)
+                for ring in polygon_data.rings
             )
         else:
             mask_sig = None
@@ -425,9 +425,9 @@ class DatasetTest(TestCase):
                 )
             )
 
-        mask = annotation.mask
-        if mask is not None:
-            polygon_copy = [list(ring) for ring in mask.polygon]
+        polygon_data = annotation.polygon
+        if polygon_data is not None:
+            polygon_copy = [list(ring) for ring in polygon_data.rings]
             cloned.set_polygon(Polygon(polygon_copy))
 
         return cloned
@@ -438,7 +438,7 @@ class DatasetTest(TestCase):
             return True
         if "box3d" in types and annotation.box3d is not None:
             return True
-        if "mask" in types and annotation.mask is not None:
+        if "mask" in types and annotation.polygon is not None:
             return True
         return False
 

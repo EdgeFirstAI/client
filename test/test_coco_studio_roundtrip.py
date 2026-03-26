@@ -308,9 +308,9 @@ def samples_to_coco(samples, include_masks=True):
                 coco_ann["area"] = 0
 
             # Get mask
-            if include_masks and ann.mask is not None:
+            if include_masks and ann.polygon is not None:
                 polygons = []
-                for poly in ann.mask.polygon:
+                for poly in ann.polygon.rings:
                     coco_poly = normalized_polygon_to_coco(poly, width, height)
                     if len(coco_poly) >= 6:
                         polygons.append(coco_poly)
@@ -797,12 +797,12 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp_dir:
                 samples = coco_to_samples(original, temp_dir=temp_dir)
 
-                # Verify mask was converted
+                # Verify polygon was converted (renamed from mask in 2026.04)
                 self.assertEqual(len(samples), 1)
                 self.assertEqual(len(samples[0].annotations), 1)
                 self.assertIsNotNone(
-                    samples[0].annotations[0].mask,
-                    "Should have mask after conversion"
+                    samples[0].annotations[0].polygon,
+                    "Should have polygon after conversion"
                 )
 
                 self.client.populate_samples(dataset_id, annotation_set_id, samples)
@@ -817,13 +817,13 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
                 self.assertEqual(len(fetched), 1)
                 self.assertGreater(len(fetched[0].annotations), 0)
 
-                # Check if any annotation has a mask
-                has_mask = any(
-                    ann.mask is not None for ann in fetched[0].annotations
+                # Check if any annotation has a polygon
+                has_polygon = any(
+                    ann.polygon is not None for ann in fetched[0].annotations
                 )
 
-                print(f"Mask present in export: {has_mask}")
-                print("✓ Mask roundtrip test completed")
+                print(f"Polygon present in export: {has_polygon}")
+                print("✓ Polygon roundtrip test completed")
 
         finally:
             if not self.skip_cleanup:
