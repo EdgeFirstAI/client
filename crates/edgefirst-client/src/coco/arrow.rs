@@ -450,12 +450,20 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .collect();
 
     let labels: Vec<String> = df
-        .column("label")?
-        .cast(&DataType::String)?
-        .str()?
-        .into_iter()
-        .map(|s| s.unwrap_or_default().to_string())
-        .collect();
+        .column("label")
+        .ok()
+        .and_then(|c| c.cast(&DataType::String).ok())
+        .map(|c| {
+            c.str()
+                .ok()
+                .map(|s| {
+                    s.into_iter()
+                        .map(|v| v.unwrap_or_default().to_string())
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![String::new(); total_rows])
+        })
+        .unwrap_or_else(|| vec![String::new(); total_rows]);
 
     let label_indices: Vec<Option<u64>> = df
         .column("label_index")
@@ -486,7 +494,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .unwrap_or_else(|| vec!["".to_string(); total_rows]);
 
     // Extract all box2d values upfront (O(n) instead of O(n²))
-    let box2ds = extract_all_box2ds(df.column("box2d")?)?;
+    let box2ds = df
+        .column("box2d")
+        .ok()
+        .map(extract_all_box2ds)
+        .transpose()?
+        .unwrap_or_else(|| vec![[0.0; 4]; total_rows]);
 
     // Extract all masks upfront if present
     let masks = if options.include_masks {
