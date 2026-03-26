@@ -5051,3 +5051,286 @@ fn test_arrow_to_coco_with_groups() {
         "Should have 1 annotation in filtered output"
     );
 }
+
+// ============================================================================
+// Migrate Command Tests
+// ============================================================================
+
+#[test]
+fn test_migrate_command_help() {
+    edgefirst_cmd()
+        .args(["migrate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Migrate an Arrow file"));
+}
+
+#[test]
+fn test_migrate_command_missing_input() {
+    edgefirst_cmd()
+        .args(["migrate", "/nonexistent/file.arrow"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("does not exist"));
+}
+
+#[test]
+fn test_migrate_command_with_mask_column() {
+    use polars::prelude::*;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let input = temp_dir.path().join("legacy.arrow");
+    let output = temp_dir.path().join("migrated.arrow");
+
+    // Create a 2025.10-style Arrow file with a NaN-separated mask column
+    // mask: List(Float32) with NaN separating polygon rings
+    // Two rows: one with a polygon (two rings), one null
+    {
+        let names = Series::new("name".into(), vec!["img1.jpg", "img2.jpg"]);
+        let labels = Series::new("label".into(), vec![Some("cat"), None]);
+
+        // Row 0: polygon with 2 rings separated by NaN
+        //   Ring 1: (10,20), (30,40)  -> [10, 20, 30, 40]
+        //   Ring 2: (50,60)           -> [50, 60]
+        //   Flat:   [10, 20, 30, 40, NaN, 50, 60]
+        let ring1_and_2: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0, f32::NAN, 50.0, 60.0];
+        let row0 = Some(Series::new(PlSmallStr::from(""), ring1_and_2));
+
+        // Row 1: null mask
+        let row1: Option<Series> = None;
+
+        let mask = Series::new("mask".into(), vec![row0, row1]);
+
+        let mut df =
+            DataFrame::new_infer_height(vec![names.into(), labels.into(), mask.into()]).unwrap();
+
+        let mut file = std::fs::File::create(&input).unwrap();
+        IpcWriter::new(&mut file).finish(&mut df).unwrap();
+    }
+
+    // Run the migrate command
+    edgefirst_cmd()
+        .args([
+            "migrate",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Converted 'mask' column -> 'polygon' column",
+        ))
+        .stdout(predicates::str::contains(
+            "Migrated to schema version 2026.04",
+        ));
+
+    assert!(output.exists(), "Migrated Arrow output file should exist");
+
+    // Read back and verify the migrated file
+    {
+        let mut file = std::fs::File::open(&output).unwrap();
+
+        // Verify schema_version metadata
+        let mut reader = IpcReader::new(&mut file);
+        let custom_meta = reader.custom_metadata().unwrap();
+        assert!(custom_meta.is_some(), "custom metadata should be present");
+        let meta = custom_meta.unwrap();
+        assert_eq!(
+            meta.get(&PlSmallStr::from("schema_version")),
+            Some(&PlSmallStr::from("2026.04")),
+            "schema_version should be 2026.04"
+        );
+
+        // Re-open to read DataFrame
+        let mut file = std::fs::File::open(&output).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+
+        // Verify mask column is gone
+        assert!(
+            df.column("mask").is_err(),
+            "mask column should have been removed"
+        );
+
+        // Verify polygon column exists
+        let polygon_col = df
+            .column("polygon")
+            .expect("polygon column should exist after migration");
+
+        assert_eq!(polygon_col.len(), 2, "Should have 2 rows");
+
+        // Should have 1 null row (row 1 had null mask) out of 2 total
+        assert_eq!(
+            polygon_col.null_count(),
+            1,
+            "Should have exactly 1 null polygon row (from null mask)"
+        );
+
+        // Verify the other columns are preserved
+        assert!(df.column("name").is_ok(), "name column should be preserved");
+        assert!(
+            df.column("label").is_ok(),
+            "label column should be preserved"
+        );
+    }
+}
+
+#[test]
+fn test_migrate_command_already_migrated() {
+    use polars::prelude::*;
+    use std::sync::Arc;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let input = temp_dir.path().join("already_migrated.arrow");
+
+    // Create an Arrow file that already has schema_version = "2026.04"
+    {
+        let names = Series::new("name".into(), vec!["img1.jpg"]);
+        let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
+
+        let mut metadata: std::collections::BTreeMap<PlSmallStr, PlSmallStr> =
+            std::collections::BTreeMap::new();
+        metadata.insert(
+            PlSmallStr::from("schema_version"),
+            PlSmallStr::from("2026.04"),
+        );
+
+        let mut file = std::fs::File::create(&input).unwrap();
+        let mut writer = IpcWriter::new(&mut file);
+        writer.set_custom_schema_metadata(Arc::new(metadata));
+        writer.finish(&mut df).unwrap();
+    }
+
+    // Run the migrate command — should detect already-migrated and succeed
+    edgefirst_cmd()
+        .args(["migrate", input.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no migration needed"));
+}
+
+#[test]
+fn test_migrate_command_no_mask_column() {
+    use polars::prelude::*;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let input = temp_dir.path().join("no_mask.arrow");
+    let output = temp_dir.path().join("migrated_no_mask.arrow");
+
+    // Create an Arrow file without a mask column (e.g., box2d only)
+    {
+        let names = Series::new("name".into(), vec!["img1.jpg"]);
+        let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
+
+        let mut file = std::fs::File::create(&input).unwrap();
+        IpcWriter::new(&mut file).finish(&mut df).unwrap();
+    }
+
+    // Run the migrate command — should just update metadata
+    edgefirst_cmd()
+        .args([
+            "migrate",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("No 'mask' column found"))
+        .stdout(predicates::str::contains(
+            "Migrated to schema version 2026.04",
+        ));
+
+    assert!(output.exists());
+
+    // Verify schema_version was set
+    {
+        let mut file = std::fs::File::open(&output).unwrap();
+        let mut reader = IpcReader::new(&mut file);
+        let custom_meta = reader.custom_metadata().unwrap();
+        assert!(custom_meta.is_some());
+        let meta = custom_meta.unwrap();
+        assert_eq!(
+            meta.get(&PlSmallStr::from("schema_version")),
+            Some(&PlSmallStr::from("2026.04")),
+        );
+    }
+}
+
+#[test]
+fn test_migrate_command_inplace() {
+    use polars::prelude::*;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let input = temp_dir.path().join("inplace.arrow");
+
+    // Create a simple Arrow file without mask column
+    {
+        let names = Series::new("name".into(), vec!["img1.jpg"]);
+        let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
+
+        let mut file = std::fs::File::create(&input).unwrap();
+        IpcWriter::new(&mut file).finish(&mut df).unwrap();
+    }
+
+    // Run migrate without --output (in-place)
+    edgefirst_cmd()
+        .args(["migrate", input.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Migrated to schema version 2026.04",
+        ));
+
+    // Verify the file was updated in place
+    {
+        let mut file = std::fs::File::open(&input).unwrap();
+        let mut reader = IpcReader::new(&mut file);
+        let custom_meta = reader.custom_metadata().unwrap();
+        assert!(custom_meta.is_some());
+        let meta = custom_meta.unwrap();
+        assert_eq!(
+            meta.get(&PlSmallStr::from("schema_version")),
+            Some(&PlSmallStr::from("2026.04")),
+        );
+    }
+}
+
+#[test]
+fn test_migrate_coco_to_arrow_roundtrip() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+
+    // Create a COCO file with polygon segmentation
+    let coco_json = r#"{
+        "images": [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}],
+        "annotations": [{
+            "id": 1, "image_id": 1, "category_id": 1,
+            "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0,
+            "segmentation": [[10, 20, 110, 20, 110, 100, 10, 100]]
+        }],
+        "categories": [{"id": 1, "name": "person", "supercategory": "human"}]
+    }"#;
+
+    let coco_path = temp_dir.path().join("coco.json");
+    std::fs::write(&coco_path, coco_json).unwrap();
+
+    let arrow_path = temp_dir.path().join("dataset.arrow");
+
+    // Convert COCO to Arrow (produces 2026.04 schema with polygon column)
+    edgefirst_cmd()
+        .args([
+            "coco-to-arrow",
+            coco_path.to_str().unwrap(),
+            "-o",
+            arrow_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Running migrate on a 2026.04 file should be a no-op
+    edgefirst_cmd()
+        .args(["migrate", arrow_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no migration needed"));
+}
