@@ -1255,8 +1255,7 @@ impl Client {
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn delete_dataset(&self, dataset_id: DatasetID) -> Result<(), Error> {
         let params = HashMap::from([("id", dataset_id)]);
-        let _: serde_json::Value =
-            self.rpc("dataset.delete".to_owned(), Some(params)).await?;
+        let _: serde_json::Value = self.rpc("dataset.delete".to_owned(), Some(params)).await?;
         Ok(())
     }
 
@@ -1825,8 +1824,7 @@ impl Client {
         annotation_set_id: AnnotationSetID,
     ) -> Result<(), Error> {
         let params = HashMap::from([("id", annotation_set_id)]);
-        let _: serde_json::Value =
-            self.rpc("annset.delete".to_owned(), Some(params)).await?;
+        let _: serde_json::Value = self.rpc("annset.delete".to_owned(), Some(params)).await?;
         Ok(())
     }
 

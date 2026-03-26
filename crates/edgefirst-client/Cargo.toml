@@ -36,6 +36,7 @@ infer = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 pathfinding = "4.11"
+png = "0.17"
 polars = { workspace = true, optional = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
