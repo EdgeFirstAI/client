@@ -156,6 +156,9 @@ pub struct CocoAnnotation {
     /// Segmentation mask (polygon or RLE format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segmentation: Option<CocoSegmentation>,
+    /// Detection confidence score (present in COCO detection results).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
 }
 
 /// Segmentation format: polygon array or RLE.
@@ -343,6 +346,7 @@ mod tests {
                     area: 20000.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
                 CocoAnnotation {
                     id: 101,
@@ -352,6 +356,7 @@ mod tests {
                     area: 15000.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
             ],
             ..Default::default()
@@ -420,6 +425,7 @@ mod tests {
             segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                 100.0, 200.0, 150.0, 200.0, 150.0, 280.0, 100.0, 280.0,
             ]])),
+            score: None,
         };
 
         let json = serde_json::to_string(&ann).unwrap();

@@ -81,8 +81,9 @@ pub use writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter};
 // Re-export conversion functions
 pub use convert::{
     box2d_to_coco_bbox, calculate_coco_area, coco_bbox_to_box2d, coco_polygon_to_polygon,
-    coco_rle_to_polygon, coco_segmentation_to_polygon, decode_compressed_rle, decode_rle,
-    mask_to_contours, polygon_to_coco_polygon, validate_coco_bbox,
+    coco_rle_to_polygon, coco_segmentation_to_mask_data, coco_segmentation_to_polygon,
+    decode_compressed_rle, decode_rle, mask_to_contours, polygon_to_coco_polygon, rle_to_mask_data,
+    validate_coco_bbox,
 };
 
 // Re-export Arrow conversions (feature-gated)

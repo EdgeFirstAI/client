@@ -8,8 +8,8 @@
 
 use super::{
     convert::{
-        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_polygon,
-        polygon_to_coco_polygon,
+        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask_data,
+        coco_segmentation_to_polygon, polygon_to_coco_polygon,
     },
     reader::CocoReader,
     types::{CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
@@ -279,6 +279,15 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
         );
     }
 
+    // Write labels metadata: sorted list of category names by category_id.
+    if !dataset.categories.is_empty() {
+        let mut cats: Vec<_> = dataset.categories.iter().collect();
+        cats.sort_by_key(|c| c.id);
+        let labels: Vec<String> = cats.iter().map(|c| c.name.clone()).collect();
+        let labels_json = serde_json::to_string(&labels).unwrap_or_default();
+        metadata.insert(PlSmallStr::from("labels"), PlSmallStr::from(labels_json));
+    }
+
     // Write Arrow file
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
@@ -324,13 +333,27 @@ fn convert_image_annotations(
             // Convert bbox
             let box2d = coco_bbox_to_box2d(&ann.bbox, image.width, image.height);
 
-            // Convert polygon if present and requested
-            let polygon = if include_masks {
-                ann.segmentation.as_ref().and_then(|seg| {
-                    coco_segmentation_to_polygon(seg, image.width, image.height).ok()
-                })
+            // Convert segmentation based on type:
+            // - Polygon → annotation.polygon (normalized coords)
+            // - RLE/CompressedRle → annotation.mask (PNG-encoded MaskData)
+            let (polygon, mask) = if include_masks {
+                if let Some(seg) = &ann.segmentation {
+                    match seg {
+                        CocoSegmentation::Polygon(_) => {
+                            let poly =
+                                coco_segmentation_to_polygon(seg, image.width, image.height).ok();
+                            (poly, None)
+                        }
+                        CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_) => {
+                            let mask_data = coco_segmentation_to_mask_data(seg).ok().flatten();
+                            (None, mask_data)
+                        }
+                    }
+                } else {
+                    (None, None)
+                }
             } else {
-                None
+                (None, None)
             };
 
             let mut annotation = Annotation::new();
@@ -339,9 +362,22 @@ fn convert_image_annotations(
             annotation.set_label_index(label_index);
             annotation.set_box2d(Some(box2d));
             annotation.set_polygon(polygon);
+            annotation.set_mask(mask);
             annotation.set_group(group.map(String::from));
             annotation.set_iscrowd(Some(ann.iscrowd != 0));
             annotation.set_category_frequency(index.frequency(ann.category_id).map(String::from));
+
+            // Map COCO score to appropriate geometry score field
+            if let Some(score) = ann.score {
+                let score_f32 = score as f32;
+                if annotation.mask().is_some() {
+                    annotation.set_mask_score(Some(score_f32));
+                } else if annotation.polygon().is_some() {
+                    annotation.set_polygon_score(Some(score_f32));
+                } else {
+                    annotation.set_box2d_score(Some(score_f32));
+                }
+            }
 
             let mut sample = Sample {
                 image_name: Some(sample_name.clone()),
@@ -1024,6 +1060,7 @@ mod tests {
                 area: 40000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -1066,6 +1103,7 @@ mod tests {
                 segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                     10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
                 ]])),
+                score: None,
             }],
             ..Default::default()
         };
@@ -1217,6 +1255,7 @@ mod tests {
                 segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                     100.0, 50.0, 300.0, 50.0, 300.0, 200.0, 100.0, 200.0,
                 ]])),
+                score: None,
             }],
             categories: vec![CocoCategory {
                 id: 1,

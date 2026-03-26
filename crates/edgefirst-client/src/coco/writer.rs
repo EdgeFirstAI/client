@@ -500,6 +500,7 @@ impl CocoDatasetBuilder {
             area,
             iscrowd,
             segmentation,
+            score: None,
         });
 
         id
@@ -598,6 +599,7 @@ mod tests {
                 area: 8000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };

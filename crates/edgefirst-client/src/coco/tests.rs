@@ -64,6 +64,7 @@ mod integration_tests {
                     segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                         100.0, 50.0, 300.0, 50.0, 300.0, 350.0, 100.0, 350.0,
                     ]])),
+                    score: None,
                 },
                 CocoAnnotation {
                     id: 2,
@@ -73,6 +74,7 @@ mod integration_tests {
                     area: 15000.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
                 // One annotation on second image
                 CocoAnnotation {
@@ -85,6 +87,7 @@ mod integration_tests {
                     segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                         50.0, 100.0, 350.0, 100.0, 350.0, 500.0, 50.0, 500.0,
                     ]])),
+                    score: None,
                 },
             ],
             licenses: vec![],
@@ -530,6 +533,7 @@ mod integration_tests {
                     area: 60000.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
                 CocoAnnotation {
                     id: 2,
@@ -539,6 +543,7 @@ mod integration_tests {
                     area: 15000.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
                 CocoAnnotation {
                     id: 3,
@@ -548,6 +553,7 @@ mod integration_tests {
                     area: 2400.0,
                     iscrowd: 0,
                     segmentation: None,
+                    score: None,
                 },
             ],
             licenses: vec![],
@@ -747,6 +753,7 @@ mod integration_tests {
                 area: 20000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -793,5 +800,323 @@ mod integration_tests {
 
         let car = result.categories.iter().find(|c| c.name == "car").unwrap();
         assert_eq!(car.frequency, Some("c".to_string()));
+    }
+
+    /// Test that polygon segmentations produce a polygon column in Arrow output.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_to_arrow_polygon_column_type() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "polygon_test.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                supercategory: Some("human".to_string()),
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [100.0, 50.0, 200.0, 150.0],
+                area: 30000.0,
+                iscrowd: 0,
+                segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                    100.0, 50.0, 300.0, 50.0, 300.0, 200.0, 100.0, 200.0,
+                ]])),
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        // Write COCO JSON
+        let coco_path = temp_dir.path().join("polygon_test.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &coco_path).unwrap();
+
+        // Convert to Arrow
+        let arrow_path = temp_dir.path().join("polygon_test.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Read back and verify column types
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+
+        // Verify "polygon" column exists and is List(List(Float32))
+        let polygon_col = df.column("polygon").expect("polygon column should exist");
+        let dtype = polygon_col.dtype();
+        // polygon is List(List(Float32)) — check outer List
+        assert!(
+            matches!(dtype, DataType::List(_)),
+            "polygon column should be List type, got {:?}",
+            dtype
+        );
+
+        // Verify "mask" column has no non-null values (only polygon data, no RLE)
+        if let Ok(mask_col) = df.column("mask") {
+            assert_eq!(
+                mask_col.null_count(),
+                mask_col.len(),
+                "mask column should be all-null when only polygon segmentations are present"
+            );
+        }
+    }
+
+    /// Test that RLE segmentations produce PNG-encoded mask data in Arrow output.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_to_arrow_rle_to_png_mask() {
+        use crate::MaskData;
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create COCO dataset with an RLE segmentation annotation
+        // 10x10 image, RLE: 10 bg, 5 fg, 85 bg = 100 pixels
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 10,
+                height: 10,
+                file_name: "rle_test.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "object".to_string(),
+                supercategory: None,
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [0.0, 0.0, 10.0, 10.0],
+                area: 5.0,
+                iscrowd: 1,
+                segmentation: Some(CocoSegmentation::Rle(CocoRle {
+                    counts: vec![10, 5, 85], // 10 bg, 5 fg, 85 bg = 100 pixels for 10x10
+                    size: [10, 10],          // [height, width]
+                })),
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        // Write COCO JSON
+        let coco_path = temp_dir.path().join("rle_test.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &coco_path).unwrap();
+
+        // Convert to Arrow
+        let arrow_path = temp_dir.path().join("rle_test.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Read back and verify mask column
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+
+        // Verify "mask" column exists and is Binary
+        let mask_col = df.column("mask").expect("mask column should exist");
+        assert!(
+            matches!(mask_col.dtype(), DataType::Binary),
+            "mask column should be Binary type, got {:?}",
+            mask_col.dtype()
+        );
+
+        // Read the Binary data and construct MaskData
+        let binary_ca = mask_col.binary().unwrap();
+        let png_bytes = binary_ca.get(0).expect("mask data should not be null");
+        assert!(!png_bytes.is_empty(), "PNG bytes should not be empty");
+
+        let mask_data = MaskData::from_png(png_bytes.to_vec());
+
+        // Verify dimensions match the COCO image dimensions
+        assert_eq!(mask_data.width(), 10, "mask width should match image width");
+        assert_eq!(
+            mask_data.height(),
+            10,
+            "mask height should match image height"
+        );
+
+        // Verify bit_depth is 1 (binary mask)
+        assert_eq!(mask_data.bit_depth(), 1, "mask should be 1-bit binary");
+
+        // Verify foreground pixel count: RLE had 5 foreground pixels
+        let decoded = mask_data.decode();
+        let fg_count = decoded.iter().filter(|&&v| v == 1).count();
+        assert_eq!(fg_count, 5, "should have 5 foreground pixels from RLE");
+
+        // Verify polygon column is all-null (RLE goes to mask, not polygon).
+        // The polygon column may be absent entirely or all-null; both are correct.
+        if let Ok(polygon_col) = df.column("polygon") {
+            assert_eq!(
+                polygon_col.null_count(),
+                polygon_col.len(),
+                "polygon column should be all-null when only RLE segmentations are present"
+            );
+        }
+    }
+
+    /// Test that labels metadata is written to Arrow file.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_to_arrow_labels_metadata() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "labels_test.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![
+                CocoCategory {
+                    id: 3,
+                    name: "car".to_string(),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 1,
+                    name: "person".to_string(),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [10.0, 20.0, 100.0, 80.0],
+                area: 8000.0,
+                iscrowd: 0,
+                segmentation: None,
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        let coco_path = temp_dir.path().join("labels_test.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &coco_path).unwrap();
+
+        let arrow_path = temp_dir.path().join("labels_test.arrow");
+        let options = CocoToArrowOptions::default();
+        coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+
+        // Read back and verify labels metadata
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let mut reader = IpcReader::new(&mut file);
+        let custom_meta = reader.custom_metadata().unwrap().unwrap();
+
+        let labels_json = custom_meta
+            .get(&PlSmallStr::from("labels"))
+            .expect("labels metadata should be present");
+        let labels: Vec<String> = serde_json::from_str(labels_json.as_str()).unwrap();
+
+        // Labels should be sorted by category_id: person (id=1), car (id=3)
+        assert_eq!(labels, vec!["person", "car"]);
+    }
+
+    /// Test that COCO score field is mapped to appropriate geometry score.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_coco_to_arrow_score_mapping() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 100,
+                height: 100,
+                file_name: "score_test.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![
+                // Annotation with polygon + score → polygon_score
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [10.0, 10.0, 50.0, 50.0],
+                    area: 2500.0,
+                    iscrowd: 0,
+                    segmentation: Some(CocoSegmentation::Polygon(vec![vec![
+                        10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
+                    ]])),
+                    score: Some(0.95),
+                },
+                // Annotation without segmentation + score → box2d_score
+                CocoAnnotation {
+                    id: 2,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [20.0, 20.0, 30.0, 30.0],
+                    area: 900.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                    score: Some(0.85),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let coco_path = temp_dir.path().join("score_test.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &coco_path).unwrap();
+
+        let arrow_path = temp_dir.path().join("score_test.arrow");
+        let options = CocoToArrowOptions::default();
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Read back and verify score columns
+        use polars::prelude::*;
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+
+        // Row 0 has polygon → polygon_score should be 0.95
+        let polygon_scores = df.column("polygon_score").unwrap().f32().unwrap();
+        assert!(
+            (polygon_scores.get(0).unwrap() - 0.95).abs() < 1e-4,
+            "polygon_score should be ~0.95"
+        );
+
+        // Row 1 has no segmentation → box2d_score should be 0.85
+        let box2d_scores = df.column("box2d_score").unwrap().f32().unwrap();
+        assert!(
+            (box2d_scores.get(1).unwrap() - 0.85).abs() < 1e-4,
+            "box2d_score should be ~0.85"
+        );
     }
 }

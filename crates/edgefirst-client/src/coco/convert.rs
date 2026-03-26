@@ -11,7 +11,7 @@
 //! - **EdgeFirst Arrow**: Normalized 0-1, center-point for box2d column
 
 use super::types::{CocoCompressedRle, CocoRle, CocoSegmentation};
-use crate::{Box2d, Error, Polygon};
+use crate::{Box2d, Error, MaskData, Polygon};
 
 // =============================================================================
 // Bounding Box Conversion
@@ -480,6 +480,31 @@ pub fn coco_segmentation_to_polygon(
                 size: compressed.size,
             };
             coco_rle_to_polygon(&rle, image_width, image_height)
+        }
+    }
+}
+
+// =============================================================================
+// RLE → MaskData (PNG) Conversion
+// =============================================================================
+
+/// Convert COCO RLE segmentation to PNG-encoded MaskData (1-bit binary).
+pub fn rle_to_mask_data(rle: &CocoRle) -> Result<MaskData, Error> {
+    let (pixels, height, width) = decode_rle(rle)?;
+    Ok(MaskData::encode(&pixels, width, height, 1))
+}
+
+/// Convert any COCO segmentation to MaskData for RLE variants.
+///
+/// Returns `None` for polygon segmentation (use `coco_segmentation_to_polygon`
+/// instead).
+pub fn coco_segmentation_to_mask_data(seg: &CocoSegmentation) -> Result<Option<MaskData>, Error> {
+    match seg {
+        CocoSegmentation::Polygon(_) => Ok(None),
+        CocoSegmentation::Rle(rle) => Ok(Some(rle_to_mask_data(rle)?)),
+        CocoSegmentation::CompressedRle(crle) => {
+            let (pixels, height, width) = decode_compressed_rle(crle)?;
+            Ok(Some(MaskData::encode(&pixels, width, height, 1)))
         }
     }
 }

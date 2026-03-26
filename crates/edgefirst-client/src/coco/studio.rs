@@ -1924,6 +1924,7 @@ mod tests {
                 area: 30000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -2003,6 +2004,7 @@ mod tests {
                 segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                     10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
                 ]])),
+                score: None,
             }],
             ..Default::default()
         };
