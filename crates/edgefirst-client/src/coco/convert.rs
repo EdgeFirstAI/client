@@ -11,7 +11,7 @@
 //! - **EdgeFirst Arrow**: Normalized 0-1, center-point for box2d column
 
 use super::types::{CocoCompressedRle, CocoRle, CocoSegmentation};
-use crate::{Box2d, Error, Mask};
+use crate::{Box2d, Error, MaskData, Polygon};
 
 // =============================================================================
 // Bounding Box Conversion
@@ -121,10 +121,11 @@ pub fn validate_coco_bbox(
 // Polygon Conversion
 // =============================================================================
 
-/// Convert COCO polygon segmentation to EdgeFirst `Mask` format.
+/// Convert COCO polygon segmentation to EdgeFirst `Polygon` format.
 ///
 /// COCO polygons: `[[x1,y1,x2,y2,...], [x3,y3,...]]` (nested, pixel
-/// coordinates) EdgeFirst Mask: `Vec<Vec<(f32, f32)>>` (nested, normalized 0-1)
+/// coordinates) EdgeFirst Polygon: `Vec<Vec<(f32, f32)>>` (nested, normalized
+/// 0-1)
 ///
 /// # Arguments
 /// * `polygons` - COCO polygon array (nested Vec of pixel coordinates)
@@ -132,8 +133,12 @@ pub fn validate_coco_bbox(
 /// * `image_height` - Image height in pixels
 ///
 /// # Returns
-/// EdgeFirst `Mask` with normalized coordinates
-pub fn coco_polygon_to_mask(polygons: &[Vec<f64>], image_width: u32, image_height: u32) -> Mask {
+/// EdgeFirst `Polygon` with normalized coordinates
+pub fn coco_polygon_to_polygon(
+    polygons: &[Vec<f64>],
+    image_width: u32,
+    image_height: u32,
+) -> Polygon {
     let img_w = image_width as f64;
     let img_h = image_height as f64;
 
@@ -155,29 +160,33 @@ pub fn coco_polygon_to_mask(polygons: &[Vec<f64>], image_width: u32, image_heigh
         .filter(|poly: &Vec<(f32, f32)>| poly.len() >= 3) // Still need 3+ points after conversion
         .collect();
 
-    Mask::new(converted)
+    Polygon::new(converted)
 }
 
-/// Convert EdgeFirst `Mask` format to COCO polygon segmentation.
+/// Convert EdgeFirst `Polygon` format to COCO polygon segmentation.
 ///
 /// # Arguments
-/// * `mask` - EdgeFirst `Mask` with normalized coordinates
+/// * `polygon` - EdgeFirst `Polygon` with normalized coordinates
 /// * `image_width` - Image width in pixels
 /// * `image_height` - Image height in pixels
 ///
 /// # Returns
 /// COCO polygon array (nested Vec of pixel coordinates)
-pub fn mask_to_coco_polygon(mask: &Mask, image_width: u32, image_height: u32) -> Vec<Vec<f64>> {
+pub fn polygon_to_coco_polygon(
+    polygon: &Polygon,
+    image_width: u32,
+    image_height: u32,
+) -> Vec<Vec<f64>> {
     let img_w = image_width as f64;
     let img_h = image_height as f64;
 
-    mask.polygon
+    polygon
+        .rings
         .iter()
         .filter(|poly| poly.len() >= 3) // Need at least 3 points
-        .map(|polygon| {
-            polygon
-                .iter()
-                .flat_map(|(x, y)| vec![(*x as f64) * img_w, (*y as f64) * img_h])
+        .map(|ring| {
+            ring.iter()
+                .flat_map(|(x, y)| [(*x as f64) * img_w, (*y as f64) * img_h])
                 .collect()
         })
         .collect()
@@ -421,10 +430,14 @@ fn trace_contour(
     }
 }
 
-/// Convert RLE segmentation to EdgeFirst `Mask`.
+/// Convert RLE segmentation to EdgeFirst `Polygon`.
 ///
 /// Decodes the RLE, extracts contours, and normalizes to `[0, 1]` range.
-pub fn coco_rle_to_mask(rle: &CocoRle, image_width: u32, image_height: u32) -> Result<Mask, Error> {
+pub fn coco_rle_to_polygon(
+    rle: &CocoRle,
+    image_width: u32,
+    image_height: u32,
+) -> Result<Polygon, Error> {
     let (binary_mask, height, width) = decode_rle(rle)?;
     let contours = mask_to_contours(&binary_mask, width, height);
 
@@ -444,31 +457,116 @@ pub fn coco_rle_to_mask(rle: &CocoRle, image_width: u32, image_height: u32) -> R
         })
         .collect();
 
-    Ok(Mask::new(normalized))
+    Ok(Polygon::new(normalized))
 }
 
-/// Convert any COCO segmentation to EdgeFirst `Mask`.
+/// Convert any COCO segmentation to EdgeFirst `Polygon`.
 ///
 /// Handles all segmentation types: polygon, RLE, and compressed RLE.
-pub fn coco_segmentation_to_mask(
+pub fn coco_segmentation_to_polygon(
     segmentation: &CocoSegmentation,
     image_width: u32,
     image_height: u32,
-) -> Result<Mask, Error> {
+) -> Result<Polygon, Error> {
     match segmentation {
         CocoSegmentation::Polygon(polygons) => {
-            Ok(coco_polygon_to_mask(polygons, image_width, image_height))
+            Ok(coco_polygon_to_polygon(polygons, image_width, image_height))
         }
-        CocoSegmentation::Rle(rle) => coco_rle_to_mask(rle, image_width, image_height),
+        CocoSegmentation::Rle(rle) => coco_rle_to_polygon(rle, image_width, image_height),
         CocoSegmentation::CompressedRle(compressed) => {
             let counts = decode_leb128(&compressed.counts)?;
             let rle = CocoRle {
                 counts,
                 size: compressed.size,
             };
-            coco_rle_to_mask(&rle, image_width, image_height)
+            coco_rle_to_polygon(&rle, image_width, image_height)
         }
     }
+}
+
+// =============================================================================
+// RLE → MaskData (PNG) Conversion
+// =============================================================================
+
+/// Convert COCO RLE segmentation to PNG-encoded MaskData (1-bit binary).
+pub fn rle_to_mask_data(rle: &CocoRle) -> Result<MaskData, Error> {
+    let (pixels, height, width) = decode_rle(rle)?;
+    MaskData::encode(&pixels, width, height, 1)
+}
+
+/// Convert any COCO segmentation to MaskData for RLE variants.
+///
+/// Returns `None` for polygon segmentation (use `coco_segmentation_to_polygon`
+/// instead).
+pub fn coco_segmentation_to_mask_data(seg: &CocoSegmentation) -> Result<Option<MaskData>, Error> {
+    match seg {
+        CocoSegmentation::Polygon(_) => Ok(None),
+        CocoSegmentation::Rle(rle) => Ok(Some(rle_to_mask_data(rle)?)),
+        CocoSegmentation::CompressedRle(crle) => {
+            let (pixels, height, width) = decode_compressed_rle(crle)?;
+            Ok(Some(MaskData::encode(&pixels, width, height, 1)?))
+        }
+    }
+}
+
+// =============================================================================
+// RLE Encoding
+// =============================================================================
+
+/// Encode a binary mask (row-major, 0/1 values) as COCO RLE.
+///
+/// COCO RLE uses column-major (Fortran) order, starting with a background
+/// count. This function transposes the input from row-major to column-major
+/// before run-length encoding.
+///
+/// # Arguments
+/// * `mask` - Binary mask in row-major order (0 = background, nonzero = foreground)
+/// * `width` - Image width in pixels
+/// * `height` - Image height in pixels
+///
+/// # Returns
+/// A `CocoRle` with counts and size fields.
+pub fn encode_rle(mask: &[u8], width: u32, height: u32) -> Result<CocoRle, Error> {
+    let total = (width as usize) * (height as usize);
+
+    if mask.len() != total {
+        return Err(Error::CocoError(format!(
+            "mask length {} does not match {}x{} = {}",
+            mask.len(),
+            width,
+            height,
+            total
+        )));
+    }
+
+    // Convert row-major to column-major
+    let mut column_major = vec![0u8; total];
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            column_major[col * height as usize + row] = mask[row * width as usize + col];
+        }
+    }
+
+    // Run-length encode (starts with background count)
+    let mut counts = Vec::new();
+    let mut current = 0u8; // start with background
+    let mut run = 0u32;
+    for &pixel in &column_major {
+        let val = if pixel != 0 { 1 } else { 0 };
+        if val == current {
+            run += 1;
+        } else {
+            counts.push(run);
+            current = val;
+            run = 1;
+        }
+    }
+    counts.push(run);
+
+    Ok(CocoRle {
+        counts,
+        size: [height, width],
+    })
 }
 
 // =============================================================================
@@ -591,28 +689,28 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_coco_polygon_to_mask() {
+    fn test_coco_polygon_to_polygon() {
         let polygons = vec![vec![100.0, 100.0, 200.0, 100.0, 200.0, 200.0, 100.0, 200.0]];
-        let mask = coco_polygon_to_mask(&polygons, 400, 400);
+        let polygon = coco_polygon_to_polygon(&polygons, 400, 400);
 
-        assert_eq!(mask.polygon.len(), 1);
-        assert_eq!(mask.polygon[0].len(), 4);
+        assert_eq!(polygon.rings.len(), 1);
+        assert_eq!(polygon.rings[0].len(), 4);
 
         // Check normalized coordinates
-        assert!((mask.polygon[0][0].0 - 0.25).abs() < 1e-6);
-        assert!((mask.polygon[0][0].1 - 0.25).abs() < 1e-6);
+        assert!((polygon.rings[0][0].0 - 0.25).abs() < 1e-6);
+        assert!((polygon.rings[0][0].1 - 0.25).abs() < 1e-6);
     }
 
     #[test]
-    fn test_mask_to_coco_polygon() {
-        let mask = Mask::new(vec![vec![
+    fn test_polygon_to_coco_polygon() {
+        let polygon = Polygon::new(vec![vec![
             (0.25, 0.25),
             (0.5, 0.25),
             (0.5, 0.5),
             (0.25, 0.5),
         ]]);
 
-        let polygons = mask_to_coco_polygon(&mask, 400, 400);
+        let polygons = polygon_to_coco_polygon(&polygon, 400, 400);
 
         assert_eq!(polygons.len(), 1);
         assert_eq!(polygons[0].len(), 8); // 4 points * 2 coords
@@ -630,8 +728,8 @@ mod tests {
         let image_w = 300;
         let image_h = 300;
 
-        let mask = coco_polygon_to_mask(&original, image_w, image_h);
-        let restored = mask_to_coco_polygon(&mask, image_w, image_h);
+        let polygon = coco_polygon_to_polygon(&original, image_w, image_h);
+        let restored = polygon_to_coco_polygon(&polygon, image_w, image_h);
 
         assert_eq!(original.len(), restored.len());
         assert_eq!(original[0].len(), restored[0].len());
@@ -654,11 +752,11 @@ mod tests {
             vec![60.0, 60.0, 90.0, 60.0, 90.0, 90.0, 60.0, 90.0],
         ];
 
-        let mask = coco_polygon_to_mask(&polygons, 100, 100);
+        let polygon = coco_polygon_to_polygon(&polygons, 100, 100);
 
-        assert_eq!(mask.polygon.len(), 2);
-        assert_eq!(mask.polygon[0].len(), 4);
-        assert_eq!(mask.polygon[1].len(), 4);
+        assert_eq!(polygon.rings.len(), 2);
+        assert_eq!(polygon.rings[0].len(), 4);
+        assert_eq!(polygon.rings[1].len(), 4);
     }
 
     #[test]
@@ -669,9 +767,20 @@ mod tests {
             vec![10.0, 10.0, 50.0, 10.0, 50.0, 50.0], // 3 points - should be kept
         ];
 
-        let mask = coco_polygon_to_mask(&polygons, 100, 100);
+        let polygon = coco_polygon_to_polygon(&polygons, 100, 100);
 
-        assert_eq!(mask.polygon.len(), 1);
+        assert_eq!(polygon.rings.len(), 1);
+    }
+
+    #[test]
+    fn test_polygon_empty_ring_handled() {
+        // Empty segmentation polygon vec![] should be handled gracefully
+        let polygons: Vec<Vec<f64>> = vec![vec![]];
+        let polygon = coco_polygon_to_polygon(&polygons, 100, 100);
+        assert!(
+            polygon.rings.is_empty(),
+            "Empty polygon ring should be filtered out"
+        );
     }
 
     // =========================================================================
@@ -771,5 +880,74 @@ mod tests {
             CocoSegmentation::Polygon(vec![vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]]);
         let area = calculate_coco_area(&seg).unwrap();
         assert!((area - 10000.0).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // RLE Encoding Tests
+    // =========================================================================
+
+    #[test]
+    fn test_encode_rle_all_background() {
+        let mask = vec![0u8; 100];
+        let rle = encode_rle(&mask, 10, 10).unwrap();
+        assert_eq!(rle.size, [10, 10]);
+        // All background → single count of 100
+        assert_eq!(rle.counts, vec![100]);
+    }
+
+    #[test]
+    fn test_encode_rle_all_foreground() {
+        let mask = vec![1u8; 100];
+        let rle = encode_rle(&mask, 10, 10).unwrap();
+        assert_eq!(rle.size, [10, 10]);
+        // All foreground → [0 bg, 100 fg]
+        assert_eq!(rle.counts, vec![0, 100]);
+    }
+
+    #[test]
+    fn test_encode_decode_rle_roundtrip() {
+        // Create a known mask: 2x2 square in top-left of 4x4 image
+        #[rustfmt::skip]
+        let mask = vec![
+            1, 1, 0, 0,
+            1, 1, 0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+        ];
+
+        let rle = encode_rle(&mask, 4, 4).unwrap();
+        assert_eq!(rle.size, [4, 4]);
+        let counts_sum: u32 = rle.counts.iter().sum();
+        assert_eq!(counts_sum, 16, "RLE counts should sum to total pixels");
+
+        // Decode back and verify pixel-for-pixel match
+        let (decoded, height, width) = decode_rle(&rle).unwrap();
+        assert_eq!(height, 4);
+        assert_eq!(width, 4);
+        assert_eq!(decoded, mask);
+    }
+
+    #[test]
+    fn test_encode_rle_single_pixel_foreground() {
+        // Only pixel (0,0) is foreground in 3x3 image
+        #[rustfmt::skip]
+        let mask = vec![
+            1, 0, 0,
+            0, 0, 0,
+            0, 0, 0,
+        ];
+
+        let rle = encode_rle(&mask, 3, 3).unwrap();
+        let (decoded, _, _) = decode_rle(&rle).unwrap();
+        assert_eq!(decoded, mask);
+    }
+
+    #[test]
+    fn test_encode_rle_size_mismatch() {
+        let mask = vec![0u8; 50];
+        assert!(
+            encode_rle(&mask, 10, 10).is_err(),
+            "Should reject mask length != width * height"
+        );
     }
 }

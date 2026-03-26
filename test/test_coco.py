@@ -219,32 +219,18 @@ class TestCOCO(unittest.TestCase):
             [],
             None)
 
-        # Verify new schema has 13 columns
-        self.assertEqual(
-            df.shape[1],
-            13,
-            "Should have 13 columns in 2025.10 schema")
-
-        # Verify column names
-        expected_columns = {
-            "name",
-            "frame",
-            "object_id",
-            "label",
-            "label_index",
-            "group",
-            "mask",
-            "box2d",
-            "box3d",
-            "size",
-            "location",
-            "pose",
-            "degradation"}
+        # 2026.04 schema: only columns with data are present (column drop rule)
+        # Required column: "name" is always present
+        # Other columns depend on what data the test dataset has
         actual_columns = set(df.columns)
-        self.assertEqual(
-            actual_columns,
-            expected_columns,
-            "Column names should match 2025.10 schema")
+        self.assertIn("name", actual_columns, "name column must always be present")
+        self.assertGreater(
+            df.shape[1], 1,
+            "Should have more than just the name column")
+
+        # Verify key data columns are present (these exist in the Deer test dataset)
+        for col in ["name", "label", "label_index", "group"]:
+            self.assertIn(col, actual_columns, f"{col} should be present")
 
         # Get unique by name
         df = df.unique(subset=["name"], keep="first", maintain_order=True)

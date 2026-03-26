@@ -476,7 +476,9 @@ pub enum AnnotationType {
     Box2d,
     /// 3D bounding boxes for object detection in 3D space
     Box3d,
-    /// Pixel-level segmentation masks
+    /// Vector polygon contours for instance segmentation
+    Polygon,
+    /// Raster pixel masks for semantic/instance segmentation
     Mask,
 }
 
@@ -485,6 +487,7 @@ impl From<core::AnnotationType> for AnnotationType {
         match at {
             core::AnnotationType::Box2d => AnnotationType::Box2d,
             core::AnnotationType::Box3d => AnnotationType::Box3d,
+            core::AnnotationType::Polygon => AnnotationType::Polygon,
             core::AnnotationType::Mask => AnnotationType::Mask,
         }
     }
@@ -495,6 +498,7 @@ impl From<AnnotationType> for core::AnnotationType {
         match at {
             AnnotationType::Box2d => core::AnnotationType::Box2d,
             AnnotationType::Box3d => core::AnnotationType::Box3d,
+            AnnotationType::Polygon => core::AnnotationType::Polygon,
             AnnotationType::Mask => core::AnnotationType::Mask,
         }
     }
@@ -941,15 +945,15 @@ pub struct PolygonRing {
 /// Each ring is a closed polygon defined by a sequence of (x, y) coordinates.
 /// Multiple rings allow for complex shapes with holes.
 #[derive(uniffi::Record, Clone, Debug)]
-pub struct Mask {
-    pub polygon: Vec<PolygonRing>,
+pub struct Polygon {
+    pub rings: Vec<PolygonRing>,
 }
 
-impl From<core::Mask> for Mask {
-    fn from(m: core::Mask) -> Self {
+impl From<core::Polygon> for Polygon {
+    fn from(p: core::Polygon) -> Self {
         Self {
-            polygon: m
-                .polygon
+            rings: p
+                .rings
                 .into_iter()
                 .map(|ring| PolygonRing {
                     points: ring.into_iter().map(|(x, y)| Point2d { x, y }).collect(),
@@ -959,10 +963,10 @@ impl From<core::Mask> for Mask {
     }
 }
 
-impl From<Mask> for core::Mask {
-    fn from(m: Mask) -> Self {
-        core::Mask::new(
-            m.polygon
+impl From<Polygon> for core::Polygon {
+    fn from(p: Polygon) -> Self {
+        core::Polygon::new(
+            p.rings
                 .into_iter()
                 .map(|ring| ring.points.into_iter().map(|p| (p.x, p.y)).collect())
                 .collect(),
@@ -1057,12 +1061,24 @@ pub struct Annotation {
     pub label_name: Option<String>,
     /// Label/class index.
     pub label_index: Option<u64>,
+    /// Whether this annotation marks a crowd region (COCO `iscrowd`).
+    pub iscrowd: Option<bool>,
     /// 2D bounding box.
     pub box2d: Option<Box2d>,
     /// 3D bounding box.
     pub box3d: Option<Box3d>,
-    /// Segmentation mask.
-    pub mask: Option<Mask>,
+    /// Polygon contours.
+    pub polygon: Option<Polygon>,
+    /// Raster mask as raw PNG bytes.
+    pub mask: Option<Vec<u8>>,
+    /// Confidence score for the 2D bounding box prediction.
+    pub box2d_score: Option<f32>,
+    /// Confidence score for the 3D bounding box prediction.
+    pub box3d_score: Option<f32>,
+    /// Confidence score for the polygon prediction.
+    pub polygon_score: Option<f32>,
+    /// Confidence score for the mask prediction.
+    pub mask_score: Option<f32>,
 }
 
 impl From<core::Annotation> for Annotation {
@@ -1076,15 +1092,23 @@ impl From<core::Annotation> for Annotation {
             object_id: a.object_id().cloned(),
             label_name: a.label().cloned(),
             label_index: a.label_index(),
+            iscrowd: a.iscrowd(),
             box2d: a.box2d().map(|b| Box2d::from(b.clone())),
             box3d: a.box3d().map(|b| Box3d::from(b.clone())),
-            mask: a.mask().map(|m| Mask::from(m.clone())),
+            polygon: a.polygon().map(|p| Polygon::from(p.clone())),
+            mask: a.mask().map(|m| m.as_bytes().to_vec()),
+            box2d_score: a.box2d_score(),
+            box3d_score: a.box3d_score(),
+            polygon_score: a.polygon_score(),
+            mask_score: a.mask_score(),
         }
     }
 }
 
-impl From<Annotation> for core::Annotation {
-    fn from(a: Annotation) -> Self {
+impl TryFrom<Annotation> for core::Annotation {
+    type Error = ClientError;
+
+    fn try_from(a: Annotation) -> Result<Self, Self::Error> {
         let mut ann = core::Annotation::new();
         ann.set_sample_id(a.sample_id.map(core::SampleID::from));
         ann.set_name(a.name);
@@ -1102,10 +1126,76 @@ impl From<Annotation> for core::Annotation {
         if let Some(idx) = a.label_index {
             ann.set_label_index(Some(idx));
         }
+        ann.set_iscrowd(a.iscrowd);
         ann.set_box2d(a.box2d.map(core::Box2d::from));
         ann.set_box3d(a.box3d.map(core::Box3d::from));
-        ann.set_mask(a.mask.map(core::Mask::from));
-        ann
+        ann.set_polygon(a.polygon.map(core::Polygon::from));
+        if let Some(bytes) = a.mask {
+            let mask = core::MaskData::from_png_checked(bytes).map_err(|e| {
+                ClientError::InvalidParameters {
+                    message: format!("Invalid PNG mask data: {e}"),
+                }
+            })?;
+            ann.set_mask(Some(mask));
+        }
+        ann.set_box2d_score(a.box2d_score);
+        ann.set_box3d_score(a.box3d_score);
+        ann.set_polygon_score(a.polygon_score);
+        ann.set_mask_score(a.mask_score);
+        Ok(ann)
+    }
+}
+
+/// Validate an FFI annotation, returning an error if mask data is invalid.
+///
+/// Swift/Kotlin callers should use this function to validate annotations
+/// with mask data before passing them to API methods.
+#[uniffi::export]
+pub fn validate_annotation(annotation: &Annotation) -> Result<(), ClientError> {
+    if let Some(ref bytes) = annotation.mask {
+        core::MaskData::from_png_checked(bytes.clone()).map_err(|e| {
+            ClientError::InvalidParameters {
+                message: format!("Invalid PNG mask data: {e}"),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Pipeline timing measurements for a sample, in nanoseconds.
+///
+/// Each field records the wall-clock duration of one pipeline stage.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct Timing {
+    /// Duration of the data-loading stage (nanoseconds).
+    pub load: Option<i64>,
+    /// Duration of the preprocessing stage (nanoseconds).
+    pub preprocess: Option<i64>,
+    /// Duration of the inference stage (nanoseconds).
+    pub inference: Option<i64>,
+    /// Duration of the decoding / postprocessing stage (nanoseconds).
+    pub decode: Option<i64>,
+}
+
+impl From<core::Timing> for Timing {
+    fn from(t: core::Timing) -> Self {
+        Self {
+            load: t.load,
+            preprocess: t.preprocess,
+            inference: t.inference,
+            decode: t.decode,
+        }
+    }
+}
+
+impl From<Timing> for core::Timing {
+    fn from(t: Timing) -> Self {
+        core::Timing {
+            load: t.load,
+            preprocess: t.preprocess,
+            inference: t.inference,
+            decode: t.decode,
+        }
     }
 }
 
@@ -1146,10 +1236,13 @@ pub struct Sample {
     pub files: Vec<SampleFile>,
     /// Annotations on this sample.
     pub annotations: Vec<Annotation>,
+    /// Pipeline timing measurements (nanoseconds per stage).
+    pub timing: Option<Timing>,
 }
 
 impl From<core::Sample> for Sample {
     fn from(s: core::Sample) -> Self {
+        let timing = s.timing.clone().map(Timing::from);
         Self {
             id: s.id().map(SampleId::from),
             group: s.group().cloned(),
@@ -1173,6 +1266,7 @@ impl From<core::Sample> for Sample {
                 .cloned()
                 .map(Annotation::from)
                 .collect(),
+            timing,
         }
     }
 }

@@ -6,6 +6,7 @@ use std::{collections::HashMap, fmt::Display};
 use crate::{
     Client, Error,
     api::{AnnotationSetID, DatasetID, ProjectID, SampleID},
+    mask::MaskData,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -214,11 +215,11 @@ impl FileType {
 ///
 /// // Create annotation types from strings (using TryFrom)
 /// let box_2d: AnnotationType = "box2d".try_into().unwrap();
-/// let segmentation: AnnotationType = "mask".try_into().unwrap();
+/// let segmentation: AnnotationType = "polygon".try_into().unwrap();
 ///
 /// // Or use From with String
 /// let box_2d = AnnotationType::from("box2d".to_string());
-/// let segmentation = AnnotationType::from("mask".to_string());
+/// let segmentation = AnnotationType::from("polygon".to_string());
 ///
 /// // Display annotation types
 /// println!("Annotation type: {}", box_2d); // "Annotation type: box2d"
@@ -228,7 +229,8 @@ impl FileType {
 /// match annotation_type {
 ///     AnnotationType::Box2d => println!("Processing 2D bounding boxes"),
 ///     AnnotationType::Box3d => println!("Processing 3D bounding boxes"),
-///     AnnotationType::Mask => println!("Processing segmentation masks"),
+///     AnnotationType::Polygon => println!("Processing polygon contours"),
+///     AnnotationType::Mask => println!("Processing raster pixel masks"),
 /// }
 /// ```
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -237,7 +239,9 @@ pub enum AnnotationType {
     Box2d,
     /// 3D bounding boxes for object detection in 3D space (LiDAR, etc.)
     Box3d,
-    /// Pixel-level segmentation masks for semantic/instance segmentation
+    /// Vector polygon contours for instance segmentation
+    Polygon,
+    /// Raster pixel masks for semantic/instance segmentation
     Mask,
 }
 
@@ -248,7 +252,10 @@ impl TryFrom<&str> for AnnotationType {
         match s {
             "box2d" => Ok(AnnotationType::Box2d),
             "box3d" => Ok(AnnotationType::Box3d),
-            "mask" => Ok(AnnotationType::Mask),
+            "polygon" => Ok(AnnotationType::Polygon),
+            "seg" => Ok(AnnotationType::Polygon),
+            "mask" => Ok(AnnotationType::Polygon), // backward compat
+            "raster" => Ok(AnnotationType::Mask),
             _ => Err(crate::Error::InvalidAnnotationType(s.to_string())),
         }
     }
@@ -274,11 +281,13 @@ impl AnnotationType {
     /// The server uses different naming conventions than the client:
     /// - `Box2d` → `"box"` (server) vs `"box2d"` (client display)
     /// - `Box3d` → `"box3d"` (same)
+    /// - `Polygon` → `"seg"` (server) vs `"polygon"` (client display)
     /// - `Mask` → `"seg"` (server) vs `"mask"` (client display)
     pub fn as_server_type(&self) -> &'static str {
         match self {
             AnnotationType::Box2d => "box",
             AnnotationType::Box3d => "box3d",
+            AnnotationType::Polygon => "seg",
             AnnotationType::Mask => "seg",
         }
     }
@@ -289,6 +298,7 @@ impl std::fmt::Display for AnnotationType {
         let value = match self {
             AnnotationType::Box2d => "box2d",
             AnnotationType::Box3d => "box3d",
+            AnnotationType::Polygon => "polygon",
             AnnotationType::Mask => "mask",
         };
         write!(f, "{}", value)
@@ -446,6 +456,22 @@ impl AnnotationSet {
     }
 }
 
+/// Pipeline timing measurements for a sample, in nanoseconds.
+///
+/// Each field records the wall-clock duration of one pipeline stage.
+/// Populated from Arrow metadata; not part of the Studio JSON-RPC API.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Timing {
+    /// Duration of the data-loading stage (nanoseconds).
+    pub load: Option<i64>,
+    /// Duration of the preprocessing stage (nanoseconds).
+    pub preprocess: Option<i64>,
+    /// Duration of the inference stage (nanoseconds).
+    pub inference: Option<i64>,
+    /// Duration of the decoding / postprocessing stage (nanoseconds).
+    pub decode: Option<i64>,
+}
+
 /// A sample in a dataset, typically representing a single image with metadata
 /// and optional sensor data.
 ///
@@ -501,6 +527,12 @@ pub struct Sample {
     /// Image degradation type (blur, occlusion, weather, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub degradation: Option<String>,
+    /// LVIS: label_index values for categories verified absent from this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neg_label_indices: Option<Vec<u32>>,
+    /// LVIS: label_index values for categories with incomplete annotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_exhaustive_label_indices: Option<Vec<u32>>,
     /// Additional sensor files (LiDAR, radar, depth maps, etc.).
     /// Deserialization is handled by custom Deserialize impl which extracts
     /// files from the "sensors" field. Serialization converts to HashMap for
@@ -519,6 +551,10 @@ pub struct Sample {
         serialize_with = "serialize_annotations"
     )]
     pub annotations: Vec<Annotation>,
+    /// Pipeline timing measurements (populated from Arrow, not from Studio
+    /// JSON-RPC).
+    #[serde(skip)]
+    pub timing: Option<Timing>,
 }
 
 // Custom deserializer for frame_number - converts -1 to None
@@ -729,6 +765,10 @@ struct SampleRaw {
     date: Option<DateTime<Utc>>,
     source: Option<String>,
     degradation: Option<String>,
+    #[serde(default)]
+    neg_label_indices: Option<Vec<u32>>,
+    #[serde(default)]
+    not_exhaustive_label_indices: Option<Vec<u32>>,
     /// Raw sensors JSON - will be processed into files + location
     #[serde(default, alias = "sensors")]
     sensors: Option<serde_json::Value>,
@@ -756,8 +796,11 @@ impl From<SampleRaw> for Sample {
             source: raw.source,
             location: sensors_data.location,
             degradation: raw.degradation,
+            neg_label_indices: raw.neg_label_indices,
+            not_exhaustive_label_indices: raw.not_exhaustive_label_indices,
             files: sensors_data.files,
             annotations: raw.annotations,
+            timing: None,
         }
     }
 }
@@ -810,8 +853,11 @@ impl Sample {
             source: None,
             location: None,
             degradation: None,
+            neg_label_indices: None,
+            not_exhaustive_label_indices: None,
             files: vec![],
             annotations: vec![],
+            timing: None,
         }
     }
 
@@ -1301,32 +1347,32 @@ impl Box2d {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Mask {
-    pub polygon: Vec<Vec<(f32, f32)>>,
+pub struct Polygon {
+    pub rings: Vec<Vec<(f32, f32)>>,
 }
 
-impl TypeName for Mask {
+impl TypeName for Polygon {
     fn type_name() -> String {
-        "mask".to_owned()
+        "polygon".to_owned()
     }
 }
 
-impl Mask {
-    pub fn new(polygon: Vec<Vec<(f32, f32)>>) -> Self {
-        Self { polygon }
+impl Polygon {
+    pub fn new(rings: Vec<Vec<(f32, f32)>>) -> Self {
+        Self { rings }
     }
 }
 
-impl serde::Serialize for Mask {
+impl serde::Serialize for Polygon {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serde::Serialize::serialize(&self.polygon, serializer)
+        serde::Serialize::serialize(&self.rings, serializer)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Mask {
+impl<'de> serde::Deserialize<'de> for Polygon {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -1336,8 +1382,9 @@ impl<'de> serde::Deserialize<'de> for Mask {
 
         // Try to extract polygon data from various formats
         let polygon_value = if let Some(obj) = value.as_object() {
-            // Format: {"polygon": [...]}
-            obj.get("polygon")
+            // Format: {"polygon": [...]} or {"rings": [...]}
+            obj.get("rings")
+                .or_else(|| obj.get("polygon"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null)
         } else {
@@ -1346,9 +1393,9 @@ impl<'de> serde::Deserialize<'de> for Mask {
         };
 
         // Parse the polygon array, filtering out null/invalid values
-        let polygon = parse_polygon_value(&polygon_value);
+        let rings = parse_polygon_value(&polygon_value);
 
-        Ok(Self { polygon })
+        Ok(Self { rings })
     }
 }
 
@@ -1447,13 +1494,17 @@ struct AnnotationRaw {
     label_name: Option<String>,
     #[serde(default)]
     label_index: Option<u64>,
+    #[serde(default)]
+    iscrowd: Option<bool>,
+    #[serde(default)]
+    category_frequency: Option<String>,
     // Nested box2d format (if server sends it this way)
     #[serde(default)]
     box2d: Option<Box2d>,
     #[serde(default)]
     box3d: Option<Box3d>,
-    #[serde(default)]
-    mask: Option<Mask>,
+    #[serde(default, alias = "mask")]
+    polygon: Option<Polygon>,
     // Flat box2d fields from server (x, y, w, h at annotation level)
     #[serde(default)]
     x: Option<f64>,
@@ -1493,12 +1544,33 @@ pub struct Annotation {
     label_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label_index: Option<u64>,
+    /// COCO crowd flag: true = crowd region, false = single instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iscrowd: Option<bool>,
+    /// LVIS frequency group: "f" (frequent), "c" (common), "r" (rare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category_frequency: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box2d: Option<Box2d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box3d: Option<Box3d>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mask: Option<Mask>,
+    polygon: Option<Polygon>,
+    /// PNG-encoded raster mask (populated from Arrow, not from Studio JSON-RPC).
+    #[serde(skip)]
+    mask: Option<MaskData>,
+    /// Detection confidence score for box2d (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box2d_score: Option<f32>,
+    /// Detection confidence score for box3d (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    box3d_score: Option<f32>,
+    /// Confidence score for polygon (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    polygon_score: Option<f32>,
+    /// Confidence score for mask (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mask_score: Option<f32>,
 }
 
 impl<'de> serde::Deserialize<'de> for Annotation {
@@ -1526,9 +1598,16 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             object_id: raw.object_id,
             label_name: raw.label_name,
             label_index: raw.label_index,
+            iscrowd: raw.iscrowd,
+            category_frequency: raw.category_frequency,
             box2d,
             box3d: raw.box3d,
-            mask: raw.mask,
+            polygon: raw.polygon,
+            mask: None,
+            box2d_score: None,
+            box3d_score: None,
+            polygon_score: None,
+            mask_score: None,
         })
     }
 }
@@ -1550,9 +1629,16 @@ impl Annotation {
             object_id: None,
             label_name: None,
             label_index: None,
+            iscrowd: None,
+            category_frequency: None,
             box2d: None,
             box3d: None,
+            polygon: None,
             mask: None,
+            box2d_score: None,
+            box3d_score: None,
+            polygon_score: None,
+            mask_score: None,
         }
     }
 
@@ -1604,16 +1690,6 @@ impl Annotation {
         self.object_id = object_id;
     }
 
-    #[deprecated(note = "renamed to object_id")]
-    pub fn object_reference(&self) -> Option<&String> {
-        self.object_id()
-    }
-
-    #[deprecated(note = "renamed to set_object_id")]
-    pub fn set_object_reference(&mut self, object_reference: Option<String>) {
-        self.set_object_id(object_reference);
-    }
-
     pub fn label(&self) -> Option<&String> {
         self.label_name.as_ref()
     }
@@ -1628,6 +1704,22 @@ impl Annotation {
 
     pub fn set_label_index(&mut self, label_index: Option<u64>) {
         self.label_index = label_index;
+    }
+
+    pub fn iscrowd(&self) -> Option<bool> {
+        self.iscrowd
+    }
+
+    pub fn set_iscrowd(&mut self, iscrowd: Option<bool>) {
+        self.iscrowd = iscrowd;
+    }
+
+    pub fn category_frequency(&self) -> Option<&String> {
+        self.category_frequency.as_ref()
+    }
+
+    pub fn set_category_frequency(&mut self, category_frequency: Option<String>) {
+        self.category_frequency = category_frequency;
     }
 
     pub fn box2d(&self) -> Option<&Box2d> {
@@ -1646,12 +1738,52 @@ impl Annotation {
         self.box3d = box3d;
     }
 
-    pub fn mask(&self) -> Option<&Mask> {
+    pub fn polygon(&self) -> Option<&Polygon> {
+        self.polygon.as_ref()
+    }
+
+    pub fn set_polygon(&mut self, polygon: Option<Polygon>) {
+        self.polygon = polygon;
+    }
+
+    pub fn mask(&self) -> Option<&MaskData> {
         self.mask.as_ref()
     }
 
-    pub fn set_mask(&mut self, mask: Option<Mask>) {
+    pub fn set_mask(&mut self, mask: Option<MaskData>) {
         self.mask = mask;
+    }
+
+    pub fn box2d_score(&self) -> Option<f32> {
+        self.box2d_score
+    }
+
+    pub fn set_box2d_score(&mut self, score: Option<f32>) {
+        self.box2d_score = score;
+    }
+
+    pub fn box3d_score(&self) -> Option<f32> {
+        self.box3d_score
+    }
+
+    pub fn set_box3d_score(&mut self, score: Option<f32>) {
+        self.box3d_score = score;
+    }
+
+    pub fn polygon_score(&self) -> Option<f32> {
+        self.polygon_score
+    }
+
+    pub fn set_polygon_score(&mut self, score: Option<f32>) {
+        self.polygon_score = score;
+    }
+
+    pub fn mask_score(&self) -> Option<f32> {
+        self.mask_score
+    }
+
+    pub fn set_mask_score(&mut self, score: Option<f32>) {
+        self.mask_score = score;
     }
 }
 
@@ -1770,187 +1902,53 @@ fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
     }
 }
 
+/// Convert a polygon into a nested `List(List(Float32))` Series for the
+/// 2026.04 schema. Each ring becomes an inner list of interleaved
+/// `[x1, y1, x2, y2, ...]` floats.
 #[cfg(feature = "polars")]
-fn convert_mask_to_series(mask: &Mask) -> Series {
-    use polars::series::Series;
-
-    let list = flatten_polygon_coordinates(&mask.polygon);
-    Series::new("mask".into(), list)
+fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
+    let ring_series: Vec<Option<Series>> = polygon
+        .rings
+        .iter()
+        .map(|ring| {
+            let coords: Vec<f32> = ring.iter().flat_map(|&(x, y)| [x, y]).collect();
+            Some(Series::new("".into(), coords))
+        })
+        .collect();
+    Series::new("".into(), ring_series)
 }
 
-/// Create a DataFrame from a slice of annotations (2025.01 schema).
+/// Create a DataFrame from a slice of samples with the 2026.04 schema.
 ///
-/// **DEPRECATED**: Use [`samples_dataframe()`] instead for full 2025.10 schema
-/// support including optional metadata columns (size, location, pose,
-/// degradation).
+/// Each annotation in each sample becomes one row. Columns where every value
+/// is null are automatically dropped, so the result only contains columns
+/// that carry data. The `name` column is always present.
 ///
-/// This function generates a DataFrame with the original 9-column schema.
-/// It remains functional for backward compatibility but does not include
-/// new optional columns added in version 2025.10.
+/// # Schema (2026.04)
 ///
-/// # Schema (2025.01)
-///
-/// - `name`: Sample name (String)
-/// - `frame`: Frame number (UInt64)
+/// - `name`: Sample name (String) - ALWAYS PRESENT
+/// - `frame`: Frame number (UInt32)
 /// - `object_id`: Object tracking ID (String)
 /// - `label`: Object label (Categorical)
 /// - `label_index`: Label index (UInt64)
 /// - `group`: Dataset group (Categorical)
-/// - `mask`: Segmentation mask (List<Float32>)
+/// - `polygon`: Segmentation polygon rings (List<List<Float32>>)
 /// - `box2d`: 2D bounding box [cx, cy, w, h] (Array<Float32, 4>)
 /// - `box3d`: 3D bounding box [x, y, z, w, h, l] (Array<Float32, 6>)
-///
-/// # Migration
-///
-/// ```rust,no_run
-/// use edgefirst_client::{Client, samples_dataframe};
-///
-/// # async fn example() -> Result<(), edgefirst_client::Error> {
-/// # let client = Client::new()?;
-/// # let dataset_id = 1.into();
-/// # let annotation_set_id = 1.into();
-/// # let groups = vec![];
-/// # let types = vec![];
-/// // OLD (deprecated):
-/// let annotations = client
-///     .annotations(annotation_set_id, &groups, &types, None)
-///     .await?;
-/// let df = edgefirst_client::annotations_dataframe(&annotations)?;
-///
-/// // NEW (recommended):
-/// let samples = client
-///     .samples(
-///         dataset_id,
-///         Some(annotation_set_id),
-///         &types,
-///         &groups,
-///         &[],
-///         None,
-///     )
-///     .await?;
-/// let df = samples_dataframe(&samples)?;
-/// # Ok(())
-/// # }
-/// ```
-#[deprecated(
-    since = "0.8.0",
-    note = "Use `samples_dataframe()` for complete 2025.10 schema support"
-)]
-#[cfg(feature = "polars")]
-pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Error> {
-    use itertools::Itertools;
-
-    let (names, frames, objects, labels, label_indices, groups, masks, boxes2d, boxes3d) =
-        annotations
-            .iter()
-            .filter_map(|ann| {
-                let (name, frame) = extract_annotation_name(ann)?;
-
-                let masks = ann.mask.as_ref().map(convert_mask_to_series);
-
-                let box2d = ann.box2d.as_ref().map(|box2d| {
-                    Series::new(
-                        "box2d".into(),
-                        [box2d.cx(), box2d.cy(), box2d.width(), box2d.height()],
-                    )
-                });
-
-                let box3d = ann.box3d.as_ref().map(|box3d| {
-                    Series::new(
-                        "box3d".into(),
-                        [box3d.x, box3d.y, box3d.z, box3d.w, box3d.h, box3d.l],
-                    )
-                });
-
-                Some((
-                    name,
-                    frame,
-                    ann.object_id().cloned(),
-                    ann.label_name.clone(),
-                    ann.label_index,
-                    ann.group.clone(),
-                    masks,
-                    box2d,
-                    box3d,
-                ))
-            })
-            .multiunzip::<(
-                Vec<_>, // names
-                Vec<_>, // frames
-                Vec<_>, // objects
-                Vec<_>, // labels
-                Vec<_>, // label_indices
-                Vec<_>, // groups
-                Vec<_>, // masks
-                Vec<_>, // boxes2d
-                Vec<_>, // boxes3d
-            )>();
-    let names = Series::new("name".into(), names).into();
-    let frames = Series::new("frame".into(), frames).into();
-    let objects = Series::new("object_id".into(), objects).into();
-    let labels = Series::new("label".into(), labels)
-        .cast(&DataType::Categorical(
-            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
-                Default::default(),
-            )),
-        ))?
-        .into();
-    let label_indices = Series::new("label_index".into(), label_indices).into();
-    let groups = Series::new("group".into(), groups)
-        .cast(&DataType::Categorical(
-            Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
-            Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
-                Default::default(),
-            )),
-        ))?
-        .into();
-    let masks = Series::new("mask".into(), masks)
-        .cast(&DataType::List(Box::new(DataType::Float32)))?
-        .into();
-    let boxes2d = Series::new("box2d".into(), boxes2d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 4))?
-        .into();
-    let boxes3d = Series::new("box3d".into(), boxes3d)
-        .cast(&DataType::Array(Box::new(DataType::Float32), 6))?
-        .into();
-
-    Ok(DataFrame::new_infer_height(vec![
-        names,
-        frames,
-        objects,
-        labels,
-        label_indices,
-        groups,
-        masks,
-        boxes2d,
-        boxes3d,
-    ])?)
-}
-
-/// Create a DataFrame from a slice of samples with complete 2025.10 schema.
-///
-/// This function generates a DataFrame with all 13 columns including optional
-/// sample metadata (size, location, pose, degradation). Each annotation in
-/// each sample becomes one row in the DataFrame.
-///
-/// # Schema (2025.10)
-///
-/// - `name`: Sample name (String)
-/// - `frame`: Frame number (UInt64)
-/// - `object_id`: Object tracking ID (String)
-/// - `label`: Object label (Categorical)
-/// - `label_index`: Label index (UInt64)
-/// - `group`: Dataset group (Categorical)
-/// - `mask`: Segmentation mask (List<Float32>)
-/// - `box2d`: 2D bounding box [cx, cy, w, h] (Array<Float32, 4>)
-/// - `box3d`: 3D bounding box [x, y, z, w, h, l] (Array<Float32, 6>)
-/// - `size`: Image size [width, height] (Array<UInt32, 2>) - OPTIONAL
-/// - `location`: GPS [lat, lon] (Array<Float32, 2>) - OPTIONAL
-/// - `pose`: IMU [yaw, pitch, roll] (Array<Float32, 3>) - OPTIONAL
-/// - `degradation`: Image degradation (String) - OPTIONAL
+/// - `mask`: PNG-encoded raster mask (Binary)
+/// - `box2d_score`: Box2d confidence (Float32)
+/// - `box3d_score`: Box3d confidence (Float32)
+/// - `polygon_score`: Polygon confidence (Float32)
+/// - `mask_score`: Mask confidence (Float32)
+/// - `size`: Image size [width, height] (Array<UInt32, 2>)
+/// - `location`: GPS [lat, lon] (Array<Float32, 2>)
+/// - `pose`: IMU [yaw, pitch, roll] (Array<Float32, 3>)
+/// - `degradation`: Image degradation (String)
+/// - `iscrowd`: COCO crowd flag (Boolean)
+/// - `category_frequency`: LVIS frequency group (Categorical)
+/// - `neg_label_indices`: Verified-absent label indices (List<UInt32>)
+/// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>)
+/// - `timing`: Pipeline timing (Struct{load, preprocess, inference, decode} of Int64)
 ///
 /// # Example
 ///
@@ -1971,150 +1969,149 @@ pub fn annotations_dataframe(annotations: &[Annotation]) -> Result<DataFrame, Er
 /// ```
 #[cfg(feature = "polars")]
 pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
-    // Flatten samples into annotation rows with sample metadata
-    let rows: Vec<_> = samples
-        .iter()
-        .flat_map(|sample| {
-            // Extract sample metadata once per sample
-            let size = match (sample.width, sample.height) {
-                (Some(w), Some(h)) => Some(vec![w, h]),
-                _ => None,
+    // Collect per-row vectors directly while iterating samples
+    let mut names: Vec<String> = Vec::new();
+    let mut frames: Vec<Option<u32>> = Vec::new();
+    let mut objects: Vec<Option<String>> = Vec::new();
+    let mut labels: Vec<Option<String>> = Vec::new();
+    let mut label_indices: Vec<Option<u64>> = Vec::new();
+    let mut groups: Vec<Option<String>> = Vec::new();
+    let mut polygons: Vec<Option<Series>> = Vec::new();
+    let mut boxes2d: Vec<Option<Series>> = Vec::new();
+    let mut boxes3d: Vec<Option<Series>> = Vec::new();
+    let mut mask_bytes: Vec<Option<Vec<u8>>> = Vec::new();
+    let mut box2d_scores: Vec<Option<f32>> = Vec::new();
+    let mut box3d_scores: Vec<Option<f32>> = Vec::new();
+    let mut polygon_scores: Vec<Option<f32>> = Vec::new();
+    let mut mask_scores: Vec<Option<f32>> = Vec::new();
+    let mut sizes: Vec<Option<Vec<u32>>> = Vec::new();
+    let mut locations: Vec<Option<Vec<f32>>> = Vec::new();
+    let mut poses: Vec<Option<Vec<f32>>> = Vec::new();
+    let mut degradations: Vec<Option<String>> = Vec::new();
+    let mut iscrowds: Vec<Option<bool>> = Vec::new();
+    let mut category_frequencies: Vec<Option<String>> = Vec::new();
+    let mut neg_label_indices_vec: Vec<Option<Vec<u32>>> = Vec::new();
+    let mut not_exhaustive_label_indices_vec: Vec<Option<Vec<u32>>> = Vec::new();
+    let mut timing_load: Vec<Option<i64>> = Vec::new();
+    let mut timing_preprocess: Vec<Option<i64>> = Vec::new();
+    let mut timing_inference: Vec<Option<i64>> = Vec::new();
+    let mut timing_decode: Vec<Option<i64>> = Vec::new();
+
+    for sample in samples {
+        // Extract sample metadata once per sample
+        let size = match (sample.width, sample.height) {
+            (Some(w), Some(h)) => Some(vec![w, h]),
+            _ => None,
+        };
+
+        let location = sample.location.as_ref().and_then(|loc| {
+            loc.gps
+                .as_ref()
+                .map(|gps| vec![gps.lat as f32, gps.lon as f32])
+        });
+
+        let pose = sample.location.as_ref().and_then(|loc| {
+            loc.imu
+                .as_ref()
+                .map(|imu| vec![imu.yaw as f32, imu.pitch as f32, imu.roll as f32])
+        });
+
+        let degradation = sample.degradation.clone();
+
+        // Timing from the sample (same for all rows of this sample)
+        let t_load = sample.timing.as_ref().and_then(|t| t.load);
+        let t_preprocess = sample.timing.as_ref().and_then(|t| t.preprocess);
+        let t_inference = sample.timing.as_ref().and_then(|t| t.inference);
+        let t_decode = sample.timing.as_ref().and_then(|t| t.decode);
+
+        // Helper to push shared sample-level fields
+        macro_rules! push_sample_fields {
+            () => {
+                sizes.push(size.clone());
+                locations.push(location.clone());
+                poses.push(pose.clone());
+                degradations.push(degradation.clone());
+                neg_label_indices_vec.push(sample.neg_label_indices.clone());
+                not_exhaustive_label_indices_vec.push(sample.not_exhaustive_label_indices.clone());
+                timing_load.push(t_load);
+                timing_preprocess.push(t_preprocess);
+                timing_inference.push(t_inference);
+                timing_decode.push(t_decode);
+            };
+        }
+
+        if sample.annotations.is_empty() {
+            // One row for the sample with null annotation fields
+            let (name, frame) = match extract_annotation_name_from_sample(sample) {
+                Some(nf) => nf,
+                None => continue,
             };
 
-            let location = sample.location.as_ref().and_then(|loc| {
-                loc.gps
-                    .as_ref()
-                    .map(|gps| vec![gps.lat as f32, gps.lon as f32])
-            });
-
-            let pose = sample.location.as_ref().and_then(|loc| {
-                loc.imu
-                    .as_ref()
-                    .map(|imu| vec![imu.yaw as f32, imu.pitch as f32, imu.roll as f32])
-            });
-
-            let degradation = sample.degradation.clone();
-
-            // If no annotations, create one row for the sample (null annotations)
-            if sample.annotations.is_empty() {
-                let (name, frame) = match extract_annotation_name_from_sample(sample) {
+            names.push(name);
+            frames.push(frame);
+            objects.push(None);
+            labels.push(None);
+            label_indices.push(None);
+            groups.push(sample.group.clone());
+            polygons.push(None);
+            boxes2d.push(None);
+            boxes3d.push(None);
+            mask_bytes.push(None);
+            box2d_scores.push(None);
+            box3d_scores.push(None);
+            polygon_scores.push(None);
+            mask_scores.push(None);
+            iscrowds.push(None);
+            category_frequencies.push(None);
+            push_sample_fields!();
+        } else {
+            // One row per annotation
+            for ann in &sample.annotations {
+                let (name, frame) = match extract_annotation_name(ann) {
                     Some(nf) => nf,
-                    None => return vec![],
+                    None => continue,
                 };
 
-                return vec![(
-                    name,
-                    frame,
-                    None,                 // object_id placeholder for now
-                    None,                 // label
-                    None,                 // label_index
-                    sample.group.clone(), // group
-                    None,                 // mask
-                    None,                 // box2d
-                    None,                 // box3d
-                    size.clone(),
-                    location.clone(),
-                    pose.clone(),
-                    degradation.clone(),
-                )];
+                let polygon = ann.polygon.as_ref().map(convert_polygon_to_nested_series);
+
+                let box2d = ann
+                    .box2d
+                    .as_ref()
+                    .map(|b| Series::new("box2d".into(), [b.cx(), b.cy(), b.width(), b.height()]));
+
+                let box3d = ann
+                    .box3d
+                    .as_ref()
+                    .map(|b| Series::new("box3d".into(), [b.x, b.y, b.z, b.w, b.h, b.l]));
+
+                names.push(name);
+                frames.push(frame);
+                objects.push(ann.object_id().cloned());
+                labels.push(ann.label_name.clone());
+                label_indices.push(ann.label_index);
+                groups.push(sample.group.clone());
+                polygons.push(polygon);
+                boxes2d.push(box2d);
+                boxes3d.push(box3d);
+                mask_bytes.push(ann.mask.as_ref().map(|m| m.as_bytes().to_vec()));
+                box2d_scores.push(ann.box2d_score());
+                box3d_scores.push(ann.box3d_score());
+                polygon_scores.push(ann.polygon_score());
+                mask_scores.push(ann.mask_score());
+                iscrowds.push(ann.iscrowd);
+                category_frequencies.push(ann.category_frequency.clone());
+                push_sample_fields!();
             }
-
-            // Create one row per annotation
-            sample
-                .annotations
-                .iter()
-                .filter_map(|ann| {
-                    let (name, frame) = extract_annotation_name(ann)?;
-
-                    let mask = ann.mask.as_ref().map(convert_mask_to_series);
-
-                    let box2d = ann.box2d.as_ref().map(|box2d| {
-                        Series::new(
-                            "box2d".into(),
-                            [box2d.cx(), box2d.cy(), box2d.width(), box2d.height()],
-                        )
-                    });
-
-                    let box3d = ann.box3d.as_ref().map(|box3d| {
-                        Series::new(
-                            "box3d".into(),
-                            [box3d.x, box3d.y, box3d.z, box3d.w, box3d.h, box3d.l],
-                        )
-                    });
-
-                    Some((
-                        name,
-                        frame,
-                        ann.object_id().cloned(),
-                        ann.label_name.clone(),
-                        ann.label_index,
-                        sample.group.clone(), // Group is on Sample, not Annotation
-                        mask,
-                        box2d,
-                        box3d,
-                        size.clone(),
-                        location.clone(),
-                        pose.clone(),
-                        degradation.clone(),
-                    ))
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
-    // Manually unzip into separate vectors
-    let mut names = Vec::new();
-    let mut frames = Vec::new();
-    let mut objects = Vec::new();
-    let mut labels = Vec::new();
-    let mut label_indices = Vec::new();
-    let mut groups = Vec::new();
-    let mut masks = Vec::new();
-    let mut boxes2d = Vec::new();
-    let mut boxes3d = Vec::new();
-    let mut sizes = Vec::new();
-    let mut locations = Vec::new();
-    let mut poses = Vec::new();
-    let mut degradations = Vec::new();
-
-    for (
-        name,
-        frame,
-        object,
-        label,
-        label_index,
-        group,
-        mask,
-        box2d,
-        box3d,
-        size,
-        location,
-        pose,
-        degradation,
-    ) in rows
-    {
-        names.push(name);
-        frames.push(frame);
-        objects.push(object);
-        labels.push(label);
-        label_indices.push(label_index);
-        groups.push(group);
-        masks.push(mask);
-        boxes2d.push(box2d);
-        boxes3d.push(box3d);
-        sizes.push(size);
-        locations.push(location);
-        poses.push(pose);
-        degradations.push(degradation);
+        }
     }
 
     // Build DataFrame columns
-    let names = Series::new("name".into(), names).into();
-    let frames = Series::new("frame".into(), frames).into();
-    let objects = Series::new("object_id".into(), objects).into();
+    let names_col: Column = Series::new("name".into(), names).into();
+    let frames_col: Column = Series::new("frame".into(), frames).into();
+    let objects_col: Column = Series::new("object_id".into(), objects).into();
 
     // Column name: "label" (NOT "label_name")
-    let labels = Series::new("label".into(), labels)
+    let labels_col: Column = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
             Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
             Arc::new(CategoricalMapping::with_hasher(
@@ -2124,10 +2121,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         ))?
         .into();
 
-    let label_indices = Series::new("label_index".into(), label_indices).into();
+    let label_indices_col: Column = Series::new("label_index".into(), label_indices).into();
 
     // Column name: "group" (NOT "group_name")
-    let groups = Series::new("group".into(), groups)
+    let groups_col: Column = Series::new("group".into(), groups)
         .cast(&DataType::Categorical(
             Categories::new("groups".into(), "groups".into(), CategoricalPhysical::U8),
             Arc::new(CategoricalMapping::with_hasher(
@@ -2137,23 +2134,54 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         ))?
         .into();
 
-    let masks = Series::new("mask".into(), masks)
-        .cast(&DataType::List(Box::new(DataType::Float32)))?
-        .into();
-    let boxes2d = Series::new("box2d".into(), boxes2d)
+    // Polygon: List(List(Float32)) — nested rings
+    // Build using ListChunked to avoid Polars dtype mismatch when mixing Some/None entries.
+    // Series::new() with Vec<Option<Series>> panics when Some entries are list[f32] but None
+    // entries infer as list[null].
+    let polygons_col: Column = if polygons.iter().all(|p| p.is_none()) {
+        // All null — create a null column that the drop rule will remove
+        Series::new_null("polygon".into(), polygons.len()).into()
+    } else {
+        // Build properly typed column: convert each Option<Series> to Option<Series>,
+        // ensuring None entries don't cause dtype inference issues
+        let typed_polygons: Vec<Option<Series>> = polygons
+            .into_iter()
+            .map(|opt| {
+                opt.map(|s| {
+                    s.cast(&DataType::List(Box::new(DataType::Float32)))
+                        .unwrap_or(s)
+                })
+            })
+            .collect();
+        Series::new("polygon".into(), &typed_polygons)
+            .cast(&DataType::List(Box::new(DataType::List(Box::new(
+                DataType::Float32,
+            )))))?
+            .into()
+    };
+
+    let boxes2d_col: Column = Series::new("box2d".into(), boxes2d)
         .cast(&DataType::Array(Box::new(DataType::Float32), 4))?
         .into();
-    let boxes3d = Series::new("box3d".into(), boxes3d)
+    let boxes3d_col: Column = Series::new("box3d".into(), boxes3d)
         .cast(&DataType::Array(Box::new(DataType::Float32), 6))?
         .into();
 
-    // NEW: Optional columns (2025.10)
-    // Convert Vec<Option<Vec<T>>> to Vec<Option<Series>> for array columns
+    // Mask: Binary (raw PNG bytes)
+    let mask_col: Column = Series::new("mask".into(), mask_bytes).into();
+
+    // Score columns: Float32
+    let box2d_score_col: Column = Series::new("box2d_score".into(), box2d_scores).into();
+    let box3d_score_col: Column = Series::new("box3d_score".into(), box3d_scores).into();
+    let polygon_score_col: Column = Series::new("polygon_score".into(), polygon_scores).into();
+    let mask_score_col: Column = Series::new("mask_score".into(), mask_scores).into();
+
+    // Optional metadata columns (2025.10)
     let size_series: Vec<Option<Series>> = sizes
         .into_iter()
         .map(|opt_vec| opt_vec.map(|vec| Series::new("size".into(), vec)))
         .collect();
-    let sizes = Series::new("size".into(), size_series)
+    let sizes_col: Column = Series::new("size".into(), size_series)
         .cast(&DataType::Array(Box::new(DataType::UInt32), 2))?
         .into();
 
@@ -2161,7 +2189,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         .into_iter()
         .map(|opt_vec| opt_vec.map(|vec| Series::new("location".into(), vec)))
         .collect();
-    let locations = Series::new("location".into(), location_series)
+    let locations_col: Column = Series::new("location".into(), location_series)
         .cast(&DataType::Array(Box::new(DataType::Float32), 2))?
         .into();
 
@@ -2169,27 +2197,123 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         .into_iter()
         .map(|opt_vec| opt_vec.map(|vec| Series::new("pose".into(), vec)))
         .collect();
-    let poses = Series::new("pose".into(), pose_series)
+    let poses_col: Column = Series::new("pose".into(), pose_series)
         .cast(&DataType::Array(Box::new(DataType::Float32), 3))?
         .into();
 
-    let degradations = Series::new("degradation".into(), degradations).into();
+    let degradations_col: Column = Series::new("degradation".into(), degradations).into();
 
-    Ok(DataFrame::new_infer_height(vec![
-        names,
-        frames,
-        objects,
-        labels,
-        label_indices,
-        groups,
-        masks,
-        boxes2d,
-        boxes3d,
-        sizes,
-        locations,
-        poses,
-        degradations,
-    ])?)
+    // LVIS extension columns
+    let iscrowds_col: Column = Series::new("iscrowd".into(), iscrowds).into();
+
+    let category_frequencies_col: Column =
+        Series::new("category_frequency".into(), category_frequencies)
+            .cast(&DataType::Categorical(
+                Categories::new(
+                    "cat_freq".into(),
+                    "cat_freq".into(),
+                    CategoricalPhysical::U8,
+                ),
+                Arc::new(CategoricalMapping::with_hasher(
+                    u8::MAX as usize,
+                    Default::default(),
+                )),
+            ))?
+            .into();
+
+    let neg_label_indices_series: Vec<Option<Series>> = neg_label_indices_vec
+        .into_iter()
+        .map(|opt_vec| opt_vec.map(|vec| Series::new("neg_label_indices".into(), vec)))
+        .collect();
+    let neg_label_indices_col: Column =
+        Series::new("neg_label_indices".into(), neg_label_indices_series)
+            .cast(&DataType::List(Box::new(DataType::UInt32)))?
+            .into();
+
+    let not_exhaustive_label_indices_series: Vec<Option<Series>> = not_exhaustive_label_indices_vec
+        .into_iter()
+        .map(|opt_vec| opt_vec.map(|vec| Series::new("not_exhaustive_label_indices".into(), vec)))
+        .collect();
+    let not_exhaustive_label_indices_col: Column = Series::new(
+        "not_exhaustive_label_indices".into(),
+        not_exhaustive_label_indices_series,
+    )
+    .cast(&DataType::List(Box::new(DataType::UInt32)))?
+    .into();
+
+    // Timing: Struct{load, preprocess, inference, decode} of Int64
+    let timing_col: Column = StructChunked::from_series(
+        "timing".into(),
+        frames_col.len(),
+        [
+            Series::new("load".into(), &timing_load),
+            Series::new("preprocess".into(), &timing_preprocess),
+            Series::new("inference".into(), &timing_inference),
+            Series::new("decode".into(), &timing_decode),
+        ]
+        .iter(),
+    )?
+    .into_series()
+    .into();
+
+    // Collect all columns, then drop any where ALL values are null (except "name")
+    let all_columns: Vec<Column> = vec![
+        names_col,
+        frames_col,
+        objects_col,
+        labels_col,
+        label_indices_col,
+        groups_col,
+        polygons_col,
+        boxes2d_col,
+        boxes3d_col,
+        mask_col,
+        box2d_score_col,
+        box3d_score_col,
+        polygon_score_col,
+        mask_score_col,
+        sizes_col,
+        locations_col,
+        poses_col,
+        degradations_col,
+        iscrowds_col,
+        category_frequencies_col,
+        neg_label_indices_col,
+        not_exhaustive_label_indices_col,
+        timing_col,
+    ];
+
+    let height = all_columns.first().map(|c| c.len()).unwrap_or(0);
+
+    let non_empty_columns: Vec<Column> = all_columns
+        .into_iter()
+        .filter(|col| col.name() == "name" || !is_all_null_column(col))
+        .collect();
+
+    Ok(DataFrame::new(height, non_empty_columns)?)
+}
+
+/// Returns `true` when every value in the column is null. For `Struct`
+/// columns the check recurses into inner fields — the struct is considered
+/// all-null when **all** of its fields are individually all-null.
+#[cfg(feature = "polars")]
+fn is_all_null_column(col: &Column) -> bool {
+    if col.is_empty() {
+        return true;
+    }
+    if col.null_count() == col.len() {
+        return true;
+    }
+    // Struct columns may have non-null outer rows but all-null inner fields
+    if let DataType::Struct(..) = col.dtype()
+        && let Ok(s) = col.as_materialized_series().struct_()
+    {
+        return s
+            .fields_as_series()
+            .iter()
+            .all(|field| field.null_count() == field.len());
+    }
+    false
 }
 
 // Helper: Extract name/frame from Sample (for samples with no annotations)
@@ -2388,41 +2512,11 @@ fn validate_imu_orientation(roll: f64, pitch: f64, yaw: f64) -> Result<(), Strin
 // MASK POLYGON CONVERSION HELPERS
 // ============================================================================
 
-/// Flatten polygon coordinates into a flat vector of f32 values for Polars
-/// Series.
-///
-/// Converts nested polygon structure into a flat list of coordinates with
-/// NaN separators between polygons:
-/// - Input: [[(x1, y1), (x2, y2)], [(x3, y3)]]
-/// - Output: [x1, y1, x2, y2, NaN, x3, y3]
-#[cfg(feature = "polars")]
-fn flatten_polygon_coordinates(polygons: &[Vec<(f32, f32)>]) -> Vec<f32> {
-    let mut list = Vec::new();
-
-    for polygon in polygons {
-        for &(x, y) in polygon {
-            list.push(x);
-            list.push(y);
-        }
-        // Separate polygons with NaN
-        if !polygons.is_empty() {
-            list.push(f32::NAN);
-        }
-    }
-
-    // Remove the last NaN if it exists (trailing separator not needed)
-    if !list.is_empty() && list[list.len() - 1].is_nan() {
-        list.pop();
-    }
-
-    list
-}
-
 /// Unflatten coordinates with NaN separators back to nested polygon
 /// structure.
 ///
 /// Converts flat list of coordinates with NaN separators back to nested
-/// polygon structure (inverse of flatten_polygon_coordinates):
+/// polygon structure:
 /// - Input: [x1, y1, x2, y2, NaN, x3, y3]
 /// - Output: [[(x1, y1), (x2, y2)], [(x3, y3)]]
 ///
@@ -2451,16 +2545,19 @@ pub fn unflatten_polygon_coordinates(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
         if coords[i].is_nan() {
             // NaN separator - save current polygon and start new one
             if !current_polygon.is_empty() {
-                polygons.push(current_polygon.clone());
-                current_polygon.clear();
+                polygons.push(std::mem::take(&mut current_polygon));
             }
             i += 1;
-        } else if i + 1 < coords.len() {
-            // Have both x and y coordinates
+        } else if i + 1 < coords.len() && !coords[i + 1].is_nan() {
+            // Have both x and y coordinates (neither is NaN)
             current_polygon.push((coords[i], coords[i + 1]));
             i += 2;
+        } else if i + 1 < coords.len() && coords[i + 1].is_nan() {
+            // x is valid but y is NaN - malformed data; skip x, process NaN on
+            // next iteration
+            i += 1;
         } else {
-            // Odd number of coordinates (malformed data) - skip last value
+            // Odd trailing value - skip
             i += 1;
         }
     }
@@ -2607,6 +2704,7 @@ mod tests {
         let cases = vec![
             (AnnotationType::Box2d, "box2d"),
             (AnnotationType::Box3d, "box3d"),
+            (AnnotationType::Polygon, "polygon"),
             (AnnotationType::Mask, "mask"),
         ];
 
@@ -2616,9 +2714,28 @@ mod tests {
         }
 
         // Test: try_from() string parsing
-        for (ann_type, type_str) in &cases {
-            assert_eq!(AnnotationType::try_from(*type_str).unwrap(), *ann_type);
-        }
+        assert_eq!(
+            AnnotationType::try_from("box2d").unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::try_from("box3d").unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::try_from("polygon").unwrap(),
+            AnnotationType::Polygon
+        );
+        // "mask" maps to Polygon for backward compat
+        assert_eq!(
+            AnnotationType::try_from("mask").unwrap(),
+            AnnotationType::Polygon
+        );
+        // "raster" maps to Mask
+        assert_eq!(
+            AnnotationType::try_from("raster").unwrap(),
+            AnnotationType::Mask
+        );
 
         // Test: From<String> (backward compatibility)
         assert_eq!(
@@ -2630,8 +2747,13 @@ mod tests {
             AnnotationType::Box3d
         );
         assert_eq!(
+            AnnotationType::from("polygon".to_string()),
+            AnnotationType::Polygon
+        );
+        // "mask" string maps to Polygon for backward compat
+        assert_eq!(
             AnnotationType::from("mask".to_string()),
-            AnnotationType::Mask
+            AnnotationType::Polygon
         );
 
         // Invalid defaults to Box2d for backward compatibility
@@ -2644,11 +2766,21 @@ mod tests {
         assert!(AnnotationType::try_from("invalid").is_err());
 
         // Test: Round-trip (Display → try_from)
-        for (ann_type, _) in &cases {
-            let s = ann_type.to_string();
-            let parsed = AnnotationType::try_from(s.as_str()).unwrap();
-            assert_eq!(parsed, *ann_type);
-        }
+        // Note: Polygon round-trips ("polygon" → Polygon), but Mask does not
+        // because "mask" → Polygon (backward compat). Mask displays as "mask"
+        // but parses to Polygon.
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Box2d.to_string().as_str()).unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Box3d.to_string().as_str()).unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            AnnotationType::try_from(AnnotationType::Polygon.to_string().as_str()).unwrap(),
+            AnnotationType::Polygon
+        );
     }
 
     // ==== Pure Function: extract_sample_name Tests ====
@@ -2938,40 +3070,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ==== Polygon Flattening Tests ====
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_single_polygon() {
-        let polygons = vec![vec![(1.0, 2.0), (3.0, 4.0)]];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        // Should have x1, y1, x2, y2 (no trailing NaN)
-        assert_eq!(result.len(), 4);
-        assert_eq!(&result[..4], &[1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_multiple_polygons() {
-        let polygons = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        // x1, y1, x2, y2, NaN, x3, y3, x4, y4 (no trailing NaN)
-        assert_eq!(result.len(), 9);
-        assert_eq!(&result[..4], &[1.0, 2.0, 3.0, 4.0]);
-        assert!(result[4].is_nan()); // NaN separator
-        assert_eq!(&result[5..9], &[5.0, 6.0, 7.0, 8.0]);
-    }
-
-    #[test]
-    #[cfg(feature = "polars")]
-    fn test_flatten_polygon_coordinates_empty() {
-        let polygons: Vec<Vec<(f32, f32)>> = vec![];
-        let result = flatten_polygon_coordinates(&polygons);
-
-        assert_eq!(result.len(), 0);
-    }
-
     // ==== Polygon Unflattening Tests ====
     #[test]
     #[cfg(feature = "polars")]
@@ -3003,12 +3101,12 @@ mod tests {
     #[test]
     #[cfg(feature = "polars")]
     fn test_unflatten_polygon_coordinates_roundtrip() {
-        // Test that flatten -> unflatten produces the same result
-        let original = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
-        let flattened = flatten_polygon_coordinates(&original);
-        let result = unflatten_polygon_coordinates(&flattened);
+        // Test that unflatten correctly reconstructs from NaN-separated flat coords
+        let flat = vec![1.0, 2.0, 3.0, 4.0, f32::NAN, 5.0, 6.0, 7.0, 8.0];
+        let result = unflatten_polygon_coordinates(&flat);
 
-        assert_eq!(result, original);
+        let expected = vec![vec![(1.0, 2.0), (3.0, 4.0)], vec![(5.0, 6.0), (7.0, 8.0)]];
+        assert_eq!(result, expected);
     }
 
     // ==== Annotation Format Flattening Tests ====
@@ -3206,17 +3304,17 @@ mod tests {
         );
     }
 
-    // ==== Mask Tests ====
+    // ==== Polygon Tests ====
     #[test]
-    fn test_mask_creation_and_deserialization() {
+    fn test_polygon_creation_and_deserialization() {
         // Test case 1: Direct construction
-        let polygon = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
-        let mask = Mask::new(polygon.clone());
-        assert_eq!(mask.polygon, polygon);
+        let rings = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+        let polygon = Polygon::new(rings.clone());
+        assert_eq!(polygon.rings, rings);
 
-        // Test case 2: Deserialization from legacy format
+        // Test case 2: Deserialization from legacy format (field name "polygon")
         let legacy = serde_json::json!({
-            "mask": {
+            "polygon": {
                 "polygon": [[
                     [0.0_f32, 0.0_f32],
                     [1.0_f32, 0.0_f32],
@@ -3227,12 +3325,12 @@ mod tests {
 
         #[derive(serde::Deserialize)]
         struct Wrapper {
-            mask: Mask,
+            polygon: Polygon,
         }
 
         let parsed: Wrapper = serde_json::from_value(legacy).unwrap();
-        assert_eq!(parsed.mask.polygon.len(), 1);
-        assert_eq!(parsed.mask.polygon[0].len(), 3);
+        assert_eq!(parsed.polygon.rings.len(), 1);
+        assert_eq!(parsed.polygon.rings[0].len(), 3);
     }
 
     // ==== Sample Tests ====
@@ -3284,7 +3382,7 @@ mod tests {
         assert_eq!(ann.label(), None);
         assert_eq!(ann.box2d(), None);
         assert_eq!(ann.box3d(), None);
-        assert_eq!(ann.mask(), None);
+        assert_eq!(ann.polygon(), None);
 
         // Test case 2: Setting annotation fields
         let mut ann = Annotation::new();
@@ -3452,7 +3550,7 @@ mod tests {
         let mut annotation = Annotation::new();
         annotation.set_label(Some("test".to_string()));
         annotation.set_box2d(Some(Box2d::new(10.0, 20.0, 30.0, 40.0)));
-        annotation.set_mask(Some(Mask::new(polygon)));
+        annotation.set_polygon(Some(Polygon::new(polygon)));
 
         let mut sample = Sample::new();
         sample.annotations.push(annotation);
@@ -3466,11 +3564,11 @@ mod tests {
 
         let annotation_json = annotations[0].as_object().expect("annotation object");
         assert!(annotation_json.contains_key("box2d"));
-        assert!(annotation_json.contains_key("mask"));
+        assert!(annotation_json.contains_key("polygon"));
         assert!(!annotation_json.contains_key("x"));
         assert!(
             annotation_json
-                .get("mask")
+                .get("polygon")
                 .and_then(|value| value.as_array())
                 .is_some()
         );
@@ -3728,5 +3826,422 @@ mod tests {
                 group
             );
         }
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_lvis_columns() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+        ann.set_label_index(Some(1));
+        ann.set_iscrowd(Some(false));
+        ann.set_category_frequency(Some("f".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            width: Some(640),
+            height: Some(480),
+            annotations: vec![ann],
+            neg_label_indices: Some(vec![5, 12]),
+            not_exhaustive_label_indices: Some(vec![3]),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Verify LVIS columns are present (they have data)
+        assert!(df.column("iscrowd").is_ok(), "iscrowd column missing");
+        assert!(
+            df.column("category_frequency").is_ok(),
+            "category_frequency column missing"
+        );
+        assert!(
+            df.column("neg_label_indices").is_ok(),
+            "neg_label_indices column missing"
+        );
+        assert!(
+            df.column("not_exhaustive_label_indices").is_ok(),
+            "not_exhaustive_label_indices column missing"
+        );
+
+        // All-null columns should be dropped (polygon, box2d, box3d, mask, scores, etc.)
+        assert!(
+            df.column("polygon").is_err(),
+            "polygon column should be dropped (all null)"
+        );
+        assert!(
+            df.column("box2d").is_err(),
+            "box2d column should be dropped (all null)"
+        );
+    }
+
+    #[test]
+    fn test_annotation_serialization_skips_lvis_fields() {
+        let ann = Annotation::new();
+        let json = serde_json::to_string(&ann).unwrap();
+        assert!(
+            !json.contains("iscrowd"),
+            "iscrowd should be omitted when None"
+        );
+        assert!(
+            !json.contains("category_frequency"),
+            "category_frequency should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_sample_serialization_skips_lvis_fields() {
+        let sample = Sample::new();
+        let json = serde_json::to_string(&sample).unwrap();
+        assert!(
+            !json.contains("neg_label_indices"),
+            "neg_label_indices should be omitted when None"
+        );
+        assert!(
+            !json.contains("not_exhaustive_label_indices"),
+            "not_exhaustive_label_indices should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn test_annotation_score_fields() {
+        let mut ann = Annotation::default();
+        assert!(ann.box2d_score.is_none());
+        assert!(ann.polygon_score.is_none());
+        assert!(ann.mask_score.is_none());
+        ann.box2d_score = Some(0.95);
+        ann.polygon_score = Some(0.87);
+        ann.mask_score = Some(0.42);
+        assert_eq!(ann.box2d_score, Some(0.95));
+        assert_eq!(ann.polygon_score, Some(0.87));
+        assert_eq!(ann.mask_score, Some(0.42));
+    }
+
+    #[test]
+    fn test_timing_struct() {
+        let timing = Timing {
+            load: Some(1_000_000),
+            preprocess: Some(2_000_000),
+            inference: Some(50_000_000),
+            decode: Some(3_000_000),
+        };
+        assert_eq!(timing.inference, Some(50_000_000));
+
+        let default = Timing::default();
+        assert!(default.load.is_none());
+    }
+
+    #[test]
+    fn test_sample_timing() {
+        let mut sample = Sample::default();
+        assert!(sample.timing.is_none());
+        sample.timing = Some(Timing {
+            load: Some(1_000_000),
+            ..Default::default()
+        });
+        assert!(sample.timing.is_some());
+    }
+
+    // =========================================================================
+    // samples_dataframe 2026.04 schema tests
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_polygon_column() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_polygon(Some(Polygon::new(vec![vec![
+            (0.1, 0.2),
+            (0.3, 0.4),
+            (0.5, 0.6),
+        ]])));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // 2026.04: polygon column exists with nested List(List(Float32))
+        assert!(df.column("polygon").is_ok(), "Should have polygon column");
+
+        // The old "mask" column with float data should NOT exist (no MaskData set)
+        // If mask column exists, it would be Binary type from MaskData, not floats
+        if let Ok(mask_col) = df.column("mask") {
+            // If it exists, it must be Binary type, not List(Float32)
+            assert_eq!(
+                mask_col.dtype(),
+                &polars::prelude::DataType::Binary,
+                "mask column must be Binary type (PNG bytes), not float list"
+            );
+        }
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_column_presence_drops_all_null() {
+        // Sample with only a name, no annotations
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // name is always present
+        assert!(df.column("name").is_ok(), "name column must always exist");
+
+        // All-null columns should be dropped
+        assert!(
+            df.column("polygon").is_err(),
+            "All-null polygon should be dropped"
+        );
+        assert!(
+            df.column("box2d").is_err(),
+            "All-null box2d should be dropped"
+        );
+        assert!(
+            df.column("box3d").is_err(),
+            "All-null box3d should be dropped"
+        );
+        assert!(
+            df.column("mask").is_err(),
+            "All-null mask should be dropped"
+        );
+        assert!(
+            df.column("box2d_score").is_err(),
+            "All-null score columns should be dropped"
+        );
+        assert!(
+            df.column("timing").is_err(),
+            "All-null timing should be dropped"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_score_columns() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann.set_box2d_score(Some(0.95));
+        ann.set_polygon(Some(Polygon::new(vec![vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+        ]])));
+        ann.set_polygon_score(Some(0.87));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Score columns with data should be present
+        assert!(
+            df.column("box2d_score").is_ok(),
+            "box2d_score column missing"
+        );
+        assert!(
+            df.column("polygon_score").is_ok(),
+            "polygon_score column missing"
+        );
+
+        // Score columns with no data should be dropped
+        assert!(
+            df.column("box3d_score").is_err(),
+            "box3d_score should be dropped (all null)"
+        );
+        assert!(
+            df.column("mask_score").is_err(),
+            "mask_score should be dropped (all null)"
+        );
+
+        // Verify score values
+        let box2d_scores = df.column("box2d_score").unwrap();
+        let val = box2d_scores.f32().unwrap().get(0);
+        assert_eq!(val, Some(0.95));
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_timing_column() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            timing: Some(Timing {
+                load: Some(1_000_000),
+                preprocess: Some(2_000_000),
+                inference: Some(50_000_000),
+                decode: Some(3_000_000),
+            }),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Timing column should exist (has data)
+        assert!(df.column("timing").is_ok(), "timing column missing");
+
+        // Verify it is a struct type
+        let timing_col = df.column("timing").unwrap();
+        assert!(
+            matches!(timing_col.dtype(), polars::prelude::DataType::Struct(..)),
+            "timing column should be Struct type, got {:?}",
+            timing_col.dtype()
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_mask_binary_column() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        // Create a small valid PNG via MaskData::encode
+        let pixels = vec![0u8, 255, 128, 64];
+        let mask_data = MaskData::encode(&pixels, 2, 2, 8).unwrap();
+        ann.set_mask(Some(mask_data));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // mask column should exist with Binary type
+        let mask_col = df.column("mask").unwrap();
+        assert_eq!(
+            mask_col.dtype(),
+            &polars::prelude::DataType::Binary,
+            "mask column should be Binary"
+        );
+        assert_eq!(mask_col.null_count(), 0, "mask value should not be null");
+    }
+
+    // =========================================================================
+    // AnnotationType "seg" alias test
+    // =========================================================================
+
+    #[test]
+    fn test_annotation_type_seg_alias() {
+        assert_eq!(
+            AnnotationType::try_from("seg").unwrap(),
+            AnnotationType::Polygon,
+            "\"seg\" should map to Polygon for server round-trip"
+        );
+    }
+
+    // =========================================================================
+    // Timing edge case tests
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_timing_partial() {
+        // Timing with only load set; other fields None
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            timing: Some(Timing {
+                load: Some(1000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        // Timing column should be present because at least one field is non-null
+        assert!(
+            df.column("timing").is_ok(),
+            "timing column should be present when partial data exists"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_timing_all_none_omitted() {
+        // All samples have timing: None — timing column should be omitted
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_label(Some("person".to_string()));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            timing: None,
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        assert!(
+            df.column("timing").is_err(),
+            "timing column should be omitted when all samples have timing: None"
+        );
+    }
+
+    // =========================================================================
+    // Score boundary tests
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_score_zero_survives() {
+        // score = 0.0 must be non-null in the output (not confused with None)
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann.set_box2d_score(Some(0.0));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        let scores = df.column("box2d_score").unwrap();
+        let val = scores.f32().unwrap().get(0);
+        assert_eq!(val, Some(0.0), "score of 0.0 should survive as non-null");
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_score_one_survives() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("test".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.2, 0.3, 0.4)));
+        ann.set_box2d_score(Some(1.0));
+
+        let sample = Sample {
+            image_name: Some("test.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        let scores = df.column("box2d_score").unwrap();
+        let val = scores.f32().unwrap().get(0);
+        assert_eq!(val, Some(1.0), "score of 1.0 should survive as non-null");
     }
 }

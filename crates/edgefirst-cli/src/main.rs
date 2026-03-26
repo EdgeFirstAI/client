@@ -668,6 +668,24 @@ enum Command {
         #[clap(long)]
         pretty: bool,
     },
+    /// Migrate an Arrow file from 2025.10 to 2026.04 schema.
+    ///
+    /// Converts the old NaN-separated `mask` column (List(Float32)) to the new
+    /// nested `polygon` column (List(List(Float32))) and sets schema_version
+    /// metadata.
+    ///
+    /// Examples:
+    ///   edgefirst migrate dataset.arrow
+    ///   edgefirst migrate dataset.arrow --output migrated.arrow
+    #[clap(name = "migrate")]
+    Migrate {
+        /// Path to the input Arrow file
+        input: PathBuf,
+
+        /// Output path (defaults to overwriting input)
+        #[clap(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 // Command handler functions
@@ -1287,52 +1305,68 @@ fn parse_box3d_from_dataframe(
     Ok(None)
 }
 
-/// Extract a polygon mask from a DataFrame row.
+/// Extract a polygon from a DataFrame row.
 ///
-/// Attempts to read the "mask" column as a list of f32 coordinates at the
-/// specified row index. Coordinates are pairs of (x, y) values, with NaN
-/// values used as separators between multiple polygons in the same mask.
+/// Reads polygon data in two formats, trying the newer format first:
 ///
-/// Returns Ok(None) if the column doesn't exist, has wrong type, or
-/// insufficient data.
+/// 1. **2026.04 format** (`polygon` column): `List(List(Float32))` where the
+///    outer list contains rings and each inner list has interleaved
+///    `[x1, y1, x2, y2, ...]` coordinates.
+/// 2. **2025.10 legacy format** (`mask` column): `List(Float32)` with
+///    NaN-separated flat coordinates (`x1, y1, x2, y2, NaN, x3, y3, ...`).
+///
+/// Returns `Ok(None)` if neither column exists, has the wrong type, or
+/// contains insufficient data.
 #[cfg(feature = "polars")]
-fn parse_mask_from_dataframe(
+fn parse_polygon_from_dataframe(
     df: &polars::prelude::DataFrame,
     idx: usize,
-) -> Result<Option<edgefirst_client::Mask>, Error> {
-    // Try to get the mask column
-    let mask_col = match df.column("mask") {
-        Ok(col) => col,
-        Err(_) => return Ok(None),
-    };
+) -> Result<Option<edgefirst_client::Polygon>, Error> {
+    // 1. Try the 2026.04 "polygon" column: List(List(Float32))
+    if let Ok(polygon_col) = df.column("polygon")
+        && let Ok(outer_list) = polygon_col.list()
+        && let Some(rings_series) = outer_list.get_as_series(idx)
+        && let Ok(inner_list) = rings_series.list()
+    {
+        let mut rings: Vec<Vec<(f32, f32)>> = Vec::new();
+        for ring_idx in 0..inner_list.len() {
+            if let Some(ring_series) = inner_list.get_as_series(ring_idx) {
+                let coords: Vec<f32> = if let Ok(v) = ring_series.f32() {
+                    v.into_iter().flatten().collect()
+                } else if let Ok(v) = ring_series.f64() {
+                    v.into_iter().flatten().map(|val| val as f32).collect()
+                } else {
+                    continue;
+                };
+                let points: Vec<(f32, f32)> =
+                    coords.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+                if !points.is_empty() {
+                    rings.push(points);
+                }
+            }
+        }
+        if !rings.is_empty() {
+            return Ok(Some(edgefirst_client::Polygon::new(rings)));
+        }
+    }
 
-    // Convert to list type
-    let list_chunked = match mask_col.list() {
-        Ok(list) => list,
-        Err(_) => return Ok(None),
-    };
-
-    // Get the series at the specified index
-    let mask_series = match list_chunked.get_as_series(idx) {
-        Some(series) => series,
-        None => return Ok(None),
-    };
-
-    let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
-        values.into_iter().flatten().collect()
-    } else if let Ok(values) = mask_series.f64() {
-        values.into_iter().flatten().map(|val| val as f32).collect()
-    } else {
-        return Ok(None);
-    };
-    if !coords.is_empty() {
-        // Use the unflatten helper to convert flat coords with NaN separators back to
-        // nested polygons
-        let polygons = edgefirst_client::unflatten_polygon_coordinates(&coords);
-
-        if !polygons.is_empty() {
-            let mask = edgefirst_client::Mask::new(polygons);
-            return Ok(Some(mask));
+    // 2. Fall back to 2025.10 legacy "mask" column: List(Float32) with NaN separators
+    if let Ok(mask_col) = df.column("mask")
+        && let Ok(list_chunked) = mask_col.list()
+        && let Some(mask_series) = list_chunked.get_as_series(idx)
+    {
+        let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
+            values.into_iter().flatten().collect()
+        } else if let Ok(values) = mask_series.f64() {
+            values.into_iter().flatten().map(|val| val as f32).collect()
+        } else {
+            return Ok(None);
+        };
+        if !coords.is_empty() {
+            let rings = edgefirst_client::unflatten_polygon_coordinates(&coords);
+            if !rings.is_empty() {
+                return Ok(Some(edgefirst_client::Polygon::new(rings)));
+            }
         }
     }
 
@@ -1968,8 +2002,8 @@ fn parse_annotations_from_arrow(
                     geometry_count += 1;
                 }
 
-                if let Some(mask) = parse_mask_from_dataframe(&df, idx)? {
-                    annotation.set_mask(Some(mask));
+                if let Some(polygon) = parse_polygon_from_dataframe(&df, idx)? {
+                    annotation.set_polygon(Some(polygon));
                     has_annotation = true;
                     geometry_count += 1;
                 }
@@ -3843,6 +3877,198 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
     Ok(())
 }
 
+/// Handle Arrow file migration from 2025.10 to 2026.04 schema.
+///
+/// Converts the old NaN-separated `mask` column to the new nested `polygon`
+/// column and sets `schema_version` metadata.
+#[cfg(feature = "polars")]
+fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use edgefirst_client::{coco::SCHEMA_VERSION, unflatten_polygon_coordinates};
+    use polars::prelude::*;
+
+    let output_path = output.unwrap_or_else(|| input.clone());
+
+    println!("Migrating Arrow file to {} schema...", SCHEMA_VERSION);
+    println!("  Input:  {}", input.display());
+    println!("  Output: {}", output_path.display());
+
+    if !input.exists() {
+        return Err(Error::InvalidParameters(format!(
+            "Input file does not exist: {}",
+            input.display()
+        )));
+    }
+
+    // Read existing metadata
+    let existing_metadata = {
+        let mut meta_file = std::fs::File::open(&input).map_err(|e| {
+            Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e))
+        })?;
+        let mut reader = IpcReader::new(&mut meta_file);
+        reader.custom_metadata().ok().flatten()
+    };
+
+    // Check schema_version — if already >= 2026.04, nothing to do
+    if let Some(ref meta) = existing_metadata
+        && let Some(version) = meta.get(&PlSmallStr::from("schema_version"))
+        && version.as_str() >= SCHEMA_VERSION
+    {
+        println!(
+            "File already at schema version {} (>= {}), no migration needed.",
+            version, SCHEMA_VERSION
+        );
+        return Ok(());
+    }
+
+    // Read the DataFrame
+    let mut file = std::fs::File::open(&input)
+        .map_err(|e| Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e)))?;
+    let df = IpcReader::new(&mut file)
+        .finish()
+        .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
+
+    let has_mask = df.get_column_names().contains(&&PlSmallStr::from("mask"));
+    let row_count = df.height();
+
+    let mut df = if has_mask {
+        // Convert mask column: List(Float32) NaN-separated -> polygon: List(List(Float32))
+        let mask_col = df
+            .column("mask")
+            .map_err(|e| Error::InvalidParameters(format!("Failed to read mask column: {}", e)))?;
+
+        let mask_chunked = mask_col.list().map_err(|e| {
+            Error::InvalidParameters(format!("mask column is not a List type: {}", e))
+        })?;
+
+        // Build the nested polygon column: List(List(Float32))
+        let mut polygon_series_vec: Vec<Option<Series>> = Vec::with_capacity(row_count);
+
+        for row_idx in 0..row_count {
+            match mask_chunked.get_as_series(row_idx) {
+                Some(inner_series) => {
+                    let ca = inner_series.f32().map_err(|e| {
+                        Error::InvalidParameters(format!(
+                            "mask row {} is not Float32: {}",
+                            row_idx, e
+                        ))
+                    })?;
+
+                    // Collect the flat coordinates, treating None as NaN
+                    let coords: Vec<f32> = ca.iter().map(|v| v.unwrap_or(f32::NAN)).collect();
+
+                    if coords.is_empty() {
+                        // Empty mask -> empty polygon (list with no rings)
+                        let ring_series: Vec<Option<Series>> = Vec::new();
+                        polygon_series_vec
+                            .push(Some(Series::new(PlSmallStr::from(""), ring_series)));
+                    } else {
+                        // Unflatten NaN-separated coords into polygon rings
+                        let rings = unflatten_polygon_coordinates(&coords);
+
+                        // Each ring becomes an Option<Series> of interleaved floats
+                        let ring_series: Vec<Option<Series>> = rings
+                            .iter()
+                            .map(|ring| {
+                                let flat: Vec<f32> =
+                                    ring.iter().flat_map(|&(x, y)| [x, y]).collect();
+                                Some(Series::new(PlSmallStr::from(""), flat))
+                            })
+                            .collect();
+
+                        polygon_series_vec
+                            .push(Some(Series::new(PlSmallStr::from(""), ring_series)));
+                    }
+                }
+                None => {
+                    polygon_series_vec.push(None);
+                }
+            }
+        }
+
+        // Build the polygon column as List(List(Float32))
+        let polygon_col: Column = Series::new(PlSmallStr::from("polygon"), polygon_series_vec)
+            .cast(&DataType::List(Box::new(DataType::List(Box::new(
+                DataType::Float32,
+            )))))
+            .map_err(|e| Error::InvalidParameters(format!("Failed to cast polygon column: {}", e)))?
+            .into();
+
+        // Drop the old mask column and add the new polygon column
+        let mut df = df
+            .drop("mask")
+            .map_err(|e| Error::InvalidParameters(format!("Failed to drop mask column: {}", e)))?;
+
+        df.with_column(polygon_col).map_err(|e| {
+            Error::InvalidParameters(format!("Failed to add polygon column: {}", e))
+        })?;
+
+        println!(
+            "  Converted 'mask' column -> 'polygon' column ({} rows)",
+            row_count
+        );
+        df
+    } else {
+        println!("  No 'mask' column found, only updating schema_version metadata.");
+        df
+    };
+
+    // Convert iscrowd from UInt32/UInt8 to Boolean if present
+    if let Ok(col) = df.column("iscrowd")
+        && col.dtype() != &DataType::Boolean
+    {
+        let bool_col = col.cast(&DataType::Boolean)?;
+        df.replace("iscrowd", bool_col)?;
+        println!("  Converted 'iscrowd' column to Boolean type");
+    }
+
+    // Prepare metadata: preserve existing, update schema_version
+    let mut metadata: std::collections::BTreeMap<PlSmallStr, PlSmallStr> = existing_metadata
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    metadata.insert(
+        PlSmallStr::from("schema_version"),
+        PlSmallStr::from(SCHEMA_VERSION),
+    );
+
+    // Write output
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error::InvalidParameters(format!(
+                "Cannot create output directory {}: {}",
+                parent.display(),
+                e
+            ))
+        })?;
+    }
+
+    let mut out_file = std::fs::File::create(&output_path).map_err(|e| {
+        Error::InvalidParameters(format!(
+            "Cannot create output file {}: {}",
+            output_path.display(),
+            e
+        ))
+    })?;
+
+    let mut writer = IpcWriter::new(&mut out_file);
+    writer.set_custom_schema_metadata(Arc::new(metadata));
+    writer
+        .finish(&mut df)
+        .map_err(|e| Error::InvalidParameters(format!("Failed to write Arrow file: {}", e)))?;
+
+    println!(
+        "\nMigrated to schema version {}: {}",
+        SCHEMA_VERSION,
+        output_path.display()
+    );
+
+    Ok(())
+}
+
 /// Handle COCO to Arrow conversion.
 async fn handle_coco_to_arrow(
     coco_path: PathBuf,
@@ -3888,7 +4114,7 @@ async fn handle_coco_to_arrow(
     let count = task.await??;
     pb.finish_with_message("done");
 
-    println!("\n✓ Converted {} annotations to Arrow format", count);
+    println!("\n✓ Converted {} samples to Arrow format", count);
 
     Ok(())
 }
@@ -4700,6 +4926,10 @@ async fn main() -> Result<(), Error> {
         Command::ValidateSnapshot { path, verbose } => {
             return handle_validate_snapshot(path.clone(), *verbose);
         }
+        #[cfg(feature = "polars")]
+        Command::Migrate { input, output } => {
+            return handle_migrate(input.clone(), output.clone());
+        }
         _ => {}
     }
 
@@ -4980,6 +5210,12 @@ async fn main() -> Result<(), Error> {
         Command::ValidateSnapshot { .. } => unreachable!(),
         Command::CocoToArrow { .. } => unreachable!(),
         Command::ArrowToCoco { .. } => unreachable!(),
+        #[cfg(feature = "polars")]
+        Command::Migrate { .. } => unreachable!(),
+        #[cfg(not(feature = "polars"))]
+        Command::Migrate { .. } => {
+            return Err(Error::FeatureNotEnabled("polars".to_owned()));
+        }
         Command::ImportCoco {
             coco_path,
             project,
@@ -5435,13 +5671,17 @@ mod tests {
 
             assert_eq!(samples.len(), 1);
             let annotations = &samples[0].annotations;
-            assert_eq!(annotations.len(), 1, "Mask annotation should be preserved");
+            assert_eq!(
+                annotations.len(),
+                1,
+                "Polygon annotation should be preserved"
+            );
 
-            let mask = annotations[0]
-                .mask()
-                .expect("Annotation should include mask geometry");
-            assert_eq!(mask.polygon.len(), 1);
-            let ring = &mask.polygon[0];
+            let polygon = annotations[0]
+                .polygon()
+                .expect("Annotation should include polygon geometry");
+            assert_eq!(polygon.rings.len(), 1);
+            let ring = &polygon.rings[0];
             assert_eq!(ring.len(), 4);
             assert_eq!(
                 ring,

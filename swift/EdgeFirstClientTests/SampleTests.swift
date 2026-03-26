@@ -134,13 +134,15 @@ final class SampleTests: XCTestCase {
       location: nil,
       degradation: nil,
       files: [],
-      annotations: []
+      annotations: [],
+      timing: nil
     )
 
     XCTAssertNil(sample.id)
     XCTAssertNil(sample.group)
     XCTAssertTrue(sample.files.isEmpty)
     XCTAssertTrue(sample.annotations.isEmpty)
+    XCTAssertNil(sample.timing)
   }
 
   // MARK: - Sample With Group Tests
@@ -164,7 +166,8 @@ final class SampleTests: XCTestCase {
       location: nil,
       degradation: nil,
       files: [],
-      annotations: []
+      annotations: [],
+      timing: nil
     )
 
     XCTAssertEqual(sample.group, "train")
@@ -179,7 +182,7 @@ final class SampleTests: XCTestCase {
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.group, "val")
@@ -192,7 +195,7 @@ final class SampleTests: XCTestCase {
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.group, "test")
@@ -219,7 +222,8 @@ final class SampleTests: XCTestCase {
       location: nil,
       degradation: nil,
       files: [],
-      annotations: []
+      annotations: [],
+      timing: nil
     )
 
     XCTAssertEqual(sample.sequenceName, "driving_scene_001")
@@ -242,7 +246,7 @@ final class SampleTests: XCTestCase {
       imageName: "image.jpg", imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
       files: [file],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.files.count, 1)
@@ -262,7 +266,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
       files: files,
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.files.count, 3)
@@ -276,7 +280,8 @@ final class SampleTests: XCTestCase {
     let annotation = Annotation(
       sampleId: nil, name: nil, sequenceName: nil, frameNumber: nil,
       group: nil, objectId: "car-1", labelName: "car", labelIndex: 0,
-      box2d: box, box3d: nil, mask: nil
+      iscrowd: nil, box2d: box, box3d: nil, polygon: nil, mask: nil,
+      box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
     )
     let sample = Sample(
       id: nil, group: nil, sequenceName: nil, sequenceUuid: nil,
@@ -284,7 +289,7 @@ final class SampleTests: XCTestCase {
       imageName: "image.jpg", imageUrl: nil, width: 1920, height: 1080,
       date: nil, source: nil, location: nil, degradation: nil,
       files: [],
-      annotations: [annotation]
+      annotations: [annotation], timing: nil
     )
 
     XCTAssertEqual(sample.annotations.count, 1)
@@ -297,14 +302,16 @@ final class SampleTests: XCTestCase {
       Annotation(
         sampleId: nil, name: nil, sequenceName: nil, frameNumber: nil,
         group: nil, objectId: "car-1", labelName: "car", labelIndex: 0,
-        box2d: Box2d(left: 100, top: 100, width: 50, height: 30),
-        box3d: nil, mask: nil
+        iscrowd: nil, box2d: Box2d(left: 100, top: 100, width: 50, height: 30),
+        box3d: nil, polygon: nil, mask: nil,
+        box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
       ),
       Annotation(
         sampleId: nil, name: nil, sequenceName: nil, frameNumber: nil,
         group: nil, objectId: "person-1", labelName: "person", labelIndex: 1,
-        box2d: Box2d(left: 200, top: 150, width: 40, height: 80),
-        box3d: nil, mask: nil
+        iscrowd: nil, box2d: Box2d(left: 200, top: 150, width: 40, height: 80),
+        box3d: nil, polygon: nil, mask: nil,
+        box2dScore: nil, box3dScore: nil, polygonScore: nil, maskScore: nil
       ),
     ]
     let sample = Sample(
@@ -313,7 +320,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
       files: [],
-      annotations: annotations
+      annotations: annotations, timing: nil
     )
 
     XCTAssertEqual(sample.annotations.count, 2)
@@ -331,7 +338,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: location, degradation: nil,
       files: [],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertNotNil(sample.location)
@@ -352,7 +359,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: location, degradation: nil,
       files: [],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertNotNil(sample.location)
@@ -374,7 +381,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: location, degradation: nil,
       files: [],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertNotNil(sample.location?.gps)
@@ -391,7 +398,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: "blur",
       files: [],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.degradation, "blur")
@@ -405,7 +412,7 @@ final class SampleTests: XCTestCase {
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: "occlusion",
       files: [],
-      annotations: []
+      annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample.degradation, "occlusion")
@@ -420,21 +427,21 @@ final class SampleTests: XCTestCase {
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: "image.jpg", imageUrl: nil, width: 1920, height: 1080,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
     let sample2 = Sample(
       id: SampleId(value: 1), group: "train", sequenceName: nil, sequenceUuid: nil,
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: "image.jpg", imageUrl: nil, width: 1920, height: 1080,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
     let sample3 = Sample(
       id: SampleId(value: 2), group: "train", sequenceName: nil, sequenceUuid: nil,
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: "image.jpg", imageUrl: nil, width: 1920, height: 1080,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
 
     XCTAssertEqual(sample1, sample2)
@@ -450,14 +457,14 @@ final class SampleTests: XCTestCase {
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
     let sample2 = Sample(
       id: SampleId(value: 2), group: nil, sequenceName: nil, sequenceUuid: nil,
       sequenceDescription: nil, frameNumber: nil, uuid: nil,
       imageName: nil, imageUrl: nil, width: nil, height: nil,
       date: nil, source: nil, location: nil, degradation: nil,
-      files: [], annotations: []
+      files: [], annotations: [], timing: nil
     )
 
     sampleSet.insert(sample1)
@@ -484,8 +491,11 @@ final class SampleTests: XCTestCase {
     let annotation = Annotation(
       sampleId: nil, name: nil, sequenceName: nil, frameNumber: nil,
       group: nil, objectId: "vehicle-1", labelName: "car", labelIndex: 0,
-      box2d: box, box3d: nil, mask: nil
+      iscrowd: false, box2d: box, box3d: nil, polygon: nil, mask: nil,
+      box2dScore: 0.95, box3dScore: nil, polygonScore: nil, maskScore: nil
     )
+
+    let timing = Timing(load: 1000, preprocess: 2000, inference: 5000, decode: 1500)
 
     let sample = Sample(
       id: SampleId(value: 12345),
@@ -504,7 +514,8 @@ final class SampleTests: XCTestCase {
       location: location,
       degradation: "rain",
       files: files,
-      annotations: [annotation]
+      annotations: [annotation],
+      timing: timing
     )
 
     // Verify all fields
@@ -521,5 +532,10 @@ final class SampleTests: XCTestCase {
     XCTAssertEqual(sample.degradation, "rain")
     XCTAssertEqual(sample.files.count, 2)
     XCTAssertEqual(sample.annotations.count, 1)
+    XCTAssertEqual(sample.annotations[0].iscrowd, false)
+    XCTAssertEqual(sample.annotations[0].box2dScore, 0.95)
+    XCTAssertNotNil(sample.timing)
+    XCTAssertEqual(sample.timing?.load, 1000)
+    XCTAssertEqual(sample.timing?.inference, 5000)
   }
 }

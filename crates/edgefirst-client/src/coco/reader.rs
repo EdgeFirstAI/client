@@ -522,6 +522,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -531,6 +532,7 @@ mod tests {
                 area: 8000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -546,6 +548,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -574,6 +577,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![],
             ..Default::default()
@@ -600,6 +604,7 @@ mod tests {
                 id: 2,
                 name: "car".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![],
             ..Default::default()

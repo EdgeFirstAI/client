@@ -38,6 +38,7 @@ log = "0.4.29"
 polars = { version = "0.53.0", default-features = false, features = [
     "dtype-array",
     "dtype-categorical",
+    "dtype-struct",
     "ipc",
     "partition_by",
 ] }

@@ -278,11 +278,11 @@ final class ArtifactTests: XCTestCase {
     let artifact1 = Artifact(name: "model1.onnx", modelType: "onnx")
     let artifact2 = Artifact(name: "model2.pt", modelType: "pytorch")
 
-    artifactSizes[artifact1] = 1024000
-    artifactSizes[artifact2] = 2048000
+    artifactSizes[artifact1] = 1_024_000
+    artifactSizes[artifact2] = 2_048_000
 
-    XCTAssertEqual(artifactSizes[artifact1], 1024000)
-    XCTAssertEqual(artifactSizes[artifact2], 2048000)
+    XCTAssertEqual(artifactSizes[artifact1], 1_024_000)
+    XCTAssertEqual(artifactSizes[artifact2], 2_048_000)
   }
 
   // MARK: - TrainingSession Offline Tests

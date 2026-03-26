@@ -12,7 +12,8 @@
 
 use super::{
     convert::{
-        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask, mask_to_coco_polygon,
+        box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_polygon,
+        polygon_to_coco_polygon,
     },
     reader::{CocoReadOptions, CocoReader, read_coco_directory},
     types::{CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
@@ -551,7 +552,15 @@ fn merge_coco_datasets(target: &mut CocoDataset, source: CocoDataset) {
     }
 }
 
-/// Convert a COCO image with annotations to an EdgeFirst Sample.
+/// Convert a COCO image and its annotations to an EdgeFirst Sample for Studio upload.
+///
+/// LVIS extension fields (`iscrowd`, `category_frequency`, `neg_label_indices`,
+/// `not_exhaustive_label_indices`) are set on the returned Sample/Annotations when
+/// present in the source data. However, Studio's backend currently drops these fields
+/// during import because it re-marshals annotations through typed Go structs (see
+/// DE-2509). These fields will round-trip correctly once the backend adds JSONB
+/// pass-through support. Until then, they are harmlessly omitted from the stored data
+/// via `skip_serializing_if = "Option::is_none"`.
 fn convert_coco_image_to_sample(
     image: &CocoImage,
     index: &CocoIndex,
@@ -570,16 +579,16 @@ fn convert_coco_image_to_sample(
     let annotations = index
         .annotations_for_image(image.id)
         .iter()
-        .filter_map(|ann| {
-            let label = index.label_name(ann.category_id)?;
-            let label_index = index.label_index(ann.category_id);
+        .filter_map(|coco_ann| {
+            let label = index.label_name(coco_ann.category_id)?;
+            let label_index = index.label_index(coco_ann.category_id);
 
-            let box2d = coco_bbox_to_box2d(&ann.bbox, image.width, image.height);
+            let box2d = coco_bbox_to_box2d(&coco_ann.bbox, image.width, image.height);
 
-            let mask = if include_masks {
-                ann.segmentation
-                    .as_ref()
-                    .and_then(|seg| coco_segmentation_to_mask(seg, image.width, image.height).ok())
+            let polygon = if include_masks {
+                coco_ann.segmentation.as_ref().and_then(|seg| {
+                    coco_segmentation_to_polygon(seg, image.width, image.height).ok()
+                })
             } else {
                 None
             };
@@ -590,12 +599,26 @@ fn convert_coco_image_to_sample(
                 ann.set_label(Some(label.to_string()));
                 ann.set_label_index(label_index);
                 ann.set_box2d(Some(box2d));
-                ann.set_mask(mask);
+                ann.set_polygon(polygon);
                 ann.set_group(group.map(String::from));
+                ann.set_iscrowd(Some(coco_ann.iscrowd != 0));
+                ann.set_category_frequency(index.frequency(coco_ann.category_id).map(String::from));
                 Some(ann)
             }
         })
         .collect();
+
+    // Translate LVIS image-level fields to label_index lists
+    let neg_label_indices = image.neg_category_ids.as_ref().map(|ids| {
+        ids.iter()
+            .filter_map(|&id| index.label_index(id).map(|idx| idx as u32))
+            .collect::<Vec<u32>>()
+    });
+    let not_exhaustive_label_indices = image.not_exhaustive_category_ids.as_ref().map(|ids| {
+        ids.iter()
+            .filter_map(|&id| index.label_index(id).map(|idx| idx as u32))
+            .collect::<Vec<u32>>()
+    });
 
     // Create sample files
     let mut files = Vec::new();
@@ -611,6 +634,8 @@ fn convert_coco_image_to_sample(
         width: Some(image.width),
         height: Some(image.height),
         group: group.map(String::from),
+        neg_label_indices,
+        not_exhaustive_label_indices,
         files,
         annotations,
         ..Default::default()
@@ -643,7 +668,7 @@ pub async fn export_studio_to_coco(
 
     // Fetch samples from Studio with annotations
     let groups: Vec<String> = options.groups.clone();
-    let annotation_types = [crate::AnnotationType::Box2d, crate::AnnotationType::Mask];
+    let annotation_types = [crate::AnnotationType::Box2d, crate::AnnotationType::Polygon];
 
     // Fetch all samples
     let all_samples = client
@@ -678,15 +703,22 @@ pub async fn export_studio_to_coco(
         let image_id = builder.add_image(&file_name, width, height);
 
         for ann in &sample.annotations {
-            if let Some(box2d) = ann.box2d() {
+            // Get bbox from box2d if present, otherwise compute from polygon
+            let bbox = if let Some(box2d) = ann.box2d() {
+                Some(box2d_to_coco_bbox(box2d, width, height))
+            } else if let Some(polygon) = ann.polygon() {
+                compute_bbox_from_polygon(polygon, width, height)
+            } else {
+                None
+            };
+
+            if let Some(bbox) = bbox {
                 let label = ann.label().map(|s| s.as_str()).unwrap_or("unknown");
                 let category_id = builder.add_category(label, None);
 
-                let bbox = box2d_to_coco_bbox(box2d, width, height);
-
                 let segmentation = if options.include_masks {
-                    ann.mask().map(|mask| {
-                        let coco_poly = mask_to_coco_polygon(mask, width, height);
+                    ann.polygon().map(|polygon| {
+                        let coco_poly = polygon_to_coco_polygon(polygon, width, height);
                         CocoSegmentation::Polygon(coco_poly)
                     })
                 } else {
@@ -965,13 +997,13 @@ fn convert_coco_annotation_to_server(
     // Convert bounding box to server format
     let box2d = coco_bbox_to_box2d(&coco_ann.bbox, width, height);
 
-    // Convert mask to polygon string if enabled
+    // Convert polygon to string if enabled
     let polygon = if include_masks {
         coco_ann
             .segmentation
             .as_ref()
-            .and_then(|seg| coco_segmentation_to_mask(seg, width, height).ok())
-            .map(|mask| mask_to_polygon_string(&mask))
+            .and_then(|seg| coco_segmentation_to_polygon(seg, width, height).ok())
+            .map(|p| polygon_to_polygon_string(&p))
             .unwrap_or_default()
     } else {
         String::new()
@@ -1333,7 +1365,7 @@ pub async fn update_coco_annotations(
     })
 }
 
-/// Convert a Mask to a polygon string for the server API.
+/// Convert a Polygon to a polygon string for the server API.
 ///
 /// The server expects a 3D array format: `[[[x1,y1],[x2,y2],...], ...]`
 /// where each point is an `[x, y]` pair. This matches how the server
@@ -1345,12 +1377,12 @@ pub async fn update_coco_annotations(
 ///
 /// **Note:** This function filters out NaN and Infinity values which would
 /// serialize as `null` in JSON and cause parsing failures on the server.
-fn mask_to_polygon_string(mask: &crate::Mask) -> String {
+fn polygon_to_polygon_string(polygon: &crate::Polygon) -> String {
     // Convert Vec<Vec<(f32, f32)>> to Vec<Vec<[f32; 2]>> for proper JSON
     // serialization Filter out any NaN or Infinity values which would become
     // "null" in JSON
-    let polygons: Vec<Vec<[f32; 2]>> = mask
-        .polygon
+    let rings: Vec<Vec<[f32; 2]>> = polygon
+        .rings
         .iter()
         .map(|ring| {
             ring.iter()
@@ -1361,15 +1393,19 @@ fn mask_to_polygon_string(mask: &crate::Mask) -> String {
         .filter(|ring: &Vec<[f32; 2]>| ring.len() >= 3) // Need at least 3 points for a valid polygon
         .collect();
 
-    serde_json::to_string(&polygons).unwrap_or_default()
+    serde_json::to_string(&rings).unwrap_or_default()
 }
 
-/// Compute COCO bounding box from mask polygon.
+/// Compute COCO bounding box from polygon contours.
 ///
 /// When the server doesn't return bounding box coordinates for segmentation
-/// annotations, we compute them from the mask polygon bounds.
-fn compute_bbox_from_mask(mask: &crate::Mask, width: u32, height: u32) -> Option<[f64; 4]> {
-    if mask.polygon.is_empty() {
+/// annotations, we compute them from the polygon bounds.
+fn compute_bbox_from_polygon(
+    polygon: &crate::Polygon,
+    width: u32,
+    height: u32,
+) -> Option<[f64; 4]> {
+    if polygon.rings.is_empty() {
         return None;
     }
 
@@ -1378,7 +1414,7 @@ fn compute_bbox_from_mask(mask: &crate::Mask, width: u32, height: u32) -> Option
     let mut max_x = f32::MIN;
     let mut max_y = f32::MIN;
 
-    for ring in &mask.polygon {
+    for ring in &polygon.rings {
         for &(x, y) in ring {
             if x.is_finite() && y.is_finite() {
                 min_x = min_x.min(x);
@@ -1483,7 +1519,7 @@ pub async fn verify_coco_import(
 
     // Fetch samples from Studio with annotations
     log::info!("Fetching samples from Studio dataset {}...", dataset_id);
-    let annotation_types = [crate::AnnotationType::Box2d, crate::AnnotationType::Mask];
+    let annotation_types = [crate::AnnotationType::Box2d, crate::AnnotationType::Polygon];
 
     let studio_samples = client
         .samples(
@@ -1520,12 +1556,12 @@ pub async fn verify_coco_import(
         let image_id = builder.add_image(&file_name, width, height);
 
         for ann in &sample.annotations {
-            // Get bbox from box2d if present, otherwise compute from mask
+            // Get bbox from box2d if present, otherwise compute from polygon
             let bbox = if let Some(box2d) = ann.box2d() {
                 Some(box2d_to_coco_bbox(box2d, width, height))
-            } else if let Some(mask) = ann.mask() {
-                // Compute bbox from mask polygon bounds
-                compute_bbox_from_mask(mask, width, height)
+            } else if let Some(polygon) = ann.polygon() {
+                // Compute bbox from polygon bounds
+                compute_bbox_from_polygon(polygon, width, height)
             } else {
                 None
             };
@@ -1535,8 +1571,8 @@ pub async fn verify_coco_import(
                 let category_id = builder.add_category(label, None);
 
                 let segmentation = if options.verify_masks {
-                    ann.mask().map(|mask| {
-                        let coco_poly = mask_to_coco_polygon(mask, width, height);
+                    ann.polygon().map(|polygon| {
+                        let coco_poly = polygon_to_coco_polygon(polygon, width, height);
                         CocoSegmentation::Polygon(coco_poly)
                     })
                 } else {
@@ -1740,6 +1776,7 @@ mod tests {
                 id: 1,
                 name: "cat".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -1760,6 +1797,7 @@ mod tests {
                 id: 2,
                 name: "dog".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 2,
@@ -1817,6 +1855,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1827,11 +1866,13 @@ mod tests {
                     id: 1, // Duplicate
                     name: "person_dup".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
                 CocoCategory {
                     id: 2,
                     name: "car".to_string(),
                     supercategory: None,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1880,6 +1921,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -1889,6 +1931,7 @@ mod tests {
                 area: 30000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -1956,6 +1999,7 @@ mod tests {
                 id: 1,
                 name: "object".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -1967,6 +2011,7 @@ mod tests {
                 segmentation: Some(CocoSegmentation::Polygon(vec![vec![
                     10.0, 10.0, 60.0, 10.0, 60.0, 60.0, 10.0, 60.0,
                 ]])),
+                score: None,
             }],
             ..Default::default()
         };
@@ -1977,24 +2022,24 @@ mod tests {
         let sample_with =
             convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), true, false, None)
                 .unwrap();
-        assert!(sample_with.annotations[0].mask().is_some());
+        assert!(sample_with.annotations[0].polygon().is_some());
 
         // Without masks
         let sample_without =
             convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), false, false, None)
                 .unwrap();
-        assert!(sample_without.annotations[0].mask().is_none());
+        assert!(sample_without.annotations[0].polygon().is_none());
     }
 
     // =========================================================================
-    // compute_bbox_from_mask tests
+    // compute_bbox_from_polygon tests
     // =========================================================================
 
     #[test]
-    fn test_compute_bbox_from_mask_simple() {
-        let mask = crate::Mask::new(vec![vec![(0.1, 0.1), (0.5, 0.1), (0.5, 0.5), (0.1, 0.5)]]);
+    fn test_compute_bbox_from_polygon_simple() {
+        let mask = crate::Polygon::new(vec![vec![(0.1, 0.1), (0.5, 0.1), (0.5, 0.5), (0.1, 0.5)]]);
 
-        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+        let bbox = compute_bbox_from_polygon(&mask, 100, 100);
 
         assert!(bbox.is_some());
         let [x, y, w, h] = bbox.unwrap();
@@ -2005,28 +2050,28 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_bbox_from_mask_empty() {
-        let mask = crate::Mask::new(vec![]);
-        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+    fn test_compute_bbox_from_polygon_empty() {
+        let mask = crate::Polygon::new(vec![]);
+        let bbox = compute_bbox_from_polygon(&mask, 100, 100);
         assert!(bbox.is_none());
     }
 
     #[test]
-    fn test_compute_bbox_from_mask_with_nan() {
-        let mask = crate::Mask::new(vec![vec![(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]]);
-        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+    fn test_compute_bbox_from_polygon_with_nan() {
+        let mask = crate::Polygon::new(vec![vec![(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]]);
+        let bbox = compute_bbox_from_polygon(&mask, 100, 100);
         assert!(bbox.is_none());
     }
 
     #[test]
-    fn test_compute_bbox_from_mask_multiple_rings() {
+    fn test_compute_bbox_from_polygon_multiple_rings() {
         // Two disjoint regions
-        let mask = crate::Mask::new(vec![
+        let mask = crate::Polygon::new(vec![
             vec![(0.1, 0.1), (0.2, 0.1), (0.2, 0.2), (0.1, 0.2)],
             vec![(0.8, 0.8), (0.9, 0.8), (0.9, 0.9), (0.8, 0.9)],
         ]);
 
-        let bbox = compute_bbox_from_mask(&mask, 100, 100);
+        let bbox = compute_bbox_from_polygon(&mask, 100, 100);
 
         assert!(bbox.is_some());
         let [x, y, w, h] = bbox.unwrap();
@@ -2038,15 +2083,15 @@ mod tests {
     }
 
     // =========================================================================
-    // mask_to_polygon_string tests
+    // polygon_to_polygon_string tests
     // =========================================================================
 
     #[test]
-    fn test_mask_to_polygon_string() {
+    fn test_polygon_to_polygon_string() {
         // Create a simple triangle mask
-        let mask = crate::Mask::new(vec![vec![(0.1, 0.2), (0.3, 0.4), (0.5, 0.6)]]);
+        let mask = crate::Polygon::new(vec![vec![(0.1, 0.2), (0.3, 0.4), (0.5, 0.6)]]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
 
         // Server expects 3D array format: [[[x1,y1],[x2,y2],...]]
         // NOT COCO format: [[x1,y1,x2,y2,...]]
@@ -2054,15 +2099,15 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_to_polygon_string_multiple_rings() {
+    fn test_polygon_to_polygon_string_multiple_rings() {
         // Create a mask with two polygons (e.g., disjoint regions)
         // Each polygon needs at least 3 points to be valid
-        let mask = crate::Mask::new(vec![
+        let mask = crate::Polygon::new(vec![
             vec![(0.1, 0.1), (0.2, 0.1), (0.15, 0.2)], // Triangle 1
             vec![(0.5, 0.5), (0.6, 0.5), (0.55, 0.6)], // Triangle 2
         ]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
 
         // Should produce two separate polygon rings
         assert_eq!(
@@ -2072,16 +2117,16 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_to_polygon_string_filters_nan_values() {
+    fn test_polygon_to_polygon_string_filters_nan_values() {
         // Test that NaN values are filtered out
-        let mask = crate::Mask::new(vec![vec![
+        let mask = crate::Polygon::new(vec![vec![
             (0.1, 0.2),
             (f32::NAN, 0.4), // NaN value - should be filtered
             (0.3, 0.4),
             (0.5, 0.6),
         ]]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
 
         // NaN values should be filtered out, not serialized as "null"
         assert!(
@@ -2094,16 +2139,16 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_to_polygon_string_filters_infinity() {
+    fn test_polygon_to_polygon_string_filters_infinity() {
         // Test that Infinity values are filtered out
-        let mask = crate::Mask::new(vec![vec![
+        let mask = crate::Polygon::new(vec![vec![
             (0.1, 0.2),
             (f32::INFINITY, 0.4), // Infinity - should be filtered
             (0.3, 0.4),
             (0.5, 0.6),
         ]]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
 
         assert!(
             !result.contains("null"),
@@ -2113,30 +2158,30 @@ mod tests {
     }
 
     #[test]
-    fn test_mask_to_polygon_string_too_few_points_after_filter() {
+    fn test_polygon_to_polygon_string_too_few_points_after_filter() {
         // If filtering leaves fewer than 3 points, the ring should be dropped
-        let mask = crate::Mask::new(vec![vec![
+        let mask = crate::Polygon::new(vec![vec![
             (0.1, 0.2),
             (f32::NAN, 0.4),      // filtered
             (f32::NAN, f32::NAN), // filtered
         ]]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
 
         // Only 1 point remains, so the ring should be dropped
         assert_eq!(result, "[]");
     }
 
     #[test]
-    fn test_mask_to_polygon_string_negative_infinity() {
-        let mask = crate::Mask::new(vec![vec![
+    fn test_polygon_to_polygon_string_negative_infinity() {
+        let mask = crate::Polygon::new(vec![vec![
             (0.1, 0.2),
             (f32::NEG_INFINITY, 0.4), // -Infinity - should be filtered
             (0.3, 0.4),
             (0.5, 0.6),
         ]]);
 
-        let result = mask_to_polygon_string(&mask);
+        let result = polygon_to_polygon_string(&mask);
         assert_eq!(result, "[[[0.1,0.2],[0.3,0.4],[0.5,0.6]]]");
     }
 

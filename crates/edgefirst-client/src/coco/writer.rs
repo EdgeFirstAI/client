@@ -413,7 +413,40 @@ impl CocoDatasetBuilder {
             id,
             name: name.to_string(),
             supercategory: supercategory.map(String::from),
+            ..Default::default()
         });
+
+        id
+    }
+
+    /// Add a category with a specific ID, returning its ID.
+    ///
+    /// Used when round-tripping datasets that have explicit category IDs
+    /// (e.g., COCO, LVIS) to preserve the original numbering.
+    pub fn add_category_with_id(
+        &mut self,
+        id: u32,
+        name: &str,
+        supercategory: Option<&str>,
+    ) -> u32 {
+        // Check if category already exists (by id or name)
+        for cat in &self.dataset.categories {
+            if cat.id == id || cat.name == name {
+                return cat.id;
+            }
+        }
+
+        self.dataset.categories.push(CocoCategory {
+            id,
+            name: name.to_string(),
+            supercategory: supercategory.map(String::from),
+            ..Default::default()
+        });
+
+        // Keep next_category_id above all known IDs
+        if id >= self.next_category_id {
+            self.next_category_id = id + 1;
+        }
 
         id
     }
@@ -442,6 +475,18 @@ impl CocoDatasetBuilder {
         bbox: [f64; 4],
         segmentation: Option<CocoSegmentation>,
     ) -> u64 {
+        self.add_annotation_with_iscrowd(image_id, category_id, bbox, segmentation, 0)
+    }
+
+    /// Add an annotation with an explicit iscrowd flag, returning its ID.
+    pub fn add_annotation_with_iscrowd(
+        &mut self,
+        image_id: u64,
+        category_id: u32,
+        bbox: [f64; 4],
+        segmentation: Option<CocoSegmentation>,
+        iscrowd: u8,
+    ) -> u64 {
         let id = self.next_annotation_id;
         self.next_annotation_id += 1;
 
@@ -453,11 +498,72 @@ impl CocoDatasetBuilder {
             category_id,
             bbox,
             area,
-            iscrowd: 0,
+            iscrowd,
             segmentation,
+            score: None,
         });
 
         id
+    }
+
+    /// Set the score on an annotation by ID.
+    pub fn set_annotation_score(&mut self, annotation_id: u64, score: f64) {
+        if let Some(ann) = self
+            .dataset
+            .annotations
+            .iter_mut()
+            .find(|a| a.id == annotation_id)
+        {
+            ann.score = Some(score);
+        }
+    }
+
+    /// Set LVIS annotation metadata on an image.
+    pub fn set_image_neg_categories(
+        &mut self,
+        image_id: u64,
+        neg_category_ids: Option<Vec<u32>>,
+        not_exhaustive_category_ids: Option<Vec<u32>>,
+    ) {
+        if let Some(img) = self.dataset.images.iter_mut().find(|i| i.id == image_id) {
+            img.neg_category_ids = neg_category_ids;
+            img.not_exhaustive_category_ids = not_exhaustive_category_ids;
+        }
+    }
+
+    /// Set LVIS metadata on a category by name.
+    ///
+    /// Only updates fields that are `Some`; leaves existing values intact
+    /// for fields passed as `None`.
+    pub fn set_category_metadata(
+        &mut self,
+        name: &str,
+        synset: Option<String>,
+        frequency: Option<String>,
+        synonyms: Option<Vec<String>>,
+        def: Option<String>,
+    ) {
+        if let Some(cat) = self.dataset.categories.iter_mut().find(|c| c.name == name) {
+            if synset.is_some() {
+                cat.synset = synset;
+            }
+            if frequency.is_some() {
+                cat.frequency = frequency;
+            }
+            if synonyms.is_some() {
+                cat.synonyms = synonyms;
+            }
+            if def.is_some() {
+                cat.def = def;
+            }
+        }
+    }
+
+    /// Set the supercategory on a category by name.
+    pub fn set_category_supercategory(&mut self, name: &str, supercategory: &str) {
+        if let Some(cat) = self.dataset.categories.iter_mut().find(|c| c.name == name) {
+            cat.supercategory = Some(supercategory.to_string());
+        }
     }
 
     /// Build the final dataset.
@@ -495,6 +601,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
                 id: 1,
@@ -504,6 +611,7 @@ mod tests {
                 area: 8000.0,
                 iscrowd: 0,
                 segmentation: None,
+                score: None,
             }],
             ..Default::default()
         };
@@ -644,6 +752,7 @@ mod tests {
                 id: 1,
                 name: "person".to_string(),
                 supercategory: None,
+                ..Default::default()
             }],
             annotations: vec![
                 CocoAnnotation {

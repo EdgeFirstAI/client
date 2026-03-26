@@ -64,21 +64,24 @@ final class DomainStructTests: XCTestCase {
   func testDatasetHashability() {
     var datasetSet: Set<Dataset> = []
 
-    datasetSet.insert(Dataset(
-      id: DatasetId(value: 1),
-      projectId: ProjectId(value: 1),
-      name: "D1", description: "", created: ""
-    ))
-    datasetSet.insert(Dataset(
-      id: DatasetId(value: 2),
-      projectId: ProjectId(value: 1),
-      name: "D2", description: "", created: ""
-    ))
-    datasetSet.insert(Dataset(
-      id: DatasetId(value: 1),
-      projectId: ProjectId(value: 1),
-      name: "D1", description: "", created: ""
-    ))  // Duplicate
+    datasetSet.insert(
+      Dataset(
+        id: DatasetId(value: 1),
+        projectId: ProjectId(value: 1),
+        name: "D1", description: "", created: ""
+      ))
+    datasetSet.insert(
+      Dataset(
+        id: DatasetId(value: 2),
+        projectId: ProjectId(value: 1),
+        name: "D2", description: "", created: ""
+      ))
+    datasetSet.insert(
+      Dataset(
+        id: DatasetId(value: 1),
+        projectId: ProjectId(value: 1),
+        name: "D1", description: "", created: ""
+      ))  // Duplicate
 
     XCTAssertEqual(datasetSet.count, 2)
   }
@@ -157,21 +160,24 @@ final class DomainStructTests: XCTestCase {
   func testExperimentHashability() {
     var expSet: Set<Experiment> = []
 
-    expSet.insert(Experiment(
-      id: ExperimentId(value: 1),
-      projectId: ProjectId(value: 1),
-      name: "E1", description: ""
-    ))
-    expSet.insert(Experiment(
-      id: ExperimentId(value: 2),
-      projectId: ProjectId(value: 1),
-      name: "E2", description: ""
-    ))
-    expSet.insert(Experiment(
-      id: ExperimentId(value: 1),
-      projectId: ProjectId(value: 1),
-      name: "E1", description: ""
-    ))  // Duplicate
+    expSet.insert(
+      Experiment(
+        id: ExperimentId(value: 1),
+        projectId: ProjectId(value: 1),
+        name: "E1", description: ""
+      ))
+    expSet.insert(
+      Experiment(
+        id: ExperimentId(value: 2),
+        projectId: ProjectId(value: 1),
+        name: "E2", description: ""
+      ))
+    expSet.insert(
+      Experiment(
+        id: ExperimentId(value: 1),
+        projectId: ProjectId(value: 1),
+        name: "E1", description: ""
+      ))  // Duplicate
 
     XCTAssertEqual(expSet.count, 2)
   }
@@ -383,18 +389,21 @@ final class DomainStructTests: XCTestCase {
   func testSnapshotHashability() {
     var snapSet: Set<Snapshot> = []
 
-    snapSet.insert(Snapshot(
-      id: SnapshotId(value: 1),
-      description: "S1", status: "completed", path: "/s1", created: ""
-    ))
-    snapSet.insert(Snapshot(
-      id: SnapshotId(value: 2),
-      description: "S2", status: "pending", path: "/s2", created: ""
-    ))
-    snapSet.insert(Snapshot(
-      id: SnapshotId(value: 1),
-      description: "S1", status: "completed", path: "/s1", created: ""
-    ))  // Duplicate
+    snapSet.insert(
+      Snapshot(
+        id: SnapshotId(value: 1),
+        description: "S1", status: "completed", path: "/s1", created: ""
+      ))
+    snapSet.insert(
+      Snapshot(
+        id: SnapshotId(value: 2),
+        description: "S2", status: "pending", path: "/s2", created: ""
+      ))
+    snapSet.insert(
+      Snapshot(
+        id: SnapshotId(value: 1),
+        description: "S1", status: "completed", path: "/s1", created: ""
+      ))  // Duplicate
 
     XCTAssertEqual(snapSet.count, 2)
   }
@@ -466,21 +475,24 @@ final class DomainStructTests: XCTestCase {
   func testAnnotationSetHashability() {
     var setCollection: Set<AnnotationSet> = []
 
-    setCollection.insert(AnnotationSet(
-      id: AnnotationSetId(value: 1),
-      datasetId: DatasetId(value: 1),
-      name: "AS1", description: "", created: ""
-    ))
-    setCollection.insert(AnnotationSet(
-      id: AnnotationSetId(value: 2),
-      datasetId: DatasetId(value: 1),
-      name: "AS2", description: "", created: ""
-    ))
-    setCollection.insert(AnnotationSet(
-      id: AnnotationSetId(value: 1),
-      datasetId: DatasetId(value: 1),
-      name: "AS1", description: "", created: ""
-    ))  // Duplicate
+    setCollection.insert(
+      AnnotationSet(
+        id: AnnotationSetId(value: 1),
+        datasetId: DatasetId(value: 1),
+        name: "AS1", description: "", created: ""
+      ))
+    setCollection.insert(
+      AnnotationSet(
+        id: AnnotationSetId(value: 2),
+        datasetId: DatasetId(value: 1),
+        name: "AS2", description: "", created: ""
+      ))
+    setCollection.insert(
+      AnnotationSet(
+        id: AnnotationSetId(value: 1),
+        datasetId: DatasetId(value: 1),
+        name: "AS1", description: "", created: ""
+      ))  // Duplicate
 
     XCTAssertEqual(setCollection.count, 2)
   }
@@ -664,8 +676,10 @@ final class DomainStructTests: XCTestCase {
     let projectId = ProjectId(value: 50)
 
     let datasets = [
-      Dataset(id: DatasetId(value: 1), projectId: projectId, name: "D1", description: "", created: ""),
-      Dataset(id: DatasetId(value: 2), projectId: projectId, name: "D2", description: "", created: ""),
+      Dataset(
+        id: DatasetId(value: 1), projectId: projectId, name: "D1", description: "", created: ""),
+      Dataset(
+        id: DatasetId(value: 2), projectId: projectId, name: "D2", description: "", created: ""),
     ]
 
     let experiments = [

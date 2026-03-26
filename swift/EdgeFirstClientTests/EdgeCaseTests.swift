@@ -10,6 +10,9 @@ import XCTest
 
 @testable import EdgeFirstClient
 
+// Disambiguate from ApplicationServices.Polygon (macOS system type)
+typealias Polygon = EdgeFirstClient.Polygon
+
 final class EdgeCaseTests: XCTestCase {
 
   // MARK: - Parameter Edge Case Tests
@@ -500,27 +503,27 @@ final class EdgeCaseTests: XCTestCase {
     XCTAssertEqual(point.y, -2000.0)
   }
 
-  // MARK: - Mask Edge Case Tests
+  // MARK: - Polygon Edge Case Tests
 
-  /// Test Mask with empty polygon array.
-  func testMaskEmptyPolygon() {
-    let mask = Mask(polygon: [])
+  /// Test Polygon with empty rings array.
+  func testPolygonEmptyRings() {
+    let polygon = Polygon(rings: [])
 
-    XCTAssertTrue(mask.polygon.isEmpty)
+    XCTAssertTrue(polygon.rings.isEmpty)
   }
 
-  /// Test Mask with single point polygon.
-  func testMaskSinglePointPolygon() {
+  /// Test Polygon with single point ring.
+  func testPolygonSinglePointRing() {
     let point = Point2d(x: 100.0, y: 100.0)
     let ring = PolygonRing(points: [point])
-    let mask = Mask(polygon: [ring])
+    let polygon = Polygon(rings: [ring])
 
-    XCTAssertEqual(mask.polygon.count, 1)
-    XCTAssertEqual(mask.polygon[0].points.count, 1)
+    XCTAssertEqual(polygon.rings.count, 1)
+    XCTAssertEqual(polygon.rings[0].points.count, 1)
   }
 
-  /// Test Mask with complex polygon.
-  func testMaskComplexPolygon() {
+  /// Test Polygon with complex shape.
+  func testPolygonComplexShape() {
     // Create a triangle
     let points = [
       Point2d(x: 0.0, y: 0.0),
@@ -528,19 +531,19 @@ final class EdgeCaseTests: XCTestCase {
       Point2d(x: 50.0, y: 100.0),
     ]
     let ring = PolygonRing(points: points)
-    let mask = Mask(polygon: [ring])
+    let polygon = Polygon(rings: [ring])
 
-    XCTAssertEqual(mask.polygon.count, 1)
-    XCTAssertEqual(mask.polygon[0].points.count, 3)
+    XCTAssertEqual(polygon.rings.count, 1)
+    XCTAssertEqual(polygon.rings[0].points.count, 3)
   }
 
-  /// Test Mask with multiple polygon rings.
-  func testMaskMultipleRings() {
+  /// Test Polygon with multiple rings.
+  func testPolygonMultipleRingsEdgeCase() {
     let ring1 = PolygonRing(points: [Point2d(x: 0.0, y: 0.0), Point2d(x: 10.0, y: 10.0)])
     let ring2 = PolygonRing(points: [Point2d(x: 20.0, y: 20.0), Point2d(x: 30.0, y: 30.0)])
-    let mask = Mask(polygon: [ring1, ring2])
+    let polygon = Polygon(rings: [ring1, ring2])
 
-    XCTAssertEqual(mask.polygon.count, 2)
+    XCTAssertEqual(polygon.rings.count, 2)
   }
 
   // MARK: - Collection Type Tests

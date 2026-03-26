@@ -61,6 +61,7 @@ mod error;
 pub mod format;
 #[cfg(feature = "profiling")]
 pub mod instrument;
+mod mask;
 mod retry;
 mod storage;
 
@@ -76,16 +77,13 @@ pub use crate::{
     client::{Client, Progress},
     dataset::{
         Annotation, AnnotationSet, AnnotationType, Box2d, Box3d, Dataset, FileType, GpsData, Group,
-        ImuData, Label, Location, Mask, Sample, SampleFile,
+        ImuData, Label, Location, Polygon, Sample, SampleFile, Timing,
     },
     error::Error,
+    mask::MaskData,
     retry::{RetryScope, classify_url},
     storage::{FileTokenStorage, MemoryTokenStorage, StorageError, TokenStorage},
 };
-
-#[cfg(feature = "polars")]
-#[allow(deprecated)] // Re-exported for backwards compatibility
-pub use crate::dataset::annotations_dataframe;
 
 #[cfg(feature = "polars")]
 pub use crate::dataset::samples_dataframe;
