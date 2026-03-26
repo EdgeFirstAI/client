@@ -25,7 +25,7 @@ from edgefirst_client import (
     Box2d,
     Box3d,
     FileType,
-    Mask,
+    Polygon,
     Sample,
     SampleFile,
 )
@@ -428,7 +428,7 @@ class DatasetTest(TestCase):
         mask = annotation.mask
         if mask is not None:
             polygon_copy = [list(ring) for ring in mask.polygon]
-            cloned.set_mask(Mask(polygon_copy))
+            cloned.set_polygon(Polygon(polygon_copy))
 
         return cloned
 

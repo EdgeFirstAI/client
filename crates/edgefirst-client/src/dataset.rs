@@ -2305,11 +2305,18 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         .into();
 
     // Polygon: List(List(Float32)) — nested rings
-    let polygons_col: Column = Series::new("polygon".into(), polygons)
-        .cast(&DataType::List(Box::new(DataType::List(Box::new(
-            DataType::Float32,
-        )))))?
-        .into();
+    // When all values are None, Polars infers List(null) which can't cast to List(List(Float32)).
+    // Skip the cast if all null — the column drop rule will remove it anyway.
+    let polygon_series = Series::new("polygon".into(), polygons);
+    let polygons_col: Column = if polygon_series.null_count() < polygon_series.len() {
+        polygon_series
+            .cast(&DataType::List(Box::new(DataType::List(Box::new(
+                DataType::Float32,
+            )))))?
+            .into()
+    } else {
+        polygon_series.into()
+    };
 
     let boxes2d_col: Column = Series::new("box2d".into(), boxes2d)
         .cast(&DataType::Array(Box::new(DataType::Float32), 4))?

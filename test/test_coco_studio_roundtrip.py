@@ -23,7 +23,7 @@ import time
 import unittest
 from pathlib import Path
 
-from edgefirst_client import Annotation, Box2d, Mask, Sample, SampleFile
+from edgefirst_client import Annotation, Box2d, Polygon, Sample, SampleFile
 from PIL import Image
 from test import get_client, get_test_data_dir
 
@@ -236,7 +236,7 @@ def coco_to_samples(coco_data, group=None, temp_dir=None):
                                 )
                                 polygons.append(norm_poly)
                         if polygons:
-                            annotation.set_mask(Mask(polygons))
+                            annotation.set_polygon(Polygon(polygons))
 
             sample.add_annotation(annotation)
 
