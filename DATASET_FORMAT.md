@@ -507,7 +507,7 @@ df = pl.read_ipc("dataset.arrow")
     {
       "label_name": "deer",
       "label_index": 0,
-  "object_id": "550e8400-e29b-41d4-a716-446655440000",
+      "object_id": "550e8400-e29b-41d4-a716-446655440000",
       "box2d": {
         "x": 0.683854,
         "y": 0.342593,
