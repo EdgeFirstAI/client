@@ -4305,6 +4305,11 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    pub fn save_token(&self) -> Result<(), Error> {
+        Ok(self.0.save_token().await?)
+    }
+
+    #[tokio_wrap::sync]
     #[getter]
     pub fn token_expiration(&self, py: Python<'_>) -> Result<Py<PyDateTime>, Error> {
         let dt = self.0.token_expiration().await?;
@@ -4787,6 +4792,48 @@ impl Client {
         ))
     }
 
+    /// Return the set of sample names in a dataset.
+    ///
+    /// Names are normalised (file extension stripped). Lightweight alternative to
+    /// `samples()` when only names are needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Dataset to query
+    /// * `groups` - Optional list of group names to filter by (empty = all groups)
+    /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
+    #[pyo3(signature = (dataset_id, groups = vec![], progress = None))]
+    pub fn sample_names<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        groups: Vec<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<std::collections::HashSet<String>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task =
+                    std::thread::spawn(move || client.sample_names_sync(dataset_id, groups, Some(tx)));
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => Ok(self.sample_names_sync(dataset_id, groups, None)?),
+        }
+    }
+
     /// Get samples from a dataset with optional annotations.
     ///
     /// Args:
@@ -5007,6 +5054,74 @@ impl Client {
             .collect::<Vec<_>>())
     }
 
+    /// Populate samples with configurable upload concurrency.
+    ///
+    /// Identical to `populate_samples` but exposes the concurrency knob that controls
+    /// how many S3 file uploads run in parallel. The default (`None`) uses the server
+    /// maximum (32).
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Target dataset
+    /// * `samples` - List of samples to create
+    /// * `annotation_set_id` - Optional annotation set (vs. required in `populate_samples`)
+    /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
+    /// * `concurrency` - Max parallel S3 uploads. `None` uses the default (32)
+    #[pyo3(signature = (dataset_id, samples, annotation_set_id = None, progress = None, concurrency = None))]
+    pub fn populate_samples_with_concurrency<'py>(
+        &self,
+        py: Python<'py>,
+        dataset_id: Bound<'py, PyAny>,
+        samples: Vec<Py<Sample>>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        progress: Option<Py<PyAny>>,
+        concurrency: Option<usize>,
+    ) -> Result<Vec<SamplesPopulateResult>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: Option<AnnotationSetID> =
+            annotation_set_id.map(|a| a.try_into()).transpose()?;
+        let samples: Vec<edgefirst_client::Sample> =
+            samples.iter().map(|s| s.borrow(py).inner.clone()).collect();
+
+        let results = match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.populate_samples_with_concurrency_sync(
+                        dataset_id,
+                        annotation_set_id,
+                        samples,
+                        Some(tx),
+                        concurrency,
+                    )
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                task.join().unwrap()
+            }
+            None => self.populate_samples_with_concurrency_sync(
+                dataset_id,
+                annotation_set_id,
+                samples,
+                None,
+                concurrency,
+            ),
+        }?;
+
+        Ok(results.into_iter().map(SamplesPopulateResult).collect())
+    }
+
     #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), flatten = false, progress = None))]
     pub fn download_dataset<'py>(
         &self,
@@ -5185,23 +5300,153 @@ impl Client {
         Ok(self.0.delete_snapshot(snapshot_id.0).await?)
     }
 
-    #[tokio_wrap::sync]
-    pub fn create_snapshot(&self, path: &str) -> Result<Snapshot, Error> {
-        let inner = self.0.create_snapshot(path, None).await?;
-        Ok(Snapshot::with_client(inner, Arc::new(self.0.clone())))
+    /// Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Local path to an MCAP file or directory containing EdgeFirst Dataset Format files
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+)
+    ///
+    /// # Returns
+    ///
+    /// Returns the created `Snapshot` object.
+    #[pyo3(signature = (path, progress = None))]
+    pub fn create_snapshot(
+        &self,
+        path: &str,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Snapshot, Error> {
+        let path = path.to_string();
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || client.create_snapshot_sync(&path, Some(tx)));
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(Snapshot::with_client(task.join().unwrap()?, Arc::new(self.0.clone())))
+            }
+            None => Ok(Snapshot::with_client(
+                self.create_snapshot_sync(&path, None)?,
+                Arc::new(self.0.clone()),
+            )),
+        }
     }
 
-    #[tokio_wrap::sync]
+    /// Create a snapshot directly from EdgeFirst Dataset Format files.
+    ///
+    /// Uploads an Arrow annotations file and a ZIP media archive as a new snapshot.
+    /// Faster than `create_snapshot` when you already have EDF files.
+    ///
+    /// # Arguments
+    ///
+    /// * `arrow_path` - Local path to the `.arrow` annotations file
+    /// * `zip_path` - Local path to the `.zip` media archive
+    /// * `description` - Optional snapshot description (defaults to Arrow file stem)
+    /// * `progress` - Optional progress callback with `(current, total)` bytes or `(current, total, status)`
+    #[pyo3(signature = (arrow_path, zip_path, description = None, progress = None))]
+    pub fn create_snapshot_edgefirst_format(
+        &self,
+        arrow_path: &str,
+        zip_path: &str,
+        description: Option<&str>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Snapshot, Error> {
+        let arrow_path = arrow_path.to_string();
+        let zip_path = zip_path.to_string();
+        let description = description.map(|s| s.to_string());
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.create_snapshot_edgefirst_format_sync(
+                        &arrow_path,
+                        &zip_path,
+                        description.as_deref(),
+                        Some(tx),
+                    )
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(Snapshot::with_client(
+                    task.join().unwrap()?,
+                    Arc::new(self.0.clone()),
+                ))
+            }
+            None => Ok(Snapshot::with_client(
+                self.create_snapshot_edgefirst_format_sync(
+                    &arrow_path,
+                    &zip_path,
+                    description.as_deref(),
+                    None,
+                )?,
+                Arc::new(self.0.clone()),
+            )),
+        }
+    }
+
+    /// Download a snapshot from EdgeFirst Studio to local storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot_id` - The snapshot ID to download
+    /// * `output` - Local directory path to save the downloaded files
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+)
+    #[pyo3(signature = (snapshot_id, output, progress = None))]
     pub fn download_snapshot<'py>(
         &self,
         snapshot_id: Bound<'py, PyAny>,
         output: &str,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
         let snapshot_id: SnapshotID = snapshot_id.try_into()?;
-        self.0
-            .download_snapshot(snapshot_id.0, std::path::PathBuf::from(output), None)
-            .await?;
-        Ok(())
+        let output = std::path::PathBuf::from(output);
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.download_snapshot_sync(snapshot_id, output, Some(tx))
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => Ok(self.download_snapshot_sync(snapshot_id, output, None)?),
+        }
     }
 
     #[tokio_wrap::sync]
@@ -5503,6 +5748,38 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn create_snapshot_sync(
+        &self,
+        path: &str,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<edgefirst_client::Snapshot, edgefirst_client::Error> {
+        self.0.create_snapshot(path, progress).await
+    }
+
+    #[tokio_wrap::sync]
+    fn create_snapshot_edgefirst_format_sync(
+        &self,
+        arrow_path: &str,
+        zip_path: &str,
+        description: Option<&str>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<edgefirst_client::Snapshot, edgefirst_client::Error> {
+        self.0
+            .create_snapshot_edgefirst_format(arrow_path, zip_path, description, progress)
+            .await
+    }
+
+    #[tokio_wrap::sync]
+    fn download_snapshot_sync(
+        &self,
+        snapshot_id: SnapshotID,
+        output: std::path::PathBuf,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<(), edgefirst_client::Error> {
+        self.0.download_snapshot(snapshot_id.0, output, progress).await
+    }
+
+    #[tokio_wrap::sync]
     fn samples_dataframe_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -5547,6 +5824,16 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn sample_names_sync(
+        &self,
+        dataset_id: DatasetID,
+        groups: Vec<String>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<std::collections::HashSet<String>, edgefirst_client::Error> {
+        self.0.sample_names(dataset_id.0, &groups, progress).await
+    }
+
+    #[tokio_wrap::sync]
     fn populate_samples_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -5556,6 +5843,26 @@ impl Client {
     ) -> Result<Vec<edgefirst_client::SamplesPopulateResult>, edgefirst_client::Error> {
         self.0
             .populate_samples(dataset_id.0, Some(annotation_set_id.0), samples, progress)
+            .await
+    }
+
+    #[tokio_wrap::sync]
+    fn populate_samples_with_concurrency_sync(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        samples: Vec<edgefirst_client::Sample>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        concurrency: Option<usize>,
+    ) -> Result<Vec<edgefirst_client::SamplesPopulateResult>, edgefirst_client::Error> {
+        self.0
+            .populate_samples_with_concurrency(
+                dataset_id.0,
+                annotation_set_id.map(|a| a.0),
+                samples,
+                progress,
+                concurrency,
+            )
             .await
     }
 
