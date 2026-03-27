@@ -4304,6 +4304,12 @@ impl Client {
         Ok(self.0.renew_token().await?)
     }
 
+    /// Persist the current authentication token to disk.
+    ///
+    /// Saves to the platform-specific token path:
+    /// - Linux: `~/.config/EdgeFirst Studio/token`
+    /// - macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst Studio/token`
+    /// - Windows: `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
     #[tokio_wrap::sync]
     pub fn save_token(&self) -> Result<(), Error> {
         Ok(self.0.save_token().await?)
