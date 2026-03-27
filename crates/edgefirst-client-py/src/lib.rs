@@ -4308,7 +4308,7 @@ impl Client {
     ///
     /// Saves to the platform-specific token path:
     /// - Linux: `~/.config/EdgeFirst Studio/token`
-    /// - macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst Studio/token`
+    /// - macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token`
     /// - Windows: `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
     #[tokio_wrap::sync]
     pub fn save_token(&self) -> Result<(), Error> {
@@ -4824,17 +4824,22 @@ impl Client {
                     std::thread::spawn(move || client.sample_names_sync(dataset_id, groups, Some(tx)));
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => {}
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                            }
+                            Err(e) => e.print(py),
                         }
                     });
                 }
-                Ok(task.join().unwrap()?)
+                Ok(task
+                    .join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "sample_names worker thread panicked",
+                    )))
+                    .flatten()?)
             }
             None => Ok(self.sample_names_sync(dataset_id, groups, None)?),
         }
@@ -5104,17 +5109,21 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => {}
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                            }
+                            Err(e) => e.print(py),
                         }
                     });
                 }
-                task.join().unwrap()
+                task.join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "populate_samples_with_concurrency worker thread panicked",
+                    )))
+                    .flatten()
             }
             None => self.populate_samples_with_concurrency_sync(
                 dataset_id,
@@ -5331,17 +5340,24 @@ impl Client {
                 let task = std::thread::spawn(move || client.create_snapshot_sync(&path, Some(tx)));
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => {}
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                            }
+                            Err(e) => e.print(py),
                         }
                     });
                 }
-                Ok(Snapshot::with_client(task.join().unwrap()?, Arc::new(self.0.clone())))
+                Ok(Snapshot::with_client(
+                    task.join()
+                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "create_snapshot worker thread panicked",
+                        )))
+                        .flatten()?,
+                    Arc::new(self.0.clone()),
+                ))
             }
             None => Ok(Snapshot::with_client(
                 self.create_snapshot_sync(&path, None)?,
@@ -5386,18 +5402,22 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => {}
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                            }
+                            Err(e) => e.print(py),
                         }
                     });
                 }
                 Ok(Snapshot::with_client(
-                    task.join().unwrap()?,
+                    task.join()
+                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "create_snapshot_edgefirst_format worker thread panicked",
+                        )))
+                        .flatten()?,
                     Arc::new(self.0.clone()),
                 ))
             }
@@ -5439,17 +5459,22 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => {}
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                            }
+                            Err(e) => e.print(py),
                         }
                     });
                 }
-                Ok(task.join().unwrap()?)
+                Ok(task
+                    .join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "download_snapshot worker thread panicked",
+                    )))
+                    .flatten()?)
             }
             None => Ok(self.download_snapshot_sync(snapshot_id, output, None)?),
         }

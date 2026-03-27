@@ -3640,8 +3640,7 @@ class Client:
 
         Saves to the platform-specific token path:
         - Linux: ~/.config/EdgeFirst Studio/token
-        - macOS: ~/Library/Application Support/ai.EdgeFirst.EdgeFirst
-          Studio/token
+        - macOS: ~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token
         - Windows: %APPDATA%\\EdgeFirst\\EdgeFirst Studio\\config\\token
 
         Raises:
