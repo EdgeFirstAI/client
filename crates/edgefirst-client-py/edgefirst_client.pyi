@@ -2302,8 +2302,8 @@ class Sample:
             :meth:`set_group` instead.
 
         Args:
-            group_id: Numeric group ID returned by :meth:`Client.groups` or
-                :meth:`Client.get_or_create_group`.
+            group_id: Numeric group ID returned by :meth:`Dataset.groups`,
+                :meth:`Client.groups`, or :meth:`Client.get_or_create_group`.
 
         Raises:
             TypeError: If sample has no client reference or no ID.
@@ -3268,6 +3268,9 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
+                Use ``client.download_artifact(session.training_session_id, filename)``
+                to download to disk (note: that variant writes to a file rather
+                than returning bytes).
 
         Example:
             >>> data = validation_session.download_artifact("labels.txt")
@@ -3287,6 +3290,9 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
+                Use ``client.download_checkpoint(session.training_session_id, filename)``
+                to download to disk (note: that variant writes to a file rather
+                than returning bytes).
 
         Example:
             >>> data = validation_session.download_checkpoint("best.pt")
