@@ -1053,6 +1053,8 @@ class FileType(Enum):
     LidarReflect: "FileType"
     RadarPcd: "FileType"
     RadarCube: "FileType"
+    All: "FileType"
+    """Download all available file types. Not valid for single-file operations."""
 
 class AnnotationType(Enum):
     """
@@ -3879,15 +3881,16 @@ class Client:
 
     def save_token(self) -> None:
         """
-        Persist the current authentication token to disk.
+        Persist the current authentication token to the configured storage.
 
-        Saves to the platform-specific token path:
-        - Linux: ~/.config/EdgeFirst Studio/token
-        - macOS: ~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token
-        - Windows: %APPDATA%\\EdgeFirst\\EdgeFirst Studio\\config\\token
+        The token is written using the client's configured storage backend.
+        When no custom storage has been configured, the token is saved to an
+        OS-appropriate default location determined at runtime. Use
+        :class:`FileTokenStorage` to discover the default path for the
+        current platform rather than hard-coding it.
 
         Raises:
-            Error: If the token cannot be written to disk.
+            Error: If the token cannot be written to storage.
 
         Example:
             >>> client = Client().with_login("user@example.com", "password")

@@ -6,6 +6,7 @@ use pyo3::{
     types::{PyDateTime, PyDict},
 };
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
+use url::form_urlencoded;
 use tokio::sync::mpsc;
 
 /// Emit a deprecation warning for uid() methods.
@@ -3533,11 +3534,13 @@ impl ValidationSession {
             )
         })?;
         let training_session_id = self.inner.training_session_id();
+        let encoded_filename: String =
+            form_urlencoded::byte_serialize(filename.as_bytes()).collect();
         Ok(client_ref
             .fetch(&format!(
                 "download_model?training_session_id={}&file={}",
                 training_session_id.value(),
-                filename
+                encoded_filename
             ))
             .await?)
     }
@@ -3560,11 +3563,13 @@ impl ValidationSession {
             )
         })?;
         let training_session_id = self.inner.training_session_id();
+        let encoded_filename: String =
+            form_urlencoded::byte_serialize(filename.as_bytes()).collect();
         Ok(client_ref
             .fetch(&format!(
                 "download_checkpoint?folder=checkpoints&training_session_id={}&file={}",
                 training_session_id.value(),
-                filename
+                encoded_filename
             ))
             .await?)
     }
@@ -3660,6 +3665,13 @@ impl Snapshot {
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = output_or_client.extract::<PyRef<Client>>() {
             warn_method_deprecated(py, "Snapshot", "download")?;
+            if progress.is_some() {
+                return Err(Error::TypeError(
+                    "progress callbacks are not supported with the deprecated API form; \
+                     use snapshot.download(output, progress=...) instead"
+                        .to_string(),
+                ));
+            }
             let output_path = output.ok_or_else(|| {
                 Error::TypeError("download(client, output) requires output parameter".to_string())
             })?;
@@ -4537,12 +4549,12 @@ impl Client {
         Ok(self.0.renew_token().await?)
     }
 
-    /// Persist the current authentication token to disk.
+    /// Persist the current authentication token to the configured storage.
     ///
-    /// Saves to the platform-specific token path:
-    /// - Linux: `~/.config/EdgeFirst Studio/token`
-    /// - macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token`
-    /// - Windows: `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
+    /// The token is written using the client's configured storage backend.
+    /// When no custom storage has been configured, the token is saved to an
+    /// OS-appropriate default location determined at runtime. Callers should
+    /// not hard-code the path; use the `FileTokenStorage` class to retrieve it.
     #[tokio_wrap::sync]
     pub fn save_token(&self) -> Result<(), Error> {
         Ok(self.0.save_token().await?)
@@ -5056,15 +5068,20 @@ impl Client {
                 let task =
                     std::thread::spawn(move || client.sample_names_sync(dataset_id, groups, Some(tx)));
                 while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
                         match progress.call1(py, (status.current, status.total, status.status.clone())) {
-                            Ok(_) => {}
+                            Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
+                                None
                             }
-                            Err(e) => e.print(py),
+                            Err(e) => Some(e),
                         }
-                    });
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
                 }
                 Ok(task
                     .join()
@@ -5341,15 +5358,20 @@ impl Client {
                     )
                 });
                 while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
                         match progress.call1(py, (status.current, status.total, status.status.clone())) {
-                            Ok(_) => {}
+                            Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
+                                None
                             }
-                            Err(e) => e.print(py),
+                            Err(e) => Some(e),
                         }
-                    });
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
                 }
                 task.join()
                     .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
@@ -5572,15 +5594,20 @@ impl Client {
                 let client = Client(self.0.clone());
                 let task = std::thread::spawn(move || client.create_snapshot_sync(&path, Some(tx)));
                 while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
                         match progress.call1(py, (status.current, status.total, status.status.clone())) {
-                            Ok(_) => {}
+                            Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
+                                None
                             }
-                            Err(e) => e.print(py),
+                            Err(e) => Some(e),
                         }
-                    });
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
                 }
                 Ok(Snapshot::with_client(
                     task.join()
@@ -5634,15 +5661,20 @@ impl Client {
                     )
                 });
                 while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
                         match progress.call1(py, (status.current, status.total, status.status.clone())) {
-                            Ok(_) => {}
+                            Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
+                                None
                             }
-                            Err(e) => e.print(py),
+                            Err(e) => Some(e),
                         }
-                    });
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
                 }
                 Ok(Snapshot::with_client(
                     task.join()
@@ -5691,15 +5723,20 @@ impl Client {
                     client.download_snapshot_sync(snapshot_id, output, Some(tx))
                 });
                 while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
                         match progress.call1(py, (status.current, status.total, status.status.clone())) {
-                            Ok(_) => {}
+                            Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
+                                None
                             }
-                            Err(e) => e.print(py),
+                            Err(e) => Some(e),
                         }
-                    });
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
                 }
                 Ok(task
                     .join()
