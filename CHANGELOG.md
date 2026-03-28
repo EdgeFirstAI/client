@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `polygon` Arrow column replaces old NaN-separated `mask: List(Float32)` for vector data
 
 ### Added
+- **Python API convenience methods** — object-level shortcuts so callers no longer need to pass IDs back
+  to the top-level `Client`. New methods on `Dataset`, `AnnotationSet`, `ValidationSession`, `Snapshot`,
+  and `Sample`; see the `edgefirst_client.pyi` stubs or the API reference for the full list.
+- New `Client` methods: `save_token`, `sample_names`, `populate_samples_with_concurrency`,
+  and `create_snapshot_edgefirst_format`; `Snapshot.download` now accepts a `progress` callback.
 - LVIS extension columns: `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`
 - `category_metadata` file-level metadata for LVIS category taxonomy (synset, synonyms, definition)
 - `schema_version` metadata written to all new Arrow IPC files
