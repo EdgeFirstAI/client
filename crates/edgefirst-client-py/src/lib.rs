@@ -2277,6 +2277,60 @@ impl Dataset {
             .collect())
     }
 
+    /// Create a new annotation set on this dataset.
+    ///
+    /// Returns the new annotation set ID as a string.
+    #[pyo3(signature = (name, description=None))]
+    #[tokio_wrap::sync]
+    pub fn create_annotation_set(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.create_annotation_set(dataset.id, name) instead."
+                    .to_string(),
+            )
+        })?;
+        let id = client_ref
+            .create_annotation_set(self.inner.id(), name, description)
+            .await?;
+        Ok(id.to_string())
+    }
+
+    /// List all groups in this dataset.
+    #[tokio_wrap::sync]
+    pub fn groups(&self) -> Result<Vec<Group>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.groups(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .groups(self.inner.id())
+            .await?
+            .into_iter()
+            .map(Group)
+            .collect())
+    }
+
+    /// Delete this dataset from EdgeFirst Studio.
+    ///
+    /// After deletion the dataset object is no longer valid; any further
+    /// method calls will fail with a server-side "not found" error.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.delete_dataset(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_dataset(self.inner.id()).await?)
+    }
+
     /// Get the count of samples in this dataset.
     ///
     /// New API (v2.6.0+): `dataset.samples_count()` - uses embedded client
@@ -2617,6 +2671,24 @@ impl AnnotationSet {
                 Ok(annotations.into_iter().map(Annotation).collect())
             }
         }
+    }
+
+    /// Delete this annotation set.
+    ///
+    /// Requires an embedded client reference (annotation sets returned by the
+    /// client methods automatically have one).
+    ///
+    /// If the AnnotationSet was created without a client reference, use
+    /// `client.delete_annotation_set(annotation_set.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "AnnotationSet has no client reference. Use client.delete_annotation_set(annotation_set.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_annotation_set(self.inner.id()).await?)
     }
 }
 
@@ -3442,6 +3514,60 @@ impl ValidationSession {
                 .to_string(),
         ))
     }
+
+    /// Download an artifact file from the associated training session.
+    ///
+    /// Returns the file content as bytes.
+    ///
+    /// Args:
+    ///     filename: Name of the artifact file to download (e.g., ``"labels.txt"``)
+    ///
+    /// Returns:
+    ///     bytes: The downloaded file content
+    #[tokio_wrap::sync]
+    pub fn download_artifact(&self, filename: &str) -> Result<Vec<u8>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "ValidationSession has no client reference. Obtain the session via the client API."
+                    .to_string(),
+            )
+        })?;
+        let training_session_id = self.inner.training_session_id();
+        Ok(client_ref
+            .fetch(&format!(
+                "download_model?training_session_id={}&file={}",
+                training_session_id.value(),
+                filename
+            ))
+            .await?)
+    }
+
+    /// Download a checkpoint file from the associated training session.
+    ///
+    /// Returns the file content as bytes.
+    ///
+    /// Args:
+    ///     filename: Name of the checkpoint file to download (e.g., ``"best.pt"``)
+    ///
+    /// Returns:
+    ///     bytes: The downloaded file content
+    #[tokio_wrap::sync]
+    pub fn download_checkpoint(&self, filename: &str) -> Result<Vec<u8>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "ValidationSession has no client reference. Obtain the session via the client API."
+                    .to_string(),
+            )
+        })?;
+        let training_session_id = self.inner.training_session_id();
+        Ok(client_ref
+            .fetch(&format!(
+                "download_checkpoint?folder=checkpoints&training_session_id={}&file={}",
+                training_session_id.value(),
+                filename
+            ))
+            .await?)
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -3596,6 +3722,72 @@ impl Snapshot {
         Err(Error::TypeError(
             "download() first argument must be a string (output path) or Client (deprecated)"
                 .to_string(),
+        ))
+    }
+
+    /// Delete this snapshot.
+    ///
+    /// Requires an embedded client reference (snapshots returned by the
+    /// client methods automatically have one).
+    ///
+    /// If the Snapshot was created without a client reference, use
+    /// `client.delete_snapshot(snapshot.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Snapshot has no client reference. Use client.delete_snapshot(snapshot.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_snapshot(self.inner.id()).await?)
+    }
+
+    /// Restore this snapshot into a new dataset.
+    ///
+    /// Requires an embedded client reference (snapshots returned by the
+    /// client methods automatically have one).
+    ///
+    /// Args:
+    ///     project_id: The project ID to restore into (ProjectID or string like ``"proj-xxx"``)
+    ///     topics: List of MCAP topics to include in the restored dataset
+    ///     autolabel: List of autolabel pipeline names to run (empty list to skip)
+    ///     autodepth: Whether to run the autodepth pipeline
+    ///     dataset_name: Optional name for the created dataset
+    ///     dataset_description: Optional description for the created dataset
+    ///
+    /// Returns:
+    ///     :class:`SnapshotRestoreResult` with the new dataset and task IDs
+    #[pyo3(signature = (project_id, topics, autolabel, autodepth, dataset_name=None, dataset_description=None))]
+    #[tokio_wrap::sync]
+    pub fn restore<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        topics: Vec<String>,
+        autolabel: Vec<String>,
+        autodepth: bool,
+        dataset_name: Option<String>,
+        dataset_description: Option<String>,
+    ) -> Result<SnapshotRestoreResult, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Snapshot has no client reference. Use client.restore_snapshot(project_id, snapshot.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        let project_id: ProjectID = project_id.try_into()?;
+        Ok(SnapshotRestoreResult(
+            client_ref
+                .restore_snapshot(
+                    project_id.0,
+                    self.inner.id(),
+                    &topics,
+                    &autolabel,
+                    autodepth,
+                    dataset_name.as_deref(),
+                    dataset_description.as_deref(),
+                )
+                .await?,
         ))
     }
 
@@ -6501,6 +6693,41 @@ impl Sample {
         Err(Error::TypeError(
             "download() first argument must be a FileType or Client (deprecated)".to_string(),
         ))
+    }
+
+    /// Assign this sample to a server-side group.
+    ///
+    /// Groups are used to organize samples into splits such as ``"train"``,
+    /// ``"val"``, and ``"test"``.  Use :meth:`Dataset.groups` to list
+    /// available groups, or :meth:`Client.get_or_create_group` to create one.
+    ///
+    /// Requires an embedded client reference (samples returned by the client
+    /// methods automatically have one).
+    ///
+    /// Note: This updates the group assignment on the server. To set the local
+    /// in-memory group name (for building new samples), use :meth:`set_group`.
+    ///
+    /// Args:
+    ///     group_id: Numeric group ID returned by :meth:`Client.groups` or
+    ///         :meth:`Client.get_or_create_group`
+    ///
+    /// If the Sample was created without a client reference, use
+    /// `client.set_sample_group_id(sample.id, group_id)` instead.
+    #[tokio_wrap::sync]
+    pub fn assign_group(&self, group_id: u64) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Sample has no client reference. Use client.set_sample_group_id(sample.id, group_id) instead."
+                    .to_string(),
+            )
+        })?;
+        let sample_id = self.inner.id().ok_or_else(|| {
+            Error::TypeError(
+                "Sample has no ID. Use client.set_sample_group_id(sample.id, group_id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.set_sample_group_id(sample_id, group_id).await?)
     }
 }
 

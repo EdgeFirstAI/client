@@ -874,6 +874,23 @@ class AnnotationSet:
         """
         ...
 
+    def delete(self) -> None:
+        """
+        Delete this annotation set.
+
+        Requires an embedded client reference (annotation sets returned by
+        the client methods automatically have one).
+
+        Raises:
+            TypeError: If annotation set has no client reference.
+                Use ``client.delete_annotation_set(annotation_set.id)``
+                instead.
+
+        Example:
+            >>> annotation_set.delete()
+        """
+        ...
+
 class Label:
     """
     Representation of a label in EdgeFirst Studio.  Labels are used to identify
@@ -1364,6 +1381,74 @@ class Dataset:
 
         Example:
             >>> count = dataset.samples_count(groups=["train"])
+        """
+        ...
+
+    def create_annotation_set(
+        self,
+        name: str,
+        description: Optional[str] = None,
+    ) -> str:
+        """
+        Create a new annotation set in this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            name: Name for the new annotation set.
+            description: Optional description for the annotation set.
+
+        Returns:
+            str: The ID of the newly created annotation set
+                (e.g., ``"as-abc123"``).
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.create_annotation_set(dataset.id, name)``
+                instead.
+
+        Example:
+            >>> as_id = dataset.create_annotation_set("my-annotations")
+        """
+        ...
+
+    def groups(self) -> List[Group]:
+        """
+        List groups for this dataset.
+
+        Groups organize samples into splits such as ``"train"``, ``"val"``,
+        and ``"test"``.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Returns:
+            List[Group]: Groups in this dataset.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.groups(dataset.id)`` instead.
+
+        Example:
+            >>> for group in dataset.groups():
+            ...     print(group.name, group.id)
+        """
+        ...
+
+    def delete(self) -> None:
+        """
+        Delete this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.delete_dataset(dataset.id)`` instead.
+
+        Example:
+            >>> dataset.delete()
         """
         ...
 
@@ -2197,6 +2282,38 @@ class Sample:
         .. deprecated::
             Passing ``client`` parameter is deprecated since v2.6.0.
             Use ``sample.download(file_type=...)`` instead.
+        """
+        ...
+
+    def assign_group(self, group_id: int) -> None:
+        """
+        Assign this sample to a server-side group.
+
+        Groups organize samples into splits such as ``"train"``, ``"val"``,
+        and ``"test"``. Use :meth:`Dataset.groups` to list available groups,
+        or :meth:`Client.get_or_create_group` to create one.
+
+        Requires an embedded client reference (samples returned by the client
+        methods automatically have one).
+
+        Note:
+            This updates the group assignment on the server. To set the
+            local in-memory group name when building new samples, use
+            :meth:`set_group` instead.
+
+        Args:
+            group_id: Numeric group ID returned by :meth:`Client.groups` or
+                :meth:`Client.get_or_create_group`.
+
+        Raises:
+            TypeError: If sample has no client reference or no ID.
+                Use ``client.set_sample_group_id(sample.id, group_id)``
+                instead.
+
+        Example:
+            >>> groups = client.groups(dataset_id)
+            >>> train_group = next(g for g in groups if g.name == "train")
+            >>> sample.assign_group(train_group.id)
         """
         ...
 
@@ -3138,6 +3255,44 @@ class ValidationSession:
         """
         ...
 
+    def download_artifact(self, filename: str) -> bytes:
+        """
+        Download an artifact file from the associated training session.
+
+        Args:
+            filename: Name of the artifact file to download
+                (e.g., ``"labels.txt"``).
+
+        Returns:
+            bytes: The downloaded file content.
+
+        Raises:
+            TypeError: If validation session has no client reference.
+
+        Example:
+            >>> data = validation_session.download_artifact("labels.txt")
+        """
+        ...
+
+    def download_checkpoint(self, filename: str) -> bytes:
+        """
+        Download a checkpoint file from the associated training session.
+
+        Args:
+            filename: Name of the checkpoint file to download
+                (e.g., ``"best.pt"``).
+
+        Returns:
+            bytes: The downloaded file content.
+
+        Raises:
+            TypeError: If validation session has no client reference.
+
+        Example:
+            >>> data = validation_session.download_checkpoint("best.pt")
+        """
+        ...
+
 class Snapshot:
     """
     This class represents a snapshot in EdgeFirst Studio.
@@ -3265,6 +3420,66 @@ class Snapshot:
         progress: Optional[Progress] = None,
     ) -> None:
         """Download this snapshot to a local directory."""
+        ...
+
+    def delete(self) -> None:
+        """
+        Delete this snapshot.
+
+        Requires an embedded client reference (snapshots returned by the
+        client methods automatically have one).
+
+        Raises:
+            TypeError: If snapshot has no client reference.
+                Use ``client.delete_snapshot(snapshot.id)`` instead.
+
+        Example:
+            >>> snapshot.delete()
+        """
+        ...
+
+    def restore(
+        self,
+        project_id: Union[ProjectID, str],
+        topics: List[str],
+        autolabel: List[str],
+        autodepth: bool,
+        dataset_name: Optional[str] = None,
+        dataset_description: Optional[str] = None,
+    ) -> SnapshotRestoreResult:
+        """
+        Restore this snapshot into a new dataset.
+
+        Requires an embedded client reference (snapshots returned by the
+        client methods automatically have one).
+
+        Args:
+            project_id: The project ID to restore into
+                (ProjectID or string like ``"proj-xxx"``).
+            topics: List of MCAP topics to include in the restored dataset.
+            autolabel: List of autolabel pipeline names to run.
+                Pass an empty list to skip autolabeling.
+            autodepth: Whether to run the autodepth pipeline.
+            dataset_name: Optional name for the created dataset.
+            dataset_description: Optional description for the created dataset.
+
+        Returns:
+            :class:`SnapshotRestoreResult` with the new dataset and task IDs.
+
+        Raises:
+            TypeError: If snapshot has no client reference.
+                Use ``client.restore_snapshot(project_id, snapshot.id, ...)``
+                instead.
+
+        Example:
+            >>> result = snapshot.restore(
+            ...     project_id="proj-abc123",
+            ...     topics=["/camera/image"],
+            ...     autolabel=[],
+            ...     autodepth=False,
+            ...     dataset_name="Restored Dataset",
+            ... )
+        """
         ...
 
 class SnapshotRestoreResult:
