@@ -3211,18 +3211,39 @@ class Snapshot:
         ...
 
     @overload
-    def download(self, output: str) -> None:
+    def download(
+        self,
+        output: str,
+        progress: Optional[Progress] = None,
+    ) -> None:
         """
         Download this snapshot to a local directory (new API).
 
         Args:
             output: Output directory path.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress).
+
+                **Timeout note:** Downloads use a 30-second request timeout
+                by default. For large snapshots set the ``EDGEFIRST_TIMEOUT``
+                environment variable (seconds) before creating the client, e.g.
+                ``EDGEFIRST_TIMEOUT=600`` for 10 minutes. The progress
+                callback does not affect timeout configuration.
 
         Raises:
             TypeError: If snapshot has no client reference.
+            Error: If the download fails or times out.
 
         Example:
-            >>> snapshot.download("./output")
+            >>> snapshot.download(
+            ...     "./output",
+            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes"),
+            ... )
         """
         ...
 
@@ -3241,6 +3262,7 @@ class Snapshot:
         self,
         output_or_client: Union[str, Client],
         output: Optional[str] = None,
+        progress: Optional[Progress] = None,
     ) -> None:
         """Download this snapshot to a local directory."""
         ...
@@ -4372,9 +4394,12 @@ class Client:
             groups: Optional list of group names to filter by. Defaults to
                     all groups.
             progress: Optional callback. Signatures supported:
+
                 - ``callback(current, total)``
                 - ``callback(current, total, status)`` (v2.8.0+)
-                Units are sample count.
+
+                Units are sample count. ``status`` is always ``None`` for
+                this operation.
 
         Returns:
             set[str]: Set of normalised sample names.
@@ -4541,9 +4566,12 @@ class Client:
             samples: List of Sample objects to create.
             annotation_set_id: Optional annotation set for sample annotations.
             progress: Optional callback. Signatures supported:
+
                 - ``callback(current, total)``
                 - ``callback(current, total, status)`` (v2.8.0+)
-                Unit is samples (not bytes).
+
+                Unit is samples (not bytes). ``status`` is always ``None``
+                for this operation.
             concurrency: Max parallel S3 uploads. ``None`` uses the default
                          (32). Lower values reduce memory pressure on
                          constrained hosts.
@@ -4720,9 +4748,12 @@ class Client:
             path: Local path to an MCAP file or a directory containing
                   EdgeFirst Dataset Format files (Arrow/ZIP pairs).
             progress: Optional callback. Signatures supported:
+
                 - ``callback(current, total)``
                 - ``callback(current, total, status)`` (v2.8.0+)
-                Units are bytes.
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress).
 
         Returns:
             Snapshot: The created snapshot with ID, description, status, and
@@ -4760,9 +4791,13 @@ class Client:
             description: Optional snapshot description. Defaults to the
                          Arrow file stem if not provided.
             progress: Optional callback. Signatures supported:
+
                 - ``callback(current, total)``
                 - ``callback(current, total, status)`` (v2.8.0+)
-                Units are bytes (combined across both files).
+
+                Units are bytes (combined across both files). ``status`` is
+                always ``None`` for this operation (single-phase byte-level
+                progress).
 
         Returns:
             Snapshot: The created snapshot with ID, description, status, and
@@ -4795,18 +4830,30 @@ class Client:
             snapshot_id: The snapshot ID to download (e.g., ``"ss-abc123"``).
             output: Local directory path to save the downloaded files.
             progress: Optional callback. Signatures supported:
+
                 - ``callback(current, total)``
                 - ``callback(current, total, status)`` (v2.8.0+)
-                Units are bytes.
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress). Providing a
+                progress callback does **not** affect timeout configuration.
+
+        **Timeout:** Downloads use a 30-second request timeout by default
+        (including response-body streaming). For large snapshots this may
+        cause ``HttpError(TimedOut)`` before the download completes. Set the
+        ``EDGEFIRST_TIMEOUT`` environment variable (integer seconds) before
+        creating the client to raise the limit, e.g.
+        ``EDGEFIRST_TIMEOUT=600`` for a 10-minute budget.
 
         Raises:
-            Error: If the snapshot does not exist or the download fails.
+            Error: If the snapshot does not exist, the download fails, or the
+                request times out.
 
         Example:
             >>> client.download_snapshot(
             ...     "ss-abc123",
             ...     "./output",
-            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes — {s}")
+            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes"),
             ... )
         """
         ...

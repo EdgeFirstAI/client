@@ -3508,48 +3508,89 @@ impl Snapshot {
     /// Download this snapshot to a local directory.
     ///
     /// New API (v2.6.0+): `snapshot.download(output_path)` - uses embedded
-    /// client reference Deprecated API: `snapshot.download(client,
-    /// output_path)` - passing client explicitly
+    /// client reference. Deprecated API: `snapshot.download(client,
+    /// output_path)` - passing client explicitly.
     ///
-    /// Args:
-    ///     output_or_client: Either the output path (str) or Client
-    /// (deprecated)     output: Output path when using deprecated API
+    /// # Arguments
+    ///
+    /// * `output_or_client` - Output directory path (new API) or Client (deprecated)
+    /// * `output` - Output path when using deprecated API
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+). `status` is always `None` for this operation.
+    ///   Progress is only supported with the new API (embedded client).
     ///
     /// If the Snapshot was created without a client reference (legacy code),
     /// use `client.download_snapshot(snapshot.id, output)` instead.
-    #[pyo3(signature = (output_or_client, output=None))]
-    #[tokio_wrap::sync]
+    #[pyo3(signature = (output_or_client, output=None, progress=None))]
     pub fn download(
         &self,
         py: Python<'_>,
         output_or_client: &Bound<'_, PyAny>,
         output: Option<String>,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
+        let snapshot_id = SnapshotID(self.inner.id());
+
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = output_or_client.extract::<PyRef<Client>>() {
             warn_method_deprecated(py, "Snapshot", "download")?;
             let output_path = output.ok_or_else(|| {
                 Error::TypeError("download(client, output) requires output parameter".to_string())
             })?;
-            client
-                .0
-                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
-                .await?;
-            return Ok(());
+            let client_wrap = Client(client.0.clone());
+            return Ok(client_wrap.download_snapshot_sync(
+                snapshot_id,
+                std::path::PathBuf::from(output_path),
+                None,
+            )?);
         }
 
         // Try to extract as string (new API)
         if let Ok(output_path) = output_or_client.extract::<String>() {
-            let client_ref = self.client.as_ref().ok_or_else(|| {
+            let client_arc = self.client.as_ref().ok_or_else(|| {
                 Error::TypeError(
                     "Snapshot has no client reference. Use client.download_snapshot(snapshot.id, output) instead."
                         .to_string(),
                 )
             })?;
-            client_ref
-                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
-                .await?;
-            return Ok(());
+            let output_pb = std::path::PathBuf::from(output_path);
+            let client_wrap = Client((**client_arc).clone());
+            return match progress {
+                Some(progress) => {
+                    let (tx, mut rx) = mpsc::channel(1);
+                    let task = std::thread::spawn(move || {
+                        client_wrap.download_snapshot_sync(snapshot_id, output_pb, Some(tx))
+                    });
+                    while let Some(status) = rx.blocking_recv() {
+                        Python::attach(|py| {
+                            match progress.call1(
+                                py,
+                                (status.current, status.total, status.status.clone()),
+                            ) {
+                                Ok(_) => {}
+                                Err(e)
+                                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) =>
+                                {
+                                    let _ = progress.call1(py, (status.current, status.total));
+                                }
+                                Err(e) => e.print(py),
+                            }
+                        });
+                    }
+                    Ok(task
+                        .join()
+                        .map_err(|_| {
+                            edgefirst_client::Error::from(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Snapshot.download worker thread panicked",
+                            ))
+                        })
+                        .flatten()?)
+                }
+                None => {
+                    Ok(client_wrap.download_snapshot_sync(snapshot_id, output_pb, None)?)
+                }
+            };
         }
 
         Err(Error::TypeError(
