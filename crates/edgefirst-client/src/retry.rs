@@ -74,12 +74,25 @@
 //! # Configuration
 //!
 //! - `EDGEFIRST_MAX_RETRIES`: Maximum retry attempts per request (default: 5)
-//! - `EDGEFIRST_TIMEOUT`: Request timeout in seconds (default: 30)
+//! - `EDGEFIRST_TIMEOUT`: Total-request deadline for API calls in seconds
+//!   (default: 30). Applies to the `http` client only. **Do not** increase this
+//!   for large file transfers — use `EDGEFIRST_READ_TIMEOUT` instead.
+//! - `EDGEFIRST_READ_TIMEOUT`: Per-chunk idle timeout for bulk downloads in
+//!   seconds (default: 120). Applies to the `bulk_http` client. Resets after
+//!   every received chunk, so healthy large downloads are never interrupted.
+//!   Only fires when no bytes arrive for the configured duration.
+//! - `EDGEFIRST_UPLOAD_TIMEOUT`: Per-operation total timeout for bulk uploads
+//!   in seconds (default: 600). Applied per-request via `RequestBuilder::timeout`
+//!   on each upload attempt (per part for multipart, per file for single uploads).
+//!   Covers the send phase where `EDGEFIRST_READ_TIMEOUT` does not apply.
+//!   Sized for PART_SIZE (100 MB) at ~170 KB/s minimum; increase for very slow
+//!   uplinks or larger single-file uploads.
 //!
 //! **For bulk file operations**, increase retry count for better resilience:
 //! ```bash
-//! export EDGEFIRST_MAX_RETRIES=10  # More retries for S3 operations
-//! export EDGEFIRST_TIMEOUT=60      # Longer timeout for large files
+//! export EDGEFIRST_MAX_RETRIES=10     # More retries for S3 operations
+//! export EDGEFIRST_READ_TIMEOUT=300   # 5-minute idle timeout for very slow downlinks
+//! export EDGEFIRST_UPLOAD_TIMEOUT=900 # 15-minute per-part timeout for very slow uplinks
 //! ```
 //!
 //! # Examples
@@ -258,14 +271,15 @@ pub fn classify_url(url: &str) -> RetryScope {
 ///
 /// **For dataset downloads/uploads** (many concurrent S3 operations):
 /// ```bash
-/// export EDGEFIRST_MAX_RETRIES=10  # More retries for robustness
-/// export EDGEFIRST_TIMEOUT=60      # Longer timeout for large files
+/// export EDGEFIRST_MAX_RETRIES=10      # More retries for robustness
+/// export EDGEFIRST_READ_TIMEOUT=300    # Longer idle timeout for slow links
+/// export EDGEFIRST_UPLOAD_TIMEOUT=900  # Longer per-part timeout for slow uplinks
 /// ```
 ///
 /// **For testing** (fast failure detection):
 /// ```bash
 /// export EDGEFIRST_MAX_RETRIES=1   # Minimal retries
-/// export EDGEFIRST_TIMEOUT=10      # Quick timeout
+/// export EDGEFIRST_TIMEOUT=10      # Quick API call timeout
 /// ```
 ///
 /// # Implementation Notes
@@ -321,10 +335,16 @@ pub fn create_retry_policy() -> reqwest::retry::Builder {
 pub fn log_retry_configuration() {
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES").unwrap_or_else(|_| "5".to_string());
     let timeout = std::env::var("EDGEFIRST_TIMEOUT").unwrap_or_else(|_| "30".to_string());
+    let read_timeout =
+        std::env::var("EDGEFIRST_READ_TIMEOUT").unwrap_or_else(|_| "120".to_string());
+    let upload_timeout =
+        std::env::var("EDGEFIRST_UPLOAD_TIMEOUT").unwrap_or_else(|_| "600".to_string());
     log::debug!(
-        "Retry configuration - max_retries={}, timeout={}s",
+        "Retry configuration - max_retries={}, api_timeout={}s, bulk_read_timeout={}s, upload_timeout={}s",
         max_retries,
-        timeout
+        timeout,
+        read_timeout,
+        upload_timeout
     );
 }
 

@@ -432,8 +432,8 @@ struct ImagesFilter {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    /// HTTP client for large file uploads (no request timeout)
-    upload_http: reqwest::Client,
+    /// HTTP client for long-running bulk transfers (uploads/downloads, no request timeout)
+    bulk_http: reqwest::Client,
     url: String,
     token: Arc<RwLock<String>>,
     /// Token storage backend. When set, tokens are automatically persisted.
@@ -499,7 +499,15 @@ impl Client {
         let timeout_secs = std::env::var("EDGEFIRST_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(30); // Default 30s timeout for API calls
+            .unwrap_or(30); // Default 30s total deadline for API calls
+
+        // Per-chunk idle timeout for bulk transfers: fires only when no bytes
+        // arrive for this duration. Resets after every received chunk, so a
+        // healthy multi-GB transfer will never be interrupted.
+        let read_timeout_secs = std::env::var("EDGEFIRST_READ_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120); // Default 120s idle timeout for bulk transfers
 
         // Create single HTTP client with URL-based retry policy
         //
@@ -518,10 +526,14 @@ impl Client {
             .retry(create_retry_policy())
             .build()?;
 
-        // Separate HTTP client for large file uploads - no request timeout
-        // since upload duration depends on file size and network speed
-        let upload_http = reqwest::Client::builder()
+        // Separate HTTP client for bulk transfers (uploads and downloads).
+        // No total-request timeout (EDGEFIRST_TIMEOUT does not apply here).
+        // Uses read_timeout instead: resets after every received chunk, so a
+        // healthy large transfer is never interrupted, but a truly stalled
+        // connection (no bytes for EDGEFIRST_READ_TIMEOUT seconds) is aborted.
+        let bulk_http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(read_timeout_secs))
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(10)
             .build()?;
@@ -569,7 +581,7 @@ impl Client {
 
         Ok(Client {
             http,
-            upload_http,
+            bulk_http,
             url,
             token: Arc::new(tokio::sync::RwLock::new(token)),
             storage: Some(storage),
@@ -2626,7 +2638,7 @@ impl Client {
             upload_map.insert((uuid, basename), source);
         }
 
-        let http = self.http.clone();
+        let http = self.bulk_http.clone();
 
         // Extract the data we need for parallel upload
         let upload_tasks: Vec<_> = results
@@ -2687,8 +2699,7 @@ impl Client {
             )));
         }
 
-        // Uses default 120s timeout from client
-        let resp = self.http.get(url).send().await?;
+        let resp = self.bulk_http.get(url).send().await?;
 
         if !resp.status().is_success() {
             return Err(Error::HttpError(resp.error_for_status().unwrap_err()));
@@ -2950,7 +2961,7 @@ impl Client {
         part.key = Some(part_key);
 
         let params = upload_multipart(
-            self.upload_http.clone(),
+            self.bulk_http.clone(),
             part.clone(),
             path.to_path_buf(),
             total,
@@ -3072,7 +3083,7 @@ impl Client {
             part.key = Some(part_key);
 
             let params = upload_multipart(
-                self.upload_http.clone(),
+                self.bulk_http.clone(),
                 part.clone(),
                 path.join(file),
                 total,
@@ -3259,7 +3270,7 @@ impl Client {
         arrow_part.key = Some(arrow_key);
 
         let params = upload_multipart(
-            self.upload_http.clone(),
+            self.bulk_http.clone(),
             arrow_part,
             arrow_path.to_path_buf(),
             total,
@@ -3285,7 +3296,7 @@ impl Client {
         zip_part.key = Some(zip_key);
 
         let params = upload_multipart(
-            self.upload_http.clone(),
+            self.bulk_http.clone(),
             zip_part,
             zip_path.to_path_buf(),
             total,
@@ -3532,39 +3543,58 @@ impl Client {
             .rpc("snapshots.create_download_url".to_owned(), Some(params))
             .await?;
 
-        let total = Arc::new(AtomicUsize::new(0));
+        // Phase 1: issue GETs bounded by semaphore to receive response headers.
+        // Semaphore is shared with Phase 2 — permits released by Phase 1 futures
+        // (when headers arrive) are available to Phase 2 streaming tasks.
+        // This lets us sum content-lengths and set an accurate total before
+        // any streaming begins, so progress never reports current > total.
+        let http = self.bulk_http.clone();
         let current = Arc::new(AtomicUsize::new(0));
         let sem = Arc::new(Semaphore::new(max_tasks()));
+        let response_futs = items.into_iter().map(|(key, url)| {
+            let http = http.clone();
+            let sem = sem.clone();
+            async move {
+                let _permit = sem.acquire().await.map_err(|_| {
+                    Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
+                })?;
+                let res = http.get(url).send().await?;
+                Ok::<_, Error>((key, res))
+            }
+        });
+        let responses: Vec<(String, reqwest::Response)> =
+            futures::future::try_join_all(response_futs).await?;
 
-        let tasks = items
+        // Total bytes known before streaming starts; captured by value in each task.
+        let total_bytes: usize = responses
             .iter()
-            .map(|(key, url)| {
-                let http = self.http.clone();
-                let key = key.clone();
-                let url = url.clone();
+            .map(|(_, r)| r.content_length().unwrap_or(0) as usize)
+            .sum();
+
+        if let Some(progress) = &progress {
+            let _ = progress
+                .send(Progress {
+                    current: 0,
+                    total: total_bytes,
+                    status: None,
+                })
+                .await;
+        }
+
+        // Phase 2: stream all responses to disk in parallel. current is updated
+        // atomically only after each chunk is successfully written to disk.
+        let tasks = responses
+            .into_iter()
+            .map(|(key, res)| {
                 let output = output.clone();
                 let progress = progress.clone();
                 let current = current.clone();
-                let total = total.clone();
                 let sem = sem.clone();
 
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.map_err(|_| {
                         Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
                     })?;
-                    let res = http.get(url).send().await?;
-                    let content_length = res.content_length().unwrap_or(0) as usize;
-
-                    if let Some(progress) = &progress {
-                        let total = total.fetch_add(content_length, Ordering::SeqCst);
-                        let _ = progress
-                            .send(Progress {
-                                current: current.load(Ordering::SeqCst),
-                                total: total + content_length,
-                                status: None,
-                            })
-                            .await;
-                    }
 
                     let mut file = File::create(output.join(key)).await?;
                     let mut stream = res.bytes_stream();
@@ -3575,13 +3605,11 @@ impl Client {
                         let len = chunk.len();
 
                         if let Some(progress) = &progress {
-                            let total = total.load(Ordering::SeqCst);
                             let current = current.fetch_add(len, Ordering::SeqCst);
-
                             let _ = progress
                                 .send(Progress {
                                     current: current + len,
-                                    total,
+                                    total: total_bytes,
                                     status: None,
                                 })
                                 .await;
@@ -3825,7 +3853,7 @@ impl Client {
     ) -> Result<(), Error> {
         let filename = filename.unwrap_or_else(|| PathBuf::from(modelname));
         let resp = self
-            .http
+            .bulk_http
             .get(format!(
                 "{}/download_model?training_session_id={}&file={}",
                 self.url,
@@ -3901,7 +3929,7 @@ impl Client {
     ) -> Result<(), Error> {
         let filename = filename.unwrap_or_else(|| PathBuf::from(checkpoint));
         let resp = self
-            .http
+            .bulk_http
             .get(format!(
                 "{}/download_checkpoint?folder=checkpoints&training_session_id={}&file={}",
                 self.url,
@@ -4069,11 +4097,13 @@ impl Client {
         Ok(())
     }
 
-    /// Raw fetch from the Studio server is used for downloading files.
+    /// Authenticated fetch from the Studio server. Uses the bulk HTTP client
+    /// (no total-request timeout; 120s idle read timeout) so it is safe for
+    /// large binary file downloads such as model artifacts and checkpoints.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn fetch(&self, query: &str) -> Result<Vec<u8>, Error> {
         let req = self
-            .http
+            .bulk_http
             .get(format!("{}/{}", self.url, query))
             .header("User-Agent", "EdgeFirst Client")
             .header("Authorization", format!("Bearer {}", self.token().await));
@@ -4098,12 +4128,18 @@ impl Client {
     /// files using multipart/form-data.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, form)))]
     pub async fn post_multipart(&self, method: &str, form: Form) -> Result<String, Error> {
+        let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(600u64);
+
         let req = self
             .http
             .post(format!("{}/api?method={}", self.url, method))
             .header("Accept", "application/json")
             .header("User-Agent", "EdgeFirst Client")
             .header("Authorization", format!("Bearer {}", self.token().await))
+            .timeout(Duration::from_secs(upload_timeout_secs))
             .multipart(form);
         let resp = req.send().await?;
 
@@ -4626,7 +4662,15 @@ async fn upload_part_with_progress(
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3usize);
+        .unwrap_or(5usize);
+
+    // Per-part total upload timeout. Covers the send phase (request body) where
+    // read_timeout does not apply. Each part is at most PART_SIZE (100MB), so
+    // this bounds how long a stalled upload can block before retrying.
+    let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600u64); // 600s = 100MB at ~170 KB/s minimum
 
     let mut last_error: Option<Error> = None;
 
@@ -4652,6 +4696,7 @@ async fn upload_part_with_progress(
             n_parts,
             part_size,
             total,
+            upload_timeout_secs,
             confirmed_bytes.clone(),
             part_bytes.clone(),
             progress.clone(),
@@ -4691,6 +4736,7 @@ async fn upload_part_streaming(
     n_parts: usize,
     _part_size: usize,
     total: usize,
+    upload_timeout_secs: u64,
     confirmed_bytes: Arc<AtomicUsize>,
     part_bytes: Arc<Vec<AtomicUsize>>,
     progress: Option<Sender<Progress>>,
@@ -4741,6 +4787,7 @@ async fn upload_part_streaming(
     let resp = http
         .put(url)
         .header(CONTENT_LENGTH, body_length)
+        .timeout(Duration::from_secs(upload_timeout_secs))
         .body(body)
         .send()
         .await?
@@ -4780,7 +4827,12 @@ async fn upload_file_to_presigned_url(
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3usize);
+        .unwrap_or(5usize);
+
+    let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600u64);
 
     // Read the entire file into memory once
     let file_data = fs::read(&path).await?;
@@ -4804,6 +4856,7 @@ async fn upload_file_to_presigned_url(
         let result = http
             .put(url)
             .header(CONTENT_LENGTH, file_size)
+            .timeout(Duration::from_secs(upload_timeout_secs))
             .body(file_data.clone())
             .send()
             .await;
@@ -4911,7 +4964,12 @@ async fn upload_bytes_to_presigned_url(
     let max_retries = std::env::var("EDGEFIRST_MAX_RETRIES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3usize);
+        .unwrap_or(5usize);
+
+    let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600u64);
 
     let file_size = file_data.len();
     let mut last_error: Option<Error> = None;
@@ -4931,6 +4989,7 @@ async fn upload_bytes_to_presigned_url(
         let result = http
             .put(url)
             .header(CONTENT_LENGTH, file_size)
+            .timeout(Duration::from_secs(upload_timeout_secs))
             .body(file_data.clone())
             .send()
             .await;

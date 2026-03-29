@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-03-29
+
+### Fixed
+
+- `download_snapshot` was using the 30-second API HTTP client instead of the bulk client, causing timeouts mid-transfer on multi-GB downloads
+- `download_artifact` was using the wrong HTTP client, causing timeouts on model weight downloads
+- `download_checkpoint` was using the wrong HTTP client, causing timeouts on checkpoint downloads
+- `download` (used by `download_dataset` sample file downloads) was using the wrong HTTP client
+- `upload_sample_files` was using the wrong HTTP client for S3 PUT operations
+- `post_multipart` (used by training/validation file uploads to Studio) was missing a per-request timeout, causing upload stalls to hang indefinitely
+- `EDGEFIRST_MAX_RETRIES` default was inconsistently applied as 3 in upload functions vs. the documented default of 5
+
+### Changed
+
+- `download_snapshot` progress tracking now computes total bytes before streaming begins (responses are collected first, then streamed in parallel), so `current` never exceeds `total`
+- `download_snapshot` Phase 1 (GET requests) is now semaphore-bounded to `MAX_TASKS` concurrent connections, matching all other parallel operations
+- Internal HTTP client renamed from `upload_http` to `bulk_http` to reflect that it handles both uploads and downloads
+- `fetch()` now uses the bulk HTTP client, fixing timeouts on large artifact/checkpoint downloads via the `TrainingSession` API
+
+### Configuration
+
+Two new environment variables are available to tune bulk transfer behaviour:
+
+- `EDGEFIRST_READ_TIMEOUT` (default: `120`s) — per-chunk idle timeout for downloads; resets after every received chunk, so healthy large downloads are never interrupted
+- `EDGEFIRST_UPLOAD_TIMEOUT` (default: `600`s) — per-operation total timeout for upload PUT requests; sized for 100 MB parts at ~170 KB/s minimum
+
 ## [2.9.0] - 2026-03-29
 
 ### Changed
