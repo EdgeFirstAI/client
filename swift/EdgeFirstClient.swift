@@ -588,6 +588,24 @@ private struct FfiConverterString: FfiConverter {
   }
 }
 
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterData: FfiConverterRustBuffer {
+  typealias SwiftType = Data
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+    let len: Int32 = try readInt(&buf)
+    return Data(try readBytes(&buf, count: Int(len)))
+  }
+
+  public static func write(_ value: Data, into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    writeBytes(&buf, value)
+  }
+}
+
 /// Main client for interacting with EdgeFirst Studio.
 public protocol ClientProtocol: AnyObject, Sendable {
 
@@ -858,6 +876,11 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   deinit {
+    if handle == 0 {
+      // Mock objects have handle=0 don't try to free them
+      return
+    }
+
     try! rustCall { uniffi_edgefirst_client_fn_free_client(handle, $0) }
   }
 
@@ -1622,6 +1645,10 @@ public struct Annotation: Equatable, Hashable {
    */
   public let labelIndex: UInt64?
   /**
+   * Whether this annotation marks a crowd region (COCO `iscrowd`).
+   */
+  public let iscrowd: Bool?
+  /**
    * 2D bounding box.
    */
   public let box2d: Box2d?
@@ -1630,9 +1657,29 @@ public struct Annotation: Equatable, Hashable {
    */
   public let box3d: Box3d?
   /**
-   * Segmentation mask.
+   * Polygon contours.
    */
-  public let mask: Mask?
+  public let polygon: Polygon?
+  /**
+   * Raster mask as raw PNG bytes.
+   */
+  public let mask: Data?
+  /**
+   * Confidence score for the 2D bounding box prediction.
+   */
+  public let box2dScore: Float?
+  /**
+   * Confidence score for the 3D bounding box prediction.
+   */
+  public let box3dScore: Float?
+  /**
+   * Confidence score for the polygon prediction.
+   */
+  public let polygonScore: Float?
+  /**
+   * Confidence score for the mask prediction.
+   */
+  public let maskScore: Float?
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
@@ -1670,6 +1717,10 @@ public struct Annotation: Equatable, Hashable {
      */
     labelIndex: UInt64?,
     /**
+     * Whether this annotation marks a crowd region (COCO `iscrowd`).
+     */
+    iscrowd: Bool?,
+    /**
      * 2D bounding box.
      */
     box2d: Box2d?,
@@ -1678,9 +1729,29 @@ public struct Annotation: Equatable, Hashable {
      */
     box3d: Box3d?,
     /**
-     * Segmentation mask.
+     * Polygon contours.
      */
-    mask: Mask?
+    polygon: Polygon?,
+    /**
+     * Raster mask as raw PNG bytes.
+     */
+    mask: Data?,
+    /**
+     * Confidence score for the 2D bounding box prediction.
+     */
+    box2dScore: Float?,
+    /**
+     * Confidence score for the 3D bounding box prediction.
+     */
+    box3dScore: Float?,
+    /**
+     * Confidence score for the polygon prediction.
+     */
+    polygonScore: Float?,
+    /**
+     * Confidence score for the mask prediction.
+     */
+    maskScore: Float?
   ) {
     self.sampleId = sampleId
     self.name = name
@@ -1690,9 +1761,15 @@ public struct Annotation: Equatable, Hashable {
     self.objectId = objectId
     self.labelName = labelName
     self.labelIndex = labelIndex
+    self.iscrowd = iscrowd
     self.box2d = box2d
     self.box3d = box3d
+    self.polygon = polygon
     self.mask = mask
+    self.box2dScore = box2dScore
+    self.box3dScore = box3dScore
+    self.polygonScore = polygonScore
+    self.maskScore = maskScore
   }
 
 }
@@ -1716,9 +1793,15 @@ public struct FfiConverterTypeAnnotation: FfiConverterRustBuffer {
         objectId: FfiConverterOptionString.read(from: &buf),
         labelName: FfiConverterOptionString.read(from: &buf),
         labelIndex: FfiConverterOptionUInt64.read(from: &buf),
+        iscrowd: FfiConverterOptionBool.read(from: &buf),
         box2d: FfiConverterOptionTypeBox2d.read(from: &buf),
         box3d: FfiConverterOptionTypeBox3d.read(from: &buf),
-        mask: FfiConverterOptionTypeMask.read(from: &buf)
+        polygon: FfiConverterOptionTypePolygon.read(from: &buf),
+        mask: FfiConverterOptionData.read(from: &buf),
+        box2dScore: FfiConverterOptionFloat.read(from: &buf),
+        box3dScore: FfiConverterOptionFloat.read(from: &buf),
+        polygonScore: FfiConverterOptionFloat.read(from: &buf),
+        maskScore: FfiConverterOptionFloat.read(from: &buf)
       )
   }
 
@@ -1731,9 +1814,15 @@ public struct FfiConverterTypeAnnotation: FfiConverterRustBuffer {
     FfiConverterOptionString.write(value.objectId, into: &buf)
     FfiConverterOptionString.write(value.labelName, into: &buf)
     FfiConverterOptionUInt64.write(value.labelIndex, into: &buf)
+    FfiConverterOptionBool.write(value.iscrowd, into: &buf)
     FfiConverterOptionTypeBox2d.write(value.box2d, into: &buf)
     FfiConverterOptionTypeBox3d.write(value.box3d, into: &buf)
-    FfiConverterOptionTypeMask.write(value.mask, into: &buf)
+    FfiConverterOptionTypePolygon.write(value.polygon, into: &buf)
+    FfiConverterOptionData.write(value.mask, into: &buf)
+    FfiConverterOptionFloat.write(value.box2dScore, into: &buf)
+    FfiConverterOptionFloat.write(value.box3dScore, into: &buf)
+    FfiConverterOptionFloat.write(value.polygonScore, into: &buf)
+    FfiConverterOptionFloat.write(value.maskScore, into: &buf)
   }
 }
 
@@ -2563,55 +2652,6 @@ public func FfiConverterTypeLocation_lower(_ value: Location) -> RustBuffer {
   return FfiConverterTypeLocation.lower(value)
 }
 
-/// Segmentation mask as a list of polygon rings.
-///
-/// Each ring is a closed polygon defined by a sequence of (x, y) coordinates.
-/// Multiple rings allow for complex shapes with holes.
-public struct Mask: Equatable, Hashable {
-  public let polygon: [PolygonRing]
-
-  // Default memberwise initializers are never public by default, so we
-  // declare one manually.
-  public init(polygon: [PolygonRing]) {
-    self.polygon = polygon
-  }
-
-}
-
-#if compiler(>=6)
-  extension Mask: Sendable {}
-#endif
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMask: FfiConverterRustBuffer {
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Mask {
-    return
-      try Mask(
-        polygon: FfiConverterSequenceTypePolygonRing.read(from: &buf)
-      )
-  }
-
-  public static func write(_ value: Mask, into buf: inout [UInt8]) {
-    FfiConverterSequenceTypePolygonRing.write(value.polygon, into: &buf)
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMask_lift(_ buf: RustBuffer) throws -> Mask {
-  return try FfiConverterTypeMask.lift(buf)
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMask_lower(_ value: Mask) -> RustBuffer {
-  return FfiConverterTypeMask.lower(value)
-}
-
 /// Organization information and metadata.
 public struct Organization: Equatable, Hashable {
   public let id: OrganizationId
@@ -2761,6 +2801,55 @@ public func FfiConverterTypePoint2d_lift(_ buf: RustBuffer) throws -> Point2d {
 #endif
 public func FfiConverterTypePoint2d_lower(_ value: Point2d) -> RustBuffer {
   return FfiConverterTypePoint2d.lower(value)
+}
+
+/// Segmentation mask as a list of polygon rings.
+///
+/// Each ring is a closed polygon defined by a sequence of (x, y) coordinates.
+/// Multiple rings allow for complex shapes with holes.
+public struct Polygon: Equatable, Hashable {
+  public let rings: [PolygonRing]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(rings: [PolygonRing]) {
+    self.rings = rings
+  }
+
+}
+
+#if compiler(>=6)
+  extension Polygon: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePolygon: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Polygon {
+    return
+      try Polygon(
+        rings: FfiConverterSequenceTypePolygonRing.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: Polygon, into buf: inout [UInt8]) {
+    FfiConverterSequenceTypePolygonRing.write(value.rings, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypePolygon_lift(_ buf: RustBuffer) throws -> Polygon {
+  return try FfiConverterTypePolygon.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypePolygon_lower(_ value: Polygon) -> RustBuffer {
+  return FfiConverterTypePolygon.lower(value)
 }
 
 /// A polygon ring as a list of 2D points.
@@ -2979,6 +3068,10 @@ public struct Sample: Equatable, Hashable {
    * Annotations on this sample.
    */
   public let annotations: [Annotation]
+  /**
+   * Pipeline timing measurements (nanoseconds per stage).
+   */
+  public let timing: Timing?
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
@@ -3050,7 +3143,11 @@ public struct Sample: Equatable, Hashable {
     /**
      * Annotations on this sample.
      */
-    annotations: [Annotation]
+    annotations: [Annotation],
+    /**
+     * Pipeline timing measurements (nanoseconds per stage).
+     */
+    timing: Timing?
   ) {
     self.id = id
     self.group = group
@@ -3069,6 +3166,7 @@ public struct Sample: Equatable, Hashable {
     self.degradation = degradation
     self.files = files
     self.annotations = annotations
+    self.timing = timing
   }
 
 }
@@ -3100,7 +3198,8 @@ public struct FfiConverterTypeSample: FfiConverterRustBuffer {
         location: FfiConverterOptionTypeLocation.read(from: &buf),
         degradation: FfiConverterOptionString.read(from: &buf),
         files: FfiConverterSequenceTypeSampleFile.read(from: &buf),
-        annotations: FfiConverterSequenceTypeAnnotation.read(from: &buf)
+        annotations: FfiConverterSequenceTypeAnnotation.read(from: &buf),
+        timing: FfiConverterOptionTypeTiming.read(from: &buf)
       )
   }
 
@@ -3122,6 +3221,7 @@ public struct FfiConverterTypeSample: FfiConverterRustBuffer {
     FfiConverterOptionString.write(value.degradation, into: &buf)
     FfiConverterSequenceTypeSampleFile.write(value.files, into: &buf)
     FfiConverterSequenceTypeAnnotation.write(value.annotations, into: &buf)
+    FfiConverterOptionTypeTiming.write(value.timing, into: &buf)
   }
 }
 
@@ -3665,6 +3765,95 @@ public func FfiConverterTypeTaskInfo_lower(_ value: TaskInfo) -> RustBuffer {
   return FfiConverterTypeTaskInfo.lower(value)
 }
 
+/// Pipeline timing measurements for a sample, in nanoseconds.
+///
+/// Each field records the wall-clock duration of one pipeline stage.
+public struct Timing: Equatable, Hashable {
+  /**
+   * Duration of the data-loading stage (nanoseconds).
+   */
+  public let load: Int64?
+  /**
+   * Duration of the preprocessing stage (nanoseconds).
+   */
+  public let preprocess: Int64?
+  /**
+   * Duration of the inference stage (nanoseconds).
+   */
+  public let inference: Int64?
+  /**
+   * Duration of the decoding / postprocessing stage (nanoseconds).
+   */
+  public let decode: Int64?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Duration of the data-loading stage (nanoseconds).
+     */
+    load: Int64?,
+    /**
+     * Duration of the preprocessing stage (nanoseconds).
+     */
+    preprocess: Int64?,
+    /**
+     * Duration of the inference stage (nanoseconds).
+     */
+    inference: Int64?,
+    /**
+     * Duration of the decoding / postprocessing stage (nanoseconds).
+     */
+    decode: Int64?
+  ) {
+    self.load = load
+    self.preprocess = preprocess
+    self.inference = inference
+    self.decode = decode
+  }
+
+}
+
+#if compiler(>=6)
+  extension Timing: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTiming: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Timing {
+    return
+      try Timing(
+        load: FfiConverterOptionInt64.read(from: &buf),
+        preprocess: FfiConverterOptionInt64.read(from: &buf),
+        inference: FfiConverterOptionInt64.read(from: &buf),
+        decode: FfiConverterOptionInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: Timing, into buf: inout [UInt8]) {
+    FfiConverterOptionInt64.write(value.load, into: &buf)
+    FfiConverterOptionInt64.write(value.preprocess, into: &buf)
+    FfiConverterOptionInt64.write(value.inference, into: &buf)
+    FfiConverterOptionInt64.write(value.decode, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTiming_lift(_ buf: RustBuffer) throws -> Timing {
+  return try FfiConverterTypeTiming.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTiming_lower(_ value: Timing) -> RustBuffer {
+  return FfiConverterTypeTiming.lower(value)
+}
+
 /// A training session in an experiment.
 public struct TrainingSession: Equatable, Hashable {
   public let id: TrainingSessionId
@@ -3918,7 +4107,11 @@ public enum AnnotationType: Equatable, Hashable {
    */
   case box3d
   /**
-   * Pixel-level segmentation masks
+   * Vector polygon contours for instance segmentation
+   */
+  case polygon
+  /**
+   * Raster pixel masks for semantic/instance segmentation
    */
   case mask
 
@@ -3943,7 +4136,9 @@ public struct FfiConverterTypeAnnotationType: FfiConverterRustBuffer {
 
     case 2: return .box3d
 
-    case 3: return .mask
+    case 3: return .polygon
+
+    case 4: return .mask
 
     default: throw UniffiInternalError.unexpectedEnumCase
     }
@@ -3958,8 +4153,11 @@ public struct FfiConverterTypeAnnotationType: FfiConverterRustBuffer {
     case .box3d:
       writeInt(&buf, Int32(2))
 
-    case .mask:
+    case .polygon:
       writeInt(&buf, Int32(3))
+
+    case .mask:
+      writeInt(&buf, Int32(4))
 
     }
   }
@@ -4145,6 +4343,10 @@ public enum FileType: Equatable, Hashable {
    * Radar cube data files (.png format)
    */
   case radarCube
+  /**
+   * All sensor types (expands to all of the above)
+   */
+  case all
 
 }
 
@@ -4174,6 +4376,8 @@ public struct FfiConverterTypeFileType: FfiConverterRustBuffer {
 
     case 6: return .radarCube
 
+    case 7: return .all
+
     default: throw UniffiInternalError.unexpectedEnumCase
     }
   }
@@ -4198,6 +4402,9 @@ public struct FfiConverterTypeFileType: FfiConverterRustBuffer {
 
     case .radarCube:
       writeInt(&buf, Int32(6))
+
+    case .all:
+      writeInt(&buf, Int32(7))
 
     }
   }
@@ -4709,6 +4916,78 @@ private struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+  typealias SwiftType = Int64?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterInt64.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterInt64.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionFloat: FfiConverterRustBuffer {
+  typealias SwiftType = Float?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterFloat.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterFloat.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionBool: FfiConverterRustBuffer {
+  typealias SwiftType = Bool?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterBool.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterBool.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionString: FfiConverterRustBuffer {
   typealias SwiftType = String?
 
@@ -4725,6 +5004,30 @@ private struct FfiConverterOptionString: FfiConverterRustBuffer {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterString.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionData: FfiConverterRustBuffer {
+  typealias SwiftType = Data?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterData.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterData.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -4853,8 +5156,8 @@ private struct FfiConverterOptionTypeLocation: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
-private struct FfiConverterOptionTypeMask: FfiConverterRustBuffer {
-  typealias SwiftType = Mask?
+private struct FfiConverterOptionTypePolygon: FfiConverterRustBuffer {
+  typealias SwiftType = Polygon?
 
   public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
     guard let value = value else {
@@ -4862,13 +5165,13 @@ private struct FfiConverterOptionTypeMask: FfiConverterRustBuffer {
       return
     }
     writeInt(&buf, Int8(1))
-    FfiConverterTypeMask.write(value, into: &buf)
+    FfiConverterTypePolygon.write(value, into: &buf)
   }
 
   public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
-    case 1: return try FfiConverterTypeMask.read(from: &buf)
+    case 1: return try FfiConverterTypePolygon.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -4917,6 +5220,30 @@ private struct FfiConverterOptionTypeSampleId: FfiConverterRustBuffer {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeSampleId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeTiming: FfiConverterRustBuffer {
+  typealias SwiftType = Timing?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeTiming.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeTiming.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -5378,6 +5705,17 @@ public func createClientWithStorage(storage: TokenStorage) throws -> Client {
       )
     })
 }
+/// Validate an FFI annotation, returning an error if mask data is invalid.
+///
+/// Swift/Kotlin callers should use this function to validate annotations
+/// with mask data before passing them to API methods.
+public func validateAnnotation(annotation: Annotation) throws {
+  try rustCallWithError(FfiConverterTypeClientError_lift) {
+    uniffi_edgefirst_client_fn_func_validate_annotation(
+      FfiConverterTypeAnnotation_lower(annotation), $0
+    )
+  }
+}
 
 private enum InitializationResult {
   case ok
@@ -5395,6 +5733,9 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.contractVersionMismatch
   }
   if uniffi_edgefirst_client_checksum_func_create_client_with_storage() != 51357 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_validate_annotation() != 60922 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_annotation_sets() != 52667 {
