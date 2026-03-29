@@ -7,31 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-03-29
+
 ### Changed
-- `label_index` now preserves source `category_id` from COCO/LVIS (non-contiguous, may have gaps)
 - **BREAKING**: Renamed `Mask` struct to `Polygon` with field `rings` (was `polygon`)
 - **BREAKING**: Split `AnnotationType::Mask` into `Polygon` (vector contours) and `Mask` (raster pixels)
 - **BREAKING**: `iscrowd` column type changed from UInt8/UInt32 to Boolean
+- `label_index` now preserves source `category_id` from COCO/LVIS (non-contiguous, may have gaps)
 - `mask` Arrow column now stores PNG-encoded raster pixels (`Binary` type)
 - `polygon` Arrow column replaces old NaN-separated `mask: List(Float32)` for vector data
+- Rust toolchain switched from nightly to stable; minimum Rust version updated to 1.94
 
 ### Added
-- **Python API convenience methods** — object-level shortcuts so callers no longer need to pass IDs back
-  to the top-level `Client`. New methods on `Dataset`, `AnnotationSet`, `ValidationSession`, `Snapshot`,
-  and `Sample`; see the `edgefirst_client.pyi` stubs or the API reference for the full list.
-- New `Client` methods: `save_token`, `sample_names`, `populate_samples_with_concurrency`,
-  and `create_snapshot_edgefirst_format`; `Snapshot.download` now accepts a `progress` callback.
-- LVIS extension columns: `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`
-- `category_metadata` file-level metadata for LVIS category taxonomy (synset, synonyms, definition)
-- `schema_version` metadata written to all new Arrow IPC files
-- COCO importer/exporter handles LVIS-extended fields automatically
+- **2026.04 dataset schema** — new Arrow IPC format with polygon/mask separation, scores, timing, and LVIS extensions
+- **LVIS dataset support** — `iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices` columns; `category_metadata` file-level metadata for LVIS category taxonomy
+- **Python API convenience methods** — object-level shortcuts on `Dataset`, `AnnotationSet`, `ValidationSession`, `Snapshot`, and `Sample` so callers no longer need to pass IDs back to the top-level `Client`
+- **Perfetto profiling instrumentation** — `--trace-file` CLI option for capturing RPC traces; supports `.json` (Chrome) and `.pftrace` (Perfetto) formats with RPC request/response as span fields
+- New `Client` methods: `save_token`, `sample_names`, `populate_samples_with_concurrency`, and `create_snapshot_edgefirst_format`
+- `Snapshot.download` now accepts a `progress` callback
 - `MaskData` struct for PNG-encoded raster masks with zero-copy header reading
 - Score columns: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score`
 - `Timing` struct with `load`, `preprocess`, `inference`, `decode` (nanoseconds)
 - COCO RLE masks imported as PNG 1-bit binary masks
 - `edgefirst migrate` CLI command for 2025.10 → 2026.04 Arrow file migration
+- `schema_version` metadata written to all new Arrow IPC files
 - `labels` file-level metadata for semantic segmentation class names
 - 2025.10 backward compatibility: old Arrow files read transparently
+
+### Removed
+- Deprecated `annotations_dataframe` method and `object_reference` aliases
+
+### Fixed
+- GPS/IMU data serialization for `samples.populate` API
+- `delete_dataset` response deserialization
+- Upload-dataset performance and sensor data handling
 
 ## [2.8.0] - 2026-01-04
 
