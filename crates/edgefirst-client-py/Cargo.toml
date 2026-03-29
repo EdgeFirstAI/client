@@ -25,3 +25,4 @@ pyo3 = { workspace = true }
 pyo3-polars = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-wrap = { workspace = true }
+url = { workspace = true }

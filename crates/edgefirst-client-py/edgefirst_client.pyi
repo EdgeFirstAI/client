@@ -11,8 +11,11 @@ from polars import DataFrame
 #:
 #: This type represents a callback function that receives progress information
 #: for operations like file uploads, downloads, or dataset processing. The
-#: callback receives the current count and total count to enable progress
-#: reporting in applications.
+#: callback receives the current count, total count, and an optional status
+#: message. Two call signatures are supported for backwards compatibility:
+#:
+#: - ``callback(current, total)`` — legacy 2-arg form
+#: - ``callback(current, total, status)`` — extended form (v2.8.0+)
 #:
 #: Examples:
 #:     >>> def progress_callback(current: int, total: int) -> None:
@@ -21,7 +24,7 @@ from polars import DataFrame
 #:     >>>
 #:     >>> client.upload_dataset("/path/to/data", "ds-abc123",
 #:     ...                      progress=progress_callback)
-Progress = Callable[[int, int], None]
+Progress = Callable[[int, int], None] | Callable[[int, int, str | None], None]
 
 class Parameter:
     """
@@ -871,6 +874,23 @@ class AnnotationSet:
         """
         ...
 
+    def delete(self) -> None:
+        """
+        Delete this annotation set.
+
+        Requires an embedded client reference (annotation sets returned by
+        the client methods automatically have one).
+
+        Raises:
+            TypeError: If annotation set has no client reference.
+                Use ``client.delete_annotation_set(annotation_set.id)``
+                instead.
+
+        Example:
+            >>> annotation_set.delete()
+        """
+        ...
+
 class Label:
     """
     Representation of a label in EdgeFirst Studio.  Labels are used to identify
@@ -983,6 +1003,88 @@ class Group:
             str: The group name (e.g., "train", "val", "test").
         """
         ...
+
+class FileType(Enum):
+    """
+    File types supported in EdgeFirst Studio datasets.
+
+    Represents the different types of sensor data files that can be stored
+    and processed in a dataset. EdgeFirst Studio supports various modalities
+    including visual images and different forms of LiDAR and radar data.
+
+    Examples:
+        >>> # Create file types from strings
+        >>> image_type = FileType.Image
+        >>> lidar_type = FileType.LidarPcd
+
+        >>> # Use in dataset operations
+        >>> files_by_type = dataset.get_files_by_type(FileType.Image)
+
+    Members:
+        Image:
+            Standard image files (JPEG, PNG, etc.). A file with extension
+            `.image.jpeg` that stores the image.
+        LidarPcd:
+            LiDAR point cloud data files (.pcd format). A file with extension
+            `.lidar.pcd` that stores [x, y, z] Cartesian coordinates from the
+            LiDAR sensor.
+        LidarDepth:
+            LiDAR depth images (.png format). A file with extension
+            `.lidar.png` that stores per-pixel depth values captured by the
+            LiDAR sensor.
+        LidarReflect:
+            LiDAR reflectance images (.jpg format). A file with extension
+            `.lidar.jpeg` that stores reflectance data from the LiDAR sensor.
+        RadarPcd:
+            Radar point cloud data files (.pcd format). A file with extension
+            `.radar.pcd` that stores [x, y, z] Cartesian coordinates in meters
+            from the Radar sensor, along with speed m/s, power, noise, and
+            radar cross-section (RCS).
+        RadarCube:
+            Radar cube data files (.png format). A file with extension
+            `.radar.png` that stores a range-doppler radar cube. The cube has
+            dimensions: sequence, rx_antenna, range_bins, doppler_bins —
+            encoded in a 16-bit PNG.
+    """
+
+    Image: "FileType"
+    LidarPcd: "FileType"
+    LidarDepth: "FileType"
+    LidarReflect: "FileType"
+    RadarPcd: "FileType"
+    RadarCube: "FileType"
+    All: "FileType"
+    """Download all available file types. Not valid for single-file operations."""
+
+class AnnotationType(Enum):
+    """
+    Annotation types supported for labeling data in EdgeFirst Studio.
+
+    Represents the different types of annotations that can be applied to
+    sensor data for machine learning tasks. Each type corresponds to a
+    different annotation geometry and use case.
+
+    Examples:
+        >>> # Create annotation types
+        >>> box_2d = AnnotationType.Box2d
+        >>> polygon = AnnotationType.Polygon
+
+        >>> # Use in dataset queries
+        >>> annotations = dataset.get_annotations_by_type(AnnotationType.Box2d)
+
+    Members:
+        Box2d:   2D bounding boxes for object detection in images
+        Box3d:   3D bounding boxes for object detection in 3D space
+                 (LiDAR, etc.)
+        Polygon: Polygonal segmentation boundaries for
+                 semantic/instance segmentation
+        Mask:    Pixel-level raster segmentation masks (PNG-encoded)
+    """
+
+    Box2d: "AnnotationType"
+    Box3d: "AnnotationType"
+    Polygon: "AnnotationType"
+    Mask: "AnnotationType"
 
 class Dataset:
     """
@@ -1223,9 +1325,9 @@ class Dataset:
     def samples(
         self,
         annotation_set_id: Optional[AnnotationSetUID] = None,
-        annotation_types: List[AnnotationType] = ...,
-        groups: List[str] = ...,
-        types: List[FileType] = ...,
+        annotation_types: List[AnnotationType] = [],
+        groups: List[str] = [],
+        types: List[FileType] = [FileType.Image],
         progress: Optional[Progress] = None,
     ) -> List[Sample]:
         """
@@ -1260,9 +1362,9 @@ class Dataset:
     def samples_count(
         self,
         annotation_set_id: Optional[AnnotationSetUID] = None,
-        annotation_types: List[AnnotationType] = ...,
-        groups: List[str] = ...,
-        types: List[FileType] = ...,
+        annotation_types: List[AnnotationType] = [],
+        groups: List[str] = [],
+        types: List[FileType] = [FileType.Image],
     ) -> SamplesCountResult:
         """
         Get samples count for this dataset.
@@ -1284,85 +1386,73 @@ class Dataset:
         """
         ...
 
-class FileType(Enum):
-    """
-    File types supported in EdgeFirst Studio datasets.
+    def create_annotation_set(
+        self,
+        name: str,
+        description: Optional[str] = None,
+    ) -> str:
+        """
+        Create a new annotation set in this dataset.
 
-    Represents the different types of sensor data files that can be stored
-    and processed in a dataset. EdgeFirst Studio supports various modalities
-    including visual images and different forms of LiDAR and radar data.
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
 
-    Examples:
-        >>> # Create file types from strings
-        >>> image_type = FileType.Image
-        >>> lidar_type = FileType.LidarPcd
+        Args:
+            name: Name for the new annotation set.
+            description: Optional description for the annotation set.
 
-        >>> # Use in dataset operations
-        >>> files_by_type = dataset.get_files_by_type(FileType.Image)
+        Returns:
+            str: The ID of the newly created annotation set
+                (e.g., ``"as-abc123"``).
 
-    Members:
-        Image:
-            Standard image files (JPEG, PNG, etc.). A file with extension
-            `.image.jpeg` that stores the image.
-        LidarPcd:
-            LiDAR point cloud data files (.pcd format). A file with extension
-            `.lidar.pcd` that stores [x, y, z] Cartesian coordinates from the
-            LiDAR sensor.
-        LidarDepth:
-            LiDAR depth images (.png format). A file with extension
-            `.lidar.png` that stores per-pixel depth values captured by the
-            LiDAR sensor.
-        LidarReflect:
-            LiDAR reflectance images (.jpg format). A file with extension
-            `.lidar.jpeg` that stores reflectance data from the LiDAR sensor.
-        RadarPcd:
-            Radar point cloud data files (.pcd format). A file with extension
-            `.radar.pcd` that stores [x, y, z] Cartesian coordinates in meters
-            from the Radar sensor, along with speed m/s, power, noise, and
-            radar cross-section (RCS).
-        RadarCube:
-            Radar cube data files (.png format). A file with extension
-            `.radar.png` that stores a range-doppler radar cube. The cube has
-            dimensions: sequence, rx_antenna, range_bins, doppler_bins —
-            encoded in a 16-bit PNG.
-    """
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.create_annotation_set(dataset.id, name)``
+                instead.
 
-    Image: "FileType"
-    LidarPcd: "FileType"
-    LidarDepth: "FileType"
-    LidarReflect: "FileType"
-    RadarPcd: "FileType"
-    RadarCube: "FileType"
+        Example:
+            >>> as_id = dataset.create_annotation_set("my-annotations")
+        """
+        ...
 
-class AnnotationType(Enum):
-    """
-    Annotation types supported for labeling data in EdgeFirst Studio.
+    def groups(self) -> List[Group]:
+        """
+        List groups for this dataset.
 
-    Represents the different types of annotations that can be applied to
-    sensor data for machine learning tasks. Each type corresponds to a
-    different annotation geometry and use case.
+        Groups organize samples into splits such as ``"train"``, ``"val"``,
+        and ``"test"``.
 
-    Examples:
-        >>> # Create annotation types
-        >>> box_2d = AnnotationType.Box2d
-        >>> polygon = AnnotationType.Polygon
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
 
-        >>> # Use in dataset queries
-        >>> annotations = dataset.get_annotations_by_type(AnnotationType.Box2d)
+        Returns:
+            List[Group]: Groups in this dataset.
 
-    Members:
-        Box2d:   2D bounding boxes for object detection in images
-        Box3d:   3D bounding boxes for object detection in 3D space
-                 (LiDAR, etc.)
-        Polygon: Polygonal segmentation boundaries for
-                 semantic/instance segmentation
-        Mask:    Pixel-level raster segmentation masks (PNG-encoded)
-    """
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.groups(dataset.id)`` instead.
 
-    Box2d: "AnnotationType"
-    Box3d: "AnnotationType"
-    Polygon: "AnnotationType"
-    Mask: "AnnotationType"
+        Example:
+            >>> for group in dataset.groups():
+            ...     print(group.name, group.id)
+        """
+        ...
+
+    def delete(self) -> None:
+        """
+        Delete this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.delete_dataset(dataset.id)`` instead.
+
+        Example:
+            >>> dataset.delete()
+        """
+        ...
 
 class Box2d:
     """
@@ -2194,6 +2284,38 @@ class Sample:
         .. deprecated::
             Passing ``client`` parameter is deprecated since v2.6.0.
             Use ``sample.download(file_type=...)`` instead.
+        """
+        ...
+
+    def assign_group(self, group_id: int) -> None:
+        """
+        Assign this sample to a server-side group.
+
+        Groups organize samples into splits such as ``"train"``, ``"val"``,
+        and ``"test"``. Use :meth:`Dataset.groups` to list available groups,
+        or :meth:`Client.get_or_create_group` to create one.
+
+        Requires an embedded client reference (samples returned by the client
+        methods automatically have one).
+
+        Note:
+            This updates the group assignment on the server. To set the
+            local in-memory group name when building new samples, use
+            :meth:`set_group` instead.
+
+        Args:
+            group_id: Numeric group ID returned by :meth:`Dataset.groups`,
+                :meth:`Client.groups`, or :meth:`Client.get_or_create_group`.
+
+        Raises:
+            TypeError: If sample has no client reference or no ID.
+                Use ``client.set_sample_group_id(sample.id, group_id)``
+                instead.
+
+        Example:
+            >>> groups = client.groups(dataset_id)
+            >>> train_group = next(g for g in groups if g.name == "train")
+            >>> sample.assign_group(train_group.id)
         """
         ...
 
@@ -3135,6 +3257,50 @@ class ValidationSession:
         """
         ...
 
+    def download_artifact(self, filename: str) -> bytes:
+        """
+        Download an artifact file from the associated training session.
+
+        Args:
+            filename: Name of the artifact file to download
+                (e.g., ``"labels.txt"``).
+
+        Returns:
+            bytes: The downloaded file content.
+
+        Raises:
+            TypeError: If validation session has no client reference.
+                Use ``client.download_artifact(session.training_session_id, filename)``
+                to download to disk (note: that variant writes to a file rather
+                than returning bytes).
+
+        Example:
+            >>> data = validation_session.download_artifact("labels.txt")
+        """
+        ...
+
+    def download_checkpoint(self, filename: str) -> bytes:
+        """
+        Download a checkpoint file from the associated training session.
+
+        Args:
+            filename: Name of the checkpoint file to download
+                (e.g., ``"best.pt"``).
+
+        Returns:
+            bytes: The downloaded file content.
+
+        Raises:
+            TypeError: If validation session has no client reference.
+                Use ``client.download_checkpoint(session.training_session_id, filename)``
+                to download to disk (note: that variant writes to a file rather
+                than returning bytes).
+
+        Example:
+            >>> data = validation_session.download_checkpoint("best.pt")
+        """
+        ...
+
 class Snapshot:
     """
     This class represents a snapshot in EdgeFirst Studio.
@@ -3208,18 +3374,39 @@ class Snapshot:
         ...
 
     @overload
-    def download(self, output: str) -> None:
+    def download(
+        self,
+        output: str,
+        progress: Optional[Progress] = None,
+    ) -> None:
         """
         Download this snapshot to a local directory (new API).
 
         Args:
             output: Output directory path.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress).
+
+                **Timeout note:** Downloads use a 30-second request timeout
+                by default. For large snapshots set the ``EDGEFIRST_TIMEOUT``
+                environment variable (seconds) before creating the client, e.g.
+                ``EDGEFIRST_TIMEOUT=600`` for 10 minutes. The progress
+                callback does not affect timeout configuration.
 
         Raises:
             TypeError: If snapshot has no client reference.
+            Error: If the download fails or times out.
 
         Example:
-            >>> snapshot.download("./output")
+            >>> snapshot.download(
+            ...     "./output",
+            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes"),
+            ... )
         """
         ...
 
@@ -3238,8 +3425,69 @@ class Snapshot:
         self,
         output_or_client: Union[str, Client],
         output: Optional[str] = None,
+        progress: Optional[Progress] = None,
     ) -> None:
         """Download this snapshot to a local directory."""
+        ...
+
+    def delete(self) -> None:
+        """
+        Delete this snapshot.
+
+        Requires an embedded client reference (snapshots returned by the
+        client methods automatically have one).
+
+        Raises:
+            TypeError: If snapshot has no client reference.
+                Use ``client.delete_snapshot(snapshot.id)`` instead.
+
+        Example:
+            >>> snapshot.delete()
+        """
+        ...
+
+    def restore(
+        self,
+        project_id: Union[ProjectID, str],
+        topics: List[str],
+        autolabel: List[str],
+        autodepth: bool,
+        dataset_name: Optional[str] = None,
+        dataset_description: Optional[str] = None,
+    ) -> SnapshotRestoreResult:
+        """
+        Restore this snapshot into a new dataset.
+
+        Requires an embedded client reference (snapshots returned by the
+        client methods automatically have one).
+
+        Args:
+            project_id: The project ID to restore into
+                (ProjectID or string like ``"proj-xxx"``).
+            topics: List of MCAP topics to include in the restored dataset.
+            autolabel: List of autolabel pipeline names to run.
+                Pass an empty list to skip autolabeling.
+            autodepth: Whether to run the autodepth pipeline.
+            dataset_name: Optional name for the created dataset.
+            dataset_description: Optional description for the created dataset.
+
+        Returns:
+            :class:`SnapshotRestoreResult` with the new dataset and task IDs.
+
+        Raises:
+            TypeError: If snapshot has no client reference.
+                Use ``client.restore_snapshot(project_id, snapshot.id, ...)``
+                instead.
+
+        Example:
+            >>> result = snapshot.restore(
+            ...     project_id="proj-abc123",
+            ...     topics=["/camera/image"],
+            ...     autolabel=[],
+            ...     autodepth=False,
+            ...     dataset_name="Restored Dataset",
+            ... )
+        """
         ...
 
 class SnapshotRestoreResult:
@@ -3628,6 +3876,25 @@ class Client:
 
         Raises:
             Error: If the token is invalid or expired.
+        """
+        ...
+
+    def save_token(self) -> None:
+        """
+        Persist the current authentication token to the configured storage.
+
+        The token is written using the client's configured storage backend.
+        When no custom storage has been configured, the token is saved to an
+        OS-appropriate default location determined at runtime. Use
+        :class:`FileTokenStorage` to discover the default path for the
+        current platform rather than hard-coding it.
+
+        Raises:
+            Error: If the token cannot be written to storage.
+
+        Example:
+            >>> client = Client().with_login("user@example.com", "password")
+            >>> client.save_token()
         """
         ...
 
@@ -4158,11 +4425,11 @@ class Client:
         self,
         dataset_id: DatasetUID,
         groups: List[str] = [],
-        types: List[FileType] = [],
-        output: Optional[str] = None,
+        types: List[FileType] = [FileType.Image],
+        output: str = ".",
         flatten: bool = False,
         progress: Optional[Progress] = None,
-    ):
+    ) -> None:
         """
         Download dataset samples matching specified groups and file types.
 
@@ -4334,11 +4601,51 @@ class Client:
         """
         ...
 
+    def sample_names(
+        self,
+        dataset_id: DatasetUID,
+        groups: List[str] = [],
+        progress: Optional[Progress] = None,
+    ) -> set[str]:
+        """
+        Return the set of sample names in a dataset.
+
+        Names are normalised (file extension stripped). This is a
+        lightweight alternative to ``samples()`` when only names are needed.
+
+        Args:
+            dataset_id: Dataset to query.
+            groups: Optional list of group names to filter by. Defaults to
+                    all groups.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are sample count. ``status`` is always ``None`` for
+                this operation.
+
+        Returns:
+            set[str]: Set of normalised sample names.
+
+        Raises:
+            Error: If the dataset does not exist or the request fails.
+
+        Example:
+            >>> names = client.sample_names(
+            ...     "ds-12345",
+            ...     groups=["train"],
+            ...     progress=lambda cur, tot, s: print(f"{cur}/{tot} — {s}")
+            ... )
+            >>> print(len(names))
+        """
+        ...
+
     def samples(
         self,
         dataset_id: DatasetUID,
         annotation_set_id: Optional[AnnotationSetUID] = None,
-        annotation_types: List[AnnotationType] = [AnnotationType.Box2d],
+        annotation_types: List[AnnotationType] = [],
         groups: List[str] = [],
         types: List[FileType] = [FileType.Image],
         progress: Optional[Progress] = None,
@@ -4460,6 +4767,55 @@ class Client:
         """
         ...
 
+    def populate_samples_with_concurrency(
+        self,
+        dataset_id: DatasetUID,
+        samples: List[Sample],
+        annotation_set_id: AnnotationSetUID | None = None,
+        progress: Optional[Progress] = None,
+        concurrency: int | None = None,
+    ) -> List[SamplesPopulateResult]:
+        """
+        Populate samples with configurable upload concurrency.
+
+        Identical to ``populate_samples`` but exposes the ``concurrency``
+        knob that controls how many S3 file uploads run in parallel.
+        The default (``None``) uses the server-side maximum (32).
+
+        Also accepts an optional ``annotation_set_id`` (vs. required in
+        ``populate_samples``).
+
+        Args:
+            dataset_id: Target dataset.
+            samples: List of Sample objects to create.
+            annotation_set_id: Optional annotation set for sample annotations.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Unit is samples (not bytes). ``status`` is always ``None``
+                for this operation.
+            concurrency: Max parallel S3 uploads. ``None`` uses the default
+                         (32). Lower values reduce memory pressure on
+                         constrained hosts.
+
+        Returns:
+            List[SamplesPopulateResult]: Results with UUIDs and presigned URLs.
+
+        Raises:
+            Error: If the dataset does not exist or upload fails.
+
+        Example:
+            >>> results = client.populate_samples_with_concurrency(
+            ...     "ds-12345",
+            ...     samples,
+            ...     concurrency=8,
+            ...     progress=lambda cur, tot, s: print(f"{cur}/{tot} — {s}")
+            ... )
+        """
+        ...
+
     def experiments(
         self, project_id: ProjectUID, name: Optional[str] = None
     ) -> List[Experiment]:
@@ -4502,7 +4858,7 @@ class Client:
         ...
 
     def training_sessions(
-        self, trainer_id: ExperimentUID, name: Optional[str] = None
+        self, experiment_id: ExperimentUID, name: Optional[str] = None
     ) -> List[TrainingSession]:
         """
         Returns a list of trainer sessions available to the user.  The trainer
@@ -4511,7 +4867,7 @@ class Client:
         actual training session which will produce metrics and model artifacts.
 
         Args:
-            trainer_id (ExperimentUID): The ID of the trainer/experiment.
+            experiment_id (ExperimentUID): The ID of the experiment.
             name (Optional[str]): The name of the trainer session to filter by.
 
         Returns:
@@ -4604,54 +4960,125 @@ class Client:
         """
         ...
 
-    def create_snapshot(self, path: str) -> Snapshot:
+    def create_snapshot(
+        self,
+        path: str,
+        progress: Optional[Progress] = None,
+    ) -> Snapshot:
         """
         Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
 
-        Snapshots are frozen datasets in EdgeFirst Dataset Format (Zip/Arrow
-        pairs) that serve two primary purposes:
-
-        1. **MCAP uploads**: Upload MCAP files containing sensor data (images,
-           point clouds, IMU, GPS) to EdgeFirst Studio.
-        2. **Dataset exchange**: Export datasets for backup, sharing, or
-           migration between EdgeFirst Studio instances.
-
         Args:
-            path (str): Local file path to MCAP file or directory containing
-                       EdgeFirst Dataset Format files (Zip/Arrow pairs).
+            path: Local path to an MCAP file or a directory containing
+                  EdgeFirst Dataset Format files (Arrow/ZIP pairs).
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress).
 
         Returns:
-            Snapshot: The created snapshot object with ID, description, status,
-                     path, and creation timestamp.
+            Snapshot: The created snapshot with ID, description, status, and
+                     creation timestamp.
 
         Raises:
-            Error: If path doesn't exist, format is invalid, or upload fails.
+            Error: If the path does not exist, the format is invalid,
+                   or the upload fails.
 
         Example:
-            >>> client = Client().with_token_path(None)
-            >>> snapshot = client.create_snapshot("data.mcap")
-            >>> print(f"Created snapshot: {snapshot.id}")
+            >>> snapshot = client.create_snapshot(
+            ...     "data.mcap",
+            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes — {s}")
+            ... )
         """
         ...
 
-    def download_snapshot(self, snapshot_id: SnapshotUID, output: str) -> None:
+    def create_snapshot_edgefirst_format(
+        self,
+        arrow_path: str,
+        zip_path: str,
+        description: str | None = None,
+        progress: Optional[Progress] = None,
+    ) -> Snapshot:
+        """
+        Create a snapshot directly from EdgeFirst Dataset Format files.
+
+        Uploads an Arrow annotations file and a ZIP media archive as a new
+        snapshot. This is faster than ``create_snapshot`` when you already
+        have EDF files and want to avoid MCAP conversion.
+
+        Args:
+            arrow_path: Local path to the ``.arrow`` annotations file.
+            zip_path: Local path to the ``.zip`` media archive.
+            description: Optional snapshot description. Defaults to the
+                         Arrow file stem if not provided.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are bytes (combined across both files). ``status`` is
+                always ``None`` for this operation (single-phase byte-level
+                progress).
+
+        Returns:
+            Snapshot: The created snapshot with ID, description, status, and
+                     creation timestamp.
+
+        Raises:
+            Error: If either file does not exist, the format is invalid,
+                   or the upload fails.
+
+        Example:
+            >>> snapshot = client.create_snapshot_edgefirst_format(
+            ...     "dataset.arrow",
+            ...     "dataset.zip",
+            ...     description="Training batch 42",
+            ...     progress=lambda c, t, s: print(f"{c}/{t} bytes — {s}"),
+            ... )
+        """
+        ...
+
+    def download_snapshot(
+        self,
+        snapshot_id: SnapshotUID,
+        output: str,
+        progress: Optional[Progress] = None,
+    ) -> None:
         """
         Download a snapshot from EdgeFirst Studio to local storage.
 
-        Downloads all files in a snapshot (single MCAP file or directory of
-        EdgeFirst Dataset Format files) to the specified output path.
-
         Args:
-            snapshot_id (SnapshotUID): The snapshot ID to download.
-            output (str): Local directory path to save downloaded files.
+            snapshot_id: The snapshot ID to download (e.g., ``"ss-abc123"``).
+            output: Local directory path to save the downloaded files.
+            progress: Optional callback. Signatures supported:
+
+                - ``callback(current, total)``
+                - ``callback(current, total, status)`` (v2.8.0+)
+
+                Units are bytes. ``status`` is always ``None`` for this
+                operation (single-phase byte-level progress). Providing a
+                progress callback does **not** affect timeout configuration.
+
+        **Timeout:** Downloads use a 30-second request timeout by default
+        (including response-body streaming). For large snapshots this may
+        cause ``HttpError(TimedOut)`` before the download completes. Set the
+        ``EDGEFIRST_TIMEOUT`` environment variable (integer seconds) before
+        creating the client to raise the limit, e.g.
+        ``EDGEFIRST_TIMEOUT=600`` for a 10-minute budget.
 
         Raises:
-            Error: If snapshot doesn't exist, output directory cannot be
-                  created, or download fails.
+            Error: If the snapshot does not exist, the download fails, or the
+                request times out.
 
         Example:
-            >>> client = Client().with_token_path(None)
-            >>> client.download_snapshot("ss-abc123", "./output")
+            >>> client.download_snapshot(
+            ...     "ss-abc123",
+            ...     "./output",
+            ...     lambda cur, tot, s: print(f"{cur}/{tot} bytes"),
+            ... )
         """
         ...
 

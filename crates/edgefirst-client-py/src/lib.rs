@@ -6,6 +6,7 @@ use pyo3::{
     types::{PyDateTime, PyDict},
 };
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
+use url::form_urlencoded;
 use tokio::sync::mpsc;
 
 /// Emit a deprecation warning for uid() methods.
@@ -2277,6 +2278,60 @@ impl Dataset {
             .collect())
     }
 
+    /// Create a new annotation set on this dataset.
+    ///
+    /// Returns the new annotation set ID as a string.
+    #[pyo3(signature = (name, description=None))]
+    #[tokio_wrap::sync]
+    pub fn create_annotation_set(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.create_annotation_set(dataset.id, name) instead."
+                    .to_string(),
+            )
+        })?;
+        let id = client_ref
+            .create_annotation_set(self.inner.id(), name, description)
+            .await?;
+        Ok(id.to_string())
+    }
+
+    /// List all groups in this dataset.
+    #[tokio_wrap::sync]
+    pub fn groups(&self) -> Result<Vec<Group>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.groups(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .groups(self.inner.id())
+            .await?
+            .into_iter()
+            .map(Group)
+            .collect())
+    }
+
+    /// Delete this dataset from EdgeFirst Studio.
+    ///
+    /// After deletion the dataset object is no longer valid; any further
+    /// method calls will fail with a server-side "not found" error.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.delete_dataset(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_dataset(self.inner.id()).await?)
+    }
+
     /// Get the count of samples in this dataset.
     ///
     /// New API (v2.6.0+): `dataset.samples_count()` - uses embedded client
@@ -2617,6 +2672,24 @@ impl AnnotationSet {
                 Ok(annotations.into_iter().map(Annotation).collect())
             }
         }
+    }
+
+    /// Delete this annotation set.
+    ///
+    /// Requires an embedded client reference (annotation sets returned by the
+    /// client methods automatically have one).
+    ///
+    /// If the AnnotationSet was created without a client reference, use
+    /// `client.delete_annotation_set(annotation_set.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "AnnotationSet has no client reference. Use client.delete_annotation_set(annotation_set.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_annotation_set(self.inner.id()).await?)
     }
 }
 
@@ -3442,6 +3515,64 @@ impl ValidationSession {
                 .to_string(),
         ))
     }
+
+    /// Download an artifact file from the associated training session.
+    ///
+    /// Returns the file content as bytes.
+    ///
+    /// Args:
+    ///     filename: Name of the artifact file to download (e.g., ``"labels.txt"``)
+    ///
+    /// Returns:
+    ///     bytes: The downloaded file content
+    #[tokio_wrap::sync]
+    pub fn download_artifact(&self, filename: &str) -> Result<Vec<u8>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "ValidationSession has no client reference. Obtain the session via the client API."
+                    .to_string(),
+            )
+        })?;
+        let training_session_id = self.inner.training_session_id();
+        let encoded_filename: String =
+            form_urlencoded::byte_serialize(filename.as_bytes()).collect();
+        Ok(client_ref
+            .fetch(&format!(
+                "download_model?training_session_id={}&file={}",
+                training_session_id.value(),
+                encoded_filename
+            ))
+            .await?)
+    }
+
+    /// Download a checkpoint file from the associated training session.
+    ///
+    /// Returns the file content as bytes.
+    ///
+    /// Args:
+    ///     filename: Name of the checkpoint file to download (e.g., ``"best.pt"``)
+    ///
+    /// Returns:
+    ///     bytes: The downloaded file content
+    #[tokio_wrap::sync]
+    pub fn download_checkpoint(&self, filename: &str) -> Result<Vec<u8>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "ValidationSession has no client reference. Obtain the session via the client API."
+                    .to_string(),
+            )
+        })?;
+        let training_session_id = self.inner.training_session_id();
+        let encoded_filename: String =
+            form_urlencoded::byte_serialize(filename.as_bytes()).collect();
+        Ok(client_ref
+            .fetch(&format!(
+                "download_checkpoint?folder=checkpoints&training_session_id={}&file={}",
+                training_session_id.value(),
+                encoded_filename
+            ))
+            .await?)
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -3508,53 +3639,167 @@ impl Snapshot {
     /// Download this snapshot to a local directory.
     ///
     /// New API (v2.6.0+): `snapshot.download(output_path)` - uses embedded
-    /// client reference Deprecated API: `snapshot.download(client,
-    /// output_path)` - passing client explicitly
+    /// client reference. Deprecated API: `snapshot.download(client,
+    /// output_path)` - passing client explicitly.
     ///
-    /// Args:
-    ///     output_or_client: Either the output path (str) or Client
-    /// (deprecated)     output: Output path when using deprecated API
+    /// # Arguments
+    ///
+    /// * `output_or_client` - Output directory path (new API) or Client (deprecated)
+    /// * `output` - Output path when using deprecated API
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+). `status` is always `None` for this operation.
+    ///   Progress is only supported with the new API (embedded client).
     ///
     /// If the Snapshot was created without a client reference (legacy code),
     /// use `client.download_snapshot(snapshot.id, output)` instead.
-    #[pyo3(signature = (output_or_client, output=None))]
-    #[tokio_wrap::sync]
+    #[pyo3(signature = (output_or_client, output=None, progress=None))]
     pub fn download(
         &self,
         py: Python<'_>,
         output_or_client: &Bound<'_, PyAny>,
         output: Option<String>,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
+        let snapshot_id = SnapshotID(self.inner.id());
+
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = output_or_client.extract::<PyRef<Client>>() {
             warn_method_deprecated(py, "Snapshot", "download")?;
+            if progress.is_some() {
+                return Err(Error::TypeError(
+                    "progress callbacks are not supported with the deprecated API form; \
+                     use snapshot.download(output, progress=...) instead"
+                        .to_string(),
+                ));
+            }
             let output_path = output.ok_or_else(|| {
                 Error::TypeError("download(client, output) requires output parameter".to_string())
             })?;
-            client
-                .0
-                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
-                .await?;
-            return Ok(());
+            let client_wrap = Client(client.0.clone());
+            return Ok(client_wrap.download_snapshot_sync(
+                snapshot_id,
+                std::path::PathBuf::from(output_path),
+                None,
+            )?);
         }
 
         // Try to extract as string (new API)
         if let Ok(output_path) = output_or_client.extract::<String>() {
-            let client_ref = self.client.as_ref().ok_or_else(|| {
+            let client_arc = self.client.as_ref().ok_or_else(|| {
                 Error::TypeError(
                     "Snapshot has no client reference. Use client.download_snapshot(snapshot.id, output) instead."
                         .to_string(),
                 )
             })?;
-            client_ref
-                .download_snapshot(self.inner.id(), std::path::PathBuf::from(output_path), None)
-                .await?;
-            return Ok(());
+            let output_pb = std::path::PathBuf::from(output_path);
+            let client_wrap = Client((**client_arc).clone());
+            return match progress {
+                Some(progress) => {
+                    let (tx, mut rx) = mpsc::channel(1);
+                    let task = std::thread::spawn(move || {
+                        client_wrap.download_snapshot_sync(snapshot_id, output_pb, Some(tx))
+                    });
+                    while let Some(status) = rx.blocking_recv() {
+                        Python::attach(|py| {
+                            match progress.call1(
+                                py,
+                                (status.current, status.total, status.status.clone()),
+                            ) {
+                                Ok(_) => {}
+                                Err(e)
+                                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) =>
+                                {
+                                    let _ = progress.call1(py, (status.current, status.total));
+                                }
+                                Err(e) => e.print(py),
+                            }
+                        });
+                    }
+                    Ok(task
+                        .join()
+                        .map_err(|_| {
+                            edgefirst_client::Error::from(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Snapshot.download worker thread panicked",
+                            ))
+                        })
+                        .flatten()?)
+                }
+                None => {
+                    Ok(client_wrap.download_snapshot_sync(snapshot_id, output_pb, None)?)
+                }
+            };
         }
 
         Err(Error::TypeError(
             "download() first argument must be a string (output path) or Client (deprecated)"
                 .to_string(),
+        ))
+    }
+
+    /// Delete this snapshot.
+    ///
+    /// Requires an embedded client reference (snapshots returned by the
+    /// client methods automatically have one).
+    ///
+    /// If the Snapshot was created without a client reference, use
+    /// `client.delete_snapshot(snapshot.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn delete(&self) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Snapshot has no client reference. Use client.delete_snapshot(snapshot.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.delete_snapshot(self.inner.id()).await?)
+    }
+
+    /// Restore this snapshot into a new dataset.
+    ///
+    /// Requires an embedded client reference (snapshots returned by the
+    /// client methods automatically have one).
+    ///
+    /// Args:
+    ///     project_id: The project ID to restore into (ProjectID or string like ``"proj-xxx"``)
+    ///     topics: List of MCAP topics to include in the restored dataset
+    ///     autolabel: List of autolabel pipeline names to run (empty list to skip)
+    ///     autodepth: Whether to run the autodepth pipeline
+    ///     dataset_name: Optional name for the created dataset
+    ///     dataset_description: Optional description for the created dataset
+    ///
+    /// Returns:
+    ///     :class:`SnapshotRestoreResult` with the new dataset and task IDs
+    #[pyo3(signature = (project_id, topics, autolabel, autodepth, dataset_name=None, dataset_description=None))]
+    #[tokio_wrap::sync]
+    pub fn restore<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        topics: Vec<String>,
+        autolabel: Vec<String>,
+        autodepth: bool,
+        dataset_name: Option<String>,
+        dataset_description: Option<String>,
+    ) -> Result<SnapshotRestoreResult, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Snapshot has no client reference. Use client.restore_snapshot(project_id, snapshot.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        let project_id: ProjectID = project_id.try_into()?;
+        Ok(SnapshotRestoreResult(
+            client_ref
+                .restore_snapshot(
+                    project_id.0,
+                    self.inner.id(),
+                    &topics,
+                    &autolabel,
+                    autodepth,
+                    dataset_name.as_deref(),
+                    dataset_description.as_deref(),
+                )
+                .await?,
         ))
     }
 
@@ -4304,6 +4549,17 @@ impl Client {
         Ok(self.0.renew_token().await?)
     }
 
+    /// Persist the current authentication token to the configured storage.
+    ///
+    /// The token is written using the client's configured storage backend.
+    /// When no custom storage has been configured, the token is saved to an
+    /// OS-appropriate default location determined at runtime. Callers should
+    /// not hard-code the path; use the `FileTokenStorage` class to retrieve it.
+    #[tokio_wrap::sync]
+    pub fn save_token(&self) -> Result<(), Error> {
+        Ok(self.0.save_token().await?)
+    }
+
     #[tokio_wrap::sync]
     #[getter]
     pub fn token_expiration(&self, py: Python<'_>) -> Result<Py<PyDateTime>, Error> {
@@ -4787,6 +5043,58 @@ impl Client {
         ))
     }
 
+    /// Return the set of sample names in a dataset.
+    ///
+    /// Names are normalised (file extension stripped). Lightweight alternative to
+    /// `samples()` when only names are needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Dataset to query
+    /// * `groups` - Optional list of group names to filter by (empty = all groups)
+    /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
+    #[pyo3(signature = (dataset_id, groups = vec![], progress = None))]
+    pub fn sample_names<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        groups: Vec<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<std::collections::HashSet<String>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task =
+                    std::thread::spawn(move || client.sample_names_sync(dataset_id, groups, Some(tx)));
+                while let Some(status) = rx.blocking_recv() {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => None,
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
+                }
+                Ok(task
+                    .join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "sample_names worker thread panicked",
+                    )))
+                    .flatten()?)
+            }
+            None => Ok(self.sample_names_sync(dataset_id, groups, None)?),
+        }
+    }
+
     /// Get samples from a dataset with optional annotations.
     ///
     /// Args:
@@ -5007,6 +5315,83 @@ impl Client {
             .collect::<Vec<_>>())
     }
 
+    /// Populate samples with configurable upload concurrency.
+    ///
+    /// Identical to `populate_samples` but exposes the concurrency knob that controls
+    /// how many S3 file uploads run in parallel. The default (`None`) uses the server
+    /// maximum (32).
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Target dataset
+    /// * `samples` - List of samples to create
+    /// * `annotation_set_id` - Optional annotation set (vs. required in `populate_samples`)
+    /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
+    /// * `concurrency` - Max parallel S3 uploads. `None` uses the default (32)
+    #[pyo3(signature = (dataset_id, samples, annotation_set_id = None, progress = None, concurrency = None))]
+    pub fn populate_samples_with_concurrency<'py>(
+        &self,
+        py: Python<'py>,
+        dataset_id: Bound<'py, PyAny>,
+        samples: Vec<Py<Sample>>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        progress: Option<Py<PyAny>>,
+        concurrency: Option<usize>,
+    ) -> Result<Vec<SamplesPopulateResult>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: Option<AnnotationSetID> =
+            annotation_set_id.map(|a| a.try_into()).transpose()?;
+        let samples: Vec<edgefirst_client::Sample> =
+            samples.iter().map(|s| s.borrow(py).inner.clone()).collect();
+
+        let results = match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.populate_samples_with_concurrency_sync(
+                        dataset_id,
+                        annotation_set_id,
+                        samples,
+                        Some(tx),
+                        concurrency,
+                    )
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => None,
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
+                }
+                task.join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "populate_samples_with_concurrency worker thread panicked",
+                    )))
+                    .flatten()
+            }
+            None => self.populate_samples_with_concurrency_sync(
+                dataset_id,
+                annotation_set_id,
+                samples,
+                None,
+                concurrency,
+            ),
+        }?;
+
+        Ok(results.into_iter().map(SamplesPopulateResult).collect())
+    }
+
     #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), flatten = false, progress = None))]
     pub fn download_dataset<'py>(
         &self,
@@ -5185,23 +5570,184 @@ impl Client {
         Ok(self.0.delete_snapshot(snapshot_id.0).await?)
     }
 
-    #[tokio_wrap::sync]
-    pub fn create_snapshot(&self, path: &str) -> Result<Snapshot, Error> {
-        let inner = self.0.create_snapshot(path, None).await?;
-        Ok(Snapshot::with_client(inner, Arc::new(self.0.clone())))
+    /// Create a new snapshot from an MCAP file or EdgeFirst Dataset directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Local path to an MCAP file or directory containing EdgeFirst Dataset Format files
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+)
+    ///
+    /// # Returns
+    ///
+    /// Returns the created `Snapshot` object.
+    #[pyo3(signature = (path, progress = None))]
+    pub fn create_snapshot(
+        &self,
+        path: &str,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Snapshot, Error> {
+        let path = path.to_string();
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || client.create_snapshot_sync(&path, Some(tx)));
+                while let Some(status) = rx.blocking_recv() {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => None,
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
+                }
+                Ok(Snapshot::with_client(
+                    task.join()
+                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "create_snapshot worker thread panicked",
+                        )))
+                        .flatten()?,
+                    Arc::new(self.0.clone()),
+                ))
+            }
+            None => Ok(Snapshot::with_client(
+                self.create_snapshot_sync(&path, None)?,
+                Arc::new(self.0.clone()),
+            )),
+        }
     }
 
-    #[tokio_wrap::sync]
+    /// Create a snapshot directly from EdgeFirst Dataset Format files.
+    ///
+    /// Uploads an Arrow annotations file and a ZIP media archive as a new snapshot.
+    /// Faster than `create_snapshot` when you already have EDF files.
+    ///
+    /// # Arguments
+    ///
+    /// * `arrow_path` - Local path to the `.arrow` annotations file
+    /// * `zip_path` - Local path to the `.zip` media archive
+    /// * `description` - Optional snapshot description (defaults to Arrow file stem)
+    /// * `progress` - Optional progress callback with `(current, total)` bytes or `(current, total, status)`
+    #[pyo3(signature = (arrow_path, zip_path, description = None, progress = None))]
+    pub fn create_snapshot_edgefirst_format(
+        &self,
+        arrow_path: &str,
+        zip_path: &str,
+        description: Option<&str>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<Snapshot, Error> {
+        let arrow_path = arrow_path.to_string();
+        let zip_path = zip_path.to_string();
+        let description = description.map(|s| s.to_string());
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.create_snapshot_edgefirst_format_sync(
+                        &arrow_path,
+                        &zip_path,
+                        description.as_deref(),
+                        Some(tx),
+                    )
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => None,
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
+                }
+                Ok(Snapshot::with_client(
+                    task.join()
+                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "create_snapshot_edgefirst_format worker thread panicked",
+                        )))
+                        .flatten()?,
+                    Arc::new(self.0.clone()),
+                ))
+            }
+            None => Ok(Snapshot::with_client(
+                self.create_snapshot_edgefirst_format_sync(
+                    &arrow_path,
+                    &zip_path,
+                    description.as_deref(),
+                    None,
+                )?,
+                Arc::new(self.0.clone()),
+            )),
+        }
+    }
+
+    /// Download a snapshot from EdgeFirst Studio to local storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot_id` - The snapshot ID to download
+    /// * `output` - Local directory path to save the downloaded files
+    /// * `progress` - Optional progress callback. Called with `(current, total)` bytes or
+    ///   `(current, total, status)` (v2.8.0+)
+    #[pyo3(signature = (snapshot_id, output, progress = None))]
     pub fn download_snapshot<'py>(
         &self,
         snapshot_id: Bound<'py, PyAny>,
         output: &str,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
         let snapshot_id: SnapshotID = snapshot_id.try_into()?;
-        self.0
-            .download_snapshot(snapshot_id.0, std::path::PathBuf::from(output), None)
-            .await?;
-        Ok(())
+        let output = std::path::PathBuf::from(output);
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.download_snapshot_sync(snapshot_id, output, Some(tx))
+                });
+                while let Some(status) = rx.blocking_recv() {
+                    if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
+                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                            Ok(_) => None,
+                            Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
+                                let _ = progress.call1(py, (status.current, status.total));
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }) {
+                        drop(rx);
+                        let _ = task.join();
+                        return Err(Error::from(cb_err));
+                    }
+                }
+                Ok(task
+                    .join()
+                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "download_snapshot worker thread panicked",
+                    )))
+                    .flatten()?)
+            }
+            None => Ok(self.download_snapshot_sync(snapshot_id, output, None)?),
+        }
     }
 
     #[tokio_wrap::sync]
@@ -5503,6 +6049,38 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn create_snapshot_sync(
+        &self,
+        path: &str,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<edgefirst_client::Snapshot, edgefirst_client::Error> {
+        self.0.create_snapshot(path, progress).await
+    }
+
+    #[tokio_wrap::sync]
+    fn create_snapshot_edgefirst_format_sync(
+        &self,
+        arrow_path: &str,
+        zip_path: &str,
+        description: Option<&str>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<edgefirst_client::Snapshot, edgefirst_client::Error> {
+        self.0
+            .create_snapshot_edgefirst_format(arrow_path, zip_path, description, progress)
+            .await
+    }
+
+    #[tokio_wrap::sync]
+    fn download_snapshot_sync(
+        &self,
+        snapshot_id: SnapshotID,
+        output: std::path::PathBuf,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<(), edgefirst_client::Error> {
+        self.0.download_snapshot(snapshot_id.0, output, progress).await
+    }
+
+    #[tokio_wrap::sync]
     fn samples_dataframe_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -5547,6 +6125,16 @@ impl Client {
     }
 
     #[tokio_wrap::sync]
+    fn sample_names_sync(
+        &self,
+        dataset_id: DatasetID,
+        groups: Vec<String>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<std::collections::HashSet<String>, edgefirst_client::Error> {
+        self.0.sample_names(dataset_id.0, &groups, progress).await
+    }
+
+    #[tokio_wrap::sync]
     fn populate_samples_sync<'py>(
         &self,
         dataset_id: DatasetID,
@@ -5556,6 +6144,26 @@ impl Client {
     ) -> Result<Vec<edgefirst_client::SamplesPopulateResult>, edgefirst_client::Error> {
         self.0
             .populate_samples(dataset_id.0, Some(annotation_set_id.0), samples, progress)
+            .await
+    }
+
+    #[tokio_wrap::sync]
+    fn populate_samples_with_concurrency_sync(
+        &self,
+        dataset_id: DatasetID,
+        annotation_set_id: Option<AnnotationSetID>,
+        samples: Vec<edgefirst_client::Sample>,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        concurrency: Option<usize>,
+    ) -> Result<Vec<edgefirst_client::SamplesPopulateResult>, edgefirst_client::Error> {
+        self.0
+            .populate_samples_with_concurrency(
+                dataset_id.0,
+                annotation_set_id.map(|a| a.0),
+                samples,
+                progress,
+                concurrency,
+            )
             .await
     }
 
@@ -6122,6 +6730,41 @@ impl Sample {
         Err(Error::TypeError(
             "download() first argument must be a FileType or Client (deprecated)".to_string(),
         ))
+    }
+
+    /// Assign this sample to a server-side group.
+    ///
+    /// Groups are used to organize samples into splits such as ``"train"``,
+    /// ``"val"``, and ``"test"``.  Use :meth:`Dataset.groups` to list
+    /// available groups, or :meth:`Client.get_or_create_group` to create one.
+    ///
+    /// Requires an embedded client reference (samples returned by the client
+    /// methods automatically have one).
+    ///
+    /// Note: This updates the group assignment on the server. To set the local
+    /// in-memory group name (for building new samples), use :meth:`set_group`.
+    ///
+    /// Args:
+    ///     group_id: Numeric group ID returned by :meth:`Client.groups` or
+    ///         :meth:`Client.get_or_create_group`
+    ///
+    /// If the Sample was created without a client reference, use
+    /// `client.set_sample_group_id(sample.id, group_id)` instead.
+    #[tokio_wrap::sync]
+    pub fn assign_group(&self, group_id: u64) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Sample has no client reference. Use client.set_sample_group_id(sample.id, group_id) instead."
+                    .to_string(),
+            )
+        })?;
+        let sample_id = self.inner.id().ok_or_else(|| {
+            Error::TypeError(
+                "Sample has no ID. Use client.set_sample_group_id(sample.id, group_id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.set_sample_group_id(sample_id, group_id).await?)
     }
 }
 
