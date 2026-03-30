@@ -1774,7 +1774,6 @@ fn create_sequence_aware_batches(
 /// Helper struct to store sample metadata during parsing.
 /// Used to collect all annotations for a sample before creating the final
 /// Sample object.
-#[cfg(feature = "polars")]
 struct SampleMetadata {
     group: Option<String>,
     sequence_name: Option<String>,

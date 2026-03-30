@@ -2,7 +2,7 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.9.0
+footer: edgefirst-client 2.9.1
 date: 2026-03-29
 ---
 

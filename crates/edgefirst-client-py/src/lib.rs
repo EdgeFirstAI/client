@@ -6,8 +6,8 @@ use pyo3::{
     types::{PyDateTime, PyDict},
 };
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
-use url::form_urlencoded;
 use tokio::sync::mpsc;
+use url::form_urlencoded;
 
 /// Emit a deprecation warning for uid() methods.
 ///
@@ -3701,14 +3701,11 @@ impl Snapshot {
                     });
                     while let Some(status) = rx.blocking_recv() {
                         Python::attach(|py| {
-                            match progress.call1(
-                                py,
-                                (status.current, status.total, status.status.clone()),
-                            ) {
+                            match progress
+                                .call1(py, (status.current, status.total, status.status.clone()))
+                            {
                                 Ok(_) => {}
-                                Err(e)
-                                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) =>
-                                {
+                                Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                     let _ = progress.call1(py, (status.current, status.total));
                                 }
                                 Err(e) => e.print(py),
@@ -3725,9 +3722,7 @@ impl Snapshot {
                         })
                         .flatten()?)
                 }
-                None => {
-                    Ok(client_wrap.download_snapshot_sync(snapshot_id, output_pb, None)?)
-                }
+                None => Ok(client_wrap.download_snapshot_sync(snapshot_id, output_pb, None)?),
             };
         }
 
@@ -5065,11 +5060,14 @@ impl Client {
             Some(progress) => {
                 let (tx, mut rx) = mpsc::channel(1);
                 let client = Client(self.0.clone());
-                let task =
-                    std::thread::spawn(move || client.sample_names_sync(dataset_id, groups, Some(tx)));
+                let task = std::thread::spawn(move || {
+                    client.sample_names_sync(dataset_id, groups, Some(tx))
+                });
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
-                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                        match progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                        {
                             Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
@@ -5085,10 +5083,12 @@ impl Client {
                 }
                 Ok(task
                     .join()
-                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "sample_names worker thread panicked",
-                    )))
+                    .map_err(|_| {
+                        edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "sample_names worker thread panicked",
+                        ))
+                    })
                     .flatten()?)
             }
             None => Ok(self.sample_names_sync(dataset_id, groups, None)?),
@@ -5359,7 +5359,9 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
-                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                        match progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                        {
                             Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
@@ -5374,10 +5376,12 @@ impl Client {
                     }
                 }
                 task.join()
-                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "populate_samples_with_concurrency worker thread panicked",
-                    )))
+                    .map_err(|_| {
+                        edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "populate_samples_with_concurrency worker thread panicked",
+                        ))
+                    })
                     .flatten()
             }
             None => self.populate_samples_with_concurrency_sync(
@@ -5595,7 +5599,9 @@ impl Client {
                 let task = std::thread::spawn(move || client.create_snapshot_sync(&path, Some(tx)));
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
-                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                        match progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                        {
                             Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
@@ -5611,10 +5617,12 @@ impl Client {
                 }
                 Ok(Snapshot::with_client(
                     task.join()
-                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "create_snapshot worker thread panicked",
-                        )))
+                        .map_err(|_| {
+                            edgefirst_client::Error::from(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "create_snapshot worker thread panicked",
+                            ))
+                        })
                         .flatten()?,
                     Arc::new(self.0.clone()),
                 ))
@@ -5662,7 +5670,9 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
-                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                        match progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                        {
                             Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
@@ -5678,10 +5688,12 @@ impl Client {
                 }
                 Ok(Snapshot::with_client(
                     task.join()
-                        .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "create_snapshot_edgefirst_format worker thread panicked",
-                        )))
+                        .map_err(|_| {
+                            edgefirst_client::Error::from(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "create_snapshot_edgefirst_format worker thread panicked",
+                            ))
+                        })
                         .flatten()?,
                     Arc::new(self.0.clone()),
                 ))
@@ -5724,7 +5736,9 @@ impl Client {
                 });
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
-                        match progress.call1(py, (status.current, status.total, status.status.clone())) {
+                        match progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                        {
                             Ok(_) => None,
                             Err(e) if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
                                 let _ = progress.call1(py, (status.current, status.total));
@@ -5740,10 +5754,12 @@ impl Client {
                 }
                 Ok(task
                     .join()
-                    .map_err(|_| edgefirst_client::Error::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "download_snapshot worker thread panicked",
-                    )))
+                    .map_err(|_| {
+                        edgefirst_client::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "download_snapshot worker thread panicked",
+                        ))
+                    })
                     .flatten()?)
             }
             None => Ok(self.download_snapshot_sync(snapshot_id, output, None)?),
@@ -6077,7 +6093,9 @@ impl Client {
         output: std::path::PathBuf,
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
     ) -> Result<(), edgefirst_client::Error> {
-        self.0.download_snapshot(snapshot_id.0, output, progress).await
+        self.0
+            .download_snapshot(snapshot_id.0, output, progress)
+            .await
     }
 
     #[tokio_wrap::sync]
