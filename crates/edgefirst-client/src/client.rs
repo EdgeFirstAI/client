@@ -536,6 +536,7 @@ impl Client {
             .read_timeout(Duration::from_secs(read_timeout_secs))
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(10)
+            .retry(create_retry_policy())
             .build()?;
 
         // Default to file storage, loading any existing token
@@ -3543,58 +3544,41 @@ impl Client {
             .rpc("snapshots.create_download_url".to_owned(), Some(params))
             .await?;
 
-        // Phase 1: issue GETs bounded by semaphore to receive response headers.
-        // Semaphore is shared with Phase 2 — permits released by Phase 1 futures
-        // (when headers arrive) are available to Phase 2 streaming tasks.
-        // This lets us sum content-lengths and set an accurate total before
-        // any streaming begins, so progress never reports current > total.
+        // Single-phase: each task holds its semaphore permit for the full
+        // lifetime of the request (GET → headers → stream → disk). This bounds
+        // the number of simultaneously-open connections to max_tasks() and
+        // avoids accumulating all responses in memory before streaming.
+        //
+        // total is updated atomically as each response's Content-Length header
+        // arrives, so progress tracking is accurate without a separate phase.
         let http = self.bulk_http.clone();
         let current = Arc::new(AtomicUsize::new(0));
+        let total = Arc::new(AtomicUsize::new(0));
         let sem = Arc::new(Semaphore::new(max_tasks()));
-        let response_futs = items.into_iter().map(|(key, url)| {
-            let http = http.clone();
-            let sem = sem.clone();
-            async move {
-                let _permit = sem.acquire().await.map_err(|_| {
-                    Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
-                })?;
-                let res = http.get(url).send().await?;
-                Ok::<_, Error>((key, res))
-            }
-        });
-        let responses: Vec<(String, reqwest::Response)> =
-            futures::future::try_join_all(response_futs).await?;
 
-        // Total bytes known before streaming starts; captured by value in each task.
-        let total_bytes: usize = responses
-            .iter()
-            .map(|(_, r)| r.content_length().unwrap_or(0) as usize)
-            .sum();
-
-        if let Some(progress) = &progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total: total_bytes,
-                    status: None,
-                })
-                .await;
-        }
-
-        // Phase 2: stream all responses to disk in parallel. current is updated
-        // atomically only after each chunk is successfully written to disk.
-        let tasks = responses
+        let tasks = items
             .into_iter()
-            .map(|(key, res)| {
+            .map(|(key, url)| {
+                let http = http.clone();
                 let output = output.clone();
                 let progress = progress.clone();
                 let current = current.clone();
+                let total = total.clone();
                 let sem = sem.clone();
 
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.map_err(|_| {
                         Error::IoError(std::io::Error::other("Semaphore closed unexpectedly"))
                     })?;
+
+                    let res = http.get(url).send().await?;
+                    let res = res.error_for_status()?;
+
+                    // Contribute this file's size to the running total so the
+                    // caller's progress bar knows the overall scope.
+                    if let Some(len) = res.content_length() {
+                        total.fetch_add(len as usize, Ordering::SeqCst);
+                    }
 
                     let mut file = File::create(output.join(key)).await?;
                     let mut stream = res.bytes_stream();
@@ -3605,11 +3589,12 @@ impl Client {
                         let len = chunk.len();
 
                         if let Some(progress) = &progress {
-                            let current = current.fetch_add(len, Ordering::SeqCst);
+                            let cur = current.fetch_add(len, Ordering::SeqCst) + len;
+                            let tot = total.load(Ordering::SeqCst);
                             let _ = progress
                                 .send(Progress {
-                                    current: current + len,
-                                    total: total_bytes,
+                                    current: cur,
+                                    total: tot,
                                     status: None,
                                 })
                                 .await;
@@ -4097,9 +4082,12 @@ impl Client {
         Ok(())
     }
 
-    /// Authenticated fetch from the Studio server. Uses the bulk HTTP client
-    /// (no total-request timeout; 120s idle read timeout) so it is safe for
-    /// large binary file downloads such as model artifacts and checkpoints.
+    /// Authenticated fetch from the Studio server using the bulk HTTP client
+    /// (no total-request timeout; idle read timeout per chunk).
+    ///
+    /// **Buffers the entire response body into memory.** Suitable for small to
+    /// medium payloads. For very large binary downloads (multi-GB artifacts or
+    /// checkpoints), prefer a streaming approach that writes directly to disk.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn fetch(&self, query: &str) -> Result<Vec<u8>, Error> {
         let req = self
