@@ -3857,8 +3857,9 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        if let Some(progress) = progress {
-            let total = resp.content_length().unwrap_or(0) as usize;
+        let total = resp.content_length().unwrap_or(0) as usize;
+
+        if let Some(ref progress) = progress {
             let _ = progress
                 .send(Progress {
                     current: 0,
@@ -3866,15 +3867,17 @@ impl Client {
                     status: None,
                 })
                 .await;
+        }
 
-            let mut file = File::create(filename).await?;
-            let mut current = 0;
-            let mut stream = resp.bytes_stream();
+        let mut file = File::create(filename).await?;
+        let mut current = 0;
+        let mut stream = resp.bytes_stream();
 
-            while let Some(item) = stream.next().await {
-                let chunk = item?;
-                file.write_all(&chunk).await?;
-                current += chunk.len();
+        while let Some(item) = stream.next().await {
+            let chunk = item?;
+            file.write_all(&chunk).await?;
+            current += chunk.len();
+            if let Some(ref progress) = progress {
                 let _ = progress
                     .send(Progress {
                         current,
@@ -3883,9 +3886,6 @@ impl Client {
                     })
                     .await;
             }
-        } else {
-            let body = resp.bytes().await?;
-            fs::write(filename, body).await?;
         }
 
         Ok(())
@@ -3933,8 +3933,9 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        if let Some(progress) = progress {
-            let total = resp.content_length().unwrap_or(0) as usize;
+        let total = resp.content_length().unwrap_or(0) as usize;
+
+        if let Some(ref progress) = progress {
             let _ = progress
                 .send(Progress {
                     current: 0,
@@ -3942,15 +3943,17 @@ impl Client {
                     status: None,
                 })
                 .await;
+        }
 
-            let mut file = File::create(filename).await?;
-            let mut current = 0;
-            let mut stream = resp.bytes_stream();
+        let mut file = File::create(filename).await?;
+        let mut current = 0;
+        let mut stream = resp.bytes_stream();
 
-            while let Some(item) = stream.next().await {
-                let chunk = item?;
-                file.write_all(&chunk).await?;
-                current += chunk.len();
+        while let Some(item) = stream.next().await {
+            let chunk = item?;
+            file.write_all(&chunk).await?;
+            current += chunk.len();
+            if let Some(ref progress) = progress {
                 let _ = progress
                     .send(Progress {
                         current,
@@ -3959,9 +3962,6 @@ impl Client {
                     })
                     .await;
             }
-        } else {
-            let body = resp.bytes().await?;
-            fs::write(filename, body).await?;
         }
 
         Ok(())

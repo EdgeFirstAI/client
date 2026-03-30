@@ -21,8 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `download_snapshot` progress tracking now computes total bytes before streaming begins (responses are collected first, then streamed in parallel), so `current` never exceeds `total`
-- `download_snapshot` Phase 1 (GET requests) is now semaphore-bounded to `MAX_TASKS` concurrent connections, matching all other parallel operations
+- `download_snapshot` refactored to a unified single-phase design: each task holds its semaphore permit for the full request lifetime (connect → headers → stream → disk), so no more than `MAX_TASKS` connections are open simultaneously; total bytes are accumulated dynamically from `Content-Length` headers as tasks start
 - Internal HTTP client renamed from `upload_http` to `bulk_http` to reflect that it handles both uploads and downloads
 - `fetch()` now uses the bulk HTTP client, fixing timeouts on large artifact/checkpoint downloads via the `TrainingSession` API
 
