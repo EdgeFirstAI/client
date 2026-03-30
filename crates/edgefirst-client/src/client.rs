@@ -432,7 +432,9 @@ struct ImagesFilter {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    /// HTTP client for long-running bulk transfers (uploads/downloads, no request timeout)
+    /// HTTP client for long-running bulk transfers (uploads/downloads, no total-request
+    /// timeout). An idle read timeout is still configured on the underlying client, and
+    /// some operations (such as uploads) may apply additional per-request timeouts.
     bulk_http: reqwest::Client,
     url: String,
     token: Arc<RwLock<String>>,
@@ -3888,6 +3890,11 @@ impl Client {
             }
         }
 
+        // Flush tokio's internal write buffer to the OS before returning.
+        // tokio::fs::File buffers writes internally; without this, the buffer
+        // may not reach the filesystem before the caller reads the file.
+        file.flush().await?;
+
         Ok(())
     }
 
@@ -3963,6 +3970,11 @@ impl Client {
                     .await;
             }
         }
+
+        // Flush tokio's internal write buffer to the OS before returning.
+        // tokio::fs::File buffers writes internally; without this, the buffer
+        // may not reach the filesystem before the caller reads the file.
+        file.flush().await?;
 
         Ok(())
     }
