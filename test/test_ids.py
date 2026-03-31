@@ -10,6 +10,22 @@ matching string representations.
 import unittest
 from test import get_client
 
+from edgefirst_client import (
+    AnnotationSetID,
+    AppId,
+    DatasetID,
+    ExperimentID,
+    ImageId,
+    OrganizationID,
+    ProjectID,
+    SampleID,
+    SequenceId,
+    SnapshotID,
+    TaskID,
+    TrainingSessionID,
+    ValidationSessionID,
+)
+
 
 class TestIDTypes(unittest.TestCase):
     """Test suite for ID type string formatting and conversions."""
@@ -349,6 +365,190 @@ class TestIDTypes(unittest.TestCase):
         else:
             # If id is None, uid should also be None
             self.assertIsNone(sample_uid)
+
+
+class TestIDConversions(unittest.TestCase):
+    """Offline tests for ID type construction and conversion.
+
+    These tests verify that all 13 ID types support:
+    - Construction from a prefixed hex string via __init__
+    - Construction from an integer via __init__
+    - The from_str static method
+    - Round-trip int → string → int fidelity
+    - Rejection of wrong prefixes
+    - Rejection of invalid hex digits
+
+    No server connection is required.
+    """
+
+    # (class, prefix) for every ID type in the module
+    ID_TYPES = [
+        (ProjectID, "p"),
+        (DatasetID, "ds"),
+        (ExperimentID, "exp"),
+        (OrganizationID, "org"),
+        (SampleID, "s"),
+        (AnnotationSetID, "as"),
+        (TaskID, "task"),
+        (TrainingSessionID, "t"),
+        (ValidationSessionID, "v"),
+        (SnapshotID, "ss"),
+        (ImageId, "im"),
+        (SequenceId, "se"),
+        (AppId, "app"),
+    ]
+
+    # ------------------------------------------------------------------
+    # Helper
+    # ------------------------------------------------------------------
+
+    def _test_id_type(self, cls, prefix, hex_value=0xABC123):
+        """Exercise standard construction and conversion for one ID type."""
+        hex_str = f"{prefix}-{hex_value:x}"
+
+        # --- construct from prefixed hex string -------------------------
+        id_from_str = cls(hex_str)
+        self.assertEqual(id_from_str.value, hex_value)
+        self.assertEqual(str(id_from_str), hex_str)
+
+        # --- construct from integer -------------------------------------
+        id_from_int = cls(hex_value)
+        self.assertEqual(str(id_from_int), hex_str)
+        self.assertEqual(int(id_from_int), hex_value)
+
+        # --- from_str static method -------------------------------------
+        id_static = cls.from_str(hex_str)
+        self.assertEqual(id_static.value, hex_value)
+        self.assertEqual(str(id_static), hex_str)
+
+        # --- round-trip: int → string → int -----------------------------
+        original = cls(42)
+        as_str = str(original)
+        restored = cls(as_str)
+        self.assertEqual(original.value, restored.value)
+        self.assertEqual(int(original), int(restored))
+
+        # --- wrong prefix → error ---------------------------------------
+        with self.assertRaises(Exception):
+            cls("zzz-abc123")
+
+        # --- invalid hex chars → error ----------------------------------
+        with self.assertRaises(Exception):
+            cls(f"{prefix}-xyz")
+
+    # ------------------------------------------------------------------
+    # Per-type tests
+    # ------------------------------------------------------------------
+
+    def test_project_id_conversions(self):
+        """Test ProjectID construction and conversion (prefix 'p-')."""
+        self._test_id_type(ProjectID, "p")
+
+    def test_dataset_id_conversions(self):
+        """Test DatasetID construction and conversion (prefix 'ds-')."""
+        self._test_id_type(DatasetID, "ds")
+
+    def test_experiment_id_conversions(self):
+        """Test ExperimentID construction and conversion (prefix 'exp-')."""
+        self._test_id_type(ExperimentID, "exp")
+
+    def test_organization_id_conversions(self):
+        """Test OrganizationID construction and conversion (prefix 'org-')."""
+        self._test_id_type(OrganizationID, "org")
+
+    def test_sample_id_conversions(self):
+        """Test SampleID construction and conversion (prefix 's-')."""
+        self._test_id_type(SampleID, "s")
+
+    def test_annotation_set_id_conversions(self):
+        """Test AnnotationSetID construction and conversion (prefix 'as-')."""
+        self._test_id_type(AnnotationSetID, "as")
+
+    def test_task_id_conversions(self):
+        """Test TaskID construction and conversion (prefix 'task-')."""
+        self._test_id_type(TaskID, "task")
+
+    def test_training_session_id_conversions(self):
+        """Test TrainingSessionID construction and conversion (prefix 't-')."""
+        self._test_id_type(TrainingSessionID, "t")
+
+    def test_validation_session_id_conversions(self):
+        """Test ValidationSessionID construction and conversion (prefix 'v-')."""
+        self._test_id_type(ValidationSessionID, "v")
+
+    def test_snapshot_id_conversions(self):
+        """Test SnapshotID construction and conversion (prefix 'ss-')."""
+        self._test_id_type(SnapshotID, "ss")
+
+    def test_image_id_conversions(self):
+        """Test ImageId construction and conversion (prefix 'im-')."""
+        self._test_id_type(ImageId, "im")
+
+    def test_sequence_id_conversions(self):
+        """Test SequenceId construction and conversion (prefix 'se-')."""
+        self._test_id_type(SequenceId, "se")
+
+    def test_app_id_conversions(self):
+        """Test AppId construction and conversion (prefix 'app-')."""
+        self._test_id_type(AppId, "app")
+
+    # ------------------------------------------------------------------
+    # Additional edge-case tests
+    # ------------------------------------------------------------------
+
+    def test_all_id_types_covered(self):
+        """Ensure we test all 13 ID types."""
+        self.assertEqual(len(self.ID_TYPES), 13)
+
+    def test_zero_value(self):
+        """Test that ID types handle zero correctly."""
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                id_obj = cls(0)
+                self.assertEqual(id_obj.value, 0)
+                self.assertEqual(int(id_obj), 0)
+                self.assertEqual(str(id_obj), f"{prefix}-0")
+
+    def test_large_value(self):
+        """Test that ID types handle large 64-bit values."""
+        large = 0xDEADBEEFCAFE
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                id_obj = cls(large)
+                self.assertEqual(id_obj.value, large)
+                self.assertEqual(int(id_obj), large)
+                self.assertEqual(str(id_obj), f"{prefix}-deadbeefcafe")
+
+    def test_from_str_round_trip_all(self):
+        """Test from_str → str round-trip for every ID type."""
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                hex_str = f"{prefix}-ff00ff"
+                id_obj = cls.from_str(hex_str)
+                self.assertEqual(str(id_obj), hex_str)
+                self.assertEqual(id_obj.value, 0xFF00FF)
+
+    def test_int_round_trip_all(self):
+        """Test int → cls → int round-trip for every ID type."""
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                original_val = 0x1A2B3C
+                id_obj = cls(original_val)
+                self.assertEqual(int(id_obj), original_val)
+
+    def test_invalid_prefix_all(self):
+        """Test that every ID type rejects a wrong prefix."""
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                with self.assertRaises(Exception):
+                    cls("BADPREFIX-abc123")
+
+    def test_invalid_hex_all(self):
+        """Test that every ID type rejects non-hex characters."""
+        for cls, prefix in self.ID_TYPES:
+            with self.subTest(cls=cls.__name__):
+                with self.assertRaises(Exception):
+                    cls(f"{prefix}-ghijkl")
 
 
 if __name__ == "__main__":

@@ -135,6 +135,424 @@ final class IDFormatTests: XCTestCase {
     XCTAssertTrue(datasetSet.contains(id2))
   }
 
+  // MARK: - Parse/Format Free Function Tests (Offline)
+
+  // -- OrganizationId --
+
+  /// Test parsing an organization ID from its string representation.
+  func testParseOrganizationId() throws {
+    let id = try parseOrganizationId(s: "org-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting an organization ID to its string representation.
+  func testFormatOrganizationId() {
+    let id = OrganizationId(value: 0xabc123)
+    XCTAssertEqual(formatOrganizationId(id: id), "org-abc123")
+  }
+
+  /// Test round-trip parse/format for organization ID.
+  func testParseOrganizationIdRoundTrip() throws {
+    let original = OrganizationId(value: 0xdeadbeef)
+    let formatted = formatOrganizationId(id: original)
+    let parsed = try parseOrganizationId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing an organization ID with an invalid prefix throws an error.
+  func testParseOrganizationIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseOrganizationId(s: "p-abc123"))
+  }
+
+  /// Test parsing an organization ID with invalid hex throws an error.
+  func testParseOrganizationIdInvalidHex() {
+    XCTAssertThrowsError(try parseOrganizationId(s: "org-xyz"))
+  }
+
+  // -- ProjectId --
+
+  /// Test parsing a project ID from its string representation.
+  func testParseProjectId() throws {
+    let id = try parseProjectId(s: "p-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a project ID to its string representation.
+  func testFormatProjectId() {
+    let id = ProjectId(value: 0xabc123)
+    XCTAssertEqual(formatProjectId(id: id), "p-abc123")
+  }
+
+  /// Test round-trip parse/format for project ID.
+  func testParseProjectIdRoundTrip() throws {
+    let original = ProjectId(value: 0xdeadbeef)
+    let formatted = formatProjectId(id: original)
+    let parsed = try parseProjectId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a project ID with an invalid prefix throws an error.
+  func testParseProjectIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseProjectId(s: "ds-abc123"))
+  }
+
+  /// Test parsing a project ID with invalid hex throws an error.
+  func testParseProjectIdInvalidHex() {
+    XCTAssertThrowsError(try parseProjectId(s: "p-xyz"))
+  }
+
+  // -- ExperimentId --
+
+  /// Test parsing an experiment ID from its string representation.
+  func testParseExperimentId() throws {
+    let id = try parseExperimentId(s: "exp-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting an experiment ID to its string representation.
+  func testFormatExperimentId() {
+    let id = ExperimentId(value: 0xabc123)
+    XCTAssertEqual(formatExperimentId(id: id), "exp-abc123")
+  }
+
+  /// Test round-trip parse/format for experiment ID.
+  func testParseExperimentIdRoundTrip() throws {
+    let original = ExperimentId(value: 0xdeadbeef)
+    let formatted = formatExperimentId(id: original)
+    let parsed = try parseExperimentId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing an experiment ID with an invalid prefix throws an error.
+  func testParseExperimentIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseExperimentId(s: "p-abc123"))
+  }
+
+  /// Test parsing an experiment ID with invalid hex throws an error.
+  func testParseExperimentIdInvalidHex() {
+    XCTAssertThrowsError(try parseExperimentId(s: "exp-xyz"))
+  }
+
+  // -- TrainingSessionId --
+
+  /// Test parsing a training session ID from its string representation.
+  func testParseTrainingSessionId() throws {
+    let id = try parseTrainingSessionId(s: "t-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a training session ID to its string representation.
+  func testFormatTrainingSessionId() {
+    let id = TrainingSessionId(value: 0xabc123)
+    XCTAssertEqual(formatTrainingSessionId(id: id), "t-abc123")
+  }
+
+  /// Test round-trip parse/format for training session ID.
+  func testParseTrainingSessionIdRoundTrip() throws {
+    let original = TrainingSessionId(value: 0xdeadbeef)
+    let formatted = formatTrainingSessionId(id: original)
+    let parsed = try parseTrainingSessionId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a training session ID with an invalid prefix throws an error.
+  func testParseTrainingSessionIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseTrainingSessionId(s: "v-abc123"))
+  }
+
+  /// Test parsing a training session ID with invalid hex throws an error.
+  func testParseTrainingSessionIdInvalidHex() {
+    XCTAssertThrowsError(try parseTrainingSessionId(s: "t-xyz"))
+  }
+
+  // -- ValidationSessionId --
+
+  /// Test parsing a validation session ID from its string representation.
+  func testParseValidationSessionId() throws {
+    let id = try parseValidationSessionId(s: "v-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a validation session ID to its string representation.
+  func testFormatValidationSessionId() {
+    let id = ValidationSessionId(value: 0xabc123)
+    XCTAssertEqual(formatValidationSessionId(id: id), "v-abc123")
+  }
+
+  /// Test round-trip parse/format for validation session ID.
+  func testParseValidationSessionIdRoundTrip() throws {
+    let original = ValidationSessionId(value: 0xdeadbeef)
+    let formatted = formatValidationSessionId(id: original)
+    let parsed = try parseValidationSessionId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a validation session ID with an invalid prefix throws an error.
+  func testParseValidationSessionIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseValidationSessionId(s: "t-abc123"))
+  }
+
+  /// Test parsing a validation session ID with invalid hex throws an error.
+  func testParseValidationSessionIdInvalidHex() {
+    XCTAssertThrowsError(try parseValidationSessionId(s: "v-xyz"))
+  }
+
+  // -- SnapshotId --
+
+  /// Test parsing a snapshot ID from its string representation.
+  func testParseSnapshotId() throws {
+    let id = try parseSnapshotId(s: "ss-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a snapshot ID to its string representation.
+  func testFormatSnapshotId() {
+    let id = SnapshotId(value: 0xabc123)
+    XCTAssertEqual(formatSnapshotId(id: id), "ss-abc123")
+  }
+
+  /// Test round-trip parse/format for snapshot ID.
+  func testParseSnapshotIdRoundTrip() throws {
+    let original = SnapshotId(value: 0xdeadbeef)
+    let formatted = formatSnapshotId(id: original)
+    let parsed = try parseSnapshotId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a snapshot ID with an invalid prefix throws an error.
+  func testParseSnapshotIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseSnapshotId(s: "p-abc123"))
+  }
+
+  /// Test parsing a snapshot ID with invalid hex throws an error.
+  func testParseSnapshotIdInvalidHex() {
+    XCTAssertThrowsError(try parseSnapshotId(s: "ss-xyz"))
+  }
+
+  // -- TaskId --
+
+  /// Test parsing a task ID from its string representation.
+  func testParseTaskId() throws {
+    let id = try parseTaskId(s: "task-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a task ID to its string representation.
+  func testFormatTaskId() {
+    let id = TaskId(value: 0xabc123)
+    XCTAssertEqual(formatTaskId(id: id), "task-abc123")
+  }
+
+  /// Test round-trip parse/format for task ID.
+  func testParseTaskIdRoundTrip() throws {
+    let original = TaskId(value: 0xdeadbeef)
+    let formatted = formatTaskId(id: original)
+    let parsed = try parseTaskId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a task ID with an invalid prefix throws an error.
+  func testParseTaskIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseTaskId(s: "p-abc123"))
+  }
+
+  /// Test parsing a task ID with invalid hex throws an error.
+  func testParseTaskIdInvalidHex() {
+    XCTAssertThrowsError(try parseTaskId(s: "task-xyz"))
+  }
+
+  // -- DatasetId --
+
+  /// Test parsing a dataset ID from its string representation.
+  func testParseDatasetId() throws {
+    let id = try parseDatasetId(s: "ds-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a dataset ID to its string representation.
+  func testFormatDatasetId() {
+    let id = DatasetId(value: 0xabc123)
+    XCTAssertEqual(formatDatasetId(id: id), "ds-abc123")
+  }
+
+  /// Test round-trip parse/format for dataset ID.
+  func testParseDatasetIdRoundTrip() throws {
+    let original = DatasetId(value: 0xdeadbeef)
+    let formatted = formatDatasetId(id: original)
+    let parsed = try parseDatasetId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a dataset ID with an invalid prefix throws an error.
+  func testParseDatasetIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseDatasetId(s: "p-abc123"))
+  }
+
+  /// Test parsing a dataset ID with invalid hex throws an error.
+  func testParseDatasetIdInvalidHex() {
+    XCTAssertThrowsError(try parseDatasetId(s: "ds-xyz"))
+  }
+
+  // -- AnnotationSetId --
+
+  /// Test parsing an annotation set ID from its string representation.
+  func testParseAnnotationSetId() throws {
+    let id = try parseAnnotationSetId(s: "as-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting an annotation set ID to its string representation.
+  func testFormatAnnotationSetId() {
+    let id = AnnotationSetId(value: 0xabc123)
+    XCTAssertEqual(formatAnnotationSetId(id: id), "as-abc123")
+  }
+
+  /// Test round-trip parse/format for annotation set ID.
+  func testParseAnnotationSetIdRoundTrip() throws {
+    let original = AnnotationSetId(value: 0xdeadbeef)
+    let formatted = formatAnnotationSetId(id: original)
+    let parsed = try parseAnnotationSetId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing an annotation set ID with an invalid prefix throws an error.
+  func testParseAnnotationSetIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseAnnotationSetId(s: "ds-abc123"))
+  }
+
+  /// Test parsing an annotation set ID with invalid hex throws an error.
+  func testParseAnnotationSetIdInvalidHex() {
+    XCTAssertThrowsError(try parseAnnotationSetId(s: "as-xyz"))
+  }
+
+  // -- SampleId --
+
+  /// Test parsing a sample ID from its string representation.
+  func testParseSampleId() throws {
+    let id = try parseSampleId(s: "s-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a sample ID to its string representation.
+  func testFormatSampleId() {
+    let id = SampleId(value: 0xabc123)
+    XCTAssertEqual(formatSampleId(id: id), "s-abc123")
+  }
+
+  /// Test round-trip parse/format for sample ID.
+  func testParseSampleIdRoundTrip() throws {
+    let original = SampleId(value: 0xdeadbeef)
+    let formatted = formatSampleId(id: original)
+    let parsed = try parseSampleId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a sample ID with an invalid prefix throws an error.
+  func testParseSampleIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseSampleId(s: "ds-abc123"))
+  }
+
+  /// Test parsing a sample ID with invalid hex throws an error.
+  func testParseSampleIdInvalidHex() {
+    XCTAssertThrowsError(try parseSampleId(s: "s-xyz"))
+  }
+
+  // -- AppId --
+
+  /// Test parsing an app ID from its string representation.
+  func testParseAppId() throws {
+    let id = try parseAppId(s: "app-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting an app ID to its string representation.
+  func testFormatAppId() {
+    let id = AppId(value: 0xabc123)
+    XCTAssertEqual(formatAppId(id: id), "app-abc123")
+  }
+
+  /// Test round-trip parse/format for app ID.
+  func testParseAppIdRoundTrip() throws {
+    let original = AppId(value: 0xdeadbeef)
+    let formatted = formatAppId(id: original)
+    let parsed = try parseAppId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing an app ID with an invalid prefix throws an error.
+  func testParseAppIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseAppId(s: "p-abc123"))
+  }
+
+  /// Test parsing an app ID with invalid hex throws an error.
+  func testParseAppIdInvalidHex() {
+    XCTAssertThrowsError(try parseAppId(s: "app-xyz"))
+  }
+
+  // -- ImageId --
+
+  /// Test parsing an image ID from its string representation.
+  func testParseImageId() throws {
+    let id = try parseImageId(s: "im-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting an image ID to its string representation.
+  func testFormatImageId() {
+    let id = ImageId(value: 0xabc123)
+    XCTAssertEqual(formatImageId(id: id), "im-abc123")
+  }
+
+  /// Test round-trip parse/format for image ID.
+  func testParseImageIdRoundTrip() throws {
+    let original = ImageId(value: 0xdeadbeef)
+    let formatted = formatImageId(id: original)
+    let parsed = try parseImageId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing an image ID with an invalid prefix throws an error.
+  func testParseImageIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseImageId(s: "p-abc123"))
+  }
+
+  /// Test parsing an image ID with invalid hex throws an error.
+  func testParseImageIdInvalidHex() {
+    XCTAssertThrowsError(try parseImageId(s: "im-xyz"))
+  }
+
+  // -- SequenceId --
+
+  /// Test parsing a sequence ID from its string representation.
+  func testParseSequenceId() throws {
+    let id = try parseSequenceId(s: "se-abc123")
+    XCTAssertEqual(id.value, 0xabc123)
+  }
+
+  /// Test formatting a sequence ID to its string representation.
+  func testFormatSequenceId() {
+    let id = SequenceId(value: 0xabc123)
+    XCTAssertEqual(formatSequenceId(id: id), "se-abc123")
+  }
+
+  /// Test round-trip parse/format for sequence ID.
+  func testParseSequenceIdRoundTrip() throws {
+    let original = SequenceId(value: 0xdeadbeef)
+    let formatted = formatSequenceId(id: original)
+    let parsed = try parseSequenceId(s: formatted)
+    XCTAssertEqual(parsed.value, original.value)
+  }
+
+  /// Test parsing a sequence ID with an invalid prefix throws an error.
+  func testParseSequenceIdInvalidPrefix() {
+    XCTAssertThrowsError(try parseSequenceId(s: "p-abc123"))
+  }
+
+  /// Test parsing a sequence ID with invalid hex throws an error.
+  func testParseSequenceIdInvalidHex() {
+    XCTAssertThrowsError(try parseSequenceId(s: "se-xyz"))
+  }
+
   // MARK: - Online ID Tests (Require Credentials)
 
   /// Test Organization ID has valid non-zero value.

@@ -369,17 +369,20 @@ ParameterDict = Dict[
 class Error(Exception): ...
 
 class ProjectID:
-    """
-    Unique identifier for a project within EdgeFirst Studio.
+    """Unique identifier for a project within EdgeFirst Studio.
 
-    Projects contain datasets, experiments, and models within an organization.
-    Each project has a unique ID displayed in hexadecimal format with a "p-"
-    prefix (e.g., "p-def456").
+    Projects contain datasets, experiments, and models within an
+    organization. Can be constructed from an integer, a prefixed hex
+    string (e.g., ``"p-def456"``), or another ``ProjectID`` instance.
 
     Examples:
+        >>> project_id = ProjectID("p-def456")
+        >>> project_id = ProjectID(0xDEF456)
         >>> project_id = ProjectID.from_str("p-def456")
-        >>> print(project_id.value)  # Returns: 14644310
-        >>> print(str(project_id))   # Returns: "p-def456"
+        >>> int(project_id)
+        14644310
+        >>> str(project_id)
+        'p-def456'
 
     Note:
         Internally a ProjectID is an unsigned 64-bit integer. This class
@@ -387,25 +390,33 @@ class ProjectID:
         project IDs.
     """
 
+    def __init__(self, value: Union[int, str, "ProjectID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "ProjectID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the project ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class DatasetID:
-    """
-    Unique identifier for a dataset within a project.
+    """Unique identifier for a dataset within a project.
 
     Datasets contain collections of images, annotations, and other data used
-    for machine learning experiments. Each dataset has a unique ID displayed
-    in hexadecimal format with a "ds-" prefix (e.g., "ds-123abc").
+    for machine learning experiments. Can be constructed from an integer, a
+    prefixed hex string (e.g., ``"ds-456def"``), or another ``DatasetID``
+    instance.
 
     Examples:
+        >>> dataset_id = DatasetID("ds-456def")
+        >>> dataset_id = DatasetID(0x456DEF)
         >>> dataset_id = DatasetID.from_str("ds-456def")
-        >>> print(dataset_id.value)  # Returns: 4508143
-        >>> print(str(dataset_id))   # Returns: "ds-456def"
+        >>> int(dataset_id)
+        4517359
+        >>> str(dataset_id)
+        'ds-456def'
 
     Note:
         Internally a DatasetID is an unsigned 64-bit integer. This class
@@ -413,25 +424,33 @@ class DatasetID:
         dataset IDs.
     """
 
+    def __init__(self, value: Union[int, str, "DatasetID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "DatasetID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the dataset ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class ExperimentID:
-    """
-    Unique identifier for an experiment within a project.
+    """Unique identifier for an experiment within a project.
 
     Experiments represent individual machine learning experiments with specific
-    configurations, datasets, and results. Each experiment has a unique ID
-    displayed in hexadecimal format with an "exp-" prefix (e.g., "exp-123abc").
+    configurations, datasets, and results. Can be constructed from an integer,
+    a prefixed hex string (e.g., ``"exp-456def"``), or another ``ExperimentID``
+    instance.
 
     Examples:
+        >>> exp_id = ExperimentID("exp-456def")
+        >>> exp_id = ExperimentID(0x456DEF)
         >>> exp_id = ExperimentID.from_str("exp-456def")
-        >>> print(exp_id.value)  # Returns: 4508143
-        >>> print(str(exp_id))   # Returns: "exp-456def"
+        >>> int(exp_id)
+        4517359
+        >>> str(exp_id)
+        'exp-456def'
 
     Note:
         Internally an ExperimentID is an unsigned 64-bit integer. This class
@@ -439,25 +458,33 @@ class ExperimentID:
         experiment IDs.
     """
 
+    def __init__(self, value: Union[int, str, "ExperimentID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "ExperimentID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the experiment ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class OrganizationID:
-    """
-    Unique identifier for an organization in EdgeFirst Studio.
+    """Unique identifier for an organization in EdgeFirst Studio.
 
     Organizations are the top-level containers for users, projects, and
-    resources in EdgeFirst Studio. Each organization has a unique ID that is
-    displayed in hexadecimal format with an "org-" prefix (e.g., "org-abc123").
+    resources in EdgeFirst Studio. Can be constructed from an integer, a
+    prefixed hex string (e.g., ``"org-abc123"``), or another ``OrganizationID``
+    instance.
 
     Examples:
+        >>> org_id = OrganizationID("org-abc123")
+        >>> org_id = OrganizationID(0xABC123)
         >>> org_id = OrganizationID.from_str("org-abc123")
-        >>> print(org_id.value)  # Returns: 11256099
-        >>> print(str(org_id))   # Returns: "org-abc123"
+        >>> int(org_id)
+        11256099
+        >>> str(org_id)
+        'org-abc123'
 
     Note:
         Internally an OrganizationID is an unsigned 64-bit integer. This class
@@ -465,73 +492,129 @@ class OrganizationID:
         organization IDs.
     """
 
+    def __init__(self, value: Union[int, str, "OrganizationID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "OrganizationID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the organization ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class SampleID:
-    """
-    Unique identifier for a sample in EdgeFirst Studio. Internally a
-    SampleID is an unsigned 64-bit integer. Samples are represented with
-    a type identifier followed by the ID in hex, for example 'smp-6c5b4a'.
-    This class handles translating between integer and string
-    representations of sample IDs.
-    """
+    """Unique identifier for a sample in EdgeFirst Studio.
 
-    @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the sample ID.
-        """
-        ...
-
-class AnnotationSetID:
-    """
-    Unique identifier for an annotation set in EdgeFirst Studio. Internally
-    an AnnotationSetID is an unsigned 64-bit integer. Annotation sets are
-    represented with a type identifier followed by the ID in hex, for
-    example 'as-3d2c1b'. This class handles translating between integer
-    and string representations of annotation set IDs.
-    """
-
-    @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the annotation set ID.
-        """
-        ...
-
-class TaskID:
-    """
-    Unique identifier for a task in EdgeFirst Studio. Internally a TaskID
-    is an unsigned 64-bit integer. Tasks are represented with a type
-    identifier followed by the ID in hex, for example 'tsk-8e7d6c'. This
-    class handles translating between integer and string representations of
-    task IDs.
-    """
-
-    @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the task ID.
-        """
-        ...
-
-class TrainingSessionID:
-    """
-    Unique identifier for a training session within an experiment.
-
-    Training sessions represent individual training runs with specific
-    hyperparameters and configurations. Each training session has a unique ID
-    displayed in hexadecimal format with a "t-" prefix (e.g., "t-789012").
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"s-6c5b4a"``), or another ``SampleID`` instance.
 
     Examples:
+        >>> sample_id = SampleID("s-6c5b4a")
+        >>> sample_id = SampleID(0x6C5B4A)
+        >>> sample_id = SampleID.from_str("s-6c5b4a")
+        >>> int(sample_id)
+        7101258
+        >>> str(sample_id)
+        's-6c5b4a'
+
+    Note:
+        Internally a SampleID is an unsigned 64-bit integer. This class
+        handles translating between integer and string representations of
+        sample IDs.
+    """
+
+    def __init__(self, value: Union[int, str, "SampleID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "SampleID": ...
+    @property
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class AnnotationSetID:
+    """Unique identifier for an annotation set in EdgeFirst Studio.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"as-3d2c1b"``), or another ``AnnotationSetID`` instance.
+
+    Examples:
+        >>> as_id = AnnotationSetID("as-3d2c1b")
+        >>> as_id = AnnotationSetID(0x3D2C1B)
+        >>> as_id = AnnotationSetID.from_str("as-3d2c1b")
+        >>> int(as_id)
+        4009499
+        >>> str(as_id)
+        'as-3d2c1b'
+
+    Note:
+        Internally an AnnotationSetID is an unsigned 64-bit integer. This
+        class handles translating between integer and string representations
+        of annotation set IDs.
+    """
+
+    def __init__(self, value: Union[int, str, "AnnotationSetID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "AnnotationSetID": ...
+    @property
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class TaskID:
+    """Unique identifier for a task in EdgeFirst Studio.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"task-abc123"``), or another ``TaskID`` instance.
+
+    Examples:
+        >>> task_id = TaskID("task-abc123")
+        >>> task_id = TaskID(0xABC123)
+        >>> task_id = TaskID.from_str("task-abc123")
+        >>> int(task_id)
+        11256099
+        >>> str(task_id)
+        'task-abc123'
+
+    Note:
+        Internally a TaskID is an unsigned 64-bit integer. This class
+        handles translating between integer and string representations of
+        task IDs.
+    """
+
+    def __init__(self, value: Union[int, str, "TaskID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "TaskID": ...
+    @property
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class TrainingSessionID:
+    """Unique identifier for a training session within an experiment.
+
+    Training sessions represent individual training runs with specific
+    hyperparameters and configurations. Can be constructed from an integer,
+    a prefixed hex string (e.g., ``"t-abc123"``), or another
+    ``TrainingSessionID`` instance.
+
+    Examples:
+        >>> training_id = TrainingSessionID("t-abc123")
+        >>> training_id = TrainingSessionID(0xABC123)
         >>> training_id = TrainingSessionID.from_str("t-abc123")
-        >>> print(training_id.value)  # Returns: 11256099
-        >>> print(str(training_id))   # Returns: "t-abc123"
+        >>> int(training_id)
+        11256099
+        >>> str(training_id)
+        't-abc123'
 
     Note:
         Internally a TrainingSessionID is an unsigned 64-bit integer. This
@@ -539,25 +622,35 @@ class TrainingSessionID:
         of training session IDs.
     """
 
+    def __init__(
+        self, value: Union[int, str, "TrainingSessionID"]
+    ) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "TrainingSessionID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the training session ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class ValidationSessionID:
-    """
-    Unique identifier for a validation session within an experiment.
+    """Unique identifier for a validation session within an experiment.
 
     Validation sessions represent model validation runs that evaluate trained
-    models against test datasets. Each validation session has a unique ID
-    displayed in hexadecimal format with a "v-" prefix (e.g., "v-345678").
+    models against test datasets. Can be constructed from an integer, a
+    prefixed hex string (e.g., ``"v-deadbeef"``), or another
+    ``ValidationSessionID`` instance.
 
     Examples:
+        >>> validation_id = ValidationSessionID("v-deadbeef")
+        >>> validation_id = ValidationSessionID(0xDEADBEEF)
         >>> validation_id = ValidationSessionID.from_str("v-deadbeef")
-        >>> print(validation_id.value)  # Returns: 3735928559
-        >>> print(str(validation_id))   # Returns: "v-deadbeef"
+        >>> int(validation_id)
+        3735928559
+        >>> str(validation_id)
+        'v-deadbeef'
 
     Note:
         Internally a ValidationSessionID is an unsigned 64-bit integer. This
@@ -565,25 +658,34 @@ class ValidationSessionID:
         of validation session IDs.
     """
 
+    def __init__(
+        self, value: Union[int, str, "ValidationSessionID"]
+    ) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "ValidationSessionID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the validation session ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class SnapshotID:
-    """
-    Unique identifier for a snapshot in EdgeFirst Studio.
+    """Unique identifier for a snapshot in EdgeFirst Studio.
 
     Snapshots represent saved states of datasets or model checkpoints.
-    Each snapshot has a unique ID displayed in hexadecimal format with
-    a "ss-" prefix (e.g., "ss-f1e2d3").
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"ss-abc123"``), or another ``SnapshotID`` instance.
 
     Examples:
+        >>> snapshot_id = SnapshotID("ss-abc123")
+        >>> snapshot_id = SnapshotID(0xABC123)
         >>> snapshot_id = SnapshotID.from_str("ss-abc123")
-        >>> print(snapshot_id.value)  # Returns: 11256099
-        >>> print(str(snapshot_id))   # Returns: "ss-abc123"
+        >>> int(snapshot_id)
+        11256099
+        >>> str(snapshot_id)
+        'ss-abc123'
 
     Note:
         Internally a SnapshotID is an unsigned 64-bit integer. This class
@@ -591,60 +693,112 @@ class SnapshotID:
         snapshot IDs.
     """
 
+    def __init__(self, value: Union[int, str, "SnapshotID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "SnapshotID": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the snapshot ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class ImageId:
-    """
-    Unique identifier for an image in EdgeFirst Studio. Internally an
-    ImageId is an unsigned 64-bit integer. Images are represented with a
-    type identifier followed by the ID in hex, for example 'img-4c3b2a'.
-    This class handles translating between integer and string
-    representations of image IDs.
+    """Unique identifier for an image in EdgeFirst Studio.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"im-4c3b2a"``), or another ``ImageId`` instance.
+
+    Examples:
+        >>> image_id = ImageId("im-4c3b2a")
+        >>> image_id = ImageId(0x4C3B2A)
+        >>> image_id = ImageId.from_str("im-4c3b2a")
+        >>> int(image_id)
+        4995882
+        >>> str(image_id)
+        'im-4c3b2a'
+
+    Note:
+        Internally an ImageId is an unsigned 64-bit integer. This class
+        handles translating between integer and string representations of
+        image IDs.
     """
 
+    def __init__(self, value: Union[int, str, "ImageId"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "ImageId": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the image ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class SequenceId:
-    """
-    Unique identifier for a sequence in EdgeFirst Studio. Internally a
-    SequenceId is an unsigned 64-bit integer. Sequences are represented
-    with a type identifier followed by the ID in hex, for example
-    'seq-7f6e5d'. This class handles translating between integer and string
-    representations of sequence IDs.
+    """Unique identifier for a sequence in EdgeFirst Studio.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"se-7f6e5d"``), or another ``SequenceId`` instance.
+
+    Examples:
+        >>> seq_id = SequenceId("se-7f6e5d")
+        >>> seq_id = SequenceId(0x7F6E5D)
+        >>> seq_id = SequenceId.from_str("se-7f6e5d")
+        >>> int(seq_id)
+        8351325
+        >>> str(seq_id)
+        'se-7f6e5d'
+
+    Note:
+        Internally a SequenceId is an unsigned 64-bit integer. This class
+        handles translating between integer and string representations of
+        sequence IDs.
     """
 
+    def __init__(self, value: Union[int, str, "SequenceId"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "SequenceId": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the sequence ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class AppId:
-    """
-    Unique identifier for an application in EdgeFirst Studio. Internally
-    an AppId is an unsigned 64-bit integer. Applications are represented
-    with a type identifier followed by the ID in hex, for example
-    'app-2e1d0c'. This class handles translating between integer and string
-    representations of application IDs.
+    """Unique identifier for an application in EdgeFirst Studio.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"app-2e1d0c"``), or another ``AppId`` instance.
+
+    Examples:
+        >>> app_id = AppId("app-2e1d0c")
+        >>> app_id = AppId(0x2E1D0C)
+        >>> app_id = AppId.from_str("app-2e1d0c")
+        >>> int(app_id)
+        3022092
+        >>> str(app_id)
+        'app-2e1d0c'
+
+    Note:
+        Internally an AppId is an unsigned 64-bit integer. This class
+        handles translating between integer and string representations of
+        application IDs.
     """
 
+    def __init__(self, value: Union[int, str, "AppId"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "AppId": ...
     @property
-    def value(self) -> int:
-        """
-        Returns the integer value of the application ID.
-        """
-        ...
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 # Type aliases for User ID patterns (TypeUID = Type User ID)
 ProjectUID = Union[ProjectID, int, str]
