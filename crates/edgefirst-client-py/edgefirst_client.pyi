@@ -380,7 +380,7 @@ class ProjectID:
         >>> project_id = ProjectID(0xDEF456)
         >>> project_id = ProjectID.from_str("p-def456")
         >>> int(project_id)
-        14644310
+        14611542
         >>> str(project_id)
         'p-def456'
 
@@ -414,7 +414,7 @@ class DatasetID:
         >>> dataset_id = DatasetID(0x456DEF)
         >>> dataset_id = DatasetID.from_str("ds-456def")
         >>> int(dataset_id)
-        4517359
+        4550127
         >>> str(dataset_id)
         'ds-456def'
 
@@ -448,7 +448,7 @@ class ExperimentID:
         >>> exp_id = ExperimentID(0x456DEF)
         >>> exp_id = ExperimentID.from_str("exp-456def")
         >>> int(exp_id)
-        4517359
+        4550127
         >>> str(exp_id)
         'exp-456def'
 
@@ -546,7 +546,7 @@ class AnnotationSetID:
         >>> as_id = AnnotationSetID(0x3D2C1B)
         >>> as_id = AnnotationSetID.from_str("as-3d2c1b")
         >>> int(as_id)
-        4009499
+        4008987
         >>> str(as_id)
         'as-3d2c1b'
 

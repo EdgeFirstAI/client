@@ -429,11 +429,11 @@ class TestIDConversions(unittest.TestCase):
         self.assertEqual(int(original), int(restored))
 
         # --- wrong prefix → error ---------------------------------------
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             cls("zzz-abc123")
 
         # --- invalid hex chars → error ----------------------------------
-        with self.assertRaises(Exception):
+        with self.assertRaises(RuntimeError):
             cls(f"{prefix}-xyz")
 
     # ------------------------------------------------------------------
@@ -540,14 +540,14 @@ class TestIDConversions(unittest.TestCase):
         """Test that every ID type rejects a wrong prefix."""
         for cls, prefix in self.ID_TYPES:
             with self.subTest(cls=cls.__name__):
-                with self.assertRaises(Exception):
+                with self.assertRaises(RuntimeError):
                     cls("BADPREFIX-abc123")
 
     def test_invalid_hex_all(self):
         """Test that every ID type rejects non-hex characters."""
         for cls, prefix in self.ID_TYPES:
             with self.subTest(cls=cls.__name__):
-                with self.assertRaises(Exception):
+                with self.assertRaises(RuntimeError):
                     cls(f"{prefix}-ghijkl")
 
 
