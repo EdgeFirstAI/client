@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.2] - 2026-04-01
+
+### Added
+
+- `typeid!` macro in Rust that generates all TypeID newtypes (`OrganizationID`, `ProjectID`, `DatasetID`, etc.) with full `Display`, `FromStr`, `TryFrom<&str>`, `TryFrom<String>`, `From<u64>`, and `Into<u64>` support — replacing ~760 lines of boilerplate with ~270 lines
+- Python ID types now support direct construction (`ProjectID(42)`, `ProjectID("p-2a")`), `int()` conversion, and `from_str()` class method across all 10 ID types
+- 26 UniFFI free functions (`parse_project_id` / `format_project_id`, etc.) for string↔ID conversion in Swift and Kotlin bindings
+- Reverse `From` conversions for `AppId`, `ImageId`, and `SequenceId` in the FFI crate
+- Comprehensive offline test suites: 13 Rust unit tests, 12 doc tests, 65 Swift tests, 19 Python tests covering construction, conversion, round-trip, and error cases
+
+### Changed
+
+- All 13 TypeID types now use a shared `typeid!` macro instead of per-type manual implementations, ensuring consistent behavior and error messages
+
 ## [2.9.1] - 2026-03-29
 
 ### Fixed

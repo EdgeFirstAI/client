@@ -1208,7 +1208,7 @@ class FileType(Enum):
     RadarPcd: "FileType"
     RadarCube: "FileType"
     All: "FileType"
-    """Download all available file types. Not valid for single-file operations."""
+    """Download all file types. Not valid for single-file operations."""
 
 class AnnotationType(Enum):
     """
@@ -3424,9 +3424,9 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
-                Use ``client.download_artifact(session.training_session_id, filename)``
-                to download to disk (note: that variant writes to a file rather
-                than returning bytes).
+                Use ``client.download_artifact(session_id, filename)``
+                to download to disk (note: that variant writes to a
+                file rather than returning bytes).
 
         Example:
             >>> data = validation_session.download_artifact("labels.txt")
@@ -3446,9 +3446,9 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
-                Use ``client.download_checkpoint(session.training_session_id, filename)``
-                to download to disk (note: that variant writes to a file rather
-                than returning bytes).
+                Use ``client.download_checkpoint(session_id, filename)``
+                to download to disk (note: that variant writes to a
+                file rather than returning bytes).
 
         Example:
             >>> data = validation_session.download_checkpoint("best.pt")
