@@ -59,63 +59,103 @@ pub struct LoginResult {
     pub(crate) token: String,
 }
 
-/// Unique identifier for an organization in EdgeFirst Studio.
+/// Generates a TypeID newtype struct with full conversion support.
 ///
-/// Organizations are the top-level containers for users, projects, and
-/// resources in EdgeFirst Studio. Each organization has a unique ID that is
-/// displayed in hexadecimal format with an "org-" prefix (e.g., "org-abc123").
+/// Each invocation creates a `Copy + Clone + Debug + PartialEq + Eq + Hash`
+/// newtype wrapping `u64`, with `Display`, `FromStr`, `TryFrom<&str>`,
+/// `TryFrom<String>`, `From<u64>`, and `From<T> for u64` implementations.
 ///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::OrganizationID;
-///
-/// // Create from u64
-/// let org_id = OrganizationID::from(12345);
-/// println!("{}", org_id); // Displays: org-3039
-///
-/// // Parse from string
-/// let org_id: OrganizationID = "org-abc123".try_into().unwrap();
-/// assert_eq!(org_id.value(), 0xabc123);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct OrganizationID(u64);
+/// The string representation uses the format `"{prefix}-{hex}"` where the
+/// hex part is the lowercase hexadecimal encoding of the inner `u64` value.
+macro_rules! typeid {
+    ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
+        $(#[$meta])*
+        #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        pub struct $name(u64);
 
-impl Display for OrganizationID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "org-{:x}", self.0)
-    }
+        impl Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, concat!($prefix, "-{:x}"), self.0)
+            }
+        }
+
+        impl From<u64> for $name {
+            fn from(id: u64) -> Self {
+                $name(id)
+            }
+        }
+
+        impl From<$name> for u64 {
+            fn from(val: $name) -> Self {
+                val.0
+            }
+        }
+
+        impl $name {
+            /// Returns the raw `u64` value of this identifier.
+            pub fn value(&self) -> u64 {
+                self.0
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = Error;
+
+            fn try_from(s: &str) -> Result<Self, Self::Error> {
+                $name::from_str(s)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = Error;
+
+            fn try_from(s: String) -> Result<Self, Self::Error> {
+                $name::from_str(&s)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = Error;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let hex_part =
+                    s.strip_prefix(concat!($prefix, "-")).ok_or_else(|| {
+                        Error::InvalidParameters(format!(
+                            "{} must start with '{}-' prefix",
+                            stringify!($name),
+                            $prefix
+                        ))
+                    })?;
+                let id = u64::from_str_radix(hex_part, 16)?;
+                Ok($name(id))
+            }
+        }
+    };
 }
 
-impl From<u64> for OrganizationID {
-    fn from(id: u64) -> Self {
-        OrganizationID(id)
-    }
-}
-
-impl From<OrganizationID> for u64 {
-    fn from(val: OrganizationID) -> Self {
-        val.0
-    }
-}
-
-impl OrganizationID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for OrganizationID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("org-").ok_or_else(|| {
-            Error::InvalidParameters("Organization ID must start with 'org-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(OrganizationID(id))
-    }
-}
+typeid!(
+    /// Unique identifier for an organization in EdgeFirst Studio.
+    ///
+    /// Organizations are the top-level containers for users, projects, and
+    /// resources in EdgeFirst Studio. Each organization has a unique ID that is
+    /// displayed in hexadecimal format with an "org-" prefix (e.g., "org-abc123").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::OrganizationID;
+    ///
+    /// // Create from u64
+    /// let org_id = OrganizationID::from(12345);
+    /// println!("{}", org_id); // Displays: org-3039
+    ///
+    /// // Parse from string
+    /// let org_id: OrganizationID = "org-abc123".try_into().unwrap();
+    /// assert_eq!(org_id.value(), 0xabc123);
+    /// ```
+    OrganizationID,
+    "org"
+);
 
 /// Organization information and metadata.
 ///
@@ -165,678 +205,239 @@ impl Organization {
     }
 }
 
-/// Unique identifier for a project within EdgeFirst Studio.
-///
-/// Projects contain datasets, experiments, and models within an organization.
-/// Each project has a unique ID displayed in hexadecimal format with a "p-"
-/// prefix (e.g., "p-def456").
-///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::ProjectID;
-/// use std::str::FromStr;
-///
-/// // Create from u64
-/// let project_id = ProjectID::from(78910);
-/// println!("{}", project_id); // Displays: p-1343e
-///
-/// // Parse from string
-/// let project_id = ProjectID::from_str("p-def456").unwrap();
-/// assert_eq!(project_id.value(), 0xdef456);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ProjectID(u64);
-
-impl Display for ProjectID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "p-{:x}", self.0)
-    }
-}
-
-impl From<u64> for ProjectID {
-    fn from(id: u64) -> Self {
-        ProjectID(id)
-    }
-}
-
-impl From<ProjectID> for u64 {
-    fn from(val: ProjectID) -> Self {
-        val.0
-    }
-}
-
-impl ProjectID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for ProjectID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        ProjectID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for ProjectID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        ProjectID::from_str(&s)
-    }
-}
-
-impl FromStr for ProjectID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("p-").ok_or_else(|| {
-            Error::InvalidParameters("Project ID must start with 'p-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(ProjectID(id))
-    }
-}
-
-/// Unique identifier for an experiment within a project.
-///
-/// Experiments represent individual machine learning experiments with specific
-/// configurations, datasets, and results. Each experiment has a unique ID
-/// displayed in hexadecimal format with an "exp-" prefix (e.g., "exp-123abc").
-///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::ExperimentID;
-/// use std::str::FromStr;
-///
-/// // Create from u64
-/// let exp_id = ExperimentID::from(1193046);
-/// println!("{}", exp_id); // Displays: exp-123abc
-///
-/// // Parse from string
-/// let exp_id = ExperimentID::from_str("exp-456def").unwrap();
-/// assert_eq!(exp_id.value(), 0x456def);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ExperimentID(u64);
-
-impl Display for ExperimentID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "exp-{:x}", self.0)
-    }
-}
-
-impl From<u64> for ExperimentID {
-    fn from(id: u64) -> Self {
-        ExperimentID(id)
-    }
-}
-
-impl From<ExperimentID> for u64 {
-    fn from(val: ExperimentID) -> Self {
-        val.0
-    }
-}
-
-impl ExperimentID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for ExperimentID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        ExperimentID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for ExperimentID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        ExperimentID::from_str(&s)
-    }
-}
-
-impl FromStr for ExperimentID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("exp-").ok_or_else(|| {
-            Error::InvalidParameters("Experiment ID must start with 'exp-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(ExperimentID(id))
-    }
-}
-
-/// Unique identifier for a training session within an experiment.
-///
-/// Training sessions represent individual training runs with specific
-/// hyperparameters and configurations. Each training session has a unique ID
-/// displayed in hexadecimal format with a "t-" prefix (e.g., "t-789012").
-///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::TrainingSessionID;
-/// use std::str::FromStr;
-///
-/// // Create from u64
-/// let training_id = TrainingSessionID::from(7901234);
-/// println!("{}", training_id); // Displays: t-7872f2
-///
-/// // Parse from string
-/// let training_id = TrainingSessionID::from_str("t-abc123").unwrap();
-/// assert_eq!(training_id.value(), 0xabc123);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TrainingSessionID(u64);
-
-impl Display for TrainingSessionID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "t-{:x}", self.0)
-    }
-}
-
-impl From<u64> for TrainingSessionID {
-    fn from(id: u64) -> Self {
-        TrainingSessionID(id)
-    }
-}
-
-impl From<TrainingSessionID> for u64 {
-    fn from(val: TrainingSessionID) -> Self {
-        val.0
-    }
-}
-
-impl TrainingSessionID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for TrainingSessionID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        TrainingSessionID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for TrainingSessionID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        TrainingSessionID::from_str(&s)
-    }
-}
-
-impl FromStr for TrainingSessionID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("t-").ok_or_else(|| {
-            Error::InvalidParameters("Training Session ID must start with 't-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(TrainingSessionID(id))
-    }
-}
-
-/// Unique identifier for a validation session within an experiment.
-///
-/// Validation sessions represent model validation runs that evaluate trained
-/// models against test datasets. Each validation session has a unique ID
-/// displayed in hexadecimal format with a "v-" prefix (e.g., "v-345678").
-///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::ValidationSessionID;
-///
-/// // Create from u64
-/// let validation_id = ValidationSessionID::from(3456789);
-/// println!("{}", validation_id); // Displays: v-34c985
-///
-/// // Parse from string
-/// let validation_id: ValidationSessionID = "v-deadbeef".try_into().unwrap();
-/// assert_eq!(validation_id.value(), 0xdeadbeef);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ValidationSessionID(u64);
-
-impl Display for ValidationSessionID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "v-{:x}", self.0)
-    }
-}
-
-impl From<u64> for ValidationSessionID {
-    fn from(id: u64) -> Self {
-        ValidationSessionID(id)
-    }
-}
-
-impl From<ValidationSessionID> for u64 {
-    fn from(val: ValidationSessionID) -> Self {
-        val.0
-    }
-}
-
-impl ValidationSessionID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for ValidationSessionID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("v-").ok_or_else(|| {
-            Error::InvalidParameters(
-                "Validation Session ID must start with 'v-' prefix".to_string(),
-            )
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(ValidationSessionID(id))
-    }
-}
-
-impl TryFrom<String> for ValidationSessionID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        ValidationSessionID::try_from(s.as_str())
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SnapshotID(u64);
-
-impl Display for SnapshotID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "ss-{:x}", self.0)
-    }
-}
-
-impl From<u64> for SnapshotID {
-    fn from(id: u64) -> Self {
-        SnapshotID(id)
-    }
-}
-
-impl From<SnapshotID> for u64 {
-    fn from(val: SnapshotID) -> Self {
-        val.0
-    }
-}
-
-impl SnapshotID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for SnapshotID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("ss-").ok_or_else(|| {
-            Error::InvalidParameters("Snapshot ID must start with 'ss-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(SnapshotID(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TaskID(u64);
-
-impl Display for TaskID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "task-{:x}", self.0)
-    }
-}
-
-impl From<u64> for TaskID {
-    fn from(id: u64) -> Self {
-        TaskID(id)
-    }
-}
-
-impl From<TaskID> for u64 {
-    fn from(val: TaskID) -> Self {
-        val.0
-    }
-}
-
-impl TaskID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for TaskID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        TaskID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for TaskID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        TaskID::from_str(&s)
-    }
-}
-
-impl FromStr for TaskID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("task-").ok_or_else(|| {
-            Error::InvalidParameters("Task ID must start with 'task-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(TaskID(id))
-    }
-}
-
-/// Unique identifier for a dataset within a project.
-///
-/// Datasets contain collections of images, annotations, and other data used for
-/// machine learning experiments. Each dataset has a unique ID displayed in
-/// hexadecimal format with a "ds-" prefix (e.g., "ds-123abc").
-///
-/// # Examples
-///
-/// ```rust
-/// use edgefirst_client::DatasetID;
-/// use std::str::FromStr;
-///
-/// // Create from u64
-/// let dataset_id = DatasetID::from(1193046);
-/// println!("{}", dataset_id); // Displays: ds-123abc
-///
-/// // Parse from string
-/// let dataset_id = DatasetID::from_str("ds-456def").unwrap();
-/// assert_eq!(dataset_id.value(), 0x456def);
-/// ```
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DatasetID(u64);
-
-impl Display for DatasetID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "ds-{:x}", self.0)
-    }
-}
-
-impl From<u64> for DatasetID {
-    fn from(id: u64) -> Self {
-        DatasetID(id)
-    }
-}
-
-impl From<DatasetID> for u64 {
-    fn from(val: DatasetID) -> Self {
-        val.0
-    }
-}
-
-impl DatasetID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for DatasetID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        DatasetID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for DatasetID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        DatasetID::from_str(&s)
-    }
-}
-
-impl FromStr for DatasetID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("ds-").ok_or_else(|| {
-            Error::InvalidParameters("Dataset ID must start with 'ds-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(DatasetID(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AnnotationSetID(u64);
-
-impl Display for AnnotationSetID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "as-{:x}", self.0)
-    }
-}
-
-impl From<u64> for AnnotationSetID {
-    fn from(id: u64) -> Self {
-        AnnotationSetID(id)
-    }
-}
-
-impl From<AnnotationSetID> for u64 {
-    fn from(val: AnnotationSetID) -> Self {
-        val.0
-    }
-}
-
-impl AnnotationSetID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for AnnotationSetID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        AnnotationSetID::from_str(s)
-    }
-}
-
-impl TryFrom<String> for AnnotationSetID {
-    type Error = Error;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        AnnotationSetID::from_str(&s)
-    }
-}
-
-impl FromStr for AnnotationSetID {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hex_part = s.strip_prefix("as-").ok_or_else(|| {
-            Error::InvalidParameters("Annotation Set ID must start with 'as-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(AnnotationSetID(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SampleID(u64);
-
-impl Display for SampleID {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "s-{:x}", self.0)
-    }
-}
-
-impl From<u64> for SampleID {
-    fn from(id: u64) -> Self {
-        SampleID(id)
-    }
-}
-
-impl From<SampleID> for u64 {
-    fn from(val: SampleID) -> Self {
-        val.0
-    }
-}
-
-impl SampleID {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for SampleID {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("s-").ok_or_else(|| {
-            Error::InvalidParameters("Sample ID must start with 's-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(SampleID(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AppId(u64);
-
-impl Display for AppId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "app-{:x}", self.0)
-    }
-}
-
-impl From<u64> for AppId {
-    fn from(id: u64) -> Self {
-        AppId(id)
-    }
-}
-
-impl From<AppId> for u64 {
-    fn from(val: AppId) -> Self {
-        val.0
-    }
-}
-
-impl AppId {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for AppId {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("app-").ok_or_else(|| {
-            Error::InvalidParameters("App ID must start with 'app-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(AppId(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ImageId(u64);
-
-impl Display for ImageId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "im-{:x}", self.0)
-    }
-}
-
-impl From<u64> for ImageId {
-    fn from(id: u64) -> Self {
-        ImageId(id)
-    }
-}
-
-impl From<ImageId> for u64 {
-    fn from(val: ImageId) -> Self {
-        val.0
-    }
-}
-
-impl ImageId {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for ImageId {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("im-").ok_or_else(|| {
-            Error::InvalidParameters("Image ID must start with 'im-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(ImageId(id))
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SequenceId(u64);
-
-impl Display for SequenceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "se-{:x}", self.0)
-    }
-}
-
-impl From<u64> for SequenceId {
-    fn from(id: u64) -> Self {
-        SequenceId(id)
-    }
-}
-
-impl From<SequenceId> for u64 {
-    fn from(val: SequenceId) -> Self {
-        val.0
-    }
-}
-
-impl SequenceId {
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl TryFrom<&str> for SequenceId {
-    type Error = Error;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let hex_part = s.strip_prefix("se-").ok_or_else(|| {
-            Error::InvalidParameters("Sequence ID must start with 'se-' prefix".to_string())
-        })?;
-        let id = u64::from_str_radix(hex_part, 16)?;
-        Ok(SequenceId(id))
-    }
-}
+typeid!(
+    /// Unique identifier for a project within EdgeFirst Studio.
+    ///
+    /// Projects contain datasets, experiments, and models within an organization.
+    /// Each project has a unique ID displayed in hexadecimal format with a "p-"
+    /// prefix (e.g., "p-def456").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::ProjectID;
+    /// use std::str::FromStr;
+    ///
+    /// // Create from u64
+    /// let project_id = ProjectID::from(78910);
+    /// println!("{}", project_id); // Displays: p-1343e
+    ///
+    /// // Parse from string
+    /// let project_id = ProjectID::from_str("p-def456").unwrap();
+    /// assert_eq!(project_id.value(), 0xdef456);
+    /// ```
+    ProjectID,
+    "p"
+);
+
+typeid!(
+    /// Unique identifier for an experiment within a project.
+    ///
+    /// Experiments represent individual machine learning experiments with specific
+    /// configurations, datasets, and results. Each experiment has a unique ID
+    /// displayed in hexadecimal format with an "exp-" prefix (e.g., "exp-123abc").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::ExperimentID;
+    /// use std::str::FromStr;
+    ///
+    /// // Create from u64
+    /// let exp_id = ExperimentID::from(1193046);
+    /// println!("{}", exp_id); // Displays: exp-123abc
+    ///
+    /// // Parse from string
+    /// let exp_id = ExperimentID::from_str("exp-456def").unwrap();
+    /// assert_eq!(exp_id.value(), 0x456def);
+    /// ```
+    ExperimentID,
+    "exp"
+);
+
+typeid!(
+    /// Unique identifier for a training session within an experiment.
+    ///
+    /// Training sessions represent individual training runs with specific
+    /// hyperparameters and configurations. Each training session has a unique ID
+    /// displayed in hexadecimal format with a "t-" prefix (e.g., "t-789012").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::TrainingSessionID;
+    /// use std::str::FromStr;
+    ///
+    /// // Create from u64
+    /// let training_id = TrainingSessionID::from(7901234);
+    /// println!("{}", training_id); // Displays: t-7872f2
+    ///
+    /// // Parse from string
+    /// let training_id = TrainingSessionID::from_str("t-abc123").unwrap();
+    /// assert_eq!(training_id.value(), 0xabc123);
+    /// ```
+    TrainingSessionID,
+    "t"
+);
+
+typeid!(
+    /// Unique identifier for a validation session within an experiment.
+    ///
+    /// Validation sessions represent model validation runs that evaluate trained
+    /// models against test datasets. Each validation session has a unique ID
+    /// displayed in hexadecimal format with a "v-" prefix (e.g., "v-345678").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::ValidationSessionID;
+    ///
+    /// // Create from u64
+    /// let validation_id = ValidationSessionID::from(3456789);
+    /// println!("{}", validation_id); // Displays: v-34c985
+    ///
+    /// // Parse from string
+    /// let validation_id: ValidationSessionID = "v-deadbeef".try_into().unwrap();
+    /// assert_eq!(validation_id.value(), 0xdeadbeef);
+    /// ```
+    ValidationSessionID,
+    "v"
+);
+
+typeid!(
+    /// Unique identifier for a snapshot in EdgeFirst Studio.
+    ///
+    /// Snapshots represent saved states of datasets or model checkpoints.
+    /// Each snapshot has a unique ID displayed in hexadecimal format with
+    /// an "ss-" prefix (e.g., "ss-f1e2d3").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::SnapshotID;
+    /// use std::str::FromStr;
+    ///
+    /// let snapshot_id = SnapshotID::from_str("ss-abc123").unwrap();
+    /// assert_eq!(snapshot_id.value(), 0xabc123);
+    /// ```
+    SnapshotID,
+    "ss"
+);
+
+typeid!(
+    /// Unique identifier for a task in EdgeFirst Studio.
+    ///
+    /// Tasks represent background operations such as training, validation,
+    /// export, or dataset processing. Each task has a unique ID displayed
+    /// in hexadecimal format with a "task-" prefix (e.g., "task-8e7d6c").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::TaskID;
+    /// use std::str::FromStr;
+    ///
+    /// let task_id = TaskID::from_str("task-abc123").unwrap();
+    /// assert_eq!(task_id.value(), 0xabc123);
+    /// ```
+    TaskID,
+    "task"
+);
+
+typeid!(
+    /// Unique identifier for a dataset within a project.
+    ///
+    /// Datasets contain collections of images, annotations, and other data used for
+    /// machine learning experiments. Each dataset has a unique ID displayed in
+    /// hexadecimal format with a "ds-" prefix (e.g., "ds-123abc").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::DatasetID;
+    /// use std::str::FromStr;
+    ///
+    /// // Create from u64
+    /// let dataset_id = DatasetID::from(1193046);
+    /// println!("{}", dataset_id); // Displays: ds-123abc
+    ///
+    /// // Parse from string
+    /// let dataset_id = DatasetID::from_str("ds-456def").unwrap();
+    /// assert_eq!(dataset_id.value(), 0x456def);
+    /// ```
+    DatasetID,
+    "ds"
+);
+
+typeid!(
+    /// Unique identifier for an annotation set within a dataset.
+    ///
+    /// Annotation sets group related annotations together. Each annotation set
+    /// has a unique ID displayed in hexadecimal format with an "as-" prefix
+    /// (e.g., "as-3d2c1b").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::AnnotationSetID;
+    /// use std::str::FromStr;
+    ///
+    /// let as_id = AnnotationSetID::from_str("as-abc123").unwrap();
+    /// assert_eq!(as_id.value(), 0xabc123);
+    /// ```
+    AnnotationSetID,
+    "as"
+);
+
+typeid!(
+    /// Unique identifier for a sample within a dataset.
+    ///
+    /// Samples represent individual data points (images, point clouds, etc.)
+    /// in a dataset. Each sample has a unique ID displayed in hexadecimal
+    /// format with an "s-" prefix (e.g., "s-6c5b4a").
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::SampleID;
+    /// use std::str::FromStr;
+    ///
+    /// let sample_id = SampleID::from_str("s-abc123").unwrap();
+    /// assert_eq!(sample_id.value(), 0xabc123);
+    /// ```
+    SampleID,
+    "s"
+);
+
+typeid!(
+    /// Unique identifier for an application in EdgeFirst Studio.
+    ///
+    /// Applications represent deployed models or inference endpoints.
+    /// Each application has a unique ID displayed in hexadecimal format
+    /// with an "app-" prefix (e.g., "app-2e1d0c").
+    AppId,
+    "app"
+);
+
+typeid!(
+    /// Unique identifier for an image in EdgeFirst Studio.
+    ///
+    /// Images are individual visual assets within a dataset sample.
+    /// Each image has a unique ID displayed in hexadecimal format
+    /// with an "im-" prefix (e.g., "im-4c3b2a").
+    ImageId,
+    "im"
+);
+
+typeid!(
+    /// Unique identifier for a sequence in EdgeFirst Studio.
+    ///
+    /// Sequences represent temporal groupings of samples (e.g., video frames).
+    /// Each sequence has a unique ID displayed in hexadecimal format
+    /// with an "se-" prefix (e.g., "se-7f6e5d").
+    SequenceId,
+    "se"
+);
 
 /// The project class represents a project in the EdgeFirst Studio.  A project
 /// contains datasets, experiments, and other resources related to a specific
@@ -2606,4 +2207,81 @@ mod tests {
             _ => panic!("Expected Array variant"),
         }
     }
+
+    // ========== Comprehensive TypeID Conversion Tests (macro-driven) ==========
+
+    macro_rules! test_typeid_conversions {
+        ($test_name:ident, $type:ty, $prefix:literal, $wrong_prefix:literal) => {
+            #[test]
+            fn $test_name() {
+                // 1. From<u64> round-trip
+                let id = <$type>::from(0xabc123);
+                assert_eq!(id.value(), 0xabc123);
+
+                // 2. Display format
+                assert_eq!(format!("{}", id), concat!($prefix, "-abc123"));
+
+                // 3. FromStr valid
+                let id: $type = concat!($prefix, "-abc123").parse().unwrap();
+                assert_eq!(id.value(), 0xabc123);
+
+                // 4. FromStr wrong prefix
+                assert!(concat!($wrong_prefix, "-abc").parse::<$type>().is_err());
+
+                // 5. FromStr missing prefix
+                assert!("abc123".parse::<$type>().is_err());
+
+                // 6. FromStr invalid hex
+                assert!(concat!($prefix, "-xyz").parse::<$type>().is_err());
+
+                // 7. TryFrom<&str>
+                let id = <$type>::try_from(concat!($prefix, "-abc123")).unwrap();
+                assert_eq!(id.value(), 0xabc123);
+
+                // 8. TryFrom<String>
+                let id = <$type>::try_from(concat!($prefix, "-abc123").to_string()).unwrap();
+                assert_eq!(id.value(), 0xabc123);
+
+                // 9. Serde round-trip
+                let id = <$type>::from(0xabc123);
+                let json = serde_json::to_string(&id).unwrap();
+                let parsed: $type = serde_json::from_str(&json).unwrap();
+                assert_eq!(id, parsed);
+
+                // 10. From<T> for u64
+                let id = <$type>::from(0xabc123);
+                let val: u64 = id.into();
+                assert_eq!(val, 0xabc123);
+            }
+        };
+    }
+
+    test_typeid_conversions!(test_organization_id_conversions, OrganizationID, "org", "p");
+    test_typeid_conversions!(test_project_id_conversions, ProjectID, "p", "org");
+    test_typeid_conversions!(test_experiment_id_conversions, ExperimentID, "exp", "p");
+    test_typeid_conversions!(
+        test_training_session_id_conversions,
+        TrainingSessionID,
+        "t",
+        "v"
+    );
+    test_typeid_conversions!(
+        test_validation_session_id_conversions,
+        ValidationSessionID,
+        "v",
+        "t"
+    );
+    test_typeid_conversions!(test_snapshot_id_conversions, SnapshotID, "ss", "ds");
+    test_typeid_conversions!(test_task_id_conversions, TaskID, "task", "t");
+    test_typeid_conversions!(test_dataset_id_conversions, DatasetID, "ds", "ss");
+    test_typeid_conversions!(
+        test_annotation_set_id_conversions,
+        AnnotationSetID,
+        "as",
+        "ds"
+    );
+    test_typeid_conversions!(test_sample_id_conversions, SampleID, "s", "p");
+    test_typeid_conversions!(test_app_id_conversions, AppId, "app", "p");
+    test_typeid_conversions!(test_image_id_conversions, ImageId, "im", "se");
+    test_typeid_conversions!(test_sequence_id_conversions, SequenceId, "se", "im");
 }

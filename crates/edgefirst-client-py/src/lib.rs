@@ -645,6 +645,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for ProjectID {
 
 #[pymethods]
 impl ProjectID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -710,6 +724,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for DatasetID {
 
 #[pymethods]
 impl DatasetID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -775,6 +803,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for ExperimentID {
 
 #[pymethods]
 impl ExperimentID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -839,6 +881,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for OrganizationID {
 
 #[pymethods]
 impl OrganizationID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -903,6 +959,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for SampleID {
 
 #[pymethods]
 impl SampleID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -968,6 +1038,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for AnnotationSetID {
 
 #[pymethods]
 impl AnnotationSetID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1033,6 +1117,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for TaskID {
 
 #[pymethods]
 impl TaskID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1098,6 +1196,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for TrainingSessionID {
 
 #[pymethods]
 impl TrainingSessionID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1162,6 +1274,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for ValidationSessionID {
 
 #[pymethods]
 impl ValidationSessionID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1226,6 +1352,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for SnapshotID {
 
 #[pymethods]
 impl SnapshotID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1290,6 +1430,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for ImageId {
 
 #[pymethods]
 impl ImageId {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1354,6 +1508,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for SequenceId {
 
 #[pymethods]
 impl SequenceId {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()
@@ -1416,6 +1584,20 @@ impl<'py> TryFrom<Bound<'py, PyAny>> for AppId {
 
 #[pymethods]
 impl AppId {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
     #[getter]
     pub fn value(&self) -> u64 {
         self.0.value()

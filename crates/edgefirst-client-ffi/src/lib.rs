@@ -394,6 +394,12 @@ impl From<core::ImageId> for ImageId {
     }
 }
 
+impl From<ImageId> for core::ImageId {
+    fn from(id: ImageId) -> Self {
+        core::ImageId::from(id.value)
+    }
+}
+
 /// Unique identifier for an application.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AppId {
@@ -403,6 +409,12 @@ pub struct AppId {
 impl From<core::AppId> for AppId {
     fn from(id: core::AppId) -> Self {
         Self { value: id.value() }
+    }
+}
+
+impl From<AppId> for core::AppId {
+    fn from(id: AppId) -> Self {
+        core::AppId::from(id.value)
     }
 }
 
@@ -417,6 +429,97 @@ impl From<core::SequenceId> for SequenceId {
         Self { value: id.value() }
     }
 }
+
+impl From<SequenceId> for core::SequenceId {
+    fn from(id: SequenceId) -> Self {
+        core::SequenceId::from(id.value)
+    }
+}
+
+// =============================================================================
+// ID String Parse/Format Functions
+// =============================================================================
+
+/// Generates a pair of UniFFI-exported free functions for parsing an ID type
+/// from its string representation (e.g. `"p-42"`) and formatting it back.
+macro_rules! ffi_id_string_functions {
+    ($parse_fn:ident, $format_fn:ident, $ffi_type:ident, $core_type:ty) => {
+        #[uniffi::export]
+        fn $parse_fn(s: String) -> Result<$ffi_type, ClientError> {
+            let id: $core_type =
+                s.parse()
+                    .map_err(|e: core::Error| ClientError::InvalidParameters {
+                        message: e.to_string(),
+                    })?;
+            Ok($ffi_type::from(id))
+        }
+
+        #[uniffi::export]
+        fn $format_fn(id: $ffi_type) -> String {
+            let core_id = <$core_type>::from(id);
+            core_id.to_string()
+        }
+    };
+}
+
+ffi_id_string_functions!(
+    parse_organization_id,
+    format_organization_id,
+    OrganizationId,
+    core::OrganizationID
+);
+ffi_id_string_functions!(
+    parse_project_id,
+    format_project_id,
+    ProjectId,
+    core::ProjectID
+);
+ffi_id_string_functions!(
+    parse_experiment_id,
+    format_experiment_id,
+    ExperimentId,
+    core::ExperimentID
+);
+ffi_id_string_functions!(
+    parse_training_session_id,
+    format_training_session_id,
+    TrainingSessionId,
+    core::TrainingSessionID
+);
+ffi_id_string_functions!(
+    parse_validation_session_id,
+    format_validation_session_id,
+    ValidationSessionId,
+    core::ValidationSessionID
+);
+ffi_id_string_functions!(
+    parse_snapshot_id,
+    format_snapshot_id,
+    SnapshotId,
+    core::SnapshotID
+);
+ffi_id_string_functions!(parse_task_id, format_task_id, TaskId, core::TaskID);
+ffi_id_string_functions!(
+    parse_dataset_id,
+    format_dataset_id,
+    DatasetId,
+    core::DatasetID
+);
+ffi_id_string_functions!(
+    parse_annotation_set_id,
+    format_annotation_set_id,
+    AnnotationSetId,
+    core::AnnotationSetID
+);
+ffi_id_string_functions!(parse_sample_id, format_sample_id, SampleId, core::SampleID);
+ffi_id_string_functions!(parse_app_id, format_app_id, AppId, core::AppId);
+ffi_id_string_functions!(parse_image_id, format_image_id, ImageId, core::ImageId);
+ffi_id_string_functions!(
+    parse_sequence_id,
+    format_sequence_id,
+    SequenceId,
+    core::SequenceId
+);
 
 // =============================================================================
 // Enum Types
