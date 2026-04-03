@@ -3424,7 +3424,8 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
-                Use ``client.download_artifact(session_id, filename)``
+                Use ``client.download_artifact(
+                validation_session.training_session_id, modelname)``
                 to download to disk (note: that variant writes to a
                 file rather than returning bytes).
 
@@ -3446,7 +3447,8 @@ class ValidationSession:
 
         Raises:
             TypeError: If validation session has no client reference.
-                Use ``client.download_checkpoint(session_id, filename)``
+                Use ``client.download_checkpoint(
+                validation_session.training_session_id, checkpoint)``
                 to download to disk (note: that variant writes to a
                 file rather than returning bytes).
 
