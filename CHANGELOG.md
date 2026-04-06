@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.3] - 2026-04-06
+
+### Fixed
+
+- `TaskInfo` deserialization now tolerates a missing `progress` field in the API response, preventing parse errors when the server omits progress data
+
 ## [2.9.2] - 2026-04-01
 
 ### Added
