@@ -105,15 +105,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for Build workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Verify Builds'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
+          # Verify Builds is an aggregation job that only gets registered after
+          # all build-cli and build-wheels matrix jobs complete (~30 min).
+          # Allow up to 5 min for the check to appear before failing.
+          checks-discovery-timeout: 300
 
       - name: Wait for Mobile SDK workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Generate Swift Bindings'
@@ -121,7 +125,7 @@ jobs:
           wait-interval: 10
 
       - name: Wait for SBOM workflow
-        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
         with:
           ref: ${{ github.sha }}
           check-name: 'Generate SBOM & Check License Compliance'
