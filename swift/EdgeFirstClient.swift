@@ -5705,6 +5705,214 @@ public func createClientWithStorage(storage: TokenStorage) throws -> Client {
       )
     })
 }
+public func formatAnnotationSetId(id: AnnotationSetId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_annotation_set_id(
+        FfiConverterTypeAnnotationSetId_lower(id), $0
+      )
+    })
+}
+public func formatAppId(id: AppId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_app_id(
+        FfiConverterTypeAppId_lower(id), $0
+      )
+    })
+}
+public func formatDatasetId(id: DatasetId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_dataset_id(
+        FfiConverterTypeDatasetId_lower(id), $0
+      )
+    })
+}
+public func formatExperimentId(id: ExperimentId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_experiment_id(
+        FfiConverterTypeExperimentId_lower(id), $0
+      )
+    })
+}
+public func formatImageId(id: ImageId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_image_id(
+        FfiConverterTypeImageId_lower(id), $0
+      )
+    })
+}
+public func formatOrganizationId(id: OrganizationId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_organization_id(
+        FfiConverterTypeOrganizationId_lower(id), $0
+      )
+    })
+}
+public func formatProjectId(id: ProjectId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_project_id(
+        FfiConverterTypeProjectId_lower(id), $0
+      )
+    })
+}
+public func formatSampleId(id: SampleId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_sample_id(
+        FfiConverterTypeSampleId_lower(id), $0
+      )
+    })
+}
+public func formatSequenceId(id: SequenceId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_sequence_id(
+        FfiConverterTypeSequenceId_lower(id), $0
+      )
+    })
+}
+public func formatSnapshotId(id: SnapshotId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_snapshot_id(
+        FfiConverterTypeSnapshotId_lower(id), $0
+      )
+    })
+}
+public func formatTaskId(id: TaskId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_task_id(
+        FfiConverterTypeTaskId_lower(id), $0
+      )
+    })
+}
+public func formatTrainingSessionId(id: TrainingSessionId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_training_session_id(
+        FfiConverterTypeTrainingSessionId_lower(id), $0
+      )
+    })
+}
+public func formatValidationSessionId(id: ValidationSessionId) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffi_edgefirst_client_fn_func_format_validation_session_id(
+        FfiConverterTypeValidationSessionId_lower(id), $0
+      )
+    })
+}
+public func parseAnnotationSetId(s: String) throws -> AnnotationSetId {
+  return try FfiConverterTypeAnnotationSetId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_annotation_set_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseAppId(s: String) throws -> AppId {
+  return try FfiConverterTypeAppId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_app_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseDatasetId(s: String) throws -> DatasetId {
+  return try FfiConverterTypeDatasetId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_dataset_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseExperimentId(s: String) throws -> ExperimentId {
+  return try FfiConverterTypeExperimentId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_experiment_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseImageId(s: String) throws -> ImageId {
+  return try FfiConverterTypeImageId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_image_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseOrganizationId(s: String) throws -> OrganizationId {
+  return try FfiConverterTypeOrganizationId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_organization_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseProjectId(s: String) throws -> ProjectId {
+  return try FfiConverterTypeProjectId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_project_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseSampleId(s: String) throws -> SampleId {
+  return try FfiConverterTypeSampleId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_sample_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseSequenceId(s: String) throws -> SequenceId {
+  return try FfiConverterTypeSequenceId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_sequence_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseSnapshotId(s: String) throws -> SnapshotId {
+  return try FfiConverterTypeSnapshotId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_snapshot_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseTaskId(s: String) throws -> TaskId {
+  return try FfiConverterTypeTaskId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_task_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseTrainingSessionId(s: String) throws -> TrainingSessionId {
+  return try FfiConverterTypeTrainingSessionId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_training_session_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
+public func parseValidationSessionId(s: String) throws -> ValidationSessionId {
+  return try FfiConverterTypeValidationSessionId_lift(
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_func_parse_validation_session_id(
+        FfiConverterString.lower(s), $0
+      )
+    })
+}
 /// Validate an FFI annotation, returning an error if mask data is invalid.
 ///
 /// Swift/Kotlin callers should use this function to validate annotations
@@ -5733,6 +5941,84 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.contractVersionMismatch
   }
   if uniffi_edgefirst_client_checksum_func_create_client_with_storage() != 51357 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_annotation_set_id() != 49870 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_app_id() != 17528 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_dataset_id() != 2225 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_experiment_id() != 47430 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_image_id() != 50080 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_organization_id() != 59891 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_project_id() != 20666 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_sample_id() != 12331 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_sequence_id() != 40981 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_snapshot_id() != 38059 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_task_id() != 11075 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_training_session_id() != 13030 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_format_validation_session_id() != 65406 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_annotation_set_id() != 105 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_app_id() != 520 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_dataset_id() != 27452 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_experiment_id() != 26371 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_image_id() != 58085 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_organization_id() != 20309 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_project_id() != 26641 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_sample_id() != 25995 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_sequence_id() != 13649 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_snapshot_id() != 38807 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_task_id() != 42763 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_training_session_id() != 8963 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_func_parse_validation_session_id() != 25138 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_func_validate_annotation() != 60922 {
