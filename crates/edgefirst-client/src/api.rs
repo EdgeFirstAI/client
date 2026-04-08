@@ -8,6 +8,18 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr};
 
+/// Deserializes a field that may be `null` in JSON as the type's `Default` value.
+/// Unlike `#[serde(default)]` alone (which only handles absent keys), this also
+/// handles explicit `null` values — common with Go's `omitempty` on slice/array fields
+/// where the server may send `null` instead of `[]`.
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Generic parameter value used in API requests and configuration.
 ///
 /// This enum represents various data types that can be passed as parameters
@@ -1560,7 +1572,7 @@ pub struct ChangelogEntry {
     created_at: DateTime<Utc>,
     #[serde(default)]
     message: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     s3_version_ids: Vec<serde_json::Value>,
 }
 
