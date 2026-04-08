@@ -72,7 +72,7 @@ async fn main() -> Result<(), Error> {
 
     // Get annotation sets for the dataset
     println!("\nFetching annotation sets...");
-    let annotation_sets = client.annotation_sets(dataset.id()).await?;
+    let annotation_sets = client.annotation_sets(dataset.id(), None).await?;
     if annotation_sets.is_empty() {
         eprintln!(
             "Error: No annotation sets found for dataset '{}'",

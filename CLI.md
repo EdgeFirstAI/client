@@ -272,6 +272,10 @@ Download a dataset to the local filesystem from the EdgeFirst Studio server.
     The prefix format is `{sequence_name}_{frame}_` when the frame number is available,
     and `{sequence_name}_` when the frame number is not available. Default: creates subdirectories for sequences.
 
+**\--tag** *TAG*
+:   Download files from the specified tagged version instead of the current HEAD state.
+    The tag must exist for the dataset. When omitted, downloads the current live data.
+
 **Example:**
 
 ```bash
@@ -288,6 +292,10 @@ edgefirst-client download-dataset 12345 \
 # Files from sequences are prefixed with sequence_name_frame_
 edgefirst-client download-dataset 12345 \
     --types image --output ./flat-dataset --flatten
+
+# Download from a tagged version for reproducible training
+edgefirst-client download-dataset 12345 \
+    --tag v1.0 --types image --output ./versioned-data
 ```
 
 **Directory Structure:**
@@ -339,6 +347,10 @@ Download dataset annotations to a local file. This command accompanies **downloa
 :   Annotation types to download (comma-separated list). Default: **box2d**.
     Supported types: box2d, box3d, mask, polygon, polyline, keypoint.
 
+**\--tag** *TAG*
+:   Download annotations from the specified tagged version instead of the current HEAD state.
+    The tag must exist for the annotation set's dataset.
+
 **Example:**
 
 ```bash
@@ -349,6 +361,10 @@ edgefirst-client download-annotations 54321 annotations.json \
 # Download all annotation types in Arrow format
 edgefirst-client download-annotations 54321 annotations.arrow \
     --types box2d,box3d,mask --groups train
+
+# Download annotations from a tagged version
+edgefirst-client download-annotations 54321 annotations.arrow \
+    --tag v1.0 --types box2d
 ```
 
 For Arrow format documentation, see: https://doc.edgefirst.ai/latest/datasets/format/
@@ -403,6 +419,155 @@ edgefirst-client upload-dataset 12345 \
 ```
 
 **Note:** Uploads are batched (500 samples per batch) with progress tracking. Arrow files must conform to the EdgeFirst Dataset Format.
+
+## DATASET VERSIONING
+
+The `version` subcommand group manages dataset version tags, changelog inspection, and dataset restore. Every dataset modification is recorded with a monotonic serial number. Named tags capture the complete dataset state at a point in time, enabling reproducible training runs and controlled rollbacks.
+
+**Key concepts:**
+
+- **Serial** — Per-dataset monotonic counter that increments with each logged change.
+- **Tag** — Named reference to a serial number and full database snapshot (images, annotations, labels, annotation sets, sensor data).
+- **Changelog** — Append-only audit trail of every dataset modification.
+
+Tag names may contain alphanumeric characters, dots, dashes, and underscores (e.g., `v1.0`, `training-2026-04`, `baseline_v3`).
+
+### version tag create
+
+Create a named version tag capturing the current dataset state.
+
+**edgefirst-client version tag create** *DATASET* *NAME* [*OPTIONS*]
+
+**Arguments:**
+
+*DATASET*
+:   Dataset identifier (ID string or dataset name).
+
+*NAME*
+:   Tag name. Allowed characters: alphanumeric, `.`, `-`, `_`. Max 100 characters. Case-sensitive.
+
+**Options:**
+
+**\-d**, **\--description** *DESCRIPTION*
+:   Human-readable description for the tag.
+
+**Example:**
+
+```bash
+# Tag current dataset state for a training run
+edgefirst-client version tag create ds-1a2b3c v1.0 -d "Initial production dataset"
+
+# Tag using dataset name
+edgefirst-client version tag create "My Dataset" training-2026-04
+```
+
+### version tag list
+
+List all version tags for a dataset, ordered by serial number (most recent first).
+
+**edgefirst-client version tag list** *DATASET*
+
+**Example:**
+
+```bash
+edgefirst-client version tag list ds-1a2b3c
+```
+
+### version tag get
+
+Show detailed information for a specific version tag.
+
+**edgefirst-client version tag get** *DATASET* *NAME*
+
+**Example:**
+
+```bash
+edgefirst-client version tag get ds-1a2b3c v1.0
+```
+
+### version tag delete
+
+Delete a version tag and its snapshot data. This operation is irreversible.
+
+**edgefirst-client version tag delete** *DATASET* *NAME*
+
+**Example:**
+
+```bash
+edgefirst-client version tag delete ds-1a2b3c v1.0-draft
+```
+
+### version tag restore
+
+Restore a dataset to the state captured by a version tag. All changes made after the tag are discarded. The tag itself is preserved and can be restored again.
+
+**edgefirst-client version tag restore** *DATASET* *NAME*
+
+**Example:**
+
+```bash
+edgefirst-client version tag restore ds-1a2b3c v1.0
+```
+
+### version changelog
+
+Show changelog entries for a dataset. Accepts serial numbers or tag names as range boundaries.
+
+**edgefirst-client version changelog** *DATASET* [*OPTIONS*]
+
+**Options:**
+
+**\--from** *VERSION*
+:   Start of the range (tag name or serial number, inclusive). Defaults to the beginning of the changelog.
+
+**\--to** *VERSION*
+:   End of the range (tag name or serial number, inclusive). Defaults to the current serial.
+
+**\--types** *TYPES*
+:   Filter by entity types (comma-separated). Valid values: `image`, `annotation`, `label`, `annotation_set`, `sensor_data`, `dataset`.
+
+**\--limit** *LIMIT*
+:   Maximum number of entries to return. Default: **100**.
+
+**Example:**
+
+```bash
+# Show all recent changelog entries
+edgefirst-client version changelog ds-1a2b3c
+
+# Show changes between two tags
+edgefirst-client version changelog ds-1a2b3c --from v1.0 --to v2.0
+
+# Show only annotation changes since a specific serial
+edgefirst-client version changelog ds-1a2b3c --from 10 --types annotation
+
+# Show the 50 most recent entries
+edgefirst-client version changelog ds-1a2b3c --limit 50
+```
+
+### version current
+
+Show the current version information for a dataset: serial number, all tags, and a dataset summary.
+
+**edgefirst-client version current** *DATASET*
+
+**Example:**
+
+```bash
+edgefirst-client version current ds-1a2b3c
+```
+
+### version summary
+
+Show cached dataset metrics: image count, annotation counts by type, label count, and annotation set count.
+
+**edgefirst-client version summary** *DATASET*
+
+**Example:**
+
+```bash
+edgefirst-client version summary ds-1a2b3c
+```
 
 ## SNAPSHOTS
 

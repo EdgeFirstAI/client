@@ -999,6 +999,7 @@ class AnnotationSet:
         groups: List[str] = [],
         annotation_types: List[AnnotationType] = [],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> List[Annotation]:
         """
         Get annotations for this annotation set.
@@ -1010,6 +1011,8 @@ class AnnotationSet:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to query data at that
+                point in time. Defaults to the current (latest) state.
 
         Progress:
             Reports progress with status=None as samples
@@ -1025,6 +1028,7 @@ class AnnotationSet:
 
         Example:
             >>> annotations = annotation_set.annotations(groups=["train"])
+            >>> annotations_v1 = annotation_set.annotations(version="v1.0")
         """
         ...
 
@@ -1312,9 +1316,13 @@ class Dataset:
         ...
 
     @overload
-    def labels(self) -> List[Label]:
+    def labels(self, *, version: Optional[str] = None) -> List[Label]:
         """
         Get labels for this dataset (new API).
+
+        Args:
+            version: Optional version tag name to query labels at that
+                point in time.
 
         Returns:
             List[Label]: Labels associated with this dataset.
@@ -1324,6 +1332,7 @@ class Dataset:
 
         Example:
             >>> labels = dataset.labels()
+            >>> labels_v1 = dataset.labels(version="v1.0")
         """
         ...
 
@@ -1344,7 +1353,9 @@ class Dataset:
         """
         ...
 
-    def labels(self, client: Optional[Client] = None) -> List[Label]:
+    def labels(
+        self, client: Optional[Client] = None, version: Optional[str] = None
+    ) -> List[Label]:
         """Get labels for this dataset."""
         ...
 
@@ -1421,6 +1432,7 @@ class Dataset:
         output: str = ".",
         flatten: bool = False,
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> None:
         """
         Download dataset files.
@@ -1461,9 +1473,15 @@ class Dataset:
         """
         ...
 
-    def annotation_sets(self) -> List[AnnotationSet]:
+    def annotation_sets(
+        self, version: Optional[str] = None
+    ) -> List[AnnotationSet]:
         """
         Get annotation sets for this dataset.
+
+        Args:
+            version: Optional version tag name to query annotation sets
+                at that point in time.
 
         Returns:
             List[AnnotationSet]: Annotation sets for this dataset.
@@ -1473,6 +1491,7 @@ class Dataset:
 
         Example:
             >>> annotation_sets = dataset.annotation_sets()
+            >>> annotation_sets_v1 = dataset.annotation_sets(version="v1.0")
         """
         ...
 
@@ -1483,6 +1502,7 @@ class Dataset:
         groups: List[str] = [],
         types: List[FileType] = [FileType.Image],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> List[Sample]:
         """
         Get samples for this dataset.
@@ -1496,6 +1516,8 @@ class Dataset:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to query samples at that
+                point in time.
 
         Progress:
             Reports progress with status=None as samples
@@ -1510,6 +1532,7 @@ class Dataset:
 
         Example:
             >>> samples = dataset.samples(groups=["train"])
+            >>> samples_v1 = dataset.samples(version="v1.0")
         """
         ...
 
@@ -1519,6 +1542,7 @@ class Dataset:
         annotation_types: List[AnnotationType] = [],
         groups: List[str] = [],
         types: List[FileType] = [FileType.Image],
+        version: Optional[str] = None,
     ) -> SamplesCountResult:
         """
         Get samples count for this dataset.
@@ -1528,6 +1552,8 @@ class Dataset:
             annotation_types: List of annotation types.
             groups: List of dataset groups.
             types: List of file types.
+            version: Optional version tag name to query counts at that
+                point in time.
 
         Returns:
             SamplesCountResult: Count information.
@@ -1537,6 +1563,7 @@ class Dataset:
 
         Example:
             >>> count = dataset.samples_count(groups=["train"])
+            >>> count_v1 = dataset.samples_count(version="v1.0")
         """
         ...
 
@@ -3909,6 +3936,309 @@ class MemoryTokenStorage:
         """Return a string representation of the storage."""
         ...
 
+class VersionTag:
+    """
+    A version tag marking a specific point in a dataset's changelog history.
+
+    Version tags are immutable snapshots that record the dataset's state
+    (image count, annotation counts, label count, etc.) at the time of
+    creation. They can be used to query historical data or restore the
+    dataset to a previous state.
+    """
+
+    @property
+    def id(self) -> int:
+        """The unique identifier for this version tag."""
+        ...
+
+    @property
+    def dataset_id(self) -> int:
+        """The dataset this tag belongs to."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """The name of the version tag (e.g., ``"v1.0"``)."""
+        ...
+
+    @property
+    def serial(self) -> int:
+        """The changelog serial number this tag references."""
+        ...
+
+    @property
+    def description(self) -> str:
+        """The description of the version tag."""
+        ...
+
+    @property
+    def created_by(self) -> str:
+        """The username that created this tag."""
+        ...
+
+    @property
+    def created_at(self) -> str:
+        """ISO 8601 timestamp of when this tag was created."""
+        ...
+
+    @property
+    def image_count(self) -> int:
+        """Number of images at tag time."""
+        ...
+
+    @property
+    def annotation_counts(self) -> Dict[str, int]:
+        """Annotation counts by type (e.g., ``{"box": 150000}``)."""
+        ...
+
+    @property
+    def sensor_counts(self) -> Dict[str, int]:
+        """Sensor data counts by type (e.g., ``{"lidar": 25000}``)."""
+        ...
+
+    @property
+    def label_count(self) -> int:
+        """Number of labels at tag time."""
+        ...
+
+    @property
+    def annotation_set_count(self) -> int:
+        """Number of annotation sets at tag time."""
+        ...
+
+    @property
+    def snapshot_id(self) -> Optional[int]:
+        """Optional snapshot export ID."""
+        ...
+
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
+class ChangelogEntry:
+    """
+    A single entry in the dataset changelog, recording one modification.
+    """
+
+    @property
+    def id(self) -> int:
+        """The unique identifier for this changelog entry."""
+        ...
+
+    @property
+    def dataset_id(self) -> int:
+        """The dataset this entry belongs to."""
+        ...
+
+    @property
+    def serial(self) -> int:
+        """The monotonic serial number for this change."""
+        ...
+
+    @property
+    def entity_type(self) -> str:
+        """The entity type (image, annotation, label, etc.)."""
+        ...
+
+    @property
+    def operation(self) -> str:
+        """The operation (create, update, delete, etc.)."""
+        ...
+
+    @property
+    def entity_id(self) -> Optional[int]:
+        """The optional entity ID affected by this change."""
+        ...
+
+    @property
+    def change_data(self) -> Any:
+        """The change details as a Python object (dict, list, or primitive)."""
+        ...
+
+    @property
+    def username(self) -> str:
+        """The username that made this change."""
+        ...
+
+    @property
+    def organization_id(self) -> int:
+        """The organization ID."""
+        ...
+
+    @property
+    def created_at(self) -> str:
+        """ISO 8601 timestamp of when this change was recorded."""
+        ...
+
+    @property
+    def message(self) -> str:
+        """Optional message associated with this change."""
+        ...
+
+    @property
+    def s3_version_ids(self) -> List[Any]:
+        """S3 version IDs associated with this change."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class ChangelogResponse:
+    """
+    Paginated response from the version changelog endpoint.
+    """
+
+    @property
+    def entries(self) -> List[ChangelogEntry]:
+        """The changelog entries in this page."""
+        ...
+
+    @property
+    def count(self) -> int:
+        """Total number of entries matching the query."""
+        ...
+
+    @property
+    def continue_token(self) -> str:
+        """Token to pass for the next page of results."""
+        ...
+
+    @property
+    def from_serial(self) -> Optional[int]:
+        """The starting serial number of the query range."""
+        ...
+
+    @property
+    def to_serial(self) -> Optional[int]:
+        """The ending serial number of the query range."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class DatasetSummary:
+    """
+    Cached metrics summary for a dataset's current state.
+    """
+
+    @property
+    def dataset_id(self) -> int:
+        """The dataset ID."""
+        ...
+
+    @property
+    def current_serial(self) -> int:
+        """The current changelog serial number."""
+        ...
+
+    @property
+    def image_count(self) -> int:
+        """Total number of images."""
+        ...
+
+    @property
+    def annotation_counts(self) -> Dict[str, int]:
+        """Annotation counts by type."""
+        ...
+
+    @property
+    def sensor_counts(self) -> Dict[str, int]:
+        """Sensor data counts by type."""
+        ...
+
+    @property
+    def label_count(self) -> int:
+        """Total number of labels."""
+        ...
+
+    @property
+    def annotation_set_count(self) -> int:
+        """Total number of annotation sets."""
+        ...
+
+    @property
+    def last_updated(self) -> str:
+        """ISO 8601 timestamp of the last summary update."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class VersionCurrentResponse:
+    """
+    Response from the version current endpoint with serial, tags, and summary.
+    """
+
+    @property
+    def dataset_id(self) -> int:
+        """The dataset ID."""
+        ...
+
+    @property
+    def current_serial(self) -> int:
+        """The current changelog serial number."""
+        ...
+
+    @property
+    def latest_tag(self) -> Optional[VersionTag]:
+        """The most recent version tag, if any."""
+        ...
+
+    @property
+    def tags(self) -> List[VersionTag]:
+        """All version tags for the dataset."""
+        ...
+
+    @property
+    def summary(self) -> Optional[DatasetSummary]:
+        """The dataset summary, if available."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class RestoreResult:
+    """
+    Result from restoring a dataset to a specific version tag.
+    """
+
+    @property
+    def success(self) -> bool:
+        """Whether the restore was successful."""
+        ...
+
+    @property
+    def new_serial(self) -> int:
+        """The new changelog serial number after restore."""
+        ...
+
+    @property
+    def restored_from_tag(self) -> str:
+        """The name of the tag that was restored from."""
+        ...
+
+    @property
+    def restored_from_serial(self) -> int:
+        """The serial number of the tag that was restored from."""
+        ...
+
+    @property
+    def restored_counts_images(self) -> int:
+        """Number of images restored."""
+        ...
+
+    @property
+    def restored_counts_labels(self) -> int:
+        """Number of labels restored."""
+        ...
+
+    @property
+    def restored_counts_annotation_sets(self) -> int:
+        """Number of annotation sets restored."""
+        ...
+
+    @property
+    def message(self) -> str:
+        """A human-readable message about the restore operation."""
+        ...
+
+    def __repr__(self) -> str: ...
+
 class Client:
     """
     Main client for interacting with EdgeFirst Studio Server.
@@ -4364,8 +4694,20 @@ class Client:
         """
         ...
 
-    def labels(self, dataset_id: DatasetUID) -> List[Label]:
-        """Get the labels associated with the dataset."""
+    def labels(
+        self, dataset_id: DatasetUID, version: Optional[str] = None
+    ) -> List[Label]:
+        """
+        Get the labels associated with the dataset.
+
+        Args:
+            dataset_id: The dataset identifier.
+            version: Optional version tag name to query labels at that
+                point in time. When omitted, returns labels at HEAD.
+
+        Returns:
+            List[Label]: Labels defined for the dataset.
+        """
         ...
 
     def add_label(self, dataset_id: DatasetUID, name: str) -> None:
@@ -4585,6 +4927,7 @@ class Client:
         output: str = ".",
         flatten: bool = False,
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> None:
         """
         Download dataset samples matching specified groups and file types.
@@ -4604,6 +4947,8 @@ class Client:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to download files from a
+                specific tagged state instead of HEAD.
 
         Progress:
             This operation has two phases with distinct progress reporting:
@@ -4619,12 +4964,232 @@ class Client:
         """
         ...
 
-    def annotation_sets(self, dataset_id: DatasetUID) -> List[AnnotationSet]:
+    # -----------------------------------------------------------------
+    # Version management
+    # -----------------------------------------------------------------
+
+    def version_tag_create(
+        self,
+        dataset_id: DatasetUID,
+        name: str,
+        description: Optional[str] = None,
+    ) -> VersionTag:
+        """
+        Create a new version tag for a dataset.
+
+        A version tag captures the current changelog serial and records
+        dataset metrics (image count, annotation counts, etc.) at the
+        time of creation.
+
+        Args:
+            dataset_id: The dataset identifier.
+            name: The name for the version tag (e.g., ``"v1.0"``).
+            description: Optional description for the tag.
+
+        Returns:
+            VersionTag: The newly created version tag.
+
+        Example:
+            >>> tag = client.version_tag_create(dataset.id, "v1.0",
+            ...     description="Initial release")
+        """
+        ...
+
+    def version_tag_get(self, dataset_id: DatasetUID, name: str) -> VersionTag:
+        """
+        Get a specific version tag by name.
+
+        Args:
+            dataset_id: The dataset identifier.
+            name: The name of the version tag to retrieve.
+
+        Returns:
+            VersionTag: The requested version tag.
+
+        Raises:
+            Error: If the tag does not exist.
+        """
+        ...
+
+    def version_tag_list(self, dataset_id: DatasetUID) -> List[VersionTag]:
+        """
+        List all version tags for a dataset.
+
+        Args:
+            dataset_id: The dataset identifier.
+
+        Returns:
+            List[VersionTag]: All version tags, ordered by serial.
+        """
+        ...
+
+    def version_tag_delete(self, dataset_id: DatasetUID, name: str) -> str:
+        """
+        Delete a version tag.
+
+        Args:
+            dataset_id: The dataset identifier.
+            name: The name of the version tag to delete.
+
+        Returns:
+            str: Confirmation message.
+
+        Raises:
+            Error: If the tag does not exist.
+        """
+        ...
+
+    def version_tag_restore(
+        self, dataset_id: DatasetUID, name: str
+    ) -> RestoreResult:
+        """
+        Restore a dataset to the state at a specific version tag.
+
+        This creates new changelog entries that undo changes made after
+        the tag was created, effectively rolling back the dataset.
+
+        Args:
+            dataset_id: The dataset identifier.
+            name: The name of the version tag to restore to.
+
+        Returns:
+            RestoreResult: Details of the restore operation including
+                counts of restored entities.
+
+        Example:
+            >>> result = client.version_tag_restore(dataset.id, "v1.0")
+            >>> print(f"Restored {result.restored_counts_images} images")
+        """
+        ...
+
+    def version_changelog(
+        self,
+        dataset_id: DatasetUID,
+        from_version: Optional[str] = None,
+        to_version: Optional[str] = None,
+        entity_types: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        continue_token: Optional[str] = None,
+    ) -> ChangelogResponse:
+        """
+        Get the changelog for a dataset between two versions.
+
+        Returns a paginated list of changelog entries describing every
+        modification to the dataset in the specified range.
+
+        Args:
+            dataset_id: The dataset identifier.
+            from_version: Optional starting version tag name
+                (``None`` = beginning).
+            to_version: Optional ending version tag name
+                (``None`` = current).
+            entity_types: Optional filter for entity types (e.g.,
+                ``["image", "annotation"]``).
+            limit: Optional limit on the number of entries per page.
+            continue_token: Optional continuation token for pagination.
+
+        Returns:
+            ChangelogResponse: Paginated changelog entries with
+                continuation support.
+
+        Example:
+            >>> changelog = client.version_changelog(
+            ...     dataset.id,
+            ...     from_version="v1.0",
+            ...     to_version="v2.0",
+            ... )
+            >>> for entry in changelog.entries:
+            ...     print(f"{entry.operation} {entry.entity_type}")
+        """
+        ...
+
+    def version_changelog_count(
+        self,
+        dataset_id: DatasetUID,
+        from_version: Optional[str] = None,
+        to_version: Optional[str] = None,
+        entity_types: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Get the count of changelog entries between two versions.
+
+        Args:
+            dataset_id: The dataset identifier.
+            from_version: Optional starting version tag name.
+            to_version: Optional ending version tag name.
+            entity_types: Optional filter for entity types.
+
+        Returns:
+            int: The number of changelog entries matching the criteria.
+        """
+        ...
+
+    def version_current(
+        self, dataset_id: DatasetUID
+    ) -> VersionCurrentResponse:
+        """
+        Get the current version information for a dataset.
+
+        Returns the current serial number, all tags, and an optional
+        summary of the dataset's current state.
+
+        Args:
+            dataset_id: The dataset identifier.
+
+        Returns:
+            VersionCurrentResponse: Current version state including
+                serial, tags, and summary.
+
+        Example:
+            >>> current = client.version_current(dataset.id)
+            >>> print(f"Serial: {current.current_serial}")
+            >>> if current.latest_tag:
+            ...     print(f"Latest tag: {current.latest_tag.name}")
+        """
+        ...
+
+    def version_summary(self, dataset_id: DatasetUID) -> DatasetSummary:
+        """
+        Get the version summary for a dataset.
+
+        Returns cached metrics about the dataset's current state
+        including image count, annotation counts, and label count.
+
+        Args:
+            dataset_id: The dataset identifier.
+
+        Returns:
+            DatasetSummary: Summary metrics for the dataset.
+        """
+        ...
+
+    def version_summary_recalculate(
+        self, dataset_id: DatasetUID
+    ) -> DatasetSummary:
+        """
+        Recalculate the version summary for a dataset.
+
+        Forces a fresh calculation of all dataset metrics. Use this
+        if the cached summary appears stale.
+
+        Args:
+            dataset_id: The dataset identifier.
+
+        Returns:
+            DatasetSummary: Freshly calculated summary metrics.
+        """
+        ...
+
+    def annotation_sets(
+        self, dataset_id: DatasetUID, version: Optional[str] = None
+    ) -> List[AnnotationSet]:
         """
         Retrieve the annotation sets associated with the specified dataset.
 
         Args:
             dataset_id (Union[DatasetID, int, str]): Dataset ID.
+            version: Optional version tag name to query annotation sets
+                at that point in time.
 
         Returns:
             List[AnnotationSet]: Annotation sets associated with the dataset.
@@ -4651,6 +5216,7 @@ class Client:
         groups: List[str] = [],
         annotation_types: List[AnnotationType] = [],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> List[Annotation]:
         """
         Get the annotations for the specified annotation set with the
@@ -4676,6 +5242,8 @@ class Client:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to query annotations at
+                that point in time.
 
         Progress:
             Reports progress with status=None as samples
@@ -4735,6 +5303,7 @@ class Client:
         annotation_types: List[AnnotationType] = [],
         groups: List[str] = [],
         types: List[FileType] = [FileType.Image],
+        version: Optional[str] = None,
     ) -> SamplesCountResult:
         """
         Count samples in a dataset without fetching them.
@@ -4751,6 +5320,8 @@ class Client:
                                                         to include.
             groups (List[str]): Dataset groups to include.
             types (List[FileType]): Type of files to include.
+            version: Optional version tag name to count samples at that
+                point in time.
 
         Returns:
             SamplesCountResult: Object with total count of matching samples.
@@ -4762,6 +5333,7 @@ class Client:
         dataset_id: DatasetUID,
         groups: List[str] = [],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> set[str]:
         """
         Return the set of sample names in a dataset.
@@ -4780,6 +5352,8 @@ class Client:
 
                 Units are sample count. ``status`` is always ``None`` for
                 this operation.
+            version: Optional version tag name to query sample names at
+                that point in time. When omitted, returns names at HEAD.
 
         Returns:
             set[str]: Set of normalised sample names.
@@ -4805,6 +5379,7 @@ class Client:
         groups: List[str] = [],
         types: List[FileType] = [FileType.Image],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> List[Sample]:
         """
         Retrieve sample metadata and annotations for a dataset.
@@ -4822,6 +5397,8 @@ class Client:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to query samples at that
+                point in time.
 
         Progress:
             Reports progress with status=None as samples

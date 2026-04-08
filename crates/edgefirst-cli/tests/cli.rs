@@ -3741,6 +3741,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
         &[], // All groups
         &[], // No file type filter
         None,
+        None,
     ))?;
 
     println!("✓ Fetched {} samples from API", samples.len());
