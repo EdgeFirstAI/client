@@ -441,7 +441,7 @@ Create a named version tag capturing the current dataset state.
 **Arguments:**
 
 *DATASET*
-:   Dataset identifier (ID string or dataset name).
+:   Dataset identifier (ID string, for example `ds-1a2b3c`).
 
 *NAME*
 :   Tag name. Allowed characters: alphanumeric, `.`, `-`, `_`. Max 100 characters. Case-sensitive.

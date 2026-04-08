@@ -1337,16 +1337,19 @@ class Dataset:
         ...
 
     @overload
-    def labels(self, client: Client) -> List[Label]:
+    def labels(
+        self, client: Client, version: Optional[str] = None
+    ) -> List[Label]:
         """
         Get labels for this dataset (deprecated API).
 
         .. deprecated::
-            Use ``dataset.labels()`` without the client parameter instead.
-            This signature will be removed in v3.0.0.
+            Use ``dataset.labels()`` without the client parameter
+            instead. This signature will be removed in v3.0.0.
 
         Args:
             client: The EdgeFirst client instance.
+            version: Optional version tag name.
 
         Returns:
             List[Label]: Labels associated with this dataset.

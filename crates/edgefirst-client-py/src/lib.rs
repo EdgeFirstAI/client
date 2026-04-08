@@ -5146,7 +5146,7 @@ impl Client {
     ///     ...     [],
     ///     ...     None
     ///     ... )
-    #[pyo3(signature = (dataset_id, annotation_set_id = None, groups = vec![], annotation_types = vec![], progress = None))]
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, groups = vec![], annotation_types = vec![], progress = None, version = None))]
     pub fn samples_dataframe<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
@@ -5154,6 +5154,7 @@ impl Client {
         groups: Vec<String>,
         annotation_types: Vec<AnnotationType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<PyDataFrame, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let annotation_set_id = match annotation_set_id {
@@ -5175,6 +5176,7 @@ impl Client {
                 let (tx, mut rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
                     client.samples_dataframe_sync(
                         dataset_id,
@@ -5182,6 +5184,7 @@ impl Client {
                         &groups,
                         &annotation_types,
                         Some(tx),
+                        version_clone.as_deref(),
                     )
                 });
 
@@ -5208,6 +5211,7 @@ impl Client {
                 &groups,
                 &annotation_types,
                 None,
+                version.as_deref(),
             ),
         }?;
 
@@ -6588,6 +6592,7 @@ impl Client {
         groups: &[String],
         annotation_types: &[edgefirst_client::AnnotationType],
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<PyDataFrame, edgefirst_client::Error> {
         let df = self
             .0
@@ -6597,6 +6602,7 @@ impl Client {
                 groups,
                 annotation_types,
                 progress,
+                version,
             )
             .await?;
         Ok(PyDataFrame(df))

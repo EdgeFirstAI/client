@@ -709,7 +709,7 @@ enum VersionCommands {
 
     /// Show changelog entries
     Changelog {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
 
         /// Start version (tag name or serial number)
@@ -731,13 +731,13 @@ enum VersionCommands {
 
     /// Show current version info
     Current {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
     },
 
     /// Show dataset summary
     Summary {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
     },
 }
@@ -746,7 +746,7 @@ enum VersionCommands {
 enum TagCommands {
     /// Create a new version tag
     Create {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
 
         /// Tag name
@@ -759,13 +759,13 @@ enum TagCommands {
 
     /// List all tags for a dataset
     List {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
     },
 
     /// Get details of a specific tag
     Get {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
 
         /// Tag name
@@ -774,7 +774,7 @@ enum TagCommands {
 
     /// Delete a version tag
     Delete {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
 
         /// Tag name
@@ -783,7 +783,7 @@ enum TagCommands {
 
     /// Restore dataset to a tagged state
     Restore {
-        /// Dataset identifier (ID or name)
+        /// Dataset identifier (e.g. ds-1a2b3c)
         dataset: String,
 
         /// Tag name
@@ -1177,6 +1177,7 @@ async fn handle_download_annotations(
                         &groups,
                         &types,
                         Some(tx),
+                        tag.as_deref(),
                     )
                     .await?;
                 IpcWriter::new(File::create(output).unwrap())

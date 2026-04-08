@@ -2847,6 +2847,7 @@ impl Client {
         groups: &[String],
         types: &[AnnotationType],
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<DataFrame, Error> {
         use crate::dataset::samples_dataframe;
 
@@ -2858,7 +2859,7 @@ impl Client {
                 groups,
                 &[],
                 progress,
-                None,
+                version,
             )
             .await?;
         samples_dataframe(&samples)
