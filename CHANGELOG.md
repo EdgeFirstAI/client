@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dataset versioning support with tag management and version-aware data fetching
+- New `version` parameter on `samples()`, `samples_count()`, `labels()`, `annotation_sets()`, `annotations()`, `sample_names()`, and `download_dataset()` to fetch data from a specific tagged version instead of HEAD
+- `version_tag_create()`, `version_tag_get()`, `version_tag_list()`, `version_tag_delete()`, `version_tag_restore()` methods for tag lifecycle management
+- `version_changelog()`, `version_changelog_count()`, `version_current()`, `version_summary()`, `version_summary_recalculate()` methods for changelog and version info
+- New types: `VersionTag`, `ChangelogEntry`, `ChangelogResponse`, `VersionCurrentResponse`, `DatasetSummary`, `RestoreResult`
+- CLI `version` subcommand group with `tag create/list/get/delete/restore`, `changelog`, `current`, and `summary` commands
+- CLI `--tag` flag on `download-dataset` and `download-annotations` commands
+- Python bindings and `.pyi` type stubs for all new versioning APIs
+- Swift/Kotlin FFI bindings for versioning types and methods
+- Integration tests for tag lifecycle, tagged data fetch, changelog, and restore workflows
+
 ## [2.9.3] - 2026-04-06
 
 ### Fixed

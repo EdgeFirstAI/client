@@ -56,7 +56,8 @@ struct Args {
 #[derive(Subcommand, PartialEq, Clone, Debug)]
 enum Command {
     /// Returns the EdgeFirst Studio Server version.
-    Version,
+    #[clap(name = "server-version")]
+    ServerVersion,
     /// Login to the EdgeFirst Studio Server with the provided username and
     /// password.  The token is stored in the application configuration file.
     Login,
@@ -188,6 +189,10 @@ enum Command {
         /// List all valid sensor types and exit.
         #[clap(long)]
         list_types: bool,
+
+        /// Download data from a specific tagged version instead of HEAD
+        #[clap(long)]
+        tag: Option<String>,
     },
     /// Download dataset annotations to a local file.  This command accompanies
     /// the `DownloadDataset` command and is used to download the annotations
@@ -212,6 +217,10 @@ enum Command {
 
         /// Output File Path
         output: PathBuf,
+
+        /// Download data from a specific tagged version instead of HEAD
+        #[clap(long)]
+        tag: Option<String>,
     },
     /// Upload samples to a dataset from images and/or Arrow annotations file.
     /// Supports flexible workflows: images-only, annotations-only, or both.
@@ -686,6 +695,100 @@ enum Command {
         #[clap(long)]
         output: Option<PathBuf>,
     },
+
+    /// Dataset version management
+    #[clap(subcommand)]
+    Version(VersionCommands),
+}
+
+#[derive(Subcommand, PartialEq, Clone, Debug)]
+enum VersionCommands {
+    /// Manage version tags
+    #[clap(subcommand)]
+    Tag(TagCommands),
+
+    /// Show changelog entries
+    Changelog {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+
+        /// Start version (tag name or serial number)
+        #[clap(long)]
+        from: Option<String>,
+
+        /// End version (tag name or serial number)
+        #[clap(long)]
+        to: Option<String>,
+
+        /// Filter by entity types (comma-separated: image,annotation,label,annotation_set,sensor_data,dataset)
+        #[clap(long, value_delimiter = ',')]
+        types: Option<Vec<String>>,
+
+        /// Maximum entries to return
+        #[clap(long, default_value = "100")]
+        limit: u64,
+    },
+
+    /// Show current version info
+    Current {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+    },
+
+    /// Show dataset summary
+    Summary {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+    },
+}
+
+#[derive(Subcommand, PartialEq, Clone, Debug)]
+enum TagCommands {
+    /// Create a new version tag
+    Create {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+
+        /// Tag name
+        name: String,
+
+        /// Tag description
+        #[clap(long, short)]
+        description: Option<String>,
+    },
+
+    /// List all tags for a dataset
+    List {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+    },
+
+    /// Get details of a specific tag
+    Get {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+
+        /// Tag name
+        name: String,
+    },
+
+    /// Delete a version tag
+    Delete {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+
+        /// Tag name
+        name: String,
+    },
+
+    /// Restore dataset to a tagged state
+    Restore {
+        /// Dataset identifier (e.g. ds-1a2b3c)
+        dataset: String,
+
+        /// Tag name
+        name: String,
+    },
 }
 
 // Command handler functions
@@ -812,7 +915,7 @@ async fn print_dataset_details(
     );
 
     if show_labels {
-        let labels = client.labels(dataset.id()).await?;
+        let labels = client.labels(dataset.id(), None).await?;
         println!("Labels:");
         for label in labels {
             println!("    [{}] {}", label.id(), label.name());
@@ -820,7 +923,7 @@ async fn print_dataset_details(
     }
 
     if show_annotation_sets {
-        let annotation_sets = client.annotation_sets(dataset.id()).await?;
+        let annotation_sets = client.annotation_sets(dataset.id(), None).await?;
         println!("Annotation Sets:");
         for annotation_set in annotation_sets {
             println!(
@@ -882,7 +985,7 @@ async fn handle_dataset(
     );
 
     if labels {
-        let labels = client.labels(dataset_id_parsed).await?;
+        let labels = client.labels(dataset_id_parsed, None).await?;
         println!("Labels:");
         for label in labels {
             println!("    [{}] {}", label.id(), label.name());
@@ -898,7 +1001,7 @@ async fn handle_dataset(
     }
 
     if annotation_sets {
-        let annotation_sets = client.annotation_sets(dataset_id_parsed).await?;
+        let annotation_sets = client.annotation_sets(dataset_id_parsed, None).await?;
         println!("Annotation Sets:");
         for annotation_set in annotation_sets {
             println!(
@@ -968,6 +1071,7 @@ async fn handle_download_dataset(
     types: Vec<edgefirst_client::FileType>,
     output: PathBuf,
     flatten: bool,
+    tag: Option<String>,
 ) -> Result<(), Error> {
     use indicatif::{ProgressBar, ProgressStyle};
     use tokio::sync::mpsc;
@@ -1005,6 +1109,7 @@ async fn handle_download_dataset(
             output,
             flatten,
             Some(tx),
+            tag.as_deref(),
         )
         .await?;
     Ok(())
@@ -1016,6 +1121,7 @@ async fn handle_download_annotations(
     groups: Vec<String>,
     types: Vec<edgefirst_client::AnnotationType>,
     output: PathBuf,
+    tag: Option<String>,
 ) -> Result<(), Error> {
     use indicatif::{ProgressBar, ProgressStyle};
     use std::io::Write;
@@ -1054,7 +1160,7 @@ async fn handle_download_annotations(
     match format {
         Some(ext) if ext == "json" => {
             let annotations = client
-                .annotations(annotation_set_id, &groups, &types, Some(tx))
+                .annotations(annotation_set_id, &groups, &types, Some(tx), tag.as_deref())
                 .await?;
             let mut file = File::create(&output)?;
             file.write_all(serde_json::to_string_pretty(&annotations)?.as_bytes())?;
@@ -1071,6 +1177,7 @@ async fn handle_download_annotations(
                         &groups,
                         &types,
                         Some(tx),
+                        tag.as_deref(),
                     )
                     .await?;
                 IpcWriter::new(File::create(output).unwrap())
@@ -2709,7 +2816,7 @@ async fn handle_upload_dataset(
         Some(as_id)
     } else if annotations.is_some() {
         // Annotations provided but no annotation_set_id - auto-resolve
-        let existing_sets = client.annotation_sets(dataset_id_parsed).await?;
+        let existing_sets = client.annotation_sets(dataset_id_parsed, None).await?;
         if let Some(first_set) = existing_sets.first() {
             let set_id = first_set.id().to_string();
             println!(
@@ -4313,7 +4420,7 @@ async fn resolve_existing_dataset(
     let annotation_set_id = if let Some(as_id) = annotation_set {
         as_id.try_into()?
     } else {
-        let ann_sets = client.annotation_sets(dataset_id).await?;
+        let ann_sets = client.annotation_sets(dataset_id, None).await?;
         if ann_sets.is_empty() {
             return Err(Error::InvalidParameters(
                 "Dataset has no annotation sets. Create one first or use --name to create a new dataset.".to_owned()
@@ -4864,6 +4971,252 @@ fn init_tracing(args: &Args) -> Option<()> {
     None
 }
 
+// Version subcommand handlers
+
+async fn handle_version_tag_create(
+    client: &Client,
+    dataset: String,
+    name: String,
+    description: Option<String>,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let tag = client
+        .version_tag_create(dataset_id, &name, description.as_deref())
+        .await?;
+    println!("Created tag '{}' at serial {}", tag.name(), tag.serial());
+    println!("  Images:          {}", tag.image_count());
+    println!("  Labels:          {}", tag.label_count());
+    println!("  Annotation Sets: {}", tag.annotation_set_count());
+    if !tag.annotation_counts().is_empty() {
+        println!(
+            "  Annotations:     {}",
+            tag.annotation_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !tag.sensor_counts().is_empty() {
+        println!(
+            "  Sensors:         {}",
+            tag.sensor_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
+async fn handle_version_tag_list(client: &Client, dataset: String) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let tags = client.version_tag_list(dataset_id).await?;
+    if tags.is_empty() {
+        println!("No version tags found.");
+        return Ok(());
+    }
+    println!(
+        "{:<20} {:<10} {:<25} {:<10}",
+        "NAME", "SERIAL", "CREATED", "IMAGES"
+    );
+    println!("{}", "-".repeat(65));
+    for tag in &tags {
+        println!(
+            "{:<20} {:<10} {:<25} {:<10}",
+            tag.name(),
+            tag.serial(),
+            tag.created_at().format("%Y-%m-%d %H:%M:%S UTC"),
+            tag.image_count(),
+        );
+    }
+    Ok(())
+}
+
+async fn handle_version_tag_get(
+    client: &Client,
+    dataset: String,
+    name: String,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let tag = client.version_tag_get(dataset_id, &name).await?;
+    println!("Tag:               {}", tag.name());
+    println!("Serial:            {}", tag.serial());
+    println!("Description:       {}", tag.description());
+    println!("Created By:        {}", tag.created_by());
+    println!(
+        "Created At:        {}",
+        tag.created_at().format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    println!("Images:            {}", tag.image_count());
+    println!("Labels:            {}", tag.label_count());
+    println!("Annotation Sets:   {}", tag.annotation_set_count());
+    if !tag.annotation_counts().is_empty() {
+        println!(
+            "Annotations:       {}",
+            tag.annotation_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !tag.sensor_counts().is_empty() {
+        println!(
+            "Sensors:           {}",
+            tag.sensor_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Some(snapshot_id) = tag.snapshot_id() {
+        println!("Snapshot ID:       {}", snapshot_id);
+    }
+    Ok(())
+}
+
+async fn handle_version_tag_delete(
+    client: &Client,
+    dataset: String,
+    name: String,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let message = client.version_tag_delete(dataset_id, &name).await?;
+    println!("{}", message);
+    Ok(())
+}
+
+async fn handle_version_tag_restore(
+    client: &Client,
+    dataset: String,
+    name: String,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let result = client.version_tag_restore(dataset_id, &name).await?;
+    println!("{}", result.message);
+    println!(
+        "Restored from tag '{}' (serial {})",
+        result.restored_from.tag, result.restored_from.serial
+    );
+    println!("New serial:        {}", result.new_serial);
+    println!(
+        "Restored counts:   {} images, {} labels, {} annotation sets",
+        result.restored_counts.images,
+        result.restored_counts.labels,
+        result.restored_counts.annotation_sets,
+    );
+    Ok(())
+}
+
+async fn handle_version_changelog(
+    client: &Client,
+    dataset: String,
+    from: Option<String>,
+    to: Option<String>,
+    types: Option<Vec<String>>,
+    limit: u64,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let response = client
+        .version_changelog(
+            dataset_id,
+            from.as_deref(),
+            to.as_deref(),
+            types.as_deref(),
+            Some(limit),
+            None,
+        )
+        .await?;
+    if response.entries.is_empty() {
+        println!("No changelog entries found.");
+        return Ok(());
+    }
+    println!("Total entries: {}", response.count);
+    println!();
+    println!(
+        "{:<10} {:<12} {:<16} {:<16} {:<25}",
+        "SERIAL", "OPERATION", "ENTITY TYPE", "USERNAME", "CREATED"
+    );
+    println!("{}", "-".repeat(79));
+    for entry in &response.entries {
+        println!(
+            "{:<10} {:<12} {:<16} {:<16} {:<25}",
+            entry.serial(),
+            entry.operation(),
+            entry.entity_type(),
+            entry.username(),
+            entry.created_at().format("%Y-%m-%d %H:%M:%S UTC"),
+        );
+    }
+    Ok(())
+}
+
+async fn handle_version_current(client: &Client, dataset: String) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let current = client.version_current(dataset_id).await?;
+    println!("Dataset ID:        {}", current.dataset_id);
+    println!("Current Serial:    {}", current.current_serial);
+    if let Some(ref tag) = current.latest_tag {
+        println!(
+            "Latest Tag:        {} (serial {})",
+            tag.name(),
+            tag.serial()
+        );
+    }
+    if !current.tags.is_empty() {
+        println!("Tags:              {}", current.tags.len());
+        for tag in &current.tags {
+            println!("  {} (serial {})", tag.name(), tag.serial());
+        }
+    }
+    if let Some(ref summary) = current.summary {
+        println!("Images:            {}", summary.image_count());
+        println!("Labels:            {}", summary.label_count());
+        println!("Annotation Sets:   {}", summary.annotation_set_count());
+    }
+    Ok(())
+}
+
+async fn handle_version_summary(client: &Client, dataset: String) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset.try_into()?;
+    let summary = client.version_summary(dataset_id).await?;
+    println!("Dataset ID:        {}", summary.dataset_id());
+    println!("Current Serial:    {}", summary.current_serial());
+    println!("Images:            {}", summary.image_count());
+    println!("Labels:            {}", summary.label_count());
+    println!("Annotation Sets:   {}", summary.annotation_set_count());
+    if !summary.annotation_counts().is_empty() {
+        println!(
+            "Annotations:       {}",
+            summary
+                .annotation_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !summary.sensor_counts().is_empty() {
+        println!(
+            "Sensors:           {}",
+            summary
+                .sensor_counts()
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!(
+        "Last Updated:      {}",
+        summary.last_updated().format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Parse arguments first so verbosity and trace file can be configured
@@ -4874,7 +5227,7 @@ async fn main() -> Result<(), Error> {
     let _trace_guard = init_tracing(&args);
 
     // Handle version command early - no authentication needed
-    if args.cmd == Command::Version {
+    if args.cmd == Command::ServerVersion {
         let client = Client::new()?.with_token_path(args.token_path.as_deref())?;
         let client = match args.server {
             Some(server) => client.with_server(&server)?,
@@ -5031,7 +5384,7 @@ async fn main() -> Result<(), Error> {
 
     // Handle all other commands
     match args.cmd {
-        Command::Version | Command::Login | Command::Logout | Command::Sleep { .. } => {
+        Command::ServerVersion | Command::Login | Command::Logout | Command::Sleep { .. } => {
             unreachable!()
         }
         Command::Token => handle_token(&client).await,
@@ -5071,6 +5424,7 @@ async fn main() -> Result<(), Error> {
             output,
             flatten,
             list_types,
+            tag,
         } => {
             if list_types {
                 println!("Valid sensor types:");
@@ -5094,15 +5448,27 @@ async fn main() -> Result<(), Error> {
             })?;
             let output = output.unwrap_or_else(|| ".".into());
             let expanded_types = FileType::expand_types(&types);
-            handle_download_dataset(&client, dataset_id, groups, expanded_types, output, flatten)
-                .await
+            handle_download_dataset(
+                &client,
+                dataset_id,
+                groups,
+                expanded_types,
+                output,
+                flatten,
+                tag,
+            )
+            .await
         }
         Command::DownloadAnnotations {
             annotation_set_id,
             groups,
             types,
             output,
-        } => handle_download_annotations(&client, annotation_set_id, groups, types, output).await,
+            tag,
+        } => {
+            handle_download_annotations(&client, annotation_set_id, groups, types, output, tag)
+                .await
+        }
         Command::UploadDataset {
             dataset_id,
             annotation_set_id,
@@ -5204,6 +5570,34 @@ async fn main() -> Result<(), Error> {
         Command::DeleteSnapshot { snapshot_id } => {
             handle_delete_snapshot(&client, snapshot_id).await
         }
+        Command::Version(cmd) => match cmd {
+            VersionCommands::Tag(tag_cmd) => match tag_cmd {
+                TagCommands::Create {
+                    dataset,
+                    name,
+                    description,
+                } => handle_version_tag_create(&client, dataset, name, description).await,
+                TagCommands::List { dataset } => handle_version_tag_list(&client, dataset).await,
+                TagCommands::Get { dataset, name } => {
+                    handle_version_tag_get(&client, dataset, name).await
+                }
+                TagCommands::Delete { dataset, name } => {
+                    handle_version_tag_delete(&client, dataset, name).await
+                }
+                TagCommands::Restore { dataset, name } => {
+                    handle_version_tag_restore(&client, dataset, name).await
+                }
+            },
+            VersionCommands::Changelog {
+                dataset,
+                from,
+                to,
+                types,
+                limit,
+            } => handle_version_changelog(&client, dataset, from, to, types, limit).await,
+            VersionCommands::Current { dataset } => handle_version_current(&client, dataset).await,
+            VersionCommands::Summary { dataset } => handle_version_summary(&client, dataset).await,
+        },
         // These are handled early without authentication
         Command::GenerateArrow { .. } => unreachable!(),
         Command::ValidateSnapshot { .. } => unreachable!(),

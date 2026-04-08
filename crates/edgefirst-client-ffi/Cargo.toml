@@ -20,6 +20,7 @@ tokio = { workspace = true }
 chrono = { workspace = true }
 thiserror = "1.0"
 async-compat = "0.2"
+serde_json = { workspace = true }
 
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }

@@ -8,6 +8,18 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, fmt::Display, path::PathBuf, str::FromStr};
 
+/// Deserializes a field that may be `null` in JSON as the type's `Default` value.
+/// Unlike `#[serde(default)]` alone (which only handles absent keys), this also
+/// handles explicit `null` values — common with Go's `omitempty` on slice/array fields
+/// where the server may send `null` instead of `[]`.
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Generic parameter value used in API requests and configuration.
 ///
 /// This enum represents various data types that can be passed as parameters
@@ -501,6 +513,8 @@ pub struct SamplesListParams {
     pub types: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub group_names: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1437,6 +1451,325 @@ impl Artifact {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Dataset Versioning Types
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A named version tag that captures a complete dataset state snapshot at a
+/// specific serial number. Tags are immutable once created and enable
+/// reproducible training and validation by referencing an exact dataset state.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct VersionTag {
+    id: u64,
+    dataset_id: u64,
+    name: String,
+    serial: u64,
+    #[serde(default)]
+    description: String,
+    created_by: String,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    image_count: u64,
+    #[serde(default)]
+    annotation_counts: HashMap<String, u64>,
+    #[serde(default)]
+    sensor_counts: HashMap<String, u64>,
+    #[serde(default)]
+    label_count: u64,
+    #[serde(default)]
+    annotation_set_count: u64,
+    #[serde(default)]
+    snapshot_id: Option<u64>,
+}
+
+impl VersionTag {
+    /// Returns the tag's unique identifier.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns the dataset ID this tag belongs to.
+    pub fn dataset_id(&self) -> u64 {
+        self.dataset_id
+    }
+
+    /// Returns the tag name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the changelog serial number this tag references.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// Returns the tag description.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// Returns the username that created this tag.
+    pub fn created_by(&self) -> &str {
+        &self.created_by
+    }
+
+    /// Returns when this tag was created.
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+
+    /// Returns the number of images at tag time.
+    pub fn image_count(&self) -> u64 {
+        self.image_count
+    }
+
+    /// Returns annotation counts by type (e.g., `{"box": 150000, "seg": 20000}`).
+    pub fn annotation_counts(&self) -> &HashMap<String, u64> {
+        &self.annotation_counts
+    }
+
+    /// Returns sensor data counts by type (e.g., `{"lidar": 25000}`).
+    pub fn sensor_counts(&self) -> &HashMap<String, u64> {
+        &self.sensor_counts
+    }
+
+    /// Returns the number of labels at tag time.
+    pub fn label_count(&self) -> u64 {
+        self.label_count
+    }
+
+    /// Returns the number of annotation sets at tag time.
+    pub fn annotation_set_count(&self) -> u64 {
+        self.annotation_set_count
+    }
+
+    /// Returns the optional snapshot export ID.
+    pub fn snapshot_id(&self) -> Option<u64> {
+        self.snapshot_id
+    }
+}
+
+impl Display for VersionTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} (serial {})", self.name, self.serial)
+    }
+}
+
+/// A single entry in the dataset changelog, recording one modification.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ChangelogEntry {
+    id: u64,
+    dataset_id: u64,
+    serial: u64,
+    entity_type: String,
+    operation: String,
+    #[serde(default)]
+    entity_id: Option<u64>,
+    #[serde(default)]
+    change_data: serde_json::Value,
+    username: String,
+    organization_id: u64,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    message: String,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    s3_version_ids: Vec<serde_json::Value>,
+}
+
+impl ChangelogEntry {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn dataset_id(&self) -> u64 {
+        self.dataset_id
+    }
+
+    /// Returns the monotonic serial number for this change.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// Returns the entity type (image, annotation, label, annotation_set, sensor_data, dataset).
+    pub fn entity_type(&self) -> &str {
+        &self.entity_type
+    }
+
+    /// Returns the operation (create, update, delete, bulk_create, bulk_delete, baseline, restore).
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    pub fn entity_id(&self) -> Option<u64> {
+        self.entity_id
+    }
+
+    /// Returns the change details as a JSON value.
+    pub fn change_data(&self) -> &serde_json::Value {
+        &self.change_data
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn organization_id(&self) -> u64 {
+        self.organization_id
+    }
+
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn s3_version_ids(&self) -> &[serde_json::Value] {
+        &self.s3_version_ids
+    }
+}
+
+/// Paginated response from the `version.changelog` endpoint.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ChangelogResponse {
+    pub entries: Vec<ChangelogEntry>,
+    pub count: u64,
+    #[serde(default)]
+    pub continue_token: String,
+    #[serde(default)]
+    pub from_serial: Option<u64>,
+    #[serde(default)]
+    pub to_serial: Option<u64>,
+}
+
+/// Cached metrics summary for a dataset's current state.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct DatasetSummary {
+    dataset_id: u64,
+    current_serial: u64,
+    #[serde(default)]
+    image_count: u64,
+    #[serde(default)]
+    annotation_counts: HashMap<String, u64>,
+    #[serde(default)]
+    sensor_counts: HashMap<String, u64>,
+    #[serde(default)]
+    label_count: u64,
+    #[serde(default)]
+    annotation_set_count: u64,
+    last_updated: DateTime<Utc>,
+}
+
+impl DatasetSummary {
+    pub fn dataset_id(&self) -> u64 {
+        self.dataset_id
+    }
+
+    pub fn current_serial(&self) -> u64 {
+        self.current_serial
+    }
+
+    pub fn image_count(&self) -> u64 {
+        self.image_count
+    }
+
+    pub fn annotation_counts(&self) -> &HashMap<String, u64> {
+        &self.annotation_counts
+    }
+
+    pub fn sensor_counts(&self) -> &HashMap<String, u64> {
+        &self.sensor_counts
+    }
+
+    pub fn label_count(&self) -> u64 {
+        self.label_count
+    }
+
+    pub fn annotation_set_count(&self) -> u64 {
+        self.annotation_set_count
+    }
+
+    pub fn last_updated(&self) -> DateTime<Utc> {
+        self.last_updated
+    }
+}
+
+/// Response from `version.current` with serial, tags, and summary.
+#[derive(Deserialize, Debug, Clone)]
+pub struct VersionCurrentResponse {
+    pub dataset_id: u64,
+    pub current_serial: u64,
+    #[serde(default)]
+    pub latest_tag: Option<VersionTag>,
+    #[serde(default)]
+    pub tags: Vec<VersionTag>,
+    #[serde(default)]
+    pub summary: Option<DatasetSummary>,
+}
+
+/// Source tag information in a restore result.
+#[derive(Deserialize, Debug, Clone)]
+pub struct RestoredFrom {
+    pub tag: String,
+    pub serial: u64,
+}
+
+/// Counts of entities restored.
+#[derive(Deserialize, Debug, Clone)]
+pub struct RestoredCounts {
+    pub images: u64,
+    pub labels: u64,
+    pub annotation_sets: u64,
+}
+
+/// Result from `version.tag.restore`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct RestoreResult {
+    pub success: bool,
+    pub new_serial: u64,
+    pub restored_from: RestoredFrom,
+    pub restored_counts: RestoredCounts,
+    pub message: String,
+}
+
+// RPC parameter structs for versioning endpoints
+
+#[derive(Serialize)]
+pub(crate) struct VersionTagCreateParams {
+    pub dataset_id: DatasetID,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct VersionTagNameParams {
+    pub dataset_id: DatasetID,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct VersionChangelogParams {
+    pub dataset_id: DatasetID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_types: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continue_token: Option<String>,
+}
+
+/// Count result from `version.changelog.count`.
+#[derive(Deserialize, Debug)]
+pub(crate) struct ChangelogCountResult {
+    pub count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2285,4 +2618,125 @@ mod tests {
     test_typeid_conversions!(test_app_id_conversions, AppId, "app", "p");
     test_typeid_conversions!(test_image_id_conversions, ImageId, "im", "se");
     test_typeid_conversions!(test_sequence_id_conversions, SequenceId, "se", "im");
+
+    // ========== Versioning Type Deserialization Tests ==========
+
+    #[test]
+    fn test_version_tag_deserialize_full() {
+        let json = r#"{
+            "id": 456, "dataset_id": 1715004, "name": "training-v1.0",
+            "serial": 42, "description": "Ready for production",
+            "created_by": "user@example.com", "created_at": "2025-01-15T10:30:00Z",
+            "image_count": 50000, "annotation_counts": {"box": 150000, "seg": 20000},
+            "sensor_counts": {"lidar": 25000}, "label_count": 15,
+            "annotation_set_count": 3, "snapshot_id": 789
+        }"#;
+        let tag: VersionTag = serde_json::from_str(json).unwrap();
+        assert_eq!(tag.name(), "training-v1.0");
+        assert_eq!(tag.serial(), 42);
+        assert_eq!(tag.image_count(), 50000);
+        assert_eq!(tag.annotation_counts().get("box"), Some(&150000));
+        assert_eq!(tag.snapshot_id(), Some(789));
+    }
+
+    #[test]
+    fn test_version_tag_deserialize_omitempty() {
+        // snapshot_id absent (Go omitempty) must deserialize as None
+        let json = r#"{
+            "id": 1, "dataset_id": 2, "name": "v1.0", "serial": 5,
+            "description": "", "created_by": "user",
+            "created_at": "2025-01-01T00:00:00Z"
+        }"#;
+        let tag: VersionTag = serde_json::from_str(json).unwrap();
+        assert_eq!(tag.snapshot_id(), None);
+        assert_eq!(tag.image_count(), 0);
+        assert!(tag.annotation_counts().is_empty());
+    }
+
+    #[test]
+    fn test_changelog_entry_deserialize_omitempty() {
+        // entity_id and s3_version_ids absent (Go omitempty)
+        let json = r#"{
+            "id": 1, "dataset_id": 2, "serial": 3, "entity_type": "image",
+            "operation": "bulk_create", "change_data": {"count": 5},
+            "username": "user", "organization_id": 1,
+            "created_at": "2025-01-01T00:00:00Z", "message": ""
+        }"#;
+        let entry: ChangelogEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.entity_id().is_none());
+        assert!(entry.s3_version_ids().is_empty());
+        assert_eq!(entry.entity_type(), "image");
+        assert_eq!(entry.operation(), "bulk_create");
+    }
+
+    #[test]
+    fn test_changelog_response_deserialize() {
+        let json = r#"{
+            "entries": [], "count": 0, "continue_token": ""
+        }"#;
+        let resp: ChangelogResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.entries.is_empty());
+        assert_eq!(resp.count, 0);
+        assert!(resp.continue_token.is_empty());
+        assert!(resp.from_serial.is_none());
+    }
+
+    #[test]
+    fn test_version_current_no_latest_tag() {
+        // latest_tag absent (Go omitempty) must deserialize as None
+        let json = r#"{
+            "dataset_id": 100, "current_serial": 5, "tags": []
+        }"#;
+        let resp: VersionCurrentResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.latest_tag.is_none());
+        assert!(resp.tags.is_empty());
+        assert_eq!(resp.current_serial, 5);
+    }
+
+    #[test]
+    fn test_version_current_with_latest_tag() {
+        let json = r#"{
+            "dataset_id": 100, "current_serial": 42,
+            "latest_tag": {
+                "id": 1, "dataset_id": 100, "name": "v1.0", "serial": 42,
+                "description": "test", "created_by": "user",
+                "created_at": "2025-01-01T00:00:00Z",
+                "image_count": 10, "label_count": 2, "annotation_set_count": 1
+            },
+            "tags": []
+        }"#;
+        let resp: VersionCurrentResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.latest_tag.is_some());
+        assert_eq!(resp.latest_tag.unwrap().name(), "v1.0");
+    }
+
+    #[test]
+    fn test_dataset_summary_deserialize() {
+        let json = r#"{
+            "dataset_id": 100, "current_serial": 10,
+            "image_count": 5000, "annotation_counts": {"box": 10000},
+            "sensor_counts": {}, "label_count": 8,
+            "annotation_set_count": 2, "last_updated": "2025-06-01T12:00:00Z"
+        }"#;
+        let summary: DatasetSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(summary.image_count(), 5000);
+        assert_eq!(summary.label_count(), 8);
+        assert_eq!(summary.annotation_counts().get("box"), Some(&10000));
+    }
+
+    #[test]
+    fn test_restore_result_deserialize() {
+        let json = r#"{
+            "success": true, "new_serial": 45,
+            "restored_from": {"tag": "v1.0", "serial": 42},
+            "restored_counts": {"images": 5000, "labels": 15, "annotation_sets": 3},
+            "message": "Dataset restored to tag v1.0"
+        }"#;
+        let result: RestoreResult = serde_json::from_str(json).unwrap();
+        assert!(result.success);
+        assert_eq!(result.new_serial, 45);
+        assert_eq!(result.restored_from.tag, "v1.0");
+        assert_eq!(result.restored_from.serial, 42);
+        assert_eq!(result.restored_counts.images, 5000);
+    }
 }

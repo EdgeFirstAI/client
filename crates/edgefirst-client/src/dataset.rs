@@ -389,12 +389,20 @@ impl Dataset {
         client.project(self.project_id).await
     }
 
-    pub async fn annotation_sets(&self, client: &Client) -> Result<Vec<AnnotationSet>, Error> {
-        client.annotation_sets(self.id).await
+    pub async fn annotation_sets(
+        &self,
+        client: &Client,
+        version: Option<&str>,
+    ) -> Result<Vec<AnnotationSet>, Error> {
+        client.annotation_sets(self.id, version).await
     }
 
-    pub async fn labels(&self, client: &Client) -> Result<Vec<Label>, Error> {
-        client.labels(self.id).await
+    pub async fn labels(
+        &self,
+        client: &Client,
+        version: Option<&str>,
+    ) -> Result<Vec<Label>, Error> {
+        client.labels(self.id, version).await
     }
 
     pub async fn add_label(&self, client: &Client, name: &str) -> Result<(), Error> {
@@ -402,7 +410,7 @@ impl Dataset {
     }
 
     pub async fn remove_label(&self, client: &Client, name: &str) -> Result<(), Error> {
-        let labels = self.labels(client).await?;
+        let labels = self.labels(client, None).await?;
         let label = labels
             .iter()
             .find(|l| l.name() == name)
@@ -1960,7 +1968,7 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
 /// # let dataset_id = 1.into();
 /// # let annotation_set_id = 1.into();
 /// let samples = client
-///     .samples(dataset_id, Some(annotation_set_id), &[], &[], &[], None)
+///     .samples(dataset_id, Some(annotation_set_id), &[], &[], &[], None, None)
 ///     .await?;
 /// let df = samples_dataframe(&samples)?;
 /// println!("DataFrame shape: {:?}", df.shape());
