@@ -2832,6 +2832,7 @@ impl Client {
     ///         &["train".to_string()],
     ///         &[],
     ///         None,
+    ///         None,
     ///     )
     ///     .await?;
     /// println!("DataFrame shape: {:?}", df.shape());
