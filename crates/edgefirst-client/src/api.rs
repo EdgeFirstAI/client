@@ -1261,6 +1261,7 @@ pub struct TaskInfo {
     #[serde(rename = "type")]
     workflow: String,
     status: Option<String>,
+    #[serde(default)]
     progress: TaskProgress,
     #[serde(rename = "created_date")]
     created: DateTime<Utc>,
@@ -1344,7 +1345,7 @@ impl TaskInfo {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 pub struct TaskProgress {
     stages: Option<HashMap<String, Stage>>,
 }
