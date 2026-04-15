@@ -243,43 +243,6 @@ impl Default for CocoReader {
 }
 
 /// Validate a COCO dataset for consistency.
-/// Derive a COCO-style relative path from an LVIS `coco_url`.
-///
-/// LVIS reuses COCO 2017 images and only records the URL (for example
-/// `http://images.cocodataset.org/val2017/000000397133.jpg`). Everything
-/// after the host is the same relative path COCO stores in `file_name`,
-/// so we strip the scheme and host and return the remainder.
-fn derive_file_name_from_coco_url(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let (_host, path) = after_scheme.split_once('/')?;
-    if path.is_empty() {
-        None
-    } else {
-        Some(path.to_string())
-    }
-}
-
-/// Populate empty `file_name` fields from `coco_url` (LVIS compatibility).
-///
-/// LVIS annotation JSONs omit `file_name`, relying on consumers to parse
-/// `coco_url`. This runs once immediately after deserialisation so every
-/// downstream stage (index building, Arrow conversion, studio upload) can
-/// continue to assume `file_name` is populated.
-fn fill_missing_file_names(dataset: &mut CocoDataset) {
-    for image in &mut dataset.images {
-        if !image.file_name.is_empty() {
-            continue;
-        }
-        if let Some(derived) = image
-            .coco_url
-            .as_deref()
-            .and_then(derive_file_name_from_coco_url)
-        {
-            image.file_name = derived;
-        }
-    }
-}
-
 fn validate_dataset(dataset: &CocoDataset) -> Result<(), Error> {
     let image_ids: HashSet<_> = dataset.images.iter().map(|i| i.id).collect();
     let category_ids: HashSet<_> = dataset.categories.iter().map(|c| c.id).collect();
@@ -309,6 +272,90 @@ fn validate_dataset(dataset: &CocoDataset) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Derive a COCO-style relative path from an LVIS `coco_url`.
+///
+/// LVIS reuses COCO 2017 images and only records the URL (for example
+/// `http://images.cocodataset.org/val2017/000000397133.jpg`). Everything
+/// after the host is the same relative path COCO stores in `file_name`,
+/// so we strip the scheme and host and return the remainder.
+///
+/// Downstream code joins the returned value onto an images base directory
+/// (e.g. `images_dir.join(file_name)`), so the result is sanitised to
+/// guarantee it stays inside that base:
+///
+/// - Leading `/` (absolute path) is rejected — `Path::join` would replace
+///   the base entirely on Unix.
+/// - Any `..` segment is rejected — `Path::join` preserves parent-dir
+///   traversals and would escape the base.
+/// - Windows drive prefixes (`C:\...`) are rejected — `Path::join` would
+///   replace the base on Windows.
+///
+/// Sanitisation failures return `None`; callers leave `file_name` empty,
+/// and later pipeline stages surface a clearer error.
+fn derive_file_name_from_coco_url(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let (_host, path) = after_scheme.split_once('/')?;
+    if path.is_empty() {
+        return None;
+    }
+
+    // Reject absolute paths. A leading `/` would make `Path::join` discard
+    // the images base directory and resolve relative to the filesystem root.
+    if path.starts_with('/') {
+        return None;
+    }
+
+    // Reject any `..` segment. `Path::join` does not normalise parent
+    // components, so `images_dir.join("../etc/passwd")` escapes the base.
+    // Also reject literal backslashes — `Path::components` treats `/` as
+    // the only separator on Unix, so `..\\foo` would slip past a naive
+    // component check on a Linux build.
+    //
+    // Reject any `:` — `Component::Prefix` only fires on Windows builds,
+    // so `C:\\Windows` reads as a single Normal component on Linux and
+    // would be joined onto the base, only to blow up once the resulting
+    // path hits a Windows host. COCO filenames never contain colons, so
+    // this is a safe, portable way to reject drive-letter prefixes.
+    if path.contains('\\') || path.contains(':') {
+        return None;
+    }
+    let as_path = Path::new(path);
+    for component in as_path.components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => continue,
+            // Any of these indicate a non-relative path or a traversal.
+            Component::RootDir
+            | Component::Prefix(_)
+            | Component::ParentDir
+            | Component::CurDir => return None,
+        }
+    }
+
+    Some(path.to_string())
+}
+
+/// Populate empty `file_name` fields from `coco_url` (LVIS compatibility).
+///
+/// LVIS annotation JSONs omit `file_name`, relying on consumers to parse
+/// `coco_url`. This runs once immediately after deserialisation so every
+/// downstream stage (index building, Arrow conversion, studio upload) can
+/// continue to assume `file_name` is populated.
+fn fill_missing_file_names(dataset: &mut CocoDataset) {
+    for image in &mut dataset.images {
+        if !image.file_name.is_empty() {
+            continue;
+        }
+        if let Some(derived) = image
+            .coco_url
+            .as_deref()
+            .and_then(derive_file_name_from_coco_url)
+        {
+            image.file_name = derived;
+        }
+    }
 }
 
 /// Infer group name from COCO annotation filename.
@@ -563,6 +610,46 @@ mod tests {
         );
         assert_eq!(derive_file_name_from_coco_url("host-only"), None);
         assert_eq!(derive_file_name_from_coco_url("http://host/"), None);
+    }
+
+    #[test]
+    fn test_derive_file_name_from_coco_url_rejects_traversal() {
+        // Parent-dir segments must not survive — `Path::join` would otherwise
+        // let `images_dir.join("../etc/passwd")` escape the images base.
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host/../etc/passwd"),
+            None
+        );
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host/val2017/../../etc/passwd"),
+            None
+        );
+        // A lone `.` segment is also rejected (no legitimate reason to keep
+        // it, and refusing keeps the sanitiser easy to reason about).
+        assert_eq!(derive_file_name_from_coco_url("http://host/./foo.jpg"), None);
+    }
+
+    #[test]
+    fn test_derive_file_name_from_coco_url_rejects_absolute_and_windows() {
+        // Leading `/` after the host means the URL encoded an absolute
+        // filesystem path (`http://host//etc/passwd`). `Path::join` drops
+        // the base on Unix when joining an absolute path.
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host//etc/passwd"),
+            None
+        );
+        // Backslashes would slip past a naive Component check on Linux
+        // because `/` is the only separator there.
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host/val2017\\..\\..\\etc"),
+            None
+        );
+        // Windows drive prefix — `Path::join` drops the base on Windows
+        // when joining a path with a drive.
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host/C:/Windows/System32"),
+            None
+        );
     }
 
     #[test]
