@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.9.4] - 2026-04-15
 
+### Security
+
+- Upgrade transitive `rustls-webpki` dependency from `0.103.10` to `0.103.12` to address [RUSTSEC-2026-0098](https://rustsec.org/advisories/RUSTSEC-2026-0098) (name constraints for URI names were incorrectly accepted) and [RUSTSEC-2026-0099](https://rustsec.org/advisories/RUSTSEC-2026-0099) (name constraints were accepted for certificates asserting a wildcard name). Both advisories were published 2026-04-14 and flagged by `cargo audit` on the release branch
+
 ### Fixed
 
 - **LVIS upload polygons were silently dropped by `samples.populate2`.** The `Annotation.polygon` field was renamed from `mask: Mask` in 2.9.0, but its wire key was not preserved — the client started sending `"polygon": [[[x,y]]]` while the server still expects `"mask": [[[x,y]]]`. Every polygon upload since 2.9.0 was lost server-side. Uploads now serialise polygons under the `mask` key again. The `test_annotation_serialization_with_mask_and_box` regression test now asserts the wire key explicitly so this cannot recur
