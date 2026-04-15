@@ -1554,7 +1554,18 @@ pub struct Annotation {
     box2d: Option<Box2d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box3d: Option<Box3d>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Polygon vertices for instance segmentation.
+    ///
+    /// Wire name is `mask` for historical reasons: the Rust field was
+    /// renamed from `mask: Mask` to `polygon: Polygon` after the
+    /// `samples.populate2` contract was already locked in, and the server
+    /// still expects the key to be `mask`. Uploads that emit `polygon`
+    /// here get silently dropped. Deserialisation accepts both names
+    /// because `AnnotationRaw` carries `alias = "mask"`.
+    #[serde(
+        rename(serialize = "mask"),
+        skip_serializing_if = "Option::is_none"
+    )]
     polygon: Option<Polygon>,
     /// PNG-encoded raster mask (populated from Arrow, not from Studio JSON-RPC).
     #[serde(skip)]
@@ -2111,11 +2122,15 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let objects_col: Column = Series::new("object_id".into(), objects).into();
 
     // Column name: "label" (NOT "label_name")
+    //
+    // Physical is U16 so taxonomies larger than 255 labels fit (LVIS v1 has
+    // 1,203 categories). U16 caps at 65,535 — comfortably above any realistic
+    // object-detection taxonomy — and only costs one extra byte per row vs U8.
     let labels_col: Column = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
-            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
+            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U16),
             Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
+                u16::MAX as usize,
                 Default::default(),
             )),
         ))?
@@ -3564,11 +3579,20 @@ mod tests {
 
         let annotation_json = annotations[0].as_object().expect("annotation object");
         assert!(annotation_json.contains_key("box2d"));
-        assert!(annotation_json.contains_key("polygon"));
+        // samples.populate2 expects the polygon geometry under the "mask" key
+        // (historical: struct was renamed Rust-side from Mask to Polygon but
+        // the wire contract did not follow). Emitting "polygon" here is what
+        // caused polygons to be silently dropped on upload.
+        assert!(
+            annotation_json.contains_key("mask"),
+            "Annotation must serialise polygon under 'mask' key for samples.populate2; got keys: {:?}",
+            annotation_json.keys().collect::<Vec<_>>()
+        );
+        assert!(!annotation_json.contains_key("polygon"));
         assert!(!annotation_json.contains_key("x"));
         assert!(
             annotation_json
-                .get("polygon")
+                .get("mask")
                 .and_then(|value| value.as_array())
                 .is_some()
         );

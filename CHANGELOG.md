@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.4] - 2026-04-15
+
+### Security
+
+- Upgrade transitive `rustls-webpki` dependency from `0.103.10` to `0.103.12` to address [RUSTSEC-2026-0098](https://rustsec.org/advisories/RUSTSEC-2026-0098) (name constraints for URI names were incorrectly accepted) and [RUSTSEC-2026-0099](https://rustsec.org/advisories/RUSTSEC-2026-0099) (name constraints were accepted for certificates asserting a wildcard name). Both advisories were published 2026-04-14 and flagged by `cargo audit` on the release branch
+- `derive_file_name_from_coco_url` now rejects absolute paths, `..` traversals, Windows drive prefixes, and backslash separators so a malformed LVIS `coco_url` cannot escape the images directory when joined downstream
+
+### Added
+
+- `make security-audit` target mirroring the `.github/workflows` Security Audit job. Runs `cargo audit` and auto-installs `cargo-audit` if missing. Wired into both `make pre-commit` and `make pre-release` so advisory regressions fail locally before hitting CI
+
+### Fixed
+
+- **LVIS upload polygons were silently dropped by `samples.populate2`.** The `Annotation.polygon` field was renamed from `mask: Mask` in 2.9.0, but its wire key was not preserved — the client started sending `"polygon": [[[x,y]]]` while the server still expects `"mask": [[[x,y]]]`. Every polygon upload since 2.9.0 was lost server-side. Uploads now serialise polygons under the `mask` key again. The `test_annotation_serialization_with_mask_and_box` regression test now asserts the wire key explicitly so this cannot recur
+- `coco-to-arrow` now accepts LVIS v1 annotation JSON, which omits `file_name` on image records and expects consumers to derive the path from `coco_url`. `CocoImage.file_name` is now optional at the Serde layer and populated from `coco_url` during read via `fill_missing_file_names`
+- Arrow `label` column physical type widened from `Categorical(U8)` to `Categorical(U16)` so taxonomies larger than 255 labels fit. LVIS v1 has 1,203 categories and previously hit `"attempted to insert more categories than the maximum allowed"` during conversion
+
 ## [2.9.3] - 2026-04-06
 
 ### Fixed
