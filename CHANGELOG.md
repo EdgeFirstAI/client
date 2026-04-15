@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Upgrade transitive `rustls-webpki` dependency from `0.103.10` to `0.103.12` to address [RUSTSEC-2026-0098](https://rustsec.org/advisories/RUSTSEC-2026-0098) (name constraints for URI names were incorrectly accepted) and [RUSTSEC-2026-0099](https://rustsec.org/advisories/RUSTSEC-2026-0099) (name constraints were accepted for certificates asserting a wildcard name). Both advisories were published 2026-04-14 and flagged by `cargo audit` on the release branch
+- `derive_file_name_from_coco_url` now rejects absolute paths, `..` traversals, Windows drive prefixes, and backslash separators so a malformed LVIS `coco_url` cannot escape the images directory when joined downstream
+
+### Added
+
+- `make security-audit` target mirroring the `.github/workflows` Security Audit job. Runs `cargo audit` and auto-installs `cargo-audit` if missing. Wired into both `make pre-commit` and `make pre-release` so advisory regressions fail locally before hitting CI
 
 ### Fixed
 
