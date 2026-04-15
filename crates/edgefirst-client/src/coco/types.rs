@@ -79,6 +79,12 @@ pub struct CocoImage {
     /// Image height in pixels.
     pub height: u32,
     /// Filename (relative path within the images folder).
+    ///
+    /// Optional on deserialisation to accommodate LVIS, which omits this
+    /// field and expects consumers to derive the path from `coco_url`. See
+    /// `reader::fill_missing_file_names`, which patches LVIS records after
+    /// parsing so the rest of the pipeline can treat COCO and LVIS uniformly.
+    #[serde(default)]
     pub file_name: String,
     /// License ID (references `CocoLicense.id`).
     #[serde(default)]

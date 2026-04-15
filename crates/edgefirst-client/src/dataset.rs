@@ -2111,11 +2111,15 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let objects_col: Column = Series::new("object_id".into(), objects).into();
 
     // Column name: "label" (NOT "label_name")
+    //
+    // Physical is U16 so taxonomies larger than 255 labels fit (LVIS v1 has
+    // 1,203 categories). U16 caps at 65,535 — comfortably above any realistic
+    // object-detection taxonomy — and only costs one extra byte per row vs U8.
     let labels_col: Column = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
-            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
+            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U16),
             Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
+                u16::MAX as usize,
                 Default::default(),
             )),
         ))?

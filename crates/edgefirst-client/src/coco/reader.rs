@@ -67,7 +67,8 @@ impl CocoReader {
     pub fn read_json<P: AsRef<Path>>(&self, path: P) -> Result<CocoDataset, Error> {
         let file = File::open(path.as_ref())?;
         let reader = BufReader::with_capacity(64 * 1024, file);
-        let dataset: CocoDataset = serde_json::from_reader(reader)?;
+        let mut dataset: CocoDataset = serde_json::from_reader(reader)?;
+        fill_missing_file_names(&mut dataset);
 
         if self.options.validate {
             validate_dataset(&dataset)?;
@@ -103,7 +104,8 @@ impl CocoReader {
                 let mut contents = String::new();
                 entry.read_to_string(&mut contents)?;
 
-                let dataset: CocoDataset = serde_json::from_str(&contents)?;
+                let mut dataset: CocoDataset = serde_json::from_str(&contents)?;
+                fill_missing_file_names(&mut dataset);
                 merge_datasets(&mut merged, dataset);
             }
         }
@@ -241,6 +243,43 @@ impl Default for CocoReader {
 }
 
 /// Validate a COCO dataset for consistency.
+/// Derive a COCO-style relative path from an LVIS `coco_url`.
+///
+/// LVIS reuses COCO 2017 images and only records the URL (for example
+/// `http://images.cocodataset.org/val2017/000000397133.jpg`). Everything
+/// after the host is the same relative path COCO stores in `file_name`,
+/// so we strip the scheme and host and return the remainder.
+fn derive_file_name_from_coco_url(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let (_host, path) = after_scheme.split_once('/')?;
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// Populate empty `file_name` fields from `coco_url` (LVIS compatibility).
+///
+/// LVIS annotation JSONs omit `file_name`, relying on consumers to parse
+/// `coco_url`. This runs once immediately after deserialisation so every
+/// downstream stage (index building, Arrow conversion, studio upload) can
+/// continue to assume `file_name` is populated.
+fn fill_missing_file_names(dataset: &mut CocoDataset) {
+    for image in &mut dataset.images {
+        if !image.file_name.is_empty() {
+            continue;
+        }
+        if let Some(derived) = image
+            .coco_url
+            .as_deref()
+            .and_then(derive_file_name_from_coco_url)
+        {
+            image.file_name = derived;
+        }
+    }
+}
+
 fn validate_dataset(dataset: &CocoDataset) -> Result<(), Error> {
     let image_ids: HashSet<_> = dataset.images.iter().map(|i| i.id).collect();
     let category_ids: HashSet<_> = dataset.categories.iter().map(|c| c.id).collect();
@@ -506,6 +545,70 @@ mod tests {
         let reader = CocoReader::with_options(options.clone());
         assert!(reader.options.validate);
         assert_eq!(reader.options.max_images, 100);
+    }
+
+    #[test]
+    fn test_derive_file_name_from_coco_url() {
+        assert_eq!(
+            derive_file_name_from_coco_url(
+                "http://images.cocodataset.org/val2017/000000397133.jpg"
+            ),
+            Some("val2017/000000397133.jpg".to_string())
+        );
+        assert_eq!(
+            derive_file_name_from_coco_url(
+                "https://images.cocodataset.org/train2017/000000000009.jpg"
+            ),
+            Some("train2017/000000000009.jpg".to_string())
+        );
+        assert_eq!(derive_file_name_from_coco_url("host-only"), None);
+        assert_eq!(derive_file_name_from_coco_url("http://host/"), None);
+    }
+
+    #[test]
+    fn test_fill_missing_file_names_from_lvis_json() {
+        // LVIS-style image record: no `file_name`, only `coco_url`.
+        let json = r#"{
+            "images": [
+                {
+                    "id": 397133,
+                    "width": 640,
+                    "height": 427,
+                    "coco_url": "http://images.cocodataset.org/val2017/000000397133.jpg",
+                    "neg_category_ids": [279, 899],
+                    "not_exhaustive_category_ids": [914]
+                }
+            ],
+            "annotations": [],
+            "categories": []
+        }"#;
+        let mut dataset: CocoDataset = serde_json::from_str(json).unwrap();
+        assert_eq!(dataset.images[0].file_name, "");
+        fill_missing_file_names(&mut dataset);
+        assert_eq!(dataset.images[0].file_name, "val2017/000000397133.jpg");
+        // LVIS extension fields survive deserialisation.
+        assert_eq!(
+            dataset.images[0].neg_category_ids.as_deref(),
+            Some(&[279u32, 899][..])
+        );
+    }
+
+    #[test]
+    fn test_fill_missing_file_names_preserves_existing() {
+        // COCO-style records already carry `file_name`; we must not clobber them.
+        let mut dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "custom/path.jpg".to_string(),
+                coco_url: Some("http://images.cocodataset.org/val2017/foo.jpg".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        fill_missing_file_names(&mut dataset);
+        assert_eq!(dataset.images[0].file_name, "custom/path.jpg");
     }
 
     #[test]
