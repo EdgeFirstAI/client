@@ -1562,10 +1562,7 @@ pub struct Annotation {
     /// still expects the key to be `mask`. Uploads that emit `polygon`
     /// here get silently dropped. Deserialisation accepts both names
     /// because `AnnotationRaw` carries `alias = "mask"`.
-    #[serde(
-        rename(serialize = "mask"),
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename(serialize = "mask"), skip_serializing_if = "Option::is_none")]
     polygon: Option<Polygon>,
     /// PNG-encoded raster mask (populated from Arrow, not from Studio JSON-RPC).
     #[serde(skip)]

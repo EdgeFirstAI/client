@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CocoDatasetBuilder::add_annotation_with_id` accepts an optional explicit annotation ID. When `Some`, the supplied ID is used verbatim and `next_annotation_id` is bumped past it so subsequent auto-generated IDs do not collide; when `None`, behaviour matches the pre-existing auto-increment path. Mirrors `add_category_with_id` semantics. Used to round-trip COCO/LVIS annotation IDs through Arrow
+
+### Fixed
+
+- **Arrow ↔ COCO/LVIS now round-trip annotation IDs losslessly.** `coco-to-arrow` populates the `object_id` column from the source COCO/LVIS annotation `id`, and `arrow-to-coco` reads `object_id` back, parses it as `u64`, and threads it into the `CocoDatasetBuilder` so the original ID is preserved in the output JSON. Previously every row was emitted with `object_id = None` on import and a fresh auto-incremented `id` on export, breaking downstream tools that rely on a stable per-instance identifier — most notably prompted-segmentation workflows where the annotation ID is the join key linking a predicted mask back to the ground-truth instance that prompted it. Source IDs are stringified as decimal `u64` so the full LVIS v1.0 ID range round-trips. Non-numeric `object_id` values (e.g., MCAP-derived instance UUIDs) parse to `None` and fall back to the auto-increment path on export
+
 ## [2.9.4] - 2026-04-15
 
 ### Security

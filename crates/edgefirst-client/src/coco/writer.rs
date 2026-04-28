@@ -487,8 +487,48 @@ impl CocoDatasetBuilder {
         segmentation: Option<CocoSegmentation>,
         iscrowd: u8,
     ) -> u64 {
-        let id = self.next_annotation_id;
-        self.next_annotation_id += 1;
+        self.add_annotation_with_id(None, image_id, category_id, bbox, segmentation, iscrowd)
+    }
+
+    /// Add an annotation with an optional explicit ID and iscrowd flag,
+    /// returning its ID.
+    ///
+    /// When `id` is `Some(explicit)`, the caller-supplied ID is used directly
+    /// and `next_annotation_id` is bumped past it so that subsequent
+    /// auto-generated IDs do not collide. When `id` is `None`, an
+    /// auto-incremented ID is assigned (the standard path).
+    ///
+    /// Used to round-trip COCO/LVIS datasets through Arrow while preserving
+    /// the original annotation `id` for downstream tools that rely on a
+    /// stable per-instance identifier (most notably prompted-segmentation
+    /// workflows where the ID links a predicted mask back to the
+    /// ground-truth instance that prompted it).
+    ///
+    /// Caller is responsible for ensuring uniqueness across explicit IDs
+    /// (mirrors [`add_category_with_id`](Self::add_category_with_id)
+    /// semantics).
+    pub fn add_annotation_with_id(
+        &mut self,
+        id: Option<u64>,
+        image_id: u64,
+        category_id: u32,
+        bbox: [f64; 4],
+        segmentation: Option<CocoSegmentation>,
+        iscrowd: u8,
+    ) -> u64 {
+        let id = match id {
+            Some(explicit) => {
+                if explicit >= self.next_annotation_id {
+                    self.next_annotation_id = explicit + 1;
+                }
+                explicit
+            }
+            None => {
+                let auto = self.next_annotation_id;
+                self.next_annotation_id += 1;
+                auto
+            }
+        };
 
         let area = bbox[2] * bbox[3]; // Default area from bbox
 
@@ -681,6 +721,41 @@ mod tests {
         assert_eq!(dataset.categories.len(), 2);
         assert_eq!(dataset.images.len(), 2);
         assert_eq!(dataset.annotations.len(), 2);
+    }
+
+    #[test]
+    fn test_add_annotation_with_explicit_id_preserves_id_and_advances_counter() {
+        let mut builder = CocoDatasetBuilder::new();
+        let cat = builder.add_category("dog", None);
+        let img = builder.add_image("image.jpg", 640, 480);
+
+        // Explicit ID is preserved verbatim.
+        let ann = builder.add_annotation_with_id(
+            Some(9_876_543_210),
+            img,
+            cat,
+            [10.0, 20.0, 100.0, 80.0],
+            None,
+            0,
+        );
+        assert_eq!(ann, 9_876_543_210);
+
+        // Subsequent auto-generated IDs do not collide with the explicit one.
+        let ann_auto = builder.add_annotation(img, cat, [0.0, 0.0, 1.0, 1.0], None);
+        assert!(
+            ann_auto > 9_876_543_210,
+            "auto-generated annotation id ({ann_auto}) must be greater than the largest explicit id"
+        );
+
+        // None preserves the existing auto-increment behaviour even when the
+        // counter has been bumped past a large explicit ID.
+        let ann_none =
+            builder.add_annotation_with_id(None, img, cat, [0.0, 0.0, 1.0, 1.0], None, 0);
+        assert_eq!(ann_none, ann_auto + 1);
+
+        let dataset = builder.build();
+        assert_eq!(dataset.annotations.len(), 3);
+        assert_eq!(dataset.annotations[0].id, 9_876_543_210);
     }
 
     #[test]

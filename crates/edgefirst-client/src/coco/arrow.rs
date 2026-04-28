@@ -320,6 +320,7 @@ fn convert_image_annotations(
 
             let mut annotation = Annotation::new();
             annotation.set_name(Some(sample_name.clone()));
+            annotation.set_object_id(Some(ann.id.to_string()));
             annotation.set_label(Some(label.to_string()));
             annotation.set_label_index(label_index);
             annotation.set_box2d(Some(box2d));
@@ -596,6 +597,32 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let polygon_scores: Vec<Option<f32>> = extract_f32_column(&df, "polygon_score", total_rows);
     let mask_scores: Vec<Option<f32>> = extract_f32_column(&df, "mask_score", total_rows);
 
+    // Extract object_id column (optional, String) and parse to u64 where
+    // possible. This preserves the source COCO/LVIS annotation `id` across
+    // the Arrow→COCO round-trip so downstream tools (e.g., prompted-
+    // segmentation workflows that key on ann.id) see the original IDs.
+    //
+    // Non-numeric object_ids — produced by datasets whose instances carry
+    // string UUIDs rather than COCO numeric IDs — parse to None and fall
+    // through to auto-generated IDs in the builder. This is intentional:
+    // COCO requires numeric annotation IDs, and a UUID has no meaningful
+    // numeric projection.
+    let object_id_u64s: Vec<Option<u64>> = df
+        .column("object_id")
+        .ok()
+        .and_then(|c| c.cast(&DataType::String).ok())
+        .map(|c| {
+            c.str()
+                .ok()
+                .map(|s| {
+                    s.into_iter()
+                        .map(|v| v.and_then(|s| s.parse::<u64>().ok()))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![None; total_rows])
+        })
+        .unwrap_or_else(|| vec![None; total_rows]);
+
     // Build COCO dataset
     let mut builder = CocoDatasetBuilder::new();
 
@@ -742,7 +769,8 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
 
         if let Some(bbox) = bbox {
             let iscrowd = iscrowds[i];
-            let ann_id = builder.add_annotation_with_iscrowd(
+            let ann_id = builder.add_annotation_with_id(
+                object_id_u64s[i],
                 image_id,
                 category_id,
                 bbox,
@@ -1251,7 +1279,7 @@ mod tests {
                 ..Default::default()
             }],
             annotations: vec![CocoAnnotation {
-                id: 1,
+                id: 42,
                 image_id: 1,
                 category_id: 1,
                 bbox: [100.0, 100.0, 200.0, 200.0],
@@ -1271,6 +1299,12 @@ mod tests {
         assert_eq!(samples[0].group, Some("train".to_string()));
         assert_eq!(samples[0].annotations.len(), 1);
         assert_eq!(samples[0].annotations[0].label(), Some(&"cat".to_string()));
+        assert_eq!(
+            samples[0].annotations[0].object_id(),
+            Some(&"42".to_string()),
+            "object_id must be populated from COCO annotation id to enable \
+             prediction-to-prompt linking in prompted-segmentation workflows",
+        );
     }
 
     #[test]
@@ -1315,6 +1349,54 @@ mod tests {
         // With masks disabled
         let samples_no_mask = convert_image_annotations(&image, &index, false, None);
         assert!(samples_no_mask[0].annotations[0].polygon().is_none());
+    }
+
+    #[test]
+    fn test_convert_image_annotations_object_id_from_lvis_large_id() {
+        // LVIS v1.0 annotation IDs are u64 and routinely exceed 32-bit range
+        // (the public release goes well past 2 billion). This test guards
+        // against any future change that silently truncates on the path from
+        // CocoAnnotation.id (u64) to Annotation.object_id (String).
+        let image = CocoImage {
+            id: 397133,
+            width: 640,
+            height: 480,
+            file_name: "000000397133.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let large_id: u64 = 9_876_543_210;
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 16,
+                name: "dog".to_string(),
+                synset: Some("dog.n.01".to_string()),
+                frequency: Some("f".to_string()),
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: large_id,
+                image_id: 397133,
+                category_id: 16,
+                bbox: [192.81, 224.8, 74.73, 33.43],
+                area: 1035.7,
+                iscrowd: 0,
+                segmentation: None,
+                score: None,
+            }],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+        let samples = convert_image_annotations(&image, &index, true, None);
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].annotations.len(), 1);
+        assert_eq!(
+            samples[0].annotations[0].object_id(),
+            Some(&large_id.to_string()),
+        );
     }
 
     #[test]
@@ -1493,6 +1575,94 @@ mod tests {
 
         // Check category name preserved
         assert_eq!(restored.categories[0].name, "person");
+    }
+
+    #[tokio::test]
+    async fn test_arrow_to_coco_roundtrip_preserves_annotation_id() {
+        // Asserts the COCO/LVIS annotation `id` survives the full
+        // JSON → Arrow → JSON round-trip. The IDs deliberately mix a
+        // small value (1) with a 33-bit value (9_876_543_210) to catch
+        // any future regression that silently truncates to u32 along
+        // the path.
+        let temp_dir = TempDir::new().unwrap();
+
+        let large_id: u64 = 9_876_543_210;
+        let original = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 640,
+                height: 480,
+                file_name: "test.jpg".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![
+                CocoAnnotation {
+                    id: 1,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [10.0, 20.0, 100.0, 80.0],
+                    area: 8000.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                    score: None,
+                },
+                CocoAnnotation {
+                    id: large_id,
+                    image_id: 1,
+                    category_id: 1,
+                    bbox: [200.0, 200.0, 100.0, 100.0],
+                    area: 10000.0,
+                    iscrowd: 0,
+                    segmentation: None,
+                    score: None,
+                },
+            ],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                supercategory: Some("human".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let coco_path = temp_dir.path().join("original.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&original, &coco_path).unwrap();
+
+        let arrow_path = temp_dir.path().join("converted.arrow");
+        coco_to_arrow(
+            &coco_path,
+            &arrow_path,
+            &CocoToArrowOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let restored_path = temp_dir.path().join("restored.json");
+        arrow_to_coco(
+            &arrow_path,
+            &restored_path,
+            &ArrowToCocoOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let restored = CocoReader::new().read_json(&restored_path).unwrap();
+        assert_eq!(restored.annotations.len(), 2);
+
+        let restored_ids: std::collections::HashSet<u64> =
+            restored.annotations.iter().map(|a| a.id).collect();
+        assert!(
+            restored_ids.contains(&1),
+            "small annotation id (1) must round-trip; got {restored_ids:?}"
+        );
+        assert!(
+            restored_ids.contains(&large_id),
+            "33-bit LVIS-scale annotation id ({large_id}) must round-trip; got {restored_ids:?}"
+        );
     }
 
     // =========================================================================
