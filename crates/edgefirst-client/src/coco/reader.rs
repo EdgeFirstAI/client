@@ -626,7 +626,10 @@ mod tests {
         );
         // A lone `.` segment is also rejected (no legitimate reason to keep
         // it, and refusing keeps the sanitiser easy to reason about).
-        assert_eq!(derive_file_name_from_coco_url("http://host/./foo.jpg"), None);
+        assert_eq!(
+            derive_file_name_from_coco_url("http://host/./foo.jpg"),
+            None
+        );
     }
 
     #[test]
