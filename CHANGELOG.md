@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Upgrade transitive `rustls-webpki` dependency from `0.103.12` to `0.103.13` to address [RUSTSEC-2026-0104](https://rustsec.org/advisories/RUSTSEC-2026-0104) — a reachable panic in certificate revocation list parsing. Follow-up to the `0.103.10 → 0.103.12` bump in 2.9.4 (RUSTSEC-2026-0098/0099)
+
 ### Added
 
 - `CocoDatasetBuilder::add_annotation_with_id` accepts an optional explicit annotation ID. When `Some`, the supplied ID is used verbatim and `next_annotation_id` is bumped past it so subsequent auto-generated IDs do not collide; when `None`, behaviour matches the pre-existing auto-increment path. Mirrors `add_category_with_id` semantics. Used to round-trip COCO/LVIS annotation IDs through Arrow
