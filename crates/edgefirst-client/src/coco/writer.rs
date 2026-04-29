@@ -516,16 +516,21 @@ impl CocoDatasetBuilder {
         segmentation: Option<CocoSegmentation>,
         iscrowd: u8,
     ) -> u64 {
+        // Use saturating_add when advancing the counter so an explicit ID
+        // at u64::MAX (or the auto path approaching it) cannot wrap to 0
+        // and silently collide with the small IDs that the auto path
+        // started at. Saturating produces a duplicate ID at exhaustion,
+        // which is bad but strictly better than the alternative.
         let id = match id {
             Some(explicit) => {
                 if explicit >= self.next_annotation_id {
-                    self.next_annotation_id = explicit + 1;
+                    self.next_annotation_id = explicit.saturating_add(1);
                 }
                 explicit
             }
             None => {
                 let auto = self.next_annotation_id;
-                self.next_annotation_id += 1;
+                self.next_annotation_id = self.next_annotation_id.saturating_add(1);
                 auto
             }
         };
@@ -756,6 +761,36 @@ mod tests {
         let dataset = builder.build();
         assert_eq!(dataset.annotations.len(), 3);
         assert_eq!(dataset.annotations[0].id, 9_876_543_210);
+    }
+
+    #[test]
+    fn test_add_annotation_with_explicit_id_at_u64_max_does_not_panic_or_wrap() {
+        // Defends against the overflow path flagged in PR review: an
+        // explicit ID at u64::MAX must not panic (debug builds) or wrap
+        // to 0 (release builds) when the counter is bumped past it. The
+        // current saturating implementation produces a duplicate ID at
+        // exhaustion, which is undesirable but strictly better than the
+        // wrap-to-zero alternative that would silently collide with the
+        // small IDs the auto path initially issues.
+        let mut builder = CocoDatasetBuilder::new();
+        let cat = builder.add_category("dog", None);
+        let img = builder.add_image("image.jpg", 640, 480);
+
+        let max = builder.add_annotation_with_id(
+            Some(u64::MAX),
+            img,
+            cat,
+            [0.0, 0.0, 1.0, 1.0],
+            None,
+            0,
+        );
+        assert_eq!(max, u64::MAX);
+
+        // The next auto-assigned ID saturates rather than wrapping;
+        // we explicitly tolerate the duplicate since the alternative
+        // (wrap-to-0) is worse.
+        let saturated = builder.add_annotation(img, cat, [0.0, 0.0, 1.0, 1.0], None);
+        assert_eq!(saturated, u64::MAX);
     }
 
     #[test]
