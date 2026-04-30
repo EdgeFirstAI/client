@@ -776,14 +776,8 @@ mod tests {
         let cat = builder.add_category("dog", None);
         let img = builder.add_image("image.jpg", 640, 480);
 
-        let max = builder.add_annotation_with_id(
-            Some(u64::MAX),
-            img,
-            cat,
-            [0.0, 0.0, 1.0, 1.0],
-            None,
-            0,
-        );
+        let max =
+            builder.add_annotation_with_id(Some(u64::MAX), img, cat, [0.0, 0.0, 1.0, 1.0], None, 0);
         assert_eq!(max, u64::MAX);
 
         // The next auto-assigned ID saturates rather than wrapping;
