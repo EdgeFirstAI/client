@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.5] - 2026-04-29
+
 ### Security
 
 - Upgrade transitive `rustls-webpki` dependency from `0.103.12` to `0.103.13` to address [RUSTSEC-2026-0104](https://rustsec.org/advisories/RUSTSEC-2026-0104) — a reachable panic in certificate revocation list parsing. Follow-up to the `0.103.10 → 0.103.12` bump in 2.9.4 (RUSTSEC-2026-0098/0099)
