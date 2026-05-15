@@ -73,7 +73,9 @@ pub(crate) fn map_rpc_error(
     // (see api.go), so we return the typed variant unconditionally when the
     // caller supplied a task_id — message phrasing is treated as informational
     // and is preserved by the RPC layer for diagnostic logging upstream.
-    if code == 101 && let Some(id) = task_id {
+    if code == 101
+        && let Some(id) = task_id
+    {
         return Error::TaskNotFound(id);
     }
     match code {

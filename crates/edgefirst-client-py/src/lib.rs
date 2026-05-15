@@ -4488,10 +4488,13 @@ impl TaskInfo {
             }
             None => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(
-                    self.0
-                        .download_data(&client.0, file, folder.as_deref(), &output_path, None),
-                )?;
+                rt.block_on(self.0.download_data(
+                    &client.0,
+                    file,
+                    folder.as_deref(),
+                    &output_path,
+                    None,
+                ))?;
                 Ok(())
             }
         }
