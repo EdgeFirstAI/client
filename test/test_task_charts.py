@@ -13,7 +13,7 @@ Requires STUDIO_USERNAME and STUDIO_PASSWORD credentials. Skips when unavailable
 import os
 import unittest
 
-from edgefirst_client import Parameter
+from edgefirst_client import Parameter, TaskID
 
 from test import get_client
 
@@ -28,12 +28,13 @@ class TestTaskCharts(unittest.TestCase):
         password = os.environ.get("STUDIO_PASSWORD")
 
         if not username or not password:
-            raise RuntimeError(
-                "STUDIO_USERNAME and STUDIO_PASSWORD required for task chart tests"
+            raise unittest.SkipTest(
+                "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping task chart tests"
             )
 
         cls.client = get_client()
-        cls.task_id = os.environ.get("STUDIO_TEST_TASK_ID")
+        raw_id = os.environ.get("STUDIO_TEST_TASK_ID")
+        cls.task_id = TaskID(raw_id) if raw_id else None
 
     @unittest.skipIf(
         not (os.environ.get("STUDIO_USERNAME") and os.environ.get("STUDIO_PASSWORD")),

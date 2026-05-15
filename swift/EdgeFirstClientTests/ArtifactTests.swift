@@ -389,87 +389,14 @@ final class ArtifactTests: XCTestCase {
   }
 
   // MARK: - ValidationSession Offline Tests
-
-  /// Test ValidationSession struct construction.
-  func testValidationSessionConstruction() {
-    let session = ValidationSession(
-      id: ValidationSessionId(value: 200),
-      experimentId: ExperimentId(value: 50),
-      trainingSessionId: TrainingSessionId(value: 100),
-      datasetId: DatasetId(value: 75),
-      annotationSetId: AnnotationSetId(value: 25),
-      description: "Validation on test dataset"
-    )
-
-    XCTAssertEqual(session.id.value, 200)
-    XCTAssertEqual(session.experimentId.value, 50)
-    XCTAssertEqual(session.trainingSessionId.value, 100)
-    XCTAssertEqual(session.datasetId.value, 75)
-    XCTAssertEqual(session.annotationSetId.value, 25)
-    XCTAssertEqual(session.description, "Validation on test dataset")
-  }
-
-  /// Test ValidationSession equality.
-  func testValidationSessionEquality() {
-    let session1 = ValidationSession(
-      id: ValidationSessionId(value: 100),
-      experimentId: ExperimentId(value: 50),
-      trainingSessionId: TrainingSessionId(value: 25),
-      datasetId: DatasetId(value: 30),
-      annotationSetId: AnnotationSetId(value: 10),
-      description: "Test"
-    )
-
-    let session2 = ValidationSession(
-      id: ValidationSessionId(value: 100),
-      experimentId: ExperimentId(value: 50),
-      trainingSessionId: TrainingSessionId(value: 25),
-      datasetId: DatasetId(value: 30),
-      annotationSetId: AnnotationSetId(value: 10),
-      description: "Test"
-    )
-
-    let session3 = ValidationSession(
-      id: ValidationSessionId(value: 101),
-      experimentId: ExperimentId(value: 51),
-      trainingSessionId: TrainingSessionId(value: 26),
-      datasetId: DatasetId(value: 31),
-      annotationSetId: AnnotationSetId(value: 11),
-      description: "Different"
-    )
-
-    XCTAssertEqual(session1, session2)
-    XCTAssertNotEqual(session1, session3)
-  }
-
-  /// Test ValidationSession hashability.
-  func testValidationSessionHashability() {
-    var sessionSet: Set<ValidationSession> = []
-
-    let session1 = ValidationSession(
-      id: ValidationSessionId(value: 100),
-      experimentId: ExperimentId(value: 50),
-      trainingSessionId: TrainingSessionId(value: 25),
-      datasetId: DatasetId(value: 30),
-      annotationSetId: AnnotationSetId(value: 10),
-      description: "Session1"
-    )
-
-    let session2 = ValidationSession(
-      id: ValidationSessionId(value: 101),
-      experimentId: ExperimentId(value: 51),
-      trainingSessionId: TrainingSessionId(value: 26),
-      datasetId: DatasetId(value: 31),
-      annotationSetId: AnnotationSetId(value: 11),
-      description: "Session2"
-    )
-
-    sessionSet.insert(session1)
-    sessionSet.insert(session2)
-    sessionSet.insert(session1)  // Duplicate
-
-    XCTAssertEqual(sessionSet.count, 2)
-  }
+  //
+  // `ValidationSession` is exposed as a uniffi `Object` (not a Record) so it
+  // can carry methods like `uploadData` / `downloadData` / `dataList`. Object
+  // types do not have field-based initializers in Swift, do not derive
+  // value-equality, and are not Hashable; the previous Record-style tests
+  // covering construction / equality / hashability were therefore removed.
+  // End-to-end behaviour is covered by online tests in `ClientTests.swift`
+  // and the Python integration suite under `test/test_val_data.py`.
 
   /// Test ValidationSessionId construction.
   func testValidationSessionIdConstruction() {

@@ -3806,13 +3806,14 @@ public struct Job: Equatable, Hashable {
      */
     public let launch: String?
     /**
-     * The Studio task id linked to this job.
+     * The Studio task id linked to this job, ready to pass directly to
+     * `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
      *
-     * The server emits Go `int64`; negative values are clamped to 0 by the
-     * core `task_id()` accessor, so callers should prefer `task_id()` when
-     * calling `Client::task_info` to obtain the task handle.
+     * The server emits Go `int64`; negative values are clamped to 0 via the
+     * core `task_id()` accessor before being exposed to FFI callers, so this
+     * field is always a well-formed `TaskId`.
      */
-    public let taskId: Int64
+    public let taskId: TaskId
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3836,12 +3837,13 @@ public struct Job: Equatable, Hashable {
          * Job launch timestamp as RFC 3339 string, if known.
          */launch: String?, 
         /**
-         * The Studio task id linked to this job.
+         * The Studio task id linked to this job, ready to pass directly to
+         * `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
          *
-         * The server emits Go `int64`; negative values are clamped to 0 by the
-         * core `task_id()` accessor, so callers should prefer `task_id()` when
-         * calling `Client::task_info` to obtain the task handle.
-         */taskId: Int64) {
+         * The server emits Go `int64`; negative values are clamped to 0 via the
+         * core `task_id()` accessor before being exposed to FFI callers, so this
+         * field is always a well-formed `TaskId`.
+         */taskId: TaskId) {
         self.code = code
         self.title = title
         self.jobName = jobName
@@ -3873,7 +3875,7 @@ public struct FfiConverterTypeJob: FfiConverterRustBuffer {
                 jobId: FfiConverterString.read(from: &buf), 
                 state: FfiConverterString.read(from: &buf), 
                 launch: FfiConverterOptionString.read(from: &buf), 
-                taskId: FfiConverterInt64.read(from: &buf)
+                taskId: FfiConverterTypeTaskId.read(from: &buf)
         )
     }
 
@@ -3884,7 +3886,7 @@ public struct FfiConverterTypeJob: FfiConverterRustBuffer {
         FfiConverterString.write(value.jobId, into: &buf)
         FfiConverterString.write(value.state, into: &buf)
         FfiConverterOptionString.write(value.launch, into: &buf)
-        FfiConverterInt64.write(value.taskId, into: &buf)
+        FfiConverterTypeTaskId.write(value.taskId, into: &buf)
     }
 }
 

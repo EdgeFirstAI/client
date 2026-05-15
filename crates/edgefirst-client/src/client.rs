@@ -61,17 +61,27 @@ use polars::prelude::*;
 /// - `101` – resource not found (e.g. "Cannot find task...", "not found in DB")
 /// - `401` – unauthenticated
 /// - `403` – forbidden
+/// - `413` – payload too large
 pub(crate) fn map_rpc_error(
     method: &str,
     code: i32,
     message: String,
     task_id: Option<crate::api::TaskID>,
 ) -> Error {
+    // Server emits "Cannot find task...", "not found in DB", and other phrasings
+    // for code 101. Code 101 with a task_id is task-not-found by contract
+    // (see api.go), so we return the typed variant unconditionally when the
+    // caller supplied a task_id — message phrasing is treated as informational
+    // and is preserved by the RPC layer for diagnostic logging upstream.
+    if code == 101 && let Some(id) = task_id {
+        return Error::TaskNotFound(id);
+    }
     match code {
-        101 if message.to_lowercase().contains("not found") && task_id.is_some() => {
-            Error::TaskNotFound(task_id.unwrap())
-        }
         401 | 403 => Error::PermissionDenied(method.to_string()),
+        413 => Error::PayloadTooLarge {
+            method: method.to_string(),
+            size_hint: None,
+        },
         _ => Error::RpcError(code, message),
     }
 }
@@ -5671,6 +5681,53 @@ mod tests_map_rpc_error {
     }
 
     #[test]
+    fn maps_cannot_find_phrasing_to_typed_variant() {
+        // The DVE server emits "Cannot find task..." — the original "not found"
+        // substring match missed this and the caller saw a generic RpcError.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "Cannot find task with id 6789".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "'Cannot find task' should map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn maps_does_not_exist_phrasing_to_typed_variant() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.chart.get",
+            101,
+            "task does not exist".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_code_101_with_unknown_phrasing_when_task_id_supplied() {
+        // Server contract for code 101 is "resource not found"; even if the
+        // phrasing is novel, the typed variant should be returned so callers
+        // can write a stable `match`.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "completely novel server message".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "code 101 + task_id should always map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
     fn maps_permission_codes_to_typed_variant() {
         for code in [401, 403] {
             let err = map_rpc_error("task.chart.add", code, "denied".to_string(), None);
@@ -5679,6 +5736,27 @@ mod tests_map_rpc_error {
                 "code {} did not map",
                 code
             );
+        }
+    }
+
+    #[test]
+    fn permission_denied_records_method_for_diagnostics() {
+        let err = map_rpc_error("task.data.upload", 403, "forbidden".to_string(), None);
+        match err {
+            Error::PermissionDenied(method) => assert_eq!(method, "task.data.upload"),
+            other => panic!("expected PermissionDenied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn maps_payload_too_large_to_typed_variant() {
+        let err = map_rpc_error("val.data.upload", 413, "request too large".into(), None);
+        match err {
+            Error::PayloadTooLarge { method, size_hint } => {
+                assert_eq!(method, "val.data.upload");
+                assert!(size_hint.is_none());
+            }
+            other => panic!("expected PayloadTooLarge, got {:?}", other),
         }
     }
 
@@ -5702,8 +5780,11 @@ mod tests_map_rpc_error {
     }
 
     #[test]
-    fn code_101_without_not_found_message_falls_through() {
-        // Code 101 but message doesn't contain "not found" → generic RpcError
+    fn code_101_with_task_id_always_maps_even_with_unrelated_message() {
+        // Previously the test asserted fall-through for non-"not found"
+        // messages, but the contract for code 101 is "resource not found"
+        // (see api.go), so when a task_id is present the typed variant is
+        // returned unconditionally to give callers a stable error type.
         let task_id = TaskID::try_from("task-1a2b").unwrap();
         let err = map_rpc_error(
             "task.data.list",
@@ -5711,7 +5792,7 @@ mod tests_map_rpc_error {
             "permission denied".to_string(),
             Some(task_id),
         );
-        assert!(matches!(err, Error::RpcError(101, _)));
+        assert!(matches!(err, Error::TaskNotFound(_)));
     }
 }
 
@@ -5950,7 +6031,196 @@ mod tests_validate_chart_args {
     }
 
     #[test]
+    fn rejects_both_empty() {
+        let err = validate_chart_args("", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
     fn accepts_valid_args() {
         assert!(validate_chart_args("group", "name").is_ok());
+    }
+
+    #[test]
+    fn accepts_unicode_args() {
+        // Unicode names are allowed; only emptiness is rejected.
+        assert!(validate_chart_args("metrics-集合", "损失").is_ok());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional offline tests for request shapes + helpers added in DE-2565.
+//
+// These focus on the wire-shape and helper logic that does not require a
+// live Studio server — they significantly boost coverage of client.rs.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_job_run_request_shape {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn empty_env_and_data_serialize_as_empty_objects() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "smoke".into(),
+            env: HashMap::new(),
+            data: HashMap::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["env"], serde_json::json!({}));
+        assert_eq!(json["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn data_passes_through_parameter_object_payloads() {
+        // Confirms the Parameter wrapper survives JSON serialization round-trip
+        // for the kind of structured chart payload that exercises Parameter
+        // variants (Real, Integer, String, Array, Object, Boolean).
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "feat".into(),
+            env: HashMap::new(),
+            data: HashMap::from([
+                ("flag".into(), Parameter::Boolean(true)),
+                ("epochs".into(), Parameter::Integer(50)),
+                ("lr".into(), Parameter::Real(1e-3)),
+                ("name".into(), Parameter::String("hello".into())),
+            ]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["data"]["flag"], true);
+        assert_eq!(json["data"]["epochs"], 50);
+        assert!(json["data"]["lr"].as_f64().unwrap() > 0.0);
+        assert_eq!(json["data"]["name"], "hello");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_chart_request_shape {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn chart_add_request_with_params_serializes_object() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let params = Parameter::Object(std::collections::HashMap::from([(
+            "y_axis".into(),
+            Parameter::String("log".into()),
+        )]));
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: Some(params),
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["params"]["y_axis"], "log");
+    }
+
+    #[test]
+    fn task_data_list_request_round_trips() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        // Field order is stable for a single-field struct, so an exact match
+        // is meaningful here.
+        assert_eq!(json, format!("{{\"task_id\":{}}}", task_id.value()));
+    }
+
+    #[test]
+    fn task_data_download_request_treats_folder_and_file_independently() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "validation/run-01".into(),
+            file: "metrics.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        // Server takes folder + file separately (not a single combined path)
+        // so callers don't have to escape slashes themselves.
+        assert_eq!(json["folder"], "validation/run-01");
+        assert_eq!(json["file"], "metrics.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_request_shape {
+    use super::*;
+
+    #[test]
+    fn val_data_list_round_trips() {
+        let req = ValDataListRequest { session_id: 2707 };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+    }
+
+    #[test]
+    fn val_data_download_round_trips_with_nested_path() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "subfolder/imx95.json".into(),
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+        assert_eq!(back["filename"], "subfolder/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_progress_struct {
+    use super::*;
+
+    #[test]
+    fn progress_can_be_constructed_with_zero_total() {
+        // Servers sometimes omit Content-Length; progress events should still
+        // be representable. This guards the public field-level API.
+        let p = Progress {
+            current: 0,
+            total: 0,
+            status: None,
+        };
+        assert_eq!(p.current, 0);
+        assert_eq!(p.total, 0);
+        assert!(p.status.is_none());
+    }
+
+    #[test]
+    fn progress_tracks_current_independently_of_total() {
+        let p = Progress {
+            current: 123,
+            total: 456,
+            status: Some("Downloading".into()),
+        };
+        assert_eq!(p.current, 123);
+        assert_eq!(p.total, 456);
+        assert_eq!(p.status.as_deref(), Some("Downloading"));
+    }
+
+    #[test]
+    fn progress_can_be_cloned() {
+        // Progress is consumed by progress sinks which may need to retain a
+        // copy independently of the channel — derive(Clone) must hold.
+        let p = Progress {
+            current: 10,
+            total: 20,
+            status: Some("phase".into()),
+        };
+        let q = p.clone();
+        assert_eq!(q.current, p.current);
+        assert_eq!(q.total, p.total);
+        assert_eq!(q.status, p.status);
     }
 }

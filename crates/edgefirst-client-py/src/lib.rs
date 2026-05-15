@@ -6628,7 +6628,8 @@ impl Client {
 
     /// Get the information about a specific task.
     #[tokio_wrap::sync]
-    pub fn task_info(&self, task_id: TaskID) -> Result<TaskInfo, Error> {
+    pub fn task_info<'py>(&self, task_id: Bound<'py, PyAny>) -> Result<TaskInfo, Error> {
+        let task_id: TaskID = task_id.try_into()?;
         Ok(TaskInfo(self.0.task_info(task_id.0).await?))
     }
 
@@ -6728,7 +6729,8 @@ impl Client {
     /// Raises:
     ///     RuntimeError: If the server rejects the request.
     #[tokio_wrap::sync]
-    pub fn job_stop(&self, task_id: TaskID) -> Result<(), Error> {
+    pub fn job_stop<'py>(&self, task_id: Bound<'py, PyAny>) -> Result<(), Error> {
+        let task_id: TaskID = task_id.try_into()?;
         Ok(self.0.job_stop(task_id.0).await?)
     }
 }

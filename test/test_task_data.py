@@ -29,8 +29,8 @@ class TestTaskData(unittest.TestCase):
         password = os.environ.get("STUDIO_PASSWORD")
 
         if not username or not password:
-            raise RuntimeError(
-                "STUDIO_USERNAME and STUDIO_PASSWORD required for task data tests"
+            raise unittest.SkipTest(
+                "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping task data tests"
             )
 
         cls.client = get_client()

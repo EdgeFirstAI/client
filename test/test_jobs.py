@@ -28,8 +28,8 @@ class TestJobs(unittest.TestCase):
         password = os.environ.get("STUDIO_PASSWORD")
 
         if not username or not password:
-            raise RuntimeError(
-                "STUDIO_USERNAME and STUDIO_PASSWORD required for jobs tests"
+            raise unittest.SkipTest(
+                "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping jobs tests"
             )
 
         cls.client = get_client()

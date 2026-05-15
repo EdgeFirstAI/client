@@ -1481,16 +1481,21 @@ pub struct Job {
     pub state: String,
     /// Job launch timestamp as RFC 3339 string, if known.
     pub launch: Option<String>,
-    /// The Studio task id linked to this job.
+    /// The Studio task id linked to this job, ready to pass directly to
+    /// `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
     ///
-    /// The server emits Go `int64`; negative values are clamped to 0 by the
-    /// core `task_id()` accessor, so callers should prefer `task_id()` when
-    /// calling `Client::task_info` to obtain the task handle.
-    pub task_id: i64,
+    /// The server emits Go `int64`; negative values are clamped to 0 via the
+    /// core `task_id()` accessor before being exposed to FFI callers, so this
+    /// field is always a well-formed `TaskId`.
+    pub task_id: TaskId,
 }
 
 impl From<core::Job> for Job {
     fn from(v: core::Job) -> Self {
+        // Use the core accessor (`task_id()`) so negative `int64` values are
+        // clamped to 0 instead of being silently reinterpreted as a giant
+        // `u64`.
+        let task_id: TaskId = v.task_id().into();
         Job {
             code: v.code,
             title: v.title,
@@ -1498,7 +1503,7 @@ impl From<core::Job> for Job {
             job_id: v.job_id,
             state: v.state,
             launch: v.launch.map(|dt| dt.to_rfc3339()),
-            task_id: v.task_id,
+            task_id,
         }
     }
 }

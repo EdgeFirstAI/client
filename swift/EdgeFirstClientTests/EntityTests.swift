@@ -133,47 +133,11 @@ final class EntityTests: XCTestCase {
   }
 
   // MARK: - ValidationSession Tests
-
-  /// Test ValidationSession construction.
-  func testValidationSessionConstruction() {
-    let session = ValidationSession(
-      id: ValidationSessionId(value: 200),
-      experimentId: ExperimentId(value: 50),
-      trainingSessionId: TrainingSessionId(value: 100),
-      datasetId: DatasetId(value: 25),
-      annotationSetId: AnnotationSetId(value: 10),
-      description: "Validation on test set"
-    )
-
-    XCTAssertEqual(session.id.value, 200)
-    XCTAssertEqual(session.experimentId.value, 50)
-    XCTAssertEqual(session.trainingSessionId.value, 100)
-    XCTAssertEqual(session.datasetId.value, 25)
-    XCTAssertEqual(session.annotationSetId.value, 10)
-    XCTAssertEqual(session.description, "Validation on test set")
-  }
-
-  /// Test ValidationSession equality.
-  func testValidationSessionEquality() {
-    let session1 = ValidationSession(
-      id: ValidationSessionId(value: 1),
-      experimentId: ExperimentId(value: 1),
-      trainingSessionId: TrainingSessionId(value: 1),
-      datasetId: DatasetId(value: 1),
-      annotationSetId: AnnotationSetId(value: 1),
-      description: "test"
-    )
-    let session2 = ValidationSession(
-      id: ValidationSessionId(value: 1),
-      experimentId: ExperimentId(value: 1),
-      trainingSessionId: TrainingSessionId(value: 1),
-      datasetId: DatasetId(value: 1),
-      annotationSetId: AnnotationSetId(value: 1),
-      description: "test"
-    )
-
-    XCTAssertEqual(session1, session2)
-  }
+  //
+  // `ValidationSession` is now a uniffi `Object` (not a Record), so it lacks
+  // field-based initializers and value-equality. Behaviour is exercised end
+  // to end in `ClientTests.swift` and in the Python integration suite under
+  // `test/test_val_data.py`.
 
   // MARK: - Task Tests
 
@@ -233,55 +197,13 @@ final class EntityTests: XCTestCase {
   }
 
   // MARK: - TaskInfo Tests
-
-  /// Test TaskInfo construction.
-  func testTaskInfoConstruction() {
-    let taskInfo = TaskInfo(
-      id: TaskId(value: 600),
-      projectId: ProjectId(value: 100),
-      description: "Processing dataset",
-      workflow: "data-processing",
-      status: "completed",
-      created: "2024-01-15T10:00:00Z",
-      completed: "2024-01-15T10:30:00Z"
-    )
-
-    XCTAssertEqual(taskInfo.id.value, 600)
-    XCTAssertEqual(taskInfo.projectId?.value, 100)
-    XCTAssertEqual(taskInfo.description, "Processing dataset")
-    XCTAssertEqual(taskInfo.workflow, "data-processing")
-    XCTAssertEqual(taskInfo.status, "completed")
-  }
-
-  /// Test TaskInfo with nil projectId.
-  func testTaskInfoWithNilProjectId() {
-    let taskInfo = TaskInfo(
-      id: TaskId(value: 1),
-      projectId: nil,
-      description: "System task",
-      workflow: "system",
-      status: "running",
-      created: "2024-01-01",
-      completed: ""
-    )
-
-    XCTAssertNil(taskInfo.projectId)
-  }
-
-  /// Test TaskInfo with nil status.
-  func testTaskInfoWithNilStatus() {
-    let taskInfo = TaskInfo(
-      id: TaskId(value: 1),
-      projectId: ProjectId(value: 1),
-      description: "task",
-      workflow: "wf",
-      status: nil,
-      created: "2024-01-01",
-      completed: ""
-    )
-
-    XCTAssertNil(taskInfo.status)
-  }
+  //
+  // `TaskInfo` is now a uniffi `Object` (not a Record) and exposes the
+  // task data, chart, and download APIs as instance methods. Field-based
+  // construction is therefore not available in Swift; end-to-end behaviour
+  // is covered by `TaskInfoTests.testGetTaskInfo` and the Python
+  // integration suite under `test/test_task_data.py` /
+  // `test/test_task_charts.py`.
 
   // MARK: - Stage Tests
 
@@ -448,12 +370,15 @@ final class EntityTests: XCTestCase {
 
   // MARK: - Complex Entity Relationships Tests
 
-  /// Test related entities share consistent IDs.
+  /// Test related entities share consistent IDs across Record types.
+  ///
+  /// `ValidationSession` is no longer a Record (it carries instance methods)
+  /// so this relationship check focuses on the Record-typed IDs that wire
+  /// the entities together; end-to-end cross-entity coverage lives in the
+  /// online suite.
   func testEntityRelationships() {
     let experimentId = ExperimentId(value: 10)
     let trainingSessionId = TrainingSessionId(value: 20)
-    let datasetId = DatasetId(value: 30)
-    let annotationSetId = AnnotationSetId(value: 40)
 
     let trainingSession = TrainingSession(
       id: trainingSessionId,
@@ -463,17 +388,8 @@ final class EntityTests: XCTestCase {
       model: "model"
     )
 
-    let validationSession = ValidationSession(
-      id: ValidationSessionId(value: 50),
-      experimentId: experimentId,
-      trainingSessionId: trainingSessionId,
-      datasetId: datasetId,
-      annotationSetId: annotationSetId,
-      description: "validation"
-    )
-
-    // Verify relationships
-    XCTAssertEqual(trainingSession.experimentId.value, validationSession.experimentId.value)
-    XCTAssertEqual(trainingSession.id.value, validationSession.trainingSessionId.value)
+    // Verify the Record-level IDs survive round-trip construction.
+    XCTAssertEqual(trainingSession.experimentId.value, experimentId.value)
+    XCTAssertEqual(trainingSession.id.value, trainingSessionId.value)
   }
 }

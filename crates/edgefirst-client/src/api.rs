@@ -2832,3 +2832,330 @@ mod tests_upload_data {
         assert!(folder_real.filter(|s| !s.is_empty()).is_some());
     }
 }
+
+#[cfg(test)]
+mod tests_job_struct {
+    use super::*;
+
+    #[test]
+    fn job_deserializes_with_all_fields() {
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "smoke-test",
+            "job_id": "aws-batch-abc",
+            "state": "RUNNING",
+            "launch": "2026-05-14T15:00:00Z",
+            "task_id": 6789
+        }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.code, "edgefirst-validator:2.9.5");
+        assert_eq!(job.title, "EdgeFirst Validator");
+        assert_eq!(job.job_name, "smoke-test");
+        assert_eq!(job.job_id, "aws-batch-abc");
+        assert_eq!(job.state, "RUNNING");
+        assert!(job.launch.is_some());
+        assert_eq!(job.task_id, 6789);
+    }
+
+    #[test]
+    fn job_tolerates_missing_optional_fields() {
+        // The server occasionally omits everything except task_id (e.g. for
+        // jobs that never reached the batch system). #[serde(default)] should
+        // fill in empty strings / None.
+        let json = r#"{ "task_id": 42 }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 42);
+        assert!(job.code.is_empty());
+        assert!(job.title.is_empty());
+        assert!(job.job_name.is_empty());
+        assert!(job.job_id.is_empty());
+        assert!(job.state.is_empty());
+        assert!(job.launch.is_none());
+    }
+
+    #[test]
+    fn job_task_id_accessor_saturates_negative_to_zero() {
+        // Go emits int64; negative values are nonsense but the wire type
+        // makes them representable. The accessor must clamp at 0 rather
+        // than wrapping into a huge u64 (which would point at a different
+        // task).
+        let job = Job {
+            code: String::new(),
+            title: String::new(),
+            job_name: String::new(),
+            job_id: String::new(),
+            state: String::new(),
+            launch: None,
+            task_id: -1,
+        };
+        assert_eq!(job.task_id().value(), 0);
+    }
+
+    #[test]
+    fn job_task_id_accessor_passes_through_positive_values() {
+        let job = Job {
+            code: String::new(),
+            title: String::new(),
+            job_name: String::new(),
+            job_id: String::new(),
+            state: String::new(),
+            launch: None,
+            task_id: 12345,
+        };
+        assert_eq!(job.task_id().value(), 12345);
+    }
+
+    #[test]
+    fn job_ignores_unknown_fields() {
+        // The server BK_BATCH wrapper carries a number of fields we don't
+        // care about (docker_task, aws_region, etc.). Deserialization must
+        // not break when these are present.
+        let json = r#"{
+            "code": "x",
+            "task_id": 1,
+            "docker_task": { "image": "x" },
+            "aws_region": "us-east-1",
+            "tags": ["a", "b"]
+        }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 1);
+    }
+}
+
+#[cfg(test)]
+mod tests_task_info_schema_tolerance {
+    use super::*;
+
+    // TaskID derives a transparent numeric Serialize/Deserialize on the wire
+    // (the hex prefix is the Display form, not the JSON form), so the test
+    // fixtures encode `id` as a number.
+
+    #[test]
+    fn task_info_accepts_task_description_field() {
+        // New server: emits `task_description`.
+        let json = r#"{
+            "id": 6699,
+            "type": "edgefirst-validator:2.9.5",
+            "task_description": "Profiler run for IMX95",
+            "status": "running"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.description(), "Profiler run for IMX95");
+    }
+
+    #[test]
+    fn task_info_accepts_legacy_description_field() {
+        // Older server / fixtures: emit `description` (aliased).
+        let json = r#"{
+            "id": 6699,
+            "type": "edgefirst-validator:2.9.5",
+            "description": "Legacy description"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.description(), "Legacy description");
+    }
+
+    #[test]
+    fn task_info_tolerates_missing_description() {
+        // Neither field present → empty string (default).
+        let json = r#"{
+            "id": 6699,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert!(info.description().is_empty());
+    }
+
+    #[test]
+    fn task_info_tolerates_missing_dates_via_default() {
+        // Server may omit `created_date` / `end_date` for early-stage tasks.
+        let json = r#"{
+            "id": 6699,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        // Defaults to UNIX_EPOCH per `default_datetime_utc()`.
+        assert_eq!(info.id().value(), 6699);
+    }
+
+    #[test]
+    fn task_info_status_accessor_returns_option() {
+        let json = r#"{
+            "id": 1,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert!(info.status().is_none());
+    }
+
+    #[test]
+    fn task_info_stages_returns_empty_map_when_unset() {
+        let json = r#"{
+            "id": 1,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        let stages = info.stages();
+        assert!(stages.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests_stage_struct {
+    use super::*;
+
+    #[test]
+    fn stage_new_sets_only_supplied_fields() {
+        let stage = Stage::new(
+            None,
+            "download".into(),
+            Some("running".into()),
+            Some("fetching".into()),
+            42,
+        );
+        assert!(stage.task_id().is_none());
+        assert_eq!(stage.stage(), "download");
+        assert_eq!(stage.status().as_deref(), Some("running"));
+        assert_eq!(stage.message().as_deref(), Some("fetching"));
+        assert_eq!(stage.percentage(), 42);
+        // `new` does not populate `description`.
+        assert!(stage.description().is_none());
+    }
+
+    #[test]
+    fn stage_serializes_without_optional_none_fields() {
+        // skip_serializing_if=Option::is_none must omit None status/message.
+        let stage = Stage::new(None, "init".into(), None, None, 0);
+        let json = serde_json::to_value(&stage).unwrap();
+        assert!(json.get("status").is_none(), "got: {json}");
+        assert!(json.get("message").is_none(), "got: {json}");
+        assert!(json.get("docker_task_id").is_none(), "got: {json}");
+        // Required field is present.
+        assert_eq!(json["stage"], "init");
+        assert_eq!(json["percentage"], 0);
+    }
+
+    #[test]
+    fn stage_serializes_task_id_when_present() {
+        let task_id = TaskID::from(0xdeadu64);
+        let stage = Stage::new(Some(task_id), "x".into(), None, None, 0);
+        let json = serde_json::to_value(&stage).unwrap();
+        // Stage carries the task_id under the `docker_task_id` legacy key on
+        // the wire.
+        assert!(json.get("docker_task_id").is_some());
+    }
+
+    #[test]
+    fn stage_round_trips_through_json() {
+        let stage = Stage::new(
+            None,
+            "train".into(),
+            Some("done".into()),
+            Some("epoch 100".into()),
+            100,
+        );
+        let s = serde_json::to_string(&stage).unwrap();
+        let back: Stage = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.stage(), "train");
+        assert_eq!(back.status().as_deref(), Some("done"));
+        assert_eq!(back.message().as_deref(), Some("epoch 100"));
+        assert_eq!(back.percentage(), 100);
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_list_extra {
+    use super::*;
+
+    #[test]
+    fn task_data_list_with_empty_data_map() {
+        let json = r#"{
+            "server": "studio",
+            "organization_uid": "org-1",
+            "traces": [],
+            "data": {}
+        }"#;
+        let parsed: TaskDataList = serde_json::from_str(json).unwrap();
+        assert!(parsed.traces.is_empty());
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn task_data_list_multiple_folders() {
+        let json = r#"{
+            "server": "studio",
+            "organization_uid": "org-1",
+            "traces": ["t1", "t2"],
+            "data": {
+                "predictions": ["a.parquet", "b.parquet"],
+                "metrics": ["loss.json"]
+            }
+        }"#;
+        let parsed: TaskDataList = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.traces.len(), 2);
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.data["predictions"].len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod tests_artifact_struct {
+    use super::*;
+
+    #[test]
+    fn artifact_accessors_return_strs() {
+        // Artifact uses serde(rename) for modelType → model_type. Make sure
+        // the JSON shape coming off the wire round-trips through accessors.
+        let json = r#"{ "name": "best.onnx", "modelType": "yolo" }"#;
+        let a: Artifact = serde_json::from_str(json).unwrap();
+        assert_eq!(a.name(), "best.onnx");
+        assert_eq!(a.model_type(), "yolo");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_status_serialize {
+    use super::*;
+
+    #[test]
+    fn task_status_uses_docker_task_id_wire_field() {
+        let s = TaskStatus {
+            task_id: TaskID::from(0x1a2bu64),
+            status: "training".into(),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        // Server takes legacy field name.
+        assert!(json.get("docker_task_id").is_some(), "got: {json}");
+        assert_eq!(json["status"], "training");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_stages_serialize {
+    use super::*;
+
+    #[test]
+    fn task_stages_omits_empty_vec() {
+        let stages = TaskStages {
+            task_id: TaskID::from(1u64),
+            stages: Vec::new(),
+        };
+        let json = serde_json::to_value(&stages).unwrap();
+        // `skip_serializing_if = "Vec::is_empty"` means the field is absent.
+        assert!(json.get("stages").is_none(), "got: {json}");
+    }
+
+    #[test]
+    fn task_stages_serializes_non_empty_vec() {
+        let stages = TaskStages {
+            task_id: TaskID::from(1u64),
+            stages: vec![std::collections::HashMap::from([(
+                "stage".to_string(),
+                "download".to_string(),
+            )])],
+        };
+        let json = serde_json::to_value(&stages).unwrap();
+        assert_eq!(json["stages"][0]["stage"], "download");
+    }
+}
