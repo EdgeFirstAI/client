@@ -48,6 +48,46 @@ use walkdir::WalkDir;
 #[cfg(feature = "polars")]
 use polars::prelude::*;
 
+/// Maps a JSON-RPC error code to a typed `Error` variant when the code is
+/// well-known; otherwise returns `Error::RpcError(code, message)` unchanged.
+///
+/// Scoped to the new DE-2565 methods. Existing methods continue to return
+/// `Error::RpcError` directly.
+///
+/// Server error codes (from `api.go` via `jrpc.Fail`):
+/// - `1`   – generic server error
+/// - `3`   – validation / bad request
+/// - `10`  – internal server error
+/// - `101` – resource not found (e.g. "Cannot find task...", "not found in DB")
+/// - `401` – unauthenticated
+/// - `403` – forbidden
+pub(crate) fn map_rpc_error(
+    method: &str,
+    code: i32,
+    message: String,
+    task_id: Option<crate::api::TaskID>,
+) -> Error {
+    match code {
+        101 if message.to_lowercase().contains("not found") && task_id.is_some() => {
+            Error::TaskNotFound(task_id.unwrap())
+        }
+        401 | 403 => Error::PermissionDenied(method.to_string()),
+        _ => Error::RpcError(code, message),
+    }
+}
+
+/// Validates that `group` and `name` are both non-empty strings for chart
+/// operations (`add_chart`, `get_chart`). Extracted so it can be unit-tested
+/// without a live server.
+pub(crate) fn validate_chart_args(group: &str, name: &str) -> Result<(), Error> {
+    if group.is_empty() || name.is_empty() {
+        return Err(Error::InvalidParameters(
+            "chart: group and name must be non-empty".into(),
+        ));
+    }
+    Ok(())
+}
+
 static PART_SIZE: usize = 100 * 1024 * 1024;
 
 /// Source for file content during upload - either a local path or raw bytes.
@@ -462,6 +502,126 @@ struct FetchContext<'a> {
     groups: &'a [String],
     types: Vec<String>,
     labels: &'a HashMap<String, u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobsListRequest {}
+
+#[derive(Debug, Serialize)]
+struct JobRunRequest {
+    name: String,
+    job_name: String,
+    env: std::collections::HashMap<String, String>,
+    data: std::collections::HashMap<String, crate::api::Parameter>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobStopRequest {
+    task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataListRequest {
+    pub(crate) task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataDownloadRequest {
+    pub(crate) task_id: u64,
+    pub(crate) folder: String,
+    pub(crate) file: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartAddRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+    pub(crate) params: Option<crate::api::Parameter>,
+    pub(crate) data: crate::api::Parameter,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartListRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartGetRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataDownloadRequest {
+    pub(crate) session_id: u64,
+    pub(crate) filename: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataListRequest {
+    pub(crate) session_id: u64,
+}
+
+/// Streams the body of a successful `reqwest` response to a file on disk,
+/// emitting optional progress events.
+///
+/// Both `download_artifact` and `rpc_download` share this logic. The caller is
+/// responsible for creating any required parent directories before calling this
+/// function.
+///
+/// # Arguments
+/// * `resp`     - A successful (HTTP 2xx) `reqwest::Response` whose body will
+///   be streamed to `path`.
+/// * `path`     - Destination file path (created or truncated).
+/// * `progress` - Optional channel; events carry bytes received and
+///   `Content-Length` total (0 if the server omits it).
+///
+/// # Errors
+/// Returns `Error::IoError` on file I/O failures or propagates stream errors.
+async fn stream_response_to_file(
+    resp: reqwest::Response,
+    path: &std::path::Path,
+    progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+) -> Result<(), Error> {
+    use tokio::io::AsyncWriteExt as _;
+    let total = resp.content_length().unwrap_or(0) as usize;
+    let mut stream = resp.bytes_stream();
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut current = 0usize;
+
+    if let Some(ref tx) = progress {
+        let _ = tx
+            .send(Progress {
+                current: 0,
+                total,
+                status: None,
+            })
+            .await;
+    }
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        current += chunk.len();
+        if let Some(ref tx) = progress {
+            let _ = tx
+                .send(Progress {
+                    current,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+    }
+
+    // Flush tokio's internal write buffer to the OS before returning.
+    // tokio::fs::File buffers writes internally; without this, the buffer
+    // may not reach the filesystem before the caller reads the file.
+    file.flush().await?;
+    Ok(())
 }
 
 impl Client {
@@ -3859,43 +4019,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Download the model checkpoint associated with the specified trainer
@@ -3940,43 +4064,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Return a list of tasks for the current user.
@@ -4031,6 +4119,89 @@ impl Client {
         }
 
         Ok(tasks)
+    }
+
+    /// Submits a job (app run) to the server. Returns the resulting task id.
+    ///
+    /// # Arguments
+    /// * `app_name` - The name of the registered app to run (e.g., `"edgefirst-validator"`).
+    /// * `job_name` - A user-defined label for this run.
+    /// * `env` - Environment variables passed to the job (string-string map).
+    /// * `data` - Job input payload (e.g., session ids, parameters).
+    ///
+    /// # Returns
+    /// The full `Job` record returned by the server (wraps the BK_BATCH object),
+    /// including AWS Batch job ID, state, and the linked `task_id`. Callers that
+    /// only need the task ID can call `.task_id()` on the returned `Job`.
+    pub async fn job_run(
+        &self,
+        app_name: &str,
+        job_name: &str,
+        env: std::collections::HashMap<String, String>,
+        data: std::collections::HashMap<String, crate::api::Parameter>,
+    ) -> Result<crate::api::Job, Error> {
+        let req = JobRunRequest {
+            name: app_name.to_owned(),
+            job_name: job_name.to_owned(),
+            env,
+            data,
+        };
+        let resp: crate::api::Job = match self.rpc("job.run".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.run", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(resp)
+    }
+
+    /// Requests a running job task be stopped.
+    ///
+    /// Returns `Ok(())` if the stop request was accepted by the server. The
+    /// task may still take time to fully terminate; poll `task_info` if you
+    /// need to wait for shutdown.
+    pub async fn job_stop(&self, task_id: crate::api::TaskID) -> Result<(), Error> {
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        // We don't care about the response body; deserialize as serde_json::Value.
+        let _resp: serde_json::Value = match self.rpc("job.stop".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.stop", code, msg, Some(task_id)));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(())
+    }
+
+    /// Lists job (app-run) entries visible to the authenticated user.
+    ///
+    /// The server returns AWS Batch-wrapper entries (not bare `Task` objects),
+    /// surfacing cloud-batch state (`RUNNING`/`SUCCEEDED`/...) and the linked
+    /// `task_id`. Use `Job::task_id()` + `Client::task_info` to fetch the
+    /// underlying task details.
+    ///
+    /// The server does not support server-side filters, so the optional
+    /// `name` argument is applied client-side as a substring match against
+    /// each job's `job_name`.
+    pub async fn jobs(&self, name: Option<&str>) -> Result<Vec<crate::api::Job>, Error> {
+        let req = JobsListRequest {};
+        let mut jobs: Vec<crate::api::Job> = match self.rpc("job.list".to_owned(), Some(&req)).await
+        {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.list", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(name) = name {
+            let needle = name.to_lowercase();
+            jobs.retain(|j| j.job_name.to_lowercase().contains(&needle));
+            jobs.sort_by(|a, b| a.job_name.cmp(&b.job_name));
+        }
+        Ok(jobs)
     }
 
     /// Retrieve the task information and status.
@@ -4126,8 +4297,18 @@ impl Client {
     /// Sends a multipart post request to the server.  This is used by the
     /// upload and download APIs which do not use JSON-RPC but instead transfer
     /// files using multipart/form-data.
+    ///
+    /// The result field is deserialized as `serde_json::Value` rather than
+    /// `String` because different server endpoints return different shapes —
+    /// `val.data.upload` returns a plain string while `task.data.upload`
+    /// returns an object `{"message":…,"path":…,"size":…}`.  All current
+    /// callers discard the return value so this is backwards-compatible.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, form)))]
-    pub async fn post_multipart(&self, method: &str, form: Form) -> Result<String, Error> {
+    pub async fn post_multipart(
+        &self,
+        method: &str,
+        form: Form,
+    ) -> Result<serde_json::Value, Error> {
         let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -4153,7 +4334,7 @@ impl Client {
                 );
             }
 
-            let response: RpcResponse<String> = match serde_json::from_slice(&body) {
+            let response: RpcResponse<serde_json::Value> = match serde_json::from_slice(&body) {
                 Ok(response) => response,
                 Err(err) => {
                     error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
@@ -4172,6 +4353,80 @@ impl Client {
             let err = resp.error_for_status_ref().unwrap_err();
             Err(Error::HttpError(err))
         }
+    }
+
+    /// Internal helper: POST a JSON-RPC request and stream the binary response
+    /// to `output_path`. The response is assumed to be raw binary (not a JSON
+    /// envelope). Use for endpoints that return file contents directly.
+    ///
+    /// On HTTP non-success, the response body is read as text and surfaced
+    /// via `Error::RpcError(status_code, body)`.
+    pub(crate) async fn rpc_download<P: Serialize>(
+        &self,
+        method: &str,
+        params: &P,
+        output_path: &std::path::Path,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": method,
+            "params": params,
+        });
+
+        let url = format!("{}/api", self.url);
+        let resp = self
+            .bulk_http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token().await))
+            .json(&envelope)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::RpcError(status.as_u16() as i32, body));
+        }
+
+        // HTTP 200 but Content-Type: application/json means the server returned
+        // a JSON-RPC error envelope (e.g. {"jsonrpc":"2.0","error":{"code":N,"message":"..."}}),
+        // not a binary file. Binary downloads use application/octet-stream or a
+        // media-type MIME. Read and decode before streaming to disk.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        if content_type.contains("application/json") {
+            let body = resp.text().await.unwrap_or_default();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body)
+                && let Some(err_obj) = val.get("error")
+            {
+                let code = err_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
+                let message = err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string();
+                return Err(Error::RpcError(code, message));
+            }
+            return Err(Error::InvalidResponse);
+        }
+
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        stream_response_to_file(resp, output_path, progress).await
     }
 
     /// Send a JSON-RPC request to the server.  The method is the name of the
@@ -5394,5 +5649,308 @@ mod tests {
 
         // Verify storage was cleared
         assert_eq!(storage.load().unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod tests_map_rpc_error {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn maps_not_found_with_task_id_to_typed_variant() {
+        // Server code 101 + "not found" message + task_id present → TaskNotFound
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "task not found".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_permission_codes_to_typed_variant() {
+        for code in [401, 403] {
+            let err = map_rpc_error("task.chart.add", code, "denied".to_string(), None);
+            assert!(
+                matches!(err, Error::PermissionDenied(_)),
+                "code {} did not map",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn falls_through_to_generic_rpc_error_for_unknown_codes() {
+        let err = map_rpc_error("task.data.list", -99999, "weird".to_string(), None);
+        match err {
+            Error::RpcError(code, msg) => {
+                assert_eq!(code, -99999);
+                assert_eq!(msg, "weird");
+            }
+            other => panic!("expected RpcError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_found_without_task_id_falls_through() {
+        // Code 101 without task_id → generic RpcError (no task to name)
+        let err = map_rpc_error("task.data.list", 101, "not found".to_string(), None);
+        assert!(matches!(err, Error::RpcError(101, _)));
+    }
+
+    #[test]
+    fn code_101_without_not_found_message_falls_through() {
+        // Code 101 but message doesn't contain "not found" → generic RpcError
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "permission denied".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::RpcError(101, _)));
+    }
+}
+
+#[cfg(test)]
+mod tests_jobs {
+    use super::*;
+
+    #[test]
+    fn jobs_list_request_serializes_to_empty_object() {
+        let req = JobsListRequest {};
+        assert_eq!(serde_json::to_value(&req).unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn job_deserializes_from_bk_batch_shape() {
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "smoke-test",
+            "job_id": "aws-batch-abc",
+            "state": "RUNNING",
+            "launch": "2026-05-14T15:00:00Z",
+            "task_id": 6789,
+            "docker_task": {},
+            "extra_field": "ignored"
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.code, "edgefirst-validator:2.9.5");
+        assert_eq!(job.state, "RUNNING");
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.task_id().value(), 6789);
+    }
+}
+
+#[cfg(test)]
+mod tests_job_run {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn job_run_request_serializes_with_expected_fields() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "post-profile-run".into(),
+            env: HashMap::from([("LOG_LEVEL".into(), "info".into())]),
+            data: HashMap::from([("validation_session_id".into(), Parameter::Integer(2707))]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["job_name"], "post-profile-run");
+        assert_eq!(json["env"]["LOG_LEVEL"], "info");
+        assert_eq!(json["data"]["validation_session_id"], 2707);
+    }
+
+    #[test]
+    fn job_run_response_deserializes_as_job() {
+        // job.run now returns the full BK_BATCH record; deserialize as Job.
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "post-profile-run",
+            "job_id": "aws-batch-job-xxx",
+            "state": "SUBMITTED",
+            "task_id": 6789
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.job_id, "aws-batch-job-xxx");
+        assert_eq!(job.state, "SUBMITTED");
+    }
+}
+
+#[cfg(test)]
+mod tests_job_stop {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn job_stop_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_list_request {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_list_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_download {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_download_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "predictions".into(),
+            file: "predictions.parquet".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["folder"], "predictions");
+        assert_eq!(json["file"], "predictions.parquet");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_add {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn task_chart_add_request_serializes_with_correct_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: None,
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+        assert_eq!(json["data"]["type"], "line");
+        assert!(json["params"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_list {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_list_request_omits_empty_group_name() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartListRequest {
+            task_id: task_id.value(),
+            group_name: String::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_get {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_get_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartGetRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_download {
+    use super::*;
+
+    #[test]
+    fn val_data_download_request_serializes() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "trace/imx95.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["session_id"], 2707);
+        assert_eq!(json["filename"], "trace/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_list {
+    use super::*;
+
+    #[test]
+    fn val_data_list_request_serializes() {
+        let req = ValDataListRequest { session_id: 2707 };
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::json!({"session_id": 2707})
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_validate_chart_args {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_group() {
+        let err = validate_chart_args("", "name").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let err = validate_chart_args("group", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn accepts_valid_args() {
+        assert!(validate_chart_args("group", "name").is_ok());
     }
 }

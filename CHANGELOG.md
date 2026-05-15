@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New SDK methods to support EdgeFirst Profiler + Validator workflows (DE-2565):
+  - `Client::job_run` — submit a Studio batch job; returns a `Job` (the full server `BK_BATCH` response: code, title, job_name, job_id, state, launch, task_id)
+  - `Client::jobs` — list batch jobs visible to the authenticated user (returns `Vec<Job>`; optional client-side substring `name` filter)
+  - `Client::job_stop` — request termination of a running job by `TaskID`
+  - `TaskInfo::data_list`, `upload_data`, `download_data` — task data artefact list / multipart upload / streaming download (no `data_delete` yet — server endpoint not exposed)
+  - `TaskInfo::list_charts`, `get_chart`, `add_chart` — task charts API; charts are S3-backed JSON blobs identified by `(group, name)` with upsert semantics. `get_chart` returns the raw chart body as a `Parameter`
+  - `ValidationSession::download_data` — streaming download of a single file from `val.data.download`
+  - `ValidationSession::data_list` — flat `Vec<String>` of relative file paths in the session data folder (matches the server's `val.data.list` shape)
+- New `TaskDataList` type representing folder→filename listings on tasks
+- New `Job` type modelling an AWS Batch job entry with linked `task_id` (returned by `Client::job_run` and `Client::jobs`). Use `Job::task_id()` and `Client::task_info` to fetch the underlying task. `Job::task_id` is `i64` to match the server's Go `int64`; the accessor saturates at zero
+- New `Error` variants: `TaskNotFound(TaskID)`, `PermissionDenied(String)`, `PayloadTooLarge { method, size_hint }`. These are emitted by the new DE-2565 methods only — existing methods continue returning `Error::RpcError(code, message)` unchanged. `TaskNotFound` fires when the server returns its error code `101` (resource-not-found) with a `"not found"` message; `PermissionDenied` fires on codes `401`/`403`; `PayloadTooLarge` fires on the HTTP-status path of `rpc_download` for `413` responses
+- Internal `Client::rpc_download` helper for binary-streaming JSON-RPC responses. Detects `Content-Type: application/json` on HTTP 200 and surfaces the JSON-RPC error envelope as `Error::RpcError` rather than streaming an error blob to disk
+- Internal `stream_response_to_file` helper shared by `download_artifact` and `rpc_download` (deduplicates the stream-with-progress-to-disk path)
+- Python (PyO3) and UniFFI (Swift/Kotlin) bindings for all of the above
+- Integration test scaffolding: `test/test_jobs.py` (jobs() + job_stop smoke against an invalid task ID), `test/test_task_data.py`, `test/test_task_charts.py`, `test/test_val_data.py` (gated on `STUDIO_*` plus per-test ID env vars; `job_run` end-to-end test is out of scope until a no-op test app exists on the staging server)
+
+### Changed (BREAKING)
+
+- `ValidationSession::upload` renamed to `upload_data`, now takes an optional
+  `folder` parameter, and targets the new `val.data.upload` endpoint. The new
+  server endpoint uses singular `session_id` (not `session_ids`), supports a
+  `folder` argument, and uses session-scoped permissions.
+
+  Migration:
+
+  ```rust
+  // before (2.9.x)
+  session.upload(&client, &files).await?;
+
+  // after (2.10.0)
+  session.upload_data(&client, &files, None, None).await?;
+  // (the third argument is `folder: Option<&str>`; pass `Some("subdir")`
+  //  to target a subfolder. The fourth is `progress: Option<Sender<Progress>>`
+  //  — pass a `Sender<Progress>` to receive byte-level upload progress events.)
+  ```
+
+  Python:
+
+  ```python
+  # before
+  session.upload(client, files)
+  # after
+  session.upload_data(client, files)            # folder defaults to None
+  session.upload_data(client, files, "subdir")  # with folder
+  ```
+
+### Compatibility notes
+
+- The `Error` enum is **not** `#[non_exhaustive]`. Adding the three new variants is technically a breaking change for downstream `match err { ... }` arms — affected callers must add a wildcard arm (`_ =>`) or extend their match to cover `TaskNotFound`, `PermissionDenied`, and `PayloadTooLarge`. This is the documented mitigation rather than introducing `#[non_exhaustive]` (which itself constitutes a breaking pattern shift)
+- `Job::launch` is exposed as `Option<DateTime<Utc>>` in the Rust core. UniFFI bindings expose it as `Option<String>` (RFC 3339) because UniFFI does not natively bridge `DateTime`. Python bindings omit the field entirely; use `job.state` to distinguish completed runs
+- Upload progress channels: `TaskInfo::upload_data` and `ValidationSession::upload_data` both emit byte-level progress events via the optional `progress: Option<Sender<Progress>>` channel. Progress is reported as the multipart body streams to the server. All bindings (Rust core, Python, UniFFI/Swift/Kotlin) wire progress through the same path as downloads
+
 ## [2.9.5] - 2026-04-29
 
 ### Security

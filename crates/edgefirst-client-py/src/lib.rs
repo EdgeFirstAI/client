@@ -3657,45 +3657,153 @@ impl ValidationSession {
         Ok(artifacts)
     }
 
-    /// Upload files to the validation session.
+    /// Upload files to this validation session's data folder.
     ///
-    /// New API (v2.6.0+): `session.upload(files)` - uses embedded client
-    /// reference Deprecated API: `session.upload(client, files)` - passing
-    /// client explicitly
-    #[pyo3(signature = (files_or_client, files=None))]
-    #[tokio_wrap::sync]
-    pub fn upload(
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     files: List of ``(filename, path)`` tuples to upload.
+    ///     folder: Optional logical subdirectory under the session data root.
+    ///     progress: Optional callback for upload progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Progress:
+    ///     Emits byte-level progress as data is streamed to the server.
+    ///     ``total`` equals the sum of all file sizes; ``current`` tracks
+    ///     aggregate bytes sent across all files.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the upload fails.
+    #[pyo3(signature = (client, files, folder=None, progress=None))]
+    pub fn upload_data(
         &self,
-        py: Python<'_>,
-        files_or_client: &Bound<'_, PyAny>,
-        files: Option<Vec<(String, PathBuf)>>,
+        client: &Client,
+        files: Vec<(String, PathBuf)>,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
-        // Try to extract as Client first (deprecated API)
-        if let Ok(client) = files_or_client.extract::<PyRef<Client>>() {
-            warn_method_deprecated(py, "ValidationSession", "upload")?;
-            let files = files.ok_or_else(|| {
-                Error::TypeError(
-                    "upload() requires 'files' argument when using deprecated API".to_string(),
-                )
-            })?;
-            return Ok(self.inner.upload(&client.0, &files).await?);
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.inner.clone();
+                let client_inner = client.0.clone();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .upload_data(&client_inner, &files, folder_clone.as_deref(), Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.inner
+                        .upload_data(&client.0, &files, folder.as_deref(), None),
+                )?;
+                Ok(())
+            }
         }
+    }
 
-        // Try to extract as files list (new API)
-        if let Ok(files_list) = files_or_client.extract::<Vec<(String, PathBuf)>>() {
-            let client_ref = self.client.as_ref().ok_or_else(|| {
-                Error::TypeError(
-                    "ValidationSession has no client reference. Use session.upload(client, files) instead."
-                        .to_string(),
-                )
-            })?;
-            return Ok(self.inner.upload(client_ref.as_ref(), &files_list).await?);
+    /// Download a file from this validation session's data folder.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     filename: Name of the file to download.
+    ///     output_path: Local path to write the downloaded file.
+    ///     progress: Optional callback for download progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Raises:
+    ///     RuntimeError: If the download fails.
+    #[pyo3(signature = (client, filename, output_path, progress=None))]
+    pub fn download_data(
+        &self,
+        client: &Client,
+        filename: &str,
+        output_path: PathBuf,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.inner.clone();
+                let client_inner = client.0.clone();
+                let filename_owned = filename.to_owned();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .download_data(&client_inner, &filename_owned, &output_path, Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.inner
+                        .download_data(&client.0, filename, &output_path, None),
+                )?;
+                Ok(())
+            }
         }
+    }
 
-        Err(Error::TypeError(
-            "upload() first argument must be a list of (str, Path) tuples or Client (deprecated)"
-                .to_string(),
-        ))
+    /// List files attached to this validation session's data folder.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///
+    /// Returns:
+    ///     list[str]: Flat list of relative file paths (e.g. ``"folder/file.txt"``),
+    ///     sorted lexicographically.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    pub fn data_list(&self, client: &Client) -> Result<Vec<String>, Error> {
+        Ok(self.inner.data_list(&client.0).await?)
     }
 
     /// Download an artifact file from the associated training session.
@@ -4231,6 +4339,232 @@ impl TaskInfo {
         self.0.set_stages(&client.0, &stages).await?;
         Ok(())
     }
+
+    /// List data artefacts (non-chart files) attached to this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///
+    /// Returns:
+    ///     TaskDataList: Data artefacts keyed by folder name.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    pub fn data_list(&self, client: &Client) -> Result<TaskDataList, Error> {
+        Ok(TaskDataList(self.0.data_list(&client.0).await?))
+    }
+
+    /// Upload a data file to this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     path: Local file path to upload.
+    ///     folder: Optional logical subdirectory under the task data root.
+    ///     progress: Optional callback for upload progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Progress:
+    ///     Emits byte-level progress as data is streamed to the server.
+    ///     ``total`` equals the file size in bytes; ``current`` tracks bytes
+    ///     sent.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the upload fails.
+    #[pyo3(signature = (client, path, folder=None, progress=None))]
+    pub fn upload_data(
+        &self,
+        client: &Client,
+        path: PathBuf,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.0.clone();
+                let client_inner = client.0.clone();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .upload_data(&client_inner, &path, folder_clone.as_deref(), Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.0
+                        .upload_data(&client.0, &path, folder.as_deref(), None),
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Download a data file from this task to a local path.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     file: Filename to download.
+    ///     output_path: Local path to write the downloaded file.
+    ///     folder: Optional logical subdirectory under the task data root.
+    ///     progress: Optional callback for download progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Raises:
+    ///     RuntimeError: If the download fails.
+    #[pyo3(signature = (client, file, output_path, folder=None, progress=None))]
+    pub fn download_data(
+        &self,
+        client: &Client,
+        file: &str,
+        output_path: PathBuf,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.0.clone();
+                let client_inner = client.0.clone();
+                let file_owned = file.to_owned();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .download_data(
+                                &client_inner,
+                                &file_owned,
+                                folder_clone.as_deref(),
+                                &output_path,
+                                Some(tx),
+                            )
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.0
+                        .download_data(&client.0, file, folder.as_deref(), &output_path, None),
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Add (or overwrite) a chart under `(group, name)` for this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Chart group name (non-empty).
+    ///     name: Chart name within the group (non-empty).
+    ///     data: Chart body as a `Parameter` (arbitrary JSON).
+    ///     params: Optional chart-rendering parameters as a `Parameter`.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails or group/name are empty.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (client, group, name, data, params=None))]
+    pub fn add_chart(
+        &self,
+        client: &Client,
+        group: &str,
+        name: &str,
+        data: Parameter,
+        params: Option<Parameter>,
+    ) -> Result<(), Error> {
+        Ok(self
+            .0
+            .add_chart(
+                &client.0,
+                group,
+                name,
+                data.into(),
+                params.map(|p| p.into()),
+            )
+            .await?)
+    }
+
+    /// List charts attached to this task, optionally filtered to a single group.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Optional group name to filter charts.
+    ///
+    /// Returns:
+    ///     TaskDataList: Charts keyed by group name.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (client, group=None))]
+    pub fn list_charts(&self, client: &Client, group: Option<&str>) -> Result<TaskDataList, Error> {
+        Ok(TaskDataList(self.0.list_charts(&client.0, group).await?))
+    }
+
+    /// Fetch the raw chart body for `(group, name)` on this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Chart group name (non-empty).
+    ///     name: Chart name within the group (non-empty).
+    ///
+    /// Returns:
+    ///     Parameter: The deserialized chart JSON.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails or group/name are empty.
+    #[tokio_wrap::sync]
+    pub fn get_chart(&self, client: &Client, group: &str, name: &str) -> Result<Parameter, Error> {
+        Ok(Parameter::from(
+            self.0.get_chart(&client.0, group, name).await?,
+        ))
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -4282,6 +4616,108 @@ impl Artifact {
     #[getter]
     pub fn model_type(&self) -> &str {
         self.0.model_type()
+    }
+}
+
+// =============================================================================
+// TaskDataList and Job
+// =============================================================================
+
+/// List of data and chart artefacts attached to a task or validation session.
+///
+/// Returned by `TaskInfo.data_list`, `TaskInfo.list_charts`, and
+/// `ValidationSession.data_list`.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct TaskDataList(pub(crate) edgefirst_client::TaskDataList);
+
+#[pymethods]
+impl TaskDataList {
+    /// The server hostname for the underlying storage.
+    #[getter]
+    pub fn server(&self) -> &str {
+        &self.0.server
+    }
+
+    /// Owning organization identifier (e.g. `'org-abc123'`).
+    #[getter]
+    pub fn organization_uid(&self) -> &str {
+        &self.0.organization_uid
+    }
+
+    /// Trace files surfaced from the `trace` folder.
+    #[getter]
+    pub fn traces(&self) -> Vec<String> {
+        self.0.traces.clone()
+    }
+
+    /// Folder -> filename map of artefacts.
+    #[getter]
+    pub fn data(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.0.data.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TaskDataList(server='{}', data={} folders, traces={} files)",
+            self.0.server,
+            self.0.data.len(),
+            self.0.traces.len()
+        )
+    }
+}
+
+/// A job (app run) entry returned by `Client.jobs`.
+///
+/// The `task_id` field links back to the underlying task that can be polled
+/// via `Client.task_info`.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct Job(pub(crate) edgefirst_client::Job);
+
+#[pymethods]
+impl Job {
+    /// App code (e.g. `"edgefirst-validator:2.9.5"`).
+    #[getter]
+    pub fn code(&self) -> &str {
+        &self.0.code
+    }
+
+    /// Display title from the app definition.
+    #[getter]
+    pub fn title(&self) -> &str {
+        &self.0.title
+    }
+
+    /// User-supplied job label provided at `job_run` time.
+    #[getter]
+    pub fn job_name(&self) -> &str {
+        &self.0.job_name
+    }
+
+    /// Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+    #[getter]
+    pub fn job_id(&self) -> &str {
+        &self.0.job_id
+    }
+
+    /// Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+    #[getter]
+    pub fn state(&self) -> &str {
+        &self.0.state
+    }
+
+    /// Returns the `TaskID` corresponding to this job, for use with
+    /// `Client.task_info`.
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.0.task_id())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Job(code='{}', state='{}', task_id={})",
+            self.0.code, self.0.state, self.0.task_id
+        )
     }
 }
 
@@ -6230,6 +6666,71 @@ impl Client {
             .await?;
         Ok(())
     }
+
+    /// Launch a job (app run) on EdgeFirst Studio.
+    ///
+    /// Args:
+    ///     app_name: The app code to run (e.g. ``"edgefirst-validator"``).
+    ///     job_name: A user-supplied label for this job run.
+    ///     env: Optional environment variables to pass to the job.
+    ///     data: Optional data parameters for the job (arbitrary JSON via
+    ///         `Parameter`).
+    ///
+    /// Returns:
+    ///     Job: The full job record returned by the server (BK_BATCH wrapper),
+    ///     including AWS Batch job ID, state, and the linked task ID.
+    ///     Call ``.task_id()`` on the result to obtain a `TaskID` for use with
+    ///     ``client.task_info(task_id)``.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server rejects the request.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (app_name, job_name, env=None, data=None))]
+    pub fn job_run(
+        &self,
+        app_name: &str,
+        job_name: &str,
+        env: Option<std::collections::HashMap<String, String>>,
+        data: Option<std::collections::HashMap<String, Parameter>>,
+    ) -> Result<Job, Error> {
+        let env = env.unwrap_or_default();
+        let data: std::collections::HashMap<String, edgefirst_client::Parameter> = data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+        Ok(Job(self.0.job_run(app_name, job_name, env, data).await?))
+    }
+
+    /// List job (app-run) entries visible to the authenticated user.
+    ///
+    /// Args:
+    ///     name: Optional substring filter applied client-side against each
+    ///         job's ``job_name``.
+    ///
+    /// Returns:
+    ///     List[Job]: Jobs visible to the current user.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server returns an error.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (name=None))]
+    pub fn jobs(&self, name: Option<&str>) -> Result<Vec<Job>, Error> {
+        Ok(self.0.jobs(name).await?.into_iter().map(Job).collect())
+    }
+
+    /// Request that a running job task be stopped.
+    ///
+    /// Args:
+    ///     task_id: The task ID of the job to stop (from ``job_run`` or
+    ///         ``jobs``).
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server rejects the request.
+    #[tokio_wrap::sync]
+    pub fn job_stop(&self, task_id: TaskID) -> Result<(), Error> {
+        Ok(self.0.job_stop(task_id.0).await?)
+    }
 }
 
 impl Client {
@@ -7035,6 +7536,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Task>()?;
     m.add_class::<TaskInfo>()?;
     m.add_class::<Stage>()?;
+    m.add_class::<TaskDataList>()?;
+    m.add_class::<Job>()?;
 
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;

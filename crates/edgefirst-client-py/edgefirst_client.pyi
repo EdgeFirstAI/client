@@ -2828,6 +2828,138 @@ class TaskInfo:
         """
         ...
 
+    def data_list(self, client: Client) -> TaskDataList:
+        """
+        List data artefacts (non-chart files) attached to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            TaskDataList: Data artefacts keyed by folder name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def upload_data(
+        self,
+        client: Client,
+        path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Upload a data file to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            path (Union[str, Path]): Local file path to upload.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the file size in bytes; ``current`` tracks
+                bytes sent. ``status`` is always ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        file: str,
+        output_path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a data file from this task to a local path.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            file (str): Filename to download.
+            output_path (Union[str, Path]): Local path to write the downloaded file.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def add_chart(
+        self,
+        client: Client,
+        group: str,
+        name: str,
+        data: Parameter,
+        params: Optional[Parameter] = None,
+    ) -> None:
+        """
+        Add (or overwrite) a chart under ``(group, name)`` for this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+            data (Parameter): Chart body as a ``Parameter`` (arbitrary JSON).
+            params (Optional[Parameter]): Optional chart-rendering parameters.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
+        """
+        ...
+
+    def list_charts(
+        self,
+        client: Client,
+        group: Optional[str] = None,
+    ) -> TaskDataList:
+        """
+        List charts attached to this task, optionally filtered to a group.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (Optional[str]): Optional group name to filter charts.
+
+        Returns:
+            TaskDataList: Charts keyed by group name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def get_chart(self, client: Client, group: str, name: str) -> Parameter:
+        """
+        Fetch the raw chart body for ``(group, name)`` on this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+
+        Returns:
+            Parameter: The deserialized chart JSON.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
+        """
+        ...
+
 class DatasetParams:
     """
     Represents the parameters for a dataset used in a training session.
@@ -2895,6 +3027,128 @@ class Artifact:
 
         Returns:
             str: The model type.
+        """
+        ...
+
+class TaskDataList:
+    """
+    List of data and chart artefacts attached to a task or validation session.
+
+    The ``data`` map encodes the folder layout: keys are folder names, values
+    are filenames within that folder.
+    """
+
+    @property
+    def server(self) -> str:
+        """
+        The server hostname for the underlying storage.
+
+        Returns:
+            str: The storage server hostname.
+        """
+        ...
+
+    @property
+    def organization_uid(self) -> str:
+        """
+        Owning organization identifier (e.g. ``'org-abc123'``).
+
+        Returns:
+            str: The organization UID.
+        """
+        ...
+
+    @property
+    def traces(self) -> List[str]:
+        """
+        Trace files surfaced from the ``trace`` folder.
+
+        Returns:
+            List[str]: List of trace filenames.
+        """
+        ...
+
+    @property
+    def data(self) -> Dict[str, List[str]]:
+        """
+        Folder -> filename map of artefacts.
+
+        Returns:
+            Dict[str, List[str]]: Map of folder names to lists of filenames.
+        """
+        ...
+
+class Job:
+    """
+    A job (app run) entry returned by ``Client.job_run`` and ``Client.jobs``.
+
+    The ``task_id`` field links back to the underlying task that can be polled
+    via ``Client.task_info``.
+
+    Note:
+        The ``launch`` timestamp present on the underlying Rust ``Job`` struct
+        is not exposed in the Python bindings. Use ``state`` to distinguish
+        completed runs.
+    """
+
+    @property
+    def code(self) -> str:
+        """
+        App code (e.g. ``"edgefirst-validator:2.9.5"``).
+
+        Returns:
+            str: The app code.
+        """
+        ...
+
+    @property
+    def title(self) -> str:
+        """
+        Display title from the app definition.
+
+        Returns:
+            str: The job title.
+        """
+        ...
+
+    @property
+    def job_name(self) -> str:
+        """
+        User-supplied job label provided at ``job_run`` time.
+
+        Returns:
+            str: The job name.
+        """
+        ...
+
+    @property
+    def job_id(self) -> str:
+        """
+        Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+
+        Returns:
+            str: The batch job identifier.
+        """
+        ...
+
+    @property
+    def state(self) -> str:
+        """
+        Cloud-batch state (e.g. ``"RUNNING"``, ``"SUCCEEDED"``, ``"FAILED"``).
+
+        Returns:
+            str: The current job state.
+        """
+        ...
+
+    def task_id(self) -> TaskID:
+        """
+        Returns the ``TaskID`` corresponding to this job.
+
+        Use with ``Client.task_info`` to fetch the underlying task details.
+
+        Returns:
+            TaskID: The task ID linked to this job.
         """
         ...
 
@@ -3389,25 +3643,75 @@ class ValidationSession:
         """
         ...
 
-    def upload(
+    def upload_data(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        client: Client,
+        files: List[Tuple[str, Path]],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
     ) -> None:
         """
-        Uploads the specified files to the validation session.
-
-        New API (v2.6.0+): ``session.upload(files)``
-        Deprecated API: ``session.upload(client, files)``
+        Upload files to this validation session's data folder.
 
         Args:
-            files_or_client: Either files list (new API) or Client
-                (deprecated).
-            files: The files list when using deprecated API.
+            client (Client): The authenticated EdgeFirst client.
+            files (List[Tuple[str, Path]]): List of ``(filename, path)``
+                tuples to upload.
+            folder (Optional[str]): Optional logical subdirectory under the
+                session data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
 
-        .. deprecated::
-            Passing ``client`` is deprecated and will be removed in v3.0.0.
-            Use ``session.upload(files)`` instead.
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the sum of all file sizes in bytes; ``current``
+                tracks aggregate bytes sent across all files using a shared
+                atomic counter. ``status`` is always ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        filename: str,
+        output_path: Union[str, Path],
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a file from this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            filename (str): Name of the file to download.
+            output_path (Union[str, Path]): Local path to write the downloaded file.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def data_list(self, client: Client) -> List[str]:
+        """
+        List files attached to this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            List[str]: Flat list of relative file paths (e.g. ``"folder/file.txt"``),
+            sorted lexicographically.
+
+        Raises:
+            RuntimeError: If the request fails.
         """
         ...
 
@@ -5534,6 +5838,65 @@ class Client:
 
         Raises:
             Error: If the task or stage does not exist or the request fails.
+        """
+        ...
+
+    def job_run(
+        self,
+        app_name: str,
+        job_name: str,
+        env: Optional[Dict[str, str]] = None,
+        data: Optional[Dict[str, Parameter]] = None,
+    ) -> Job:
+        """
+        Launch a job (app run) on EdgeFirst Studio.
+
+        Args:
+            app_name (str): The app code to run
+                (e.g. ``"edgefirst-validator"``).
+            job_name (str): A user-supplied label for this job run.
+            env (Optional[Dict[str, str]]): Optional environment variables to
+                pass to the job.
+            data (Optional[Dict[str, Parameter]]): Optional data parameters for
+                the job (arbitrary JSON via ``Parameter``).
+
+        Returns:
+            Job: The full job record returned by the server (BK_BATCH wrapper),
+            including AWS Batch job ID, state, and the linked task ID. Call
+            ``.task_id()`` on the result to obtain a ``TaskID`` for use with
+            ``client.task_info(task_id)``.
+
+        Raises:
+            RuntimeError: If the server rejects the request.
+        """
+        ...
+
+    def jobs(self, name: Optional[str] = None) -> List[Job]:
+        """
+        List job (app-run) entries visible to the authenticated user.
+
+        Args:
+            name (Optional[str]): Optional substring filter applied
+                client-side against each job's ``job_name``.
+
+        Returns:
+            List[Job]: Jobs visible to the current user.
+
+        Raises:
+            RuntimeError: If the server returns an error.
+        """
+        ...
+
+    def job_stop(self, task_id: TaskUID) -> None:
+        """
+        Request that a running job task be stopped.
+
+        Args:
+            task_id (Union[TaskID, int, str]): The task ID of the job to stop
+                (from ``job_run`` or ``jobs``).
+
+        Raises:
+            RuntimeError: If the server rejects the request.
         """
         ...
 

@@ -82,6 +82,18 @@ pub enum Error {
     CocoError(String),
     /// ZIP archive read/write error.
     ZipError(String),
+    /// Server reported the addressed task does not exist.
+    TaskNotFound(crate::api::TaskID),
+    /// Server rejected the call for authorization reasons.
+    /// String identifies the operation that was denied (e.g., `"task.chart.add"`).
+    PermissionDenied(String),
+    /// Server rejected the payload as too large.
+    /// `method` identifies the RPC method; `size_hint` is the body size
+    /// if the client could compute it pre-send.
+    PayloadTooLarge {
+        method: String,
+        size_hint: Option<u64>,
+    },
 }
 
 impl From<std::io::Error> for Error {
@@ -214,6 +226,9 @@ impl std::fmt::Display for Error {
             Error::PolarsError(e) => write!(f, "Polars error: {}", e),
             Error::CocoError(s) => write!(f, "COCO format error: {}", s),
             Error::ZipError(s) => write!(f, "ZIP error: {}", s),
+            Error::TaskNotFound(id) => write!(f, "task not found: {}", id),
+            Error::PermissionDenied(op) => write!(f, "permission denied: {}", op),
+            Error::PayloadTooLarge { method, .. } => write!(f, "payload too large for {}", method),
         }
     }
 }
