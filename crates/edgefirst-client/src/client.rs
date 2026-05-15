@@ -4406,10 +4406,16 @@ impl Client {
             return Err(Error::RpcError(status.as_u16() as i32, body));
         }
 
-        // HTTP 200 but Content-Type: application/json means the server returned
-        // a JSON-RPC error envelope (e.g. {"jsonrpc":"2.0","error":{"code":N,"message":"..."}}),
-        // not a binary file. Binary downloads use application/octet-stream or a
-        // media-type MIME. Read and decode before streaming to disk.
+        // HTTP 200 with Content-Type: application/json can mean two things:
+        //   (a) a JSON-RPC error envelope when the server failed mid-way
+        //       (e.g. {"jsonrpc":"2.0","error":{"code":N,"message":"..."}}),
+        //   (b) a legitimate JSON file payload — validation traces, chart
+        //       bodies, metrics, etc., are typically served with this MIME.
+        //
+        // Disambiguate by parsing: only treat the body as an error envelope
+        // when it has a top-level `error` object; otherwise the body *is*
+        // the file, so persist the buffered bytes to disk. JSON downloads
+        // are small in practice, so buffering the full body is acceptable.
         let content_type = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -4417,9 +4423,10 @@ impl Client {
             .unwrap_or("")
             .to_owned();
         if content_type.contains("application/json") {
-            let body = resp.text().await.unwrap_or_default();
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body)
+            let body = resp.bytes().await?;
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body)
                 && let Some(err_obj) = val.get("error")
+                && err_obj.is_object()
             {
                 let code = err_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
                 let message = err_obj
@@ -4429,7 +4436,29 @@ impl Client {
                     .to_string();
                 return Err(Error::RpcError(code, message));
             }
-            return Err(Error::InvalidResponse);
+            // Not an error envelope — body is a JSON file. Write it to disk
+            // and emit a single completion progress event so callers (e.g.,
+            // Python download_data progress callbacks) see the download
+            // finish.
+            if let Some(parent) = output_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let mut file = tokio::fs::File::create(output_path).await?;
+            file.write_all(&body).await?;
+            file.flush().await?;
+            if let Some(tx) = progress {
+                let total = body.len();
+                // Use the awaited send for the final event so completion
+                // handlers are never silently dropped.
+                let _ = tx
+                    .send(Progress {
+                        current: total,
+                        total,
+                        status: None,
+                    })
+                    .await;
+            }
+            return Ok(());
         }
 
         if let Some(parent) = output_path.parent() {

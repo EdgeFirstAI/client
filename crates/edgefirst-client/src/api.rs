@@ -1187,6 +1187,10 @@ impl ValidationSession {
                 if let Ok(chunk) = chunk_result {
                     let current =
                         sent_clone.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                    // Intermediate progress is sampled with try_send so a slow
+                    // consumer never blocks the upload pipeline; the
+                    // guaranteed completion event is emitted after the
+                    // multipart POST returns below.
                     if let Some(tx) = &progress_clone {
                         let _ = tx.try_send(Progress {
                             current,
@@ -1201,13 +1205,30 @@ impl ValidationSession {
             form = form.part("file", part);
         }
 
-        match client.post_multipart("val.data.upload", form).await {
+        let result = match client.post_multipart("val.data.upload", form).await {
             Ok(_) => Ok(()),
             Err(Error::RpcError(code, msg)) => {
                 Err(client::map_rpc_error("val.data.upload", code, msg, None))
             }
             Err(e) => Err(e),
+        };
+
+        // Guarantee a terminal `current == total` event reaches the consumer
+        // so completion handlers (Python callbacks, UniFFI progress bridges)
+        // always observe the finished state. Use `send().await` rather than
+        // `try_send` here so the event is never dropped.
+        if result.is_ok()
+            && let Some(tx) = progress
+        {
+            let _ = tx
+                .send(Progress {
+                    current: total,
+                    total,
+                    status: None,
+                })
+                .await;
         }
+        result
     }
 
     /// Streams a file from this validation session's data folder to `output_path`.
@@ -1616,6 +1637,11 @@ impl TaskInfo {
         let progress_stream = reader_stream.inspect(move |chunk_result| {
             if let Ok(chunk) = chunk_result {
                 let current = sent_clone.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                // Intermediate events are sampled with `try_send` so a slow
+                // consumer never stalls the upload pipeline; the terminal
+                // `current == total` event is emitted with an awaited send
+                // after the multipart POST returns below so completion
+                // handlers always fire.
                 if let Some(tx) = &progress_clone {
                     let _ = tx.try_send(Progress {
                         current,
@@ -1635,7 +1661,7 @@ impl TaskInfo {
         }
         form = form.part("file", file_part);
 
-        match client.post_multipart("task.data.upload", form).await {
+        let result = match client.post_multipart("task.data.upload", form).await {
             Ok(_) => Ok(()),
             Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
                 "task.data.upload",
@@ -1644,7 +1670,23 @@ impl TaskInfo {
                 Some(self.id()),
             )),
             Err(e) => Err(e),
+        };
+
+        // Guaranteed completion event: send the terminal progress update
+        // with `send().await` so consumers always see `current == total`
+        // even if they were slow to drain intermediate samples.
+        if result.is_ok()
+            && let Some(tx) = progress
+        {
+            let _ = tx
+                .send(Progress {
+                    current: total,
+                    total,
+                    status: None,
+                })
+                .await;
         }
+        result
     }
 
     /// Streams a data file from this task to `output_path`.

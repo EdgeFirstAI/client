@@ -3032,10 +3032,13 @@ class Artifact:
 
 class TaskDataList:
     """
-    List of data and chart artefacts attached to a task or validation session.
+    List of data and chart artefacts attached to a task.
 
     The ``data`` map encodes the folder layout: keys are folder names, values
     are filenames within that folder.
+
+    Note: validation sessions use a flat ``list[str]`` of relative paths
+    (returned by :meth:`ValidationSession.data_list`), not this type.
     """
 
     @property

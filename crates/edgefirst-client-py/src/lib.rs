@@ -4623,10 +4623,11 @@ impl Artifact {
 // TaskDataList and Job
 // =============================================================================
 
-/// List of data and chart artefacts attached to a task or validation session.
+/// List of data and chart artefacts attached to a task.
 ///
-/// Returned by `TaskInfo.data_list`, `TaskInfo.list_charts`, and
-/// `ValidationSession.data_list`.
+/// Returned by `TaskInfo.data_list` and `TaskInfo.list_charts`. Validation
+/// sessions use a flat `list[str]` of relative paths (returned by
+/// `ValidationSession.data_list`), not this type.
 #[pyclass(module = "edgefirst_client")]
 #[derive(Clone)]
 pub struct TaskDataList(pub(crate) edgefirst_client::TaskDataList);
