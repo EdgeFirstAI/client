@@ -3318,7 +3318,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads an artifact file to the training session.
@@ -3367,7 +3367,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads a checkpoint file to the training session.
@@ -3414,8 +3414,8 @@ class TrainingSession:
 
     def upload(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        files_or_client: Union[List[Tuple[str, Union[str, Path]]], Client],
+        files: Optional[List[Tuple[str, Union[str, Path]]]] = None,
     ) -> None:
         """
         Uploads files to the training session.  This can be used to upload
@@ -3649,7 +3649,7 @@ class ValidationSession:
     def upload_data(
         self,
         client: Client,
-        files: List[Tuple[str, Path]],
+        files: List[Tuple[str, Union[str, Path]]],
         folder: Optional[str] = None,
         progress: Optional[Callable[..., None]] = None,
     ) -> None:
@@ -3658,8 +3658,9 @@ class ValidationSession:
 
         Args:
             client (Client): The authenticated EdgeFirst client.
-            files (List[Tuple[str, Path]]): List of ``(filename, path)``
-                tuples to upload.
+            files (List[Tuple[str, Union[str, Path]]]): List of ``(filename,
+                path)`` tuples to upload. The path may be either a ``str``
+                or a ``pathlib.Path``; PyO3 accepts any ``os.PathLike``.
             folder (Optional[str]): Optional logical subdirectory under the
                 session data root.
             progress (Optional[Callable]): Optional progress callback. Supports
@@ -5676,7 +5677,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         modelname: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5688,9 +5689,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the model belongs to.
             modelname (str): Name of the model file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       artifact.  If not specified, the
-                                       modelname is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded artifact.  Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the modelname is used as
+                                       the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
@@ -5708,7 +5711,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         checkpoint: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5720,9 +5723,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the checkpoint belongs to.
             checkpoint (str): Name of the checkpoint file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       checkpoint.  If not specified, the
-                                       checkpoint name is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded checkpoint. Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the checkpoint name is
+                                       used as the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
