@@ -61,3 +61,8 @@ png = "0.17"
 rand = { workspace = true }
 sha1 = { workspace = true }
 tempfile = { workspace = true }
+# Mock HTTP server for offline integration tests of the DE-2565 methods
+# (rpc_download, post_multipart, job_run/jobs/job_stop, task data
+# upload/download/list_charts/get_chart/add_chart, val.data.*). Lets us
+# exercise the full wire path without a live Studio server.
+wiremock = "0.6"

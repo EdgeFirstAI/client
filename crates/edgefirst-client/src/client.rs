@@ -837,6 +837,12 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
+        // Allow callers to pass a full URL (e.g. for self-hosted Studio
+        // deployments or mock-HTTP integration tests) by forwarding it to
+        // `with_url` unchanged when it carries an explicit scheme.
+        if server.starts_with("http://") || server.starts_with("https://") {
+            return self.with_url(server);
+        }
         let url = match server {
             "" | "saas" => "https://edgefirst.studio".to_string(),
             name => format!("https://{}.edgefirst.studio", name),
@@ -856,6 +862,22 @@ impl Client {
         Ok(Client {
             url,
             token: Arc::new(tokio::sync::RwLock::new(String::new())),
+            ..self.clone()
+        })
+    }
+
+    /// Returns a new client pointed at an explicit URL (e.g.
+    /// `http://127.0.0.1:8080`, `https://studio.example.com`).
+    ///
+    /// Used for self-hosted Studio deployments and for offline integration
+    /// tests against a mock HTTP server. The token is preserved so callers
+    /// can chain `Client::new()?.with_url(...)?.with_token(...)`.
+    pub fn with_url(&self, url: &str) -> Result<Self, Error> {
+        // Reject malformed inputs early so test failures point at the test
+        // rather than a downstream reqwest send.
+        let _ = url::Url::parse(url)?;
+        Ok(Client {
+            url: url.trim_end_matches('/').to_string(),
             ..self.clone()
         })
     }
