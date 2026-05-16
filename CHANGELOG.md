@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-05-15
+
+### Versioning note
+
+This release contains breaking changes (see "Changed (BREAKING)" and
+"Compatibility notes" below). A strict SemVer reading would call for a
+3.0.0 major bump. The maintainers have deliberately chosen to ship this
+as a 2.10.0 minor bump consistent with the project's established
+cadence for the internal client SDK; the breaking changes are
+narrowly scoped, fully documented here, and accompanied by inline
+migration recipes for every renamed API.
+
 ### Added
 
 - New SDK methods to support EdgeFirst Profiler + Validator workflows (DE-2565):

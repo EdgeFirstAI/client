@@ -1245,8 +1245,11 @@ impl ValidationSession {
     ///
     /// # Errors
     /// Returns `Error::PermissionDenied` if authorization fails,
-    /// `Error::InvalidResponse` if the server returns JSON instead of binary, or
-    /// `Error::IoError` on file write failures.
+    /// `Error::RpcError` if the server returns a JSON-RPC error envelope
+    /// (decoded from the `Content-Type: application/json` body), or
+    /// `Error::IoError` on file write failures. Legitimate JSON file
+    /// payloads (e.g. trace JSON) are persisted normally rather than
+    /// treated as an error.
     pub async fn download_data(
         &self,
         client: &client::Client,
@@ -1712,8 +1715,11 @@ impl TaskInfo {
     /// # Errors
     /// Returns `Error::TaskNotFound` if the task does not exist,
     /// `Error::PermissionDenied` if authorization fails,
-    /// `Error::InvalidResponse` if the server returns JSON instead of binary, or
-    /// `Error::IoError` on file write failures.
+    /// `Error::RpcError` if the server returns a JSON-RPC error envelope
+    /// (decoded from the `Content-Type: application/json` body), or
+    /// `Error::IoError` on file write failures. Legitimate JSON file
+    /// payloads (e.g. trace JSON, chart bodies) are persisted normally
+    /// rather than treated as an error.
     pub async fn download_data(
         &self,
         client: &client::Client,

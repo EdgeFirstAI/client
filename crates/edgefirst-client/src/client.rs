@@ -4442,7 +4442,14 @@ impl Client {
             // and emit a single completion progress event so callers (e.g.,
             // Python download_data progress callbacks) see the download
             // finish.
-            if let Some(parent) = output_path.parent() {
+            //
+            // `Path::parent` returns `Some("")` for a bare filename like
+            // "metrics.json"; `create_dir_all("")` errors out with
+            // `NotFound`, so only create the parent when it actually names
+            // a directory.
+            if let Some(parent) = output_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
                 tokio::fs::create_dir_all(parent).await?;
             }
             let mut file = tokio::fs::File::create(output_path).await?;
@@ -4463,7 +4470,12 @@ impl Client {
             return Ok(());
         }
 
-        if let Some(parent) = output_path.parent() {
+        // Same empty-parent guard for the streaming download path: passing
+        // a bare filename like "metrics.json" must write to the current
+        // directory rather than failing on `create_dir_all("")`.
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
             tokio::fs::create_dir_all(parent).await?;
         }
 
@@ -6253,5 +6265,36 @@ mod tests_progress_struct {
         assert_eq!(q.current, p.current);
         assert_eq!(q.total, p.total);
         assert_eq!(q.status, p.status);
+    }
+}
+
+#[cfg(test)]
+mod tests_bare_filename_parent {
+    // Documents the empty-parent guard added for `rpc_download` so that
+    // callers passing a bare filename like "metrics.json" download to the
+    // current directory instead of erroring on `create_dir_all("")`.
+    use std::path::Path;
+
+    #[test]
+    fn bare_filename_parent_is_empty_path() {
+        // This is the invariant our guard depends on. If a future Rust
+        // release ever changed `Path::parent` for bare filenames, the guard
+        // would need revisiting.
+        let p = Path::new("metrics.json");
+        let parent = p.parent().expect("bare filename always has Some parent");
+        assert!(
+            parent.as_os_str().is_empty(),
+            "Path::parent for bare filename should be empty, got: {parent:?}"
+        );
+    }
+
+    #[test]
+    fn path_with_directory_has_non_empty_parent() {
+        // The companion case: when the path includes a directory, the
+        // parent is non-empty and `create_dir_all` should be invoked.
+        let p = Path::new("dir/metrics.json");
+        let parent = p.parent().expect("path-with-dir always has Some parent");
+        assert!(!parent.as_os_str().is_empty());
+        assert_eq!(parent, Path::new("dir"));
     }
 }
