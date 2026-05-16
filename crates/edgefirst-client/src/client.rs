@@ -88,6 +88,36 @@ pub(crate) fn map_rpc_error(
     }
 }
 
+/// Returns true if `val` is structurally a JSON-RPC 2.0 *error* envelope.
+///
+/// A real envelope must:
+/// 1. Be a JSON object,
+/// 2. Carry a `"jsonrpc"` member (the protocol-version sentinel — JSON-RPC
+///    2.0 §5 mandates this on every response object),
+/// 3. Carry an `"error"` object that includes a numeric `"code"` field.
+///
+/// This is intentionally stricter than a "looks for a top-level `error`
+/// key" check so that legitimate JSON file payloads (validation traces,
+/// metrics dumps, diagnostics) which happen to include a free-form `error`
+/// field are *not* misclassified as RPC failures.
+///
+/// Extracted so it can be unit-tested without a live server.
+pub(crate) fn is_jsonrpc_error_envelope(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    // Protocol-version sentinel — only JSON-RPC envelopes carry this.
+    if !obj.contains_key("jsonrpc") {
+        return false;
+    }
+    let Some(err) = obj.get("error").and_then(|e| e.as_object()) else {
+        return false;
+    };
+    err.get("code")
+        .map(|c| c.is_i64() || c.is_u64())
+        .unwrap_or(false)
+}
+
 /// Validates that `group` and `name` are both non-empty strings for chart
 /// operations (`add_chart`, `get_chart`). Extracted so it can be unit-tested
 /// without a live server.
@@ -4133,7 +4163,9 @@ impl Client {
         Ok(tasks)
     }
 
-    /// Submits a job (app run) to the server. Returns the resulting task id.
+    /// Submits a job (app run) to the server and returns the resulting `Job`
+    /// record (which carries the linked task id alongside the cloud-batch
+    /// metadata).
     ///
     /// # Arguments
     /// * `app_name` - The name of the registered app to run (e.g., `"edgefirst-validator"`).
@@ -4362,6 +4394,17 @@ impl Client {
                 Err(Error::InvalidResponse)
             }
         } else {
+            // HTTP-level failure on the multipart upload. Map 413 to the
+            // typed `PayloadTooLarge` variant so callers see the same error
+            // type from both single-file rpc_download paths and multipart
+            // upload paths; everything else falls through to HttpError.
+            let status = resp.status();
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
             let err = resp.error_for_status_ref().unwrap_err();
             Err(Error::HttpError(err))
         }
@@ -4414,10 +4457,14 @@ impl Client {
         //   (b) a legitimate JSON file payload — validation traces, chart
         //       bodies, metrics, etc., are typically served with this MIME.
         //
-        // Disambiguate by parsing: only treat the body as an error envelope
-        // when it has a top-level `error` object; otherwise the body *is*
-        // the file, so persist the buffered bytes to disk. JSON downloads
-        // are small in practice, so buffering the full body is acceptable.
+        // Disambiguate structurally: a JSON-RPC 2.0 envelope is required to
+        // carry a `jsonrpc` member, and an *error* envelope further requires
+        // an `error.code` integer (per RFC 8259 + JSON-RPC 2.0 §5). Only
+        // decode the body as an error if both markers are present. This is
+        // strict enough to leave legitimate JSON artifacts that happen to
+        // contain a free-form `error` field (metrics, diagnostics, log
+        // dumps) untouched, while still catching every real server
+        // failure.
         let content_type = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -4427,8 +4474,8 @@ impl Client {
         if content_type.contains("application/json") {
             let body = resp.bytes().await?;
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body)
+                && is_jsonrpc_error_envelope(&val)
                 && let Some(err_obj) = val.get("error")
-                && err_obj.is_object()
             {
                 let code = err_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
                 let message = err_obj
@@ -6054,6 +6101,96 @@ mod tests_val_data_list {
             serde_json::to_value(&req).unwrap(),
             serde_json::json!({"session_id": 2707})
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_jsonrpc_envelope_detection {
+    use super::*;
+
+    #[test]
+    fn detects_real_envelope() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "error": { "code": 101, "message": "Cannot find task" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_plain_json_artifact_with_error_field() {
+        // A diagnostics file with a free-form `error` object — must not be
+        // misread as an RPC envelope just because the key collides.
+        let v = serde_json::json!({
+            "metric": "loss",
+            "value": 0.42,
+            "error": { "code": "ENV_NOT_FOUND", "message": "missing var" },
+        });
+        assert!(
+            !is_jsonrpc_error_envelope(&v),
+            "missing jsonrpc sentinel should mean 'not an envelope'"
+        );
+    }
+
+    #[test]
+    fn rejects_envelope_missing_jsonrpc_sentinel() {
+        // Bare `error` block without the protocol-version marker.
+        let v = serde_json::json!({
+            "id": 0,
+            "error": { "code": 101, "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_object_error_field() {
+        // A diagnostics file shaped like JSON-RPC accidentally but using
+        // a string for `error`.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": "something went wrong",
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_without_error_code() {
+        // Real envelopes always carry an integer error.code; missing one
+        // is suspicious enough to refuse the envelope classification.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "message": "no code" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_numeric_error_code() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": "ENOENT", "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_non_object_root() {
+        // A JSON file whose root is an array — common for metrics dumps —
+        // must not be misread.
+        let v = serde_json::json!([1, 2, 3]);
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn accepts_unsigned_error_code() {
+        // The server's code is technically i32 but JSON has no signed/
+        // unsigned distinction — accept both shapes.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": 101u32, "message": "x" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
     }
 }
 
