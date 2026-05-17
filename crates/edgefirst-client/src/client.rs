@@ -858,19 +858,26 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
-        // Allow callers to pass a full URL (e.g. for self-hosted Studio
-        // deployments or mock-HTTP integration tests) by forwarding it to
-        // `with_url` unchanged when it carries an explicit scheme.
-        if server.starts_with("http://") || server.starts_with("https://") {
-            return self.with_url(server);
-        }
-        let url = match server {
-            "" | "saas" => "https://edgefirst.studio".to_string(),
-            name => format!("https://{}.edgefirst.studio", name),
+        // Resolve the target URL. Full URLs (self-hosted Studio,
+        // wiremock) are validated through `with_url` so the HTTPS rules
+        // there apply uniformly. Short names map to the SaaS pattern.
+        // We extract only the URL string and rebuild the Client below,
+        // because `with_url` preserves the in-memory token (the contract
+        // for self-hosted deployments) whereas `with_server` deliberately
+        // clears it (a different server means a stale token).
+        let url = if server.starts_with("http://") || server.starts_with("https://") {
+            self.with_url(server)?.url().to_string()
+        } else {
+            match server {
+                "" | "saas" => "https://edgefirst.studio".to_string(),
+                name => format!("https://{}.edgefirst.studio", name),
+            }
         };
 
         // Clear token from storage when changing servers to prevent
-        // authentication issues with stale tokens from different instances
+        // authentication issues with stale tokens from different
+        // instances. This runs whether the caller passed a short name
+        // or a full URL — both reach a new server.
         if let Some(ref storage) = self.storage
             && let Err(e) = storage.clear()
         {
@@ -5923,6 +5930,48 @@ mod tests {
 
         // Verify storage was cleared
         assert_eq!(storage.load().unwrap(), None);
+    }
+
+    #[test]
+    fn test_with_server_clears_storage_even_for_full_url() {
+        // Regression: `with_server` used to short-circuit to `with_url`
+        // when given a full URL, which preserved the bearer token. The
+        // contract for `with_server` is that switching servers means
+        // the token from the old server is no longer trusted.
+        use crate::storage::MemoryTokenStorage;
+
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store("token-from-old-server").unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+        assert_eq!(
+            storage.load().unwrap(),
+            Some("token-from-old-server".to_string())
+        );
+
+        // Switch to a self-hosted Studio (full URL). Storage must be
+        // cleared, and the new client must have a blank in-memory token.
+        let new_client = client
+            .with_server("https://studio.example.com")
+            .expect("https full URL through with_server");
+        assert_eq!(storage.load().unwrap(), None);
+        assert_eq!(new_client.url(), "https://studio.example.com");
+
+        // The new client should not carry the old token in memory either.
+        let in_mem = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { new_client.token.read().await.clone() });
+        assert!(in_mem.is_empty(), "expected blank token, got {in_mem:?}");
+    }
+
+    #[test]
+    fn test_with_server_rejects_insecure_full_url() {
+        // `with_server` validates full URLs through `with_url`, so the
+        // HTTPS rule applies uniformly. Plain http to a public host
+        // must be rejected — the bearer token would otherwise leak in
+        // plaintext when the caller next authenticates.
+        let client = Client::new().unwrap();
+        let err = client.with_server("http://studio.example.com").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
     }
 
     // ===== with_url HTTPS enforcement =====
