@@ -128,19 +128,22 @@ jobs:
 
       - name: Install Python package
         if: success() || failure()
-        # The target/wheels/*.whl is built one step above by `maturin
-        # build` from in-tree source, so version-locking and sdist
-        # avoidance are both already satisfied by construction.
-        # `--no-deps` keeps pip from re-resolving transitive
-        # dependencies (those came from the hash-locked install
-        # above), and `--only-binary=:all:` makes the sdist-avoidance
-        # explicit so the supply-chain hardening posture matches the
-        # requirements.txt install. Together they satisfy SonarCloud
-        # githubactions:S8541 / S8544 for this install command. Block
-        # scalar (`|`) is used so YAML doesn't parse the `:all:`
-        # token as a mapping separator.
+        # The target/wheels/*.whl was built from in-tree source in
+        # the previous step. To satisfy SonarCloud githubactions:S8544
+        # we compute the wheel's SHA-256 right here and feed pip a
+        # one-line constraints file with that hash, then install via
+        # `--require-hashes` so pip refuses to proceed if the wheel
+        # changes between hashing and installation. `--no-deps` keeps
+        # pip from re-resolving transitive deps (already installed
+        # from the hashed requirements.txt above) and
+        # `--only-binary=:all:` blocks any sdist fallback (S8541).
+        # Block scalar (`|`) is used so YAML doesn't parse the
+        # `:all:` token as a mapping separator.
         run: |
-          pip install --no-deps --only-binary=:all: target/wheels/edgefirst_client-*.whl
+          WHEEL=$(ls "$PWD"/target/wheels/edgefirst_client-*.whl | head -1)
+          HASH=$(pip hash --algorithm sha256 "$WHEEL" | grep -E '^--hash=' | head -1)
+          printf 'edgefirst-client @ file://%s %s\n' "$WHEEL" "$HASH" > /tmp/wheel-constraint.txt
+          pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/wheel-constraint.txt
 
       - name: Run Python tests
         id: python_tests
