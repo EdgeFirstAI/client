@@ -1,8 +1,16 @@
-ruff
-maturin
-pillow
-polars
-slipcover
-tqdm
-unittest-xml-reporting
-requests
+# Test / build dependencies for the EdgeFirst Client.
+#
+# Versions are pinned to satisfy SonarCloud githubactions:S8544
+# ("Using dependencies without locking resolved versions is
+# security-sensitive") and to make CI reproducible. The pins are
+# the current venv-installed versions on 2026-05-17; refresh them
+# (and re-run `pip-compile` if you switch to hash-locked installs)
+# when intentionally upgrading.
+ruff==0.14.6
+maturin==1.10.2
+pillow==12.0.0
+polars==1.35.2
+slipcover==1.0.17
+tqdm==4.67.1
+unittest-xml-reporting==3.2.0
+requests==2.32.5
