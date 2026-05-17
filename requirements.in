@@ -1,0 +1,19 @@
+# Top-level test / build dependencies for the EdgeFirst Client.
+#
+# Edit this file to add or pin packages, then regenerate the
+# hash-locked ``requirements.txt`` (committed alongside) with:
+#
+#     pip install pip-tools
+#     pip-compile --generate-hashes -o requirements.txt requirements.in
+#
+# Version pins here satisfy SonarCloud githubactions:S8544 by
+# making every install reproducible; the hashes in the compiled
+# ``requirements.txt`` also satisfy ``pip install --require-hashes``.
+ruff==0.14.6
+maturin==1.10.2
+pillow==12.0.0
+polars==1.35.2
+slipcover==1.0.17
+tqdm==4.67.1
+unittest-xml-reporting==3.2.0
+requests==2.32.5
