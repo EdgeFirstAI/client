@@ -931,9 +931,7 @@ async fn delete_validation_sessions_maps_permission_denied() {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("validate.session.delete"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rpc_error(100, "permission denied")),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(100, "permission denied")))
         .mount(&server)
         .await;
 

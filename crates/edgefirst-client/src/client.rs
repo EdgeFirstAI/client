@@ -9,7 +9,8 @@ use crate::{
         SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset,
         SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
         StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
-        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
+        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
+        ValidationSessionID,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -229,8 +230,7 @@ fn is_loopback_host(host: Option<&url::Host<&str>>) -> bool {
         // name. Compare case-insensitively because URL hosts are matched
         // that way and developers do type capitalized variants.
         Some(url::Host::Domain(d)) => {
-            d.eq_ignore_ascii_case("localhost")
-                || d.to_ascii_lowercase().ends_with(".localhost")
+            d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost")
         }
         None => false,
     }
@@ -4111,12 +4111,12 @@ impl Client {
         // match the JS frontend's call site verbatim (see
         // `dve-frontend/src/components/ValidationPage/StartValidatorModal.vue`).
         let mut body = serde_json::Map::new();
-        body.insert("type".into(), serde_json::Value::String("validation".into()));
-        body.insert("name".into(), serde_json::Value::String(req.name));
         body.insert(
-            "project_id".into(),
-            serde_json::to_value(req.project_id)?,
+            "type".into(),
+            serde_json::Value::String("validation".into()),
         );
+        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
         body.insert(
             "training_session_id".into(),
             serde_json::to_value(req.training_session_id)?,
@@ -4125,14 +4125,8 @@ impl Client {
             "model_file".into(),
             serde_json::Value::String(req.model_file),
         );
-        body.insert(
-            "val_type".into(),
-            serde_json::Value::String(req.val_type),
-        );
-        body.insert(
-            "is_local".into(),
-            serde_json::Value::Bool(req.is_local),
-        );
+        body.insert("val_type".into(), serde_json::Value::String(req.val_type));
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
         body.insert(
             "is_kubernetes".into(),
             serde_json::Value::Bool(req.is_kubernetes),
@@ -4182,10 +4176,7 @@ impl Client {
         session_ids: &[ValidationSessionID],
     ) -> Result<(), Error> {
         let mut body = serde_json::Map::new();
-        body.insert(
-            "session_ids".into(),
-            serde_json::to_value(session_ids)?,
-        );
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
         let _: serde_json::Value = self
             .rpc("validate.session.delete".to_owned(), Some(body))
             .await?;

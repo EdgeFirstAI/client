@@ -2886,7 +2886,8 @@ class TaskInfo:
         Args:
             client (Client): The authenticated EdgeFirst client.
             file (str): Filename to download.
-            output_path (Union[str, Path]): Local path to write the downloaded file.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
             folder (Optional[str]): Optional logical subdirectory under the
                 task data root.
             progress (Optional[Callable]): Optional progress callback. Supports
@@ -3696,9 +3697,10 @@ class ValidationSession:
                 - ``callback(current, total)`` — basic progress
                 - ``callback(current, total, status)`` — with status message
 
-                ``total`` equals the sum of all file sizes in bytes; ``current``
-                tracks aggregate bytes sent across all files using a shared
-                atomic counter. ``status`` is always ``None`` for uploads.
+                ``total`` equals the sum of all file sizes in bytes;
+                ``current`` tracks aggregate bytes sent across all files
+                using a shared atomic counter. ``status`` is always
+                ``None`` for uploads.
 
         Raises:
             RuntimeError: If the upload fails.
@@ -3718,7 +3720,8 @@ class ValidationSession:
         Args:
             client (Client): The authenticated EdgeFirst client.
             filename (str): Name of the file to download.
-            output_path (Union[str, Path]): Local path to write the downloaded file.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
             progress (Optional[Callable]): Optional progress callback. Supports
                 two signatures:
 
@@ -3738,8 +3741,8 @@ class ValidationSession:
             client (Client): The authenticated EdgeFirst client.
 
         Returns:
-            List[str]: Flat list of relative file paths (e.g. ``"folder/file.txt"``),
-            sorted lexicographically.
+            List[str]: Flat list of relative file paths
+            (e.g. ``"folder/file.txt"``), sorted lexicographically.
 
         Raises:
             RuntimeError: If the request fails.
