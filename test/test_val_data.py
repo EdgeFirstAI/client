@@ -130,6 +130,53 @@ class TestValData(unittest.TestCase):
                 folder="de2565-test",
             )
 
+    def test_upload_and_download_emit_progress_events(self):
+        """Cover the progress-callback PyO3 bridge for ValidationSession.
+
+        Mirrors the equivalent test in ``test_task_data`` — the wrapper
+        bridge code (mpsc channel + worker thread + re-entering the GIL
+        per event) is only exercised when ``progress`` is non-None.
+        """
+        session = self.client.validation_session(self.session_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "progress.txt"
+            payload = b"validation progress probe payload"
+            src.write_bytes(payload)
+
+            upload_events = []
+
+            def upload_cb(current, total):
+                upload_events.append((current, total))
+
+            session.upload_data(
+                self.client,
+                [("progress.txt", str(src))],
+                folder="de2565-test",
+                progress=upload_cb,
+            )
+            self.assertTrue(upload_events, "upload progress callback never fired")
+            last_cur, last_tot = upload_events[-1]
+            self.assertEqual(last_cur, last_tot)
+            self.assertEqual(last_tot, len(payload))
+
+            download_events = []
+
+            def download_cb(current, total, status=None):
+                download_events.append((current, total, status))
+
+            dst = Path(tmp) / "progress_dl.txt"
+            session.download_data(
+                self.client,
+                "de2565-test/progress.txt",
+                dst,
+                progress=download_cb,
+            )
+            self.assertEqual(dst.read_bytes(), payload)
+            self.assertTrue(
+                download_events, "download progress callback never fired"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

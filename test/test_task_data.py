@@ -122,6 +122,59 @@ class TestTaskData(unittest.TestCase):
         rep = repr(listing)
         self.assertIn("TaskDataList", rep)
 
+    def test_upload_and_download_emit_progress_events(self):
+        """Exercise the progress-callback PyO3 bridge for both upload and
+        download. The bridge spins up an mpsc channel, a worker thread, and
+        re-enters the GIL on each event to invoke the Python callable — none
+        of that is hit when ``progress=None`` (the path the other tests
+        take), so this test exists purely to cover those wrapper branches.
+        """
+        task_info = self.client.task_info(self.task_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "progress.txt"
+            payload = b"progress callback probe payload"
+            src.write_bytes(payload)
+
+            upload_events = []
+
+            def upload_cb(current, total):
+                upload_events.append((current, total))
+
+            task_info.upload_data(
+                self.client,
+                str(src),
+                folder="de2565-test",
+                progress=upload_cb,
+            )
+
+            # At minimum we should have received the terminal completion
+            # event (current == total). Intermediate events are
+            # best-effort (try_send may drop them under load).
+            self.assertTrue(upload_events, "upload progress callback never fired")
+            last_cur, last_tot = upload_events[-1]
+            self.assertEqual(last_cur, last_tot)
+            self.assertEqual(last_tot, len(payload))
+
+            download_events = []
+
+            def download_cb(current, total, status=None):
+                # Exercise the 3-arg callback signature path
+                download_events.append((current, total, status))
+
+            dst = Path(tmp) / "progress_dl.txt"
+            task_info.download_data(
+                self.client,
+                "progress.txt",
+                dst,
+                folder="de2565-test",
+                progress=download_cb,
+            )
+            self.assertEqual(dst.read_bytes(), payload)
+            self.assertTrue(
+                download_events, "download progress callback never fired"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
