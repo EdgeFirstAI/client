@@ -59,6 +59,9 @@ image = { version = "0.25", features = ["jpeg", "png"] }
 pathfinding = "4.11"
 png = "0.17"
 rand = { workspace = true }
+# `serial_test` lets us mark process-wide-mutation tests (`std::env::
+# set_current_dir`) so they don't race other parallel tests.
+serial_test = { workspace = true }
 sha1 = { workspace = true }
 tempfile = { workspace = true }
 # Mock HTTP server for offline integration tests of the DE-2565 methods

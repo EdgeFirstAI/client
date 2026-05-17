@@ -34,6 +34,7 @@
 use base64::Engine as _;
 use edgefirst_client::{Client, Error, Parameter, TaskID, ValidationSessionID};
 use serde_json::json;
+use serial_test::serial;
 use wiremock::matchers::{body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -275,7 +276,37 @@ async fn rpc_download_maps_http_413_to_payload_too_large() {
     );
 }
 
+/// RAII guard around `std::env::set_current_dir`.
+///
+/// CWD is process-global, so the `Drop` impl restores it even on panic.
+/// Combined with `#[serial]` on the surrounding test, no other test
+/// observes a mid-flight CWD.
+struct CwdGuard {
+    original: std::path::PathBuf,
+}
+
+impl CwdGuard {
+    fn enter(new_cwd: &std::path::Path) -> std::io::Result<Self> {
+        let original = std::env::current_dir()?;
+        std::env::set_current_dir(new_cwd)?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        // Best-effort restore — if this fails, the process is already in
+        // a weird state and `expect` would just trip a double-panic.
+        let _ = std::env::set_current_dir(&self.original);
+    }
+}
+
+// `#[serial]` (single-threaded) is mandatory: CWD is process-wide, so
+// running this in parallel with other tests would race their file-path
+// assertions or fixture lookups. The `CwdGuard` restores CWD on drop so
+// a panic mid-test still leaves the process clean for the next test.
 #[tokio::test]
+#[serial]
 async fn rpc_download_accepts_bare_filename_without_dirname() {
     // Regression: `Path::parent` for "metrics.bin" returns `Some("")`, and
     // `create_dir_all("")` errors. The guard should let the bare filename
@@ -298,20 +329,18 @@ async fn rpc_download_accepts_bare_filename_without_dirname() {
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let bare = tmp_dir.path().join("metrics.bin");
-    let cwd_before = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp_dir.path()).unwrap();
-    let result = task
-        .download_data(
-            &client,
-            "any.bin",
-            None,
-            std::path::Path::new("metrics.bin"),
-            None,
-        )
-        .await;
-    std::env::set_current_dir(cwd_before).unwrap();
-    result.expect("bare filename download");
+    let _cwd = CwdGuard::enter(tmp_dir.path()).expect("enter tempdir");
+    task.download_data(
+        &client,
+        "any.bin",
+        None,
+        std::path::Path::new("metrics.bin"),
+        None,
+    )
+    .await
+    .expect("bare filename download");
     assert_eq!(tokio::fs::read(&bare).await.unwrap(), b"hello");
+    // `_cwd` drops here and restores CWD even if the assertions panic.
 }
 
 #[tokio::test]
