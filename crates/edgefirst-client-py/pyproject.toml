@@ -1,7 +1,12 @@
 [project]
 name = "edgefirst_client"
 requires-python = ">=3.8"
-dependencies = ["polars"]
+# Bounded version constraint matches ``requirements.in`` so the wheel
+# and the CI test deps consume the same polars major. Sonar's
+# ``text:S8565`` rule rejects pure ``"polars"`` declarations as
+# non-reproducible; the range gives pip a well-defined resolution
+# window without exact-pinning (which would prevent patch updates).
+dependencies = ["polars>=1.35,<2"]
 dynamic = ["version"]
 # Matches workspace `license = "Apache-2.0"` in /Cargo.toml. Declared
 # here so scancode resolves the Python wheel's license at SBOM time
