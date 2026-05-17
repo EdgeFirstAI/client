@@ -5431,7 +5431,7 @@ class Client:
         training_session_id: TrainingSessionUID,
         model_file: str,
         val_type: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: Dict[str, Any] = {},
         is_local: bool = False,
         is_kubernetes: bool = False,
         description: Optional[str] = None,
