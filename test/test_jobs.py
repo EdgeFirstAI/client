@@ -74,6 +74,53 @@ class TestJobs(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.client.job_stop(invalid)
 
+    @unittest.skipIf(
+        not (os.environ.get("STUDIO_USERNAME") and os.environ.get("STUDIO_PASSWORD")),
+        "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping integration tests",
+    )
+    def test_job_stop_accepts_int_and_str_arms(self):
+        """``job_stop`` should accept ``TaskID``, ``int``, and ``str`` per the
+        ``TaskUID`` typing in the .pyi stub. All three arms go through
+        ``TryFrom<Bound<PyAny>> for TaskID`` in the PyO3 binding.
+
+        We assert each call raises (the server rejects the dead-beef ID); the
+        test's purpose is to exercise the binding-side conversion code, not
+        the server behavior.
+        """
+        for arg in (
+            TaskID("task-deadbeef"),  # TaskID arm
+            0xDEADBEEF,                # int arm
+            "task-deadbeef",          # str arm
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.job_stop(arg)
+
+    @unittest.skipIf(
+        not (os.environ.get("STUDIO_USERNAME") and os.environ.get("STUDIO_PASSWORD")),
+        "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping integration tests",
+    )
+    def test_jobs_listing_exercises_job_getters(self):
+        """When ``jobs()`` returns a non-empty list, walk each entry and hit
+        every getter on the ``Job`` PyO3 wrapper.
+
+        On a fresh test account the list is often empty — in that case this
+        test still passes (the assertion below is a no-op), but on any
+        environment that has run a job it provides direct coverage of the
+        ``Job::code/title/job_name/job_id/state/task_id`` getters.
+        """
+        for job in self.client.jobs():
+            # Each getter returns either str or int — checking type at all
+            # exercises the PyO3 descriptor path even if the value is empty.
+            self.assertIsInstance(job.code, str)
+            self.assertIsInstance(job.title, str)
+            self.assertIsInstance(job.job_name, str)
+            self.assertIsInstance(job.job_id, str)
+            self.assertIsInstance(job.state, str)
+            # task_id() is a method (not a property) because we need to
+            # call the core saturating accessor that promotes negative
+            # i64 → TaskID(0).
+            self.assertIsInstance(job.task_id(), TaskID)
+
 
 if __name__ == "__main__":
     unittest.main()
