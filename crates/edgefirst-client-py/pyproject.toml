@@ -3,6 +3,12 @@ name = "edgefirst_client"
 requires-python = ">=3.8"
 dependencies = ["polars"]
 dynamic = ["version"]
+# Matches workspace `license = "Apache-2.0"` in /Cargo.toml. Declared
+# here so scancode resolves the Python wheel's license at SBOM time
+# instead of flagging it as unknown — the wheel and the Rust crate
+# ship under the same Apache-2.0 terms.
+license = "Apache-2.0"
+authors = [{ name = "Au-Zone Technologies", email = "support@au-zone.com" }]
 
 [project.urls]
 Homepage = "https://edgefirst.studio"

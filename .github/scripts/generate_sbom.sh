@@ -185,11 +185,58 @@ echo "[3/6] Generating dependency SBOM..."
 # For Rust projects with cargo-cyclonedx
 if [ -f "Cargo.toml" ] && command -v cargo-cyclonedx &> /dev/null; then
     echo "  Generating Rust dependencies with cargo-cyclonedx..."
-    cargo cyclonedx --format json --all
-    # Rename output to deps-sbom.json
-    if [ -f "$PROJECT_NAME.cdx.json" ]; then
-        mv "$PROJECT_NAME.cdx.json" deps-sbom.json
-    fi
+    # cargo-cyclonedx 0.5+ emits one SBOM per workspace member at
+    # ``crates/<name>/<name>.cdx.json``. We merge them into a single
+    # deps-sbom.json with python (deduplicating by ``purl`` so a
+    # transitive dependency reachable from multiple workspace members
+    # only appears once). Without this merge the script fell back to
+    # the empty stub below, and inherited license declarations
+    # (``license.workspace = true``) never reached the final SBOM —
+    # which surfaced as spurious "unknown license" warnings on every
+    # workspace crate.
+    cargo cyclonedx --format json --quiet
+    python3 << 'EOF'
+import glob
+import json
+import os
+import sys
+
+per_crate = sorted(glob.glob('crates/*/*.cdx.json'))
+if not per_crate:
+    sys.exit(0)
+
+components_by_key = {}
+workspace_members = set()
+for path in per_crate:
+    with open(path) as f:
+        sbom = json.load(f)
+    # The main component of each per-crate SBOM is the workspace
+    # member itself — include it (those are the entries that carry
+    # the inherited Apache-2.0 license).
+    main = sbom.get('metadata', {}).get('component')
+    if main and main.get('name'):
+        key = main.get('purl') or f"{main['name']}@{main.get('version','')}"
+        components_by_key.setdefault(key, main)
+        workspace_members.add(main['name'])
+    for comp in sbom.get('components', []):
+        key = comp.get('purl') or f"{comp.get('name','')}@{comp.get('version','')}"
+        components_by_key.setdefault(key, comp)
+
+with open('deps-sbom.json', 'w') as f:
+    json.dump({
+        'bomFormat': 'CycloneDX',
+        'specVersion': '1.6',
+        'version': 1,
+        'components': list(components_by_key.values()),
+    }, f, indent=2)
+
+# Clean up per-crate intermediates so they don't pollute git.
+for path in per_crate:
+    os.remove(path)
+print(f"Merged {len(per_crate)} per-crate SBOMs "
+      f"({len(workspace_members)} workspace members, "
+      f"{len(components_by_key)} unique components)")
+EOF
 fi
 
 # For Python projects (scancode already parsed requirements.txt/pyproject.toml)
@@ -227,7 +274,16 @@ $CYCLONEDX merge \
     --input-files source-sbom.json deps-sbom.json \
     --output-file sbom-temp.json
 
-# Remove duplicate project component from components list
+# Post-merge cleanup:
+#  1. Drop the duplicate metadata-vs-component entry for the project
+#     itself (the workspace package shows up in both places).
+#  2. Drop "versionless / unlicensed" scancode placeholders for any
+#     component that also appears with a version and license from
+#     cargo-cyclonedx. Scancode walks the manifest tree and emits
+#     bare ``pkg:cargo/<name>`` rows that don't resolve workspace-
+#     inherited license fields; without dedup they pollute the
+#     compliance report as "unknown license" duplicates of entries
+#     that DO carry the inherited Apache-2.0.
 export PROJECT_NAME
 python3 << 'EOF'
 import json
@@ -238,12 +294,27 @@ PROJECT_NAME = os.environ['PROJECT_NAME']
 with open('sbom-temp.json', 'r') as f:
     sbom = json.load(f)
 
-# Filter out project name from components (it's defined in metadata, not a dependency)
-if 'components' in sbom:
-    sbom['components'] = [
-        c for c in sbom['components']
-        if c.get('name') != PROJECT_NAME.lower()
-    ]
+components = sbom.get('components', [])
+
+# Map name -> True if any entry for that name has a version (the
+# versioned entry is the authoritative one from cargo-cyclonedx).
+has_versioned = {}
+for c in components:
+    name = c.get('name')
+    if name and c.get('version'):
+        has_versioned[name] = True
+
+def keep(c):
+    name = c.get('name')
+    # Drop the project's own metadata-mirror entry.
+    if name == PROJECT_NAME.lower():
+        return False
+    # Drop versionless placeholders that have a versioned twin.
+    if not c.get('version') and has_versioned.get(name):
+        return False
+    return True
+
+sbom['components'] = [c for c in components if keep(c)]
 
 with open('sbom.json', 'w') as f:
     json.dump(sbom, f, indent=2)
