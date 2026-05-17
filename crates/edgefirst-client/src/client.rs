@@ -215,6 +215,27 @@ where
     filtered
 }
 
+/// Whether `host` refers to a loopback (machine-local) endpoint.
+///
+/// Used by [`Client::with_url`] to decide whether a plain-`http://` URL is
+/// safe to accept. Loopback traffic never leaves the machine, so the
+/// usual concern about leaking the Studio bearer token in plaintext does
+/// not apply — that's how wiremock and local dev servers connect.
+fn is_loopback_host(host: Option<&url::Host<&str>>) -> bool {
+    match host {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // RFC 6761 reserves "localhost" (and `*.localhost`) as a loopback
+        // name. Compare case-insensitively because URL hosts are matched
+        // that way and developers do type capitalized variants.
+        Some(url::Host::Domain(d)) => {
+            d.eq_ignore_ascii_case("localhost")
+                || d.to_ascii_lowercase().ends_with(".localhost")
+        }
+        None => false,
+    }
+}
+
 fn sanitize_path_component(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -866,16 +887,35 @@ impl Client {
         })
     }
 
-    /// Returns a new client pointed at an explicit URL (e.g.
-    /// `http://127.0.0.1:8080`, `https://studio.example.com`).
+    /// Returns a new client pointed at an explicit URL.
     ///
-    /// Used for self-hosted Studio deployments and for offline integration
-    /// tests against a mock HTTP server. The token is preserved so callers
-    /// can chain `Client::new()?.with_url(...)?.with_token(...)`.
+    /// Used for self-hosted Studio deployments (e.g.
+    /// `https://studio.example.com`) and for offline integration tests
+    /// against a mock HTTP server (e.g. `http://127.0.0.1:8080`). The
+    /// token is preserved so callers can chain
+    /// `Client::new()?.with_url(...)?.with_token(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UrlParseError`] for syntactically invalid URLs and
+    /// [`Error::InsecureUrl`] for plain `http://` URLs that resolve to a
+    /// non-loopback host: the Studio bearer token rides in the
+    /// `Authorization` header, and plain HTTP would leak it in the clear.
+    /// Loopback URLs (`127.0.0.1`, `::1`, `localhost`, `*.localhost`) are
+    /// permitted because traffic never leaves the machine — wiremock and
+    /// local dev servers go through that path.
     pub fn with_url(&self, url: &str) -> Result<Self, Error> {
         // Reject malformed inputs early so test failures point at the test
         // rather than a downstream reqwest send.
-        let _ = url::Url::parse(url)?;
+        let parsed = url::Url::parse(url)?;
+        let scheme = parsed.scheme();
+        if scheme == "http" {
+            if !is_loopback_host(parsed.host().as_ref()) {
+                return Err(Error::InsecureUrl(url.to_string()));
+            }
+        } else if scheme != "https" {
+            return Err(Error::InsecureUrl(url.to_string()));
+        }
         Ok(Client {
             url: url.trim_end_matches('/').to_string(),
             ..self.clone()
@@ -5771,6 +5811,81 @@ mod tests {
 
         // Verify storage was cleared
         assert_eq!(storage.load().unwrap(), None);
+    }
+
+    // ===== with_url HTTPS enforcement =====
+    //
+    // The bearer token rides in the Authorization header, so plain
+    // http:// to a public host would leak it in the clear. The function
+    // must reject those URLs, but still let wiremock / local-dev URLs
+    // through (loopback addresses, "localhost", "*.localhost").
+
+    #[test]
+    fn with_url_accepts_https_public_host() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("https://studio.example.com")
+            .expect("https public host must be accepted");
+        assert_eq!(out.url(), "https://studio.example.com");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv4() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://127.0.0.1:8080")
+            .expect("http://127.0.0.1 must be accepted (loopback)");
+        assert_eq!(out.url(), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv6() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://[::1]:8080")
+            .expect("http://[::1] must be accepted (loopback)");
+        assert!(out.url().starts_with("http://[::1]"));
+    }
+
+    #[test]
+    fn with_url_accepts_http_localhost() {
+        let client = Client::new().unwrap();
+        client
+            .with_url("http://localhost:8080")
+            .expect("http://localhost must be accepted");
+        client
+            .with_url("http://LOCALHOST")
+            .expect("http://LOCALHOST must be accepted (case-insensitive)");
+        client
+            .with_url("http://wiremock.localhost")
+            .expect("http://*.localhost must be accepted");
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_host() {
+        let client = Client::new().unwrap();
+        let err = client.with_url("http://studio.example.com").unwrap_err();
+        match err {
+            Error::InsecureUrl(u) => assert_eq!(u, "http://studio.example.com"),
+            other => panic!("expected InsecureUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_ip() {
+        let client = Client::new().unwrap();
+        // 8.8.8.8 is not loopback; must be rejected.
+        let err = client.with_url("http://8.8.8.8").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+
+    #[test]
+    fn with_url_rejects_non_http_scheme() {
+        let client = Client::new().unwrap();
+        // file:// would otherwise parse, but it's not a transport we
+        // can use for RPC and we don't want to silently accept it.
+        let err = client.with_url("file:///etc/passwd").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
     }
 }
 

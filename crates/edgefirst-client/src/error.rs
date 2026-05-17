@@ -94,6 +94,12 @@ pub enum Error {
         method: String,
         size_hint: Option<u64>,
     },
+    /// Refusing to point the client at a non-loopback `http://` URL.
+    /// Studio bearer tokens ride in the `Authorization` header, and plain
+    /// HTTP would leak them in the clear. Loopback URLs (`127.0.0.1`,
+    /// `::1`, `localhost`) are permitted because traffic never leaves
+    /// the machine — that's how wiremock and local dev servers connect.
+    InsecureUrl(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -229,6 +235,12 @@ impl std::fmt::Display for Error {
             Error::TaskNotFound(id) => write!(f, "task not found: {}", id),
             Error::PermissionDenied(op) => write!(f, "permission denied: {}", op),
             Error::PayloadTooLarge { method, .. } => write!(f, "payload too large for {}", method),
+            Error::InsecureUrl(url) => write!(
+                f,
+                "refusing insecure URL '{}': Studio bearer tokens require HTTPS \
+                 (loopback http is allowed for tests/dev)",
+                url
+            ),
         }
     }
 }
