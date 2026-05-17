@@ -3447,6 +3447,44 @@ impl TrainingSession {
     }
 }
 
+/// Result of `Client.start_validation_session`.
+///
+/// `task_id` is the backing BackgroundTask row id (passable to
+/// `task_info` etc.); `session_id` is the freshly-minted
+/// `ValidationSessionID` for downstream data ops and the matching
+/// `delete_validation_sessions` call in test teardown. The session_id
+/// is optional because the underlying `cloud.server.start` endpoint
+/// also returns non-validation tasks; for a user-managed validation
+/// session this is always populated.
+#[pyclass(module = "edgefirst_client")]
+pub struct NewValidationSession {
+    inner: edgefirst_client::NewValidationSession,
+}
+
+#[pymethods]
+impl NewValidationSession {
+    #[getter]
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.inner.task_id)
+    }
+
+    #[getter]
+    pub fn session_id(&self) -> Option<ValidationSessionID> {
+        self.inner.session_id.map(ValidationSessionID)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "NewValidationSession(task_id={}, session_id={})",
+            self.inner.task_id,
+            self.inner
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct ValidationSession {
     inner: edgefirst_client::ValidationSession,
@@ -6171,6 +6209,102 @@ impl Client {
         ))
     }
 
+    /// Create a new validation session (Studio `cloud.server.start`).
+    ///
+    /// Pass ``is_local=True`` for a user-managed session: the session
+    /// row is created and data uploads / downloads work normally, but
+    /// no EC2 instance is provisioned and no automated validator
+    /// pipeline runs. That is the mode the test fixtures use — the
+    /// caller is responsible for cleanup via
+    /// :py:meth:`delete_validation_sessions`.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (
+        project_id,
+        name,
+        training_session_id,
+        model_file,
+        val_type,
+        params = HashMap::new(),
+        is_local = false,
+        is_kubernetes = false,
+        description = None,
+        dataset_id = None,
+        annotation_set_id = None,
+        snapshot_id = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_validation_session<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        name: &str,
+        training_session_id: Bound<'py, PyAny>,
+        model_file: &str,
+        val_type: &str,
+        params: HashMap<String, Bound<'py, PyAny>>,
+        is_local: bool,
+        is_kubernetes: bool,
+        description: Option<&str>,
+        dataset_id: Option<Bound<'py, PyAny>>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        snapshot_id: Option<Bound<'py, PyAny>>,
+    ) -> Result<NewValidationSession, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let training_session_id: TrainingSessionID = training_session_id.try_into()?;
+        let dataset_id = match dataset_id {
+            Some(v) => Some(DatasetID::try_from(v)?.0),
+            None => None,
+        };
+        let annotation_set_id = match annotation_set_id {
+            Some(v) => Some(AnnotationSetID::try_from(v)?.0),
+            None => None,
+        };
+        let snapshot_id = match snapshot_id {
+            Some(v) => Some(SnapshotID::try_from(v)?.0),
+            None => None,
+        };
+        let mut params_map = HashMap::<String, edgefirst_client::Parameter>::new();
+        for (key, value) in params {
+            let value: Parameter = value.try_into()?;
+            params_map.insert(key, value.into());
+        }
+        let req = edgefirst_client::StartValidationRequest {
+            project_id: project_id.0,
+            name: name.to_string(),
+            training_session_id: training_session_id.0,
+            model_file: model_file.to_string(),
+            val_type: val_type.to_string(),
+            params: params_map,
+            is_local,
+            is_kubernetes,
+            description: description.map(|s| s.to_string()),
+            dataset_id,
+            annotation_set_id,
+            snapshot_id,
+        };
+        let inner = self.0.start_validation_session(req).await?;
+        Ok(NewValidationSession { inner })
+    }
+
+    /// Delete one or more validation sessions (Studio
+    /// ``validate.session.delete``).
+    ///
+    /// Accepts a list of ids in any of the forms ``TaskUID`` accepts
+    /// (``ValidationSessionID``, ``int``, or ``"v-…"`` string). Used in
+    /// integration-test teardown to remove sessions previously created
+    /// via :py:meth:`start_validation_session`.
+    #[tokio_wrap::sync]
+    pub fn delete_validation_sessions<'py>(
+        &self,
+        session_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let mut ids = Vec::with_capacity(session_ids.len());
+        for v in session_ids {
+            let id: ValidationSessionID = v.try_into()?;
+            ids.push(id.0);
+        }
+        Ok(self.0.delete_validation_sessions(&ids).await?)
+    }
+
     #[tokio_wrap::sync]
     pub fn snapshots(&self) -> Result<Vec<Snapshot>, Error> {
         let client_arc = Arc::new(self.0.clone());
@@ -7519,6 +7653,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Experiment>()?;
     m.add_class::<TrainingSession>()?;
     m.add_class::<ValidationSession>()?;
+    m.add_class::<NewValidationSession>()?;
     m.add_class::<Snapshot>()?;
     m.add_class::<SnapshotRestoreResult>()?;
     m.add_class::<SnapshotFromDatasetResult>()?;

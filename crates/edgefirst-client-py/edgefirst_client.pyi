@@ -3470,6 +3470,33 @@ class TrainingSession:
         """
         ...
 
+class NewValidationSession:
+    """Result of :py:meth:`Client.start_validation_session`.
+
+    The handle returned when a session is freshly created via
+    ``cloud.server.start``. The session_id is what downstream data
+    uploads / metrics use and what :py:meth:`Client.
+    delete_validation_sessions` consumes in test teardown.
+    """
+
+    @property
+    def task_id(self) -> TaskID:
+        """Backing BackgroundTask row id (acceptable to
+        ``task_info`` / ``task_status`` / ``job_stop``)."""
+        ...
+
+    @property
+    def session_id(self) -> Optional[ValidationSessionID]:
+        """Freshly-minted validation session id.
+
+        Optional because the underlying ``cloud.server.start`` endpoint
+        also returns non-validation tasks (e.g. trainer). For a
+        validation start request this is always populated.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
 class ValidationSession:
     """
     This class represents a validation session for a given model and dataset.
@@ -5394,6 +5421,82 @@ class Client:
         Raises:
             Error: If the validation session does not exist or the request
                    fails.
+        """
+        ...
+
+    def start_validation_session(
+        self,
+        project_id: ProjectUID,
+        name: str,
+        training_session_id: TrainingSessionUID,
+        model_file: str,
+        val_type: str,
+        params: Optional[Dict[str, Any]] = None,
+        is_local: bool = False,
+        is_kubernetes: bool = False,
+        description: Optional[str] = None,
+        dataset_id: Optional[DatasetUID] = None,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        snapshot_id: Optional[SnapshotUID] = None,
+    ) -> "NewValidationSession":
+        """Create a new validation session (Studio ``cloud.server.start``).
+
+        Pass ``is_local=True`` to create a **user-managed** session: the
+        DB row is created and the session is fully usable for data
+        uploads / downloads / metric updates, but no EC2 instance is
+        provisioned and no automated validator pipeline runs. That is
+        the mode the integration tests use — the caller is responsible
+        for cleanup via :py:meth:`delete_validation_sessions`.
+
+        Args:
+            project_id: Project that owns the new session.
+            name: Session display name.
+            training_session_id: Source training session (the session
+                being validated).
+            model_file: Path/name of the model artifact relative to the
+                training session's artifacts.
+            val_type: Validator schema name, e.g. ``"modelpack"``.
+            params: Inner ``params.params`` dict the validator schema
+                consumes; pass an empty dict for the default config.
+            is_local: ``True`` for a user-managed session with no cloud
+                EC2/Kubernetes provisioning.
+            is_kubernetes: ``True`` to route the session to a Kubernetes
+                worker pool instead of EC2.
+            description: Optional session description.
+            dataset_id: Validation dataset id (one of dataset_id+
+                annotation_set_id *or* snapshot_id is required).
+            annotation_set_id: Annotation set on the dataset to validate
+                against.
+            snapshot_id: Snapshot id (alternative to dataset_id/
+                annotation_set_id when the validator runs against a
+                frozen snapshot).
+
+        Returns:
+            NewValidationSession: Backing task id and the freshly-minted
+            ``ValidationSessionID``.
+
+        Raises:
+            Error: ``RpcError(101, ...)`` if a referenced entity is
+                missing; ``PermissionDenied`` if the caller can't write
+                to the target project.
+        """
+        ...
+
+    def delete_validation_sessions(
+        self, session_ids: List[ValidationSessionUID]
+    ) -> None:
+        """Delete one or more validation sessions
+        (Studio ``validate.session.delete``).
+
+        Idempotent against already-deleted ids on the server side.
+
+        Args:
+            session_ids: Sessions to remove; each accepts the
+                :py:data:`ValidationSessionUID` typing.
+
+        Raises:
+            Error: ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on at least one session.
         """
         ...
 
