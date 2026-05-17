@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-"""Integration tests for TaskInfo chart methods (add_chart, list_charts, get_chart).
+"""Integration tests for TaskInfo chart methods.
 
-These tests verify the TaskInfo chart API functionality including adding charts,
-listing charts, and retrieving chart data. Operations require explicit task
-authorization; when ``STUDIO_TEST_TASK_ID`` is set we use that, otherwise the
-suite auto-discovers a task in the ``Unit Testing`` project so it can still
-exercise the wrappers (PyO3 coverage) on any developer machine.
+The test class creates its own **user-managed** validation session in
+``setUpClass`` and uses that session's backing ``BackgroundTask`` as the
+task fixture. The session (and thus the task) is deleted in
+``tearDownClass`` — no random live tasks on the test account are ever
+mutated, so the chart-mutating tests are safe to run on any developer
+machine.
 
-Requires STUDIO_USERNAME and STUDIO_PASSWORD credentials. Skips when unavailable.
+If ``STUDIO_TEST_TASK_ID`` is set we reuse that task instead of creating
+one (and skip the teardown delete because we did not create it).
+
+Requires STUDIO_USERNAME and STUDIO_PASSWORD credentials. Skips when
+unavailable. Skips with a clear message when the canonical "Unit
+Testing" project lacks the entities needed to create a fixture.
 """
 
 import os
@@ -17,42 +23,24 @@ import unittest
 
 from edgefirst_client import Parameter, TaskID
 
-from test import get_client
-
-
-def _autodiscover_task_id(client):
-    """Best-effort lookup of any task whose ``task_info`` resolves.
-
-    Returns a ``TaskID`` or ``None``. Mirrors the helper in
-    ``test_task_data.py``: prefer a task in the canonical Unit Testing
-    project, otherwise fall back to any resolvable task so the PyO3
-    chart wrappers still get exercised on fresh dev servers.
-    """
-    projects = client.projects("Unit Testing")
-    target_project_id = projects[0].id if projects else None
-
-    fallback = None
-    for task in client.tasks(None, None, None, None):
-        try:
-            info = client.task_info(task.id)
-        except RuntimeError:
-            continue
-        if target_project_id is not None and info.project_id == target_project_id:
-            return task.id
-        if fallback is None:
-            fallback = task.id
-    return fallback
+from test import (
+    cleanup_validation_session,
+    get_client,
+    make_user_managed_validation_session,
+)
 
 
 class TestTaskCharts(unittest.TestCase):
     """Test suite for TaskInfo chart API operations."""
 
+    _owns_session = False
+    _owned_session_id = None
+
     @classmethod
     def setUpClass(cls):
-        """Set up authenticated client and resolve a task fixture."""
+        """Authenticate and resolve (or create) a task fixture."""
         username = os.environ.get("STUDIO_USERNAME")
         password = os.environ.get("STUDIO_PASSWORD")
-
         if not username or not password:
             raise unittest.SkipTest(
                 "STUDIO_USERNAME and STUDIO_PASSWORD not set; skipping task chart tests"
@@ -60,14 +48,31 @@ class TestTaskCharts(unittest.TestCase):
 
         cls.client = get_client()
         raw_id = os.environ.get("STUDIO_TEST_TASK_ID")
-        cls.task_id = TaskID(raw_id) if raw_id else _autodiscover_task_id(cls.client)
+        if raw_id:
+            cls.task_id = TaskID(raw_id)
+            cls._owns_session = False
+            return
 
-    def setUp(self):
-        if self.task_id is None:
-            self.skipTest(
-                "no task fixture available (STUDIO_TEST_TASK_ID unset and no "
-                "tasks visible in the 'Unit Testing' project)"
+        new_session = make_user_managed_validation_session(
+            cls.client, name_suffix="task-charts"
+        )
+        if new_session is None:
+            raise unittest.SkipTest(
+                "no task fixture available: the 'Unit Testing' project is "
+                "missing a training session with model artifacts. Set "
+                "STUDIO_TEST_TASK_ID to reuse an existing task instead."
             )
+        cls.task_id = new_session.task_id
+        cls._owned_session_id = new_session.session_id
+        cls._owns_session = True
+
+    @classmethod
+    def tearDownClass(cls):
+        """Delete the session we created (if any). Deleting the session
+        also removes its backing task, so a single delete cleans up
+        both the chart fixture and the data-test fixture."""
+        if cls._owns_session and cls._owned_session_id is not None:
+            cleanup_validation_session(cls.client, cls._owned_session_id)
 
     def test_add_list_get_chart_round_trip(self):
         """Add, list, and get task charts with upsert semantics on (group, name)."""

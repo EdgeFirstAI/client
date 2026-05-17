@@ -1206,6 +1206,7 @@ dependencies = [
  "reqwest 0.13.3",
  "serde",
  "serde_json",
+ "serial_test",
  "sha1",
  "tempfile",
  "tokio",

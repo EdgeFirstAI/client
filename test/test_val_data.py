@@ -1,17 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-"""Integration tests for ValidationSession data methods (upload_data, download_data, data_list).
+"""Integration tests for ValidationSession data methods.
 
-These tests verify the ValidationSession data API functionality including
-uploading files, listing data, and downloading files. Operations require
-explicit session authorization; when
-``STUDIO_TEST_VALIDATION_SESSION_ID`` is set we use that, otherwise the
-suite auto-discovers a validation session in the ``Unit Testing``
-project so it can still exercise the PyO3 wrappers on any developer
-machine.
+Each test class creates its own **user-managed** validation session in
+``setUpClass`` (via :py:meth:`Client.start_validation_session` with
+``is_local=True``) and deletes it in ``tearDownClass``. The session is
+fully usable for the upload / list / download wrappers under test, but
+no EC2 instance is provisioned and no validator pipeline runs, so the
+suite has no side effects beyond the session row it creates and tears
+down.
 
-Requires STUDIO_USERNAME and STUDIO_PASSWORD credentials. Skips when unavailable.
+If ``STUDIO_TEST_VALIDATION_SESSION_ID`` is set the tests reuse that
+existing session instead of creating one (and skip the teardown delete
+to avoid removing a fixture they did not own).
+
+Requires STUDIO_USERNAME and STUDIO_PASSWORD credentials. Skips when
+unavailable. Skips with a clear message when the canonical "Unit
+Testing" project lacks the entities needed to create a fixture.
 """
 
 import os
@@ -19,51 +25,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test import get_client
-
-
-def _autodiscover_validation_session(client):
-    """Best-effort lookup of any validation session the user can see.
-
-    Returns a ``ValidationSessionID`` or ``None``. Prefer the canonical
-    Unit Testing project; otherwise sweep every visible project and
-    return the first session found. Lets the test exercise the PyO3
-    upload_data / download_data / data_list wrappers without requiring
-    developer-side env var setup.
-    """
-
-    def first_session(project_id):
-        try:
-            sessions = client.validation_sessions(project_id)
-        except RuntimeError:
-            return None
-        return sessions[0].id if sessions else None
-
-    # Preference: canonical project.
-    projects = client.projects("Unit Testing")
-    if projects:
-        sid = first_session(projects[0].id)
-        if sid is not None:
-            return sid
-
-    # Fallback: sweep all visible projects until we find one with a session.
-    for project in client.projects(None):
-        sid = first_session(project.id)
-        if sid is not None:
-            return sid
-
-    return None
+from test import (
+    cleanup_validation_session,
+    get_client,
+    make_user_managed_validation_session,
+)
 
 
 class TestValData(unittest.TestCase):
     """Test suite for ValidationSession data API operations."""
 
+    # When True, ``tearDownClass`` deletes ``session_id``. False when an
+    # externally-provided fixture is reused (we did not create it, so we
+    # do not own its lifecycle).
+    _owns_session = False
+
     @classmethod
     def setUpClass(cls):
-        """Set up authenticated client and resolve a session fixture."""
+        """Authenticate and resolve (or create) a session fixture."""
         username = os.environ.get("STUDIO_USERNAME")
         password = os.environ.get("STUDIO_PASSWORD")
-
         if not username or not password:
             raise unittest.SkipTest(
                 "STUDIO_USERNAME and STUDIO_PASSWORD not set; "
@@ -74,16 +55,27 @@ class TestValData(unittest.TestCase):
         raw_id = os.environ.get("STUDIO_TEST_VALIDATION_SESSION_ID")
         if raw_id:
             cls.session_id = raw_id
-        else:
-            cls.session_id = _autodiscover_validation_session(cls.client)
+            cls._owns_session = False
+            return
 
-    def setUp(self):
-        if self.session_id is None:
-            self.skipTest(
-                "no validation-session fixture available "
-                "(STUDIO_TEST_VALIDATION_SESSION_ID unset and no sessions "
-                "visible in the 'Unit Testing' project)"
+        new_session = make_user_managed_validation_session(
+            cls.client, name_suffix="val-data"
+        )
+        if new_session is None or new_session.session_id is None:
+            raise unittest.SkipTest(
+                "no validation-session fixture available: the 'Unit Testing' "
+                "project is missing a training session with model artifacts. "
+                "Set STUDIO_TEST_VALIDATION_SESSION_ID to reuse an existing "
+                "session instead."
             )
+        cls.session_id = new_session.session_id
+        cls._owns_session = True
+
+    @classmethod
+    def tearDownClass(cls):
+        """Delete the session we created (if any)."""
+        if cls._owns_session and getattr(cls, "session_id", None) is not None:
+            cleanup_validation_session(cls.client, cls.session_id)
 
     def test_upload_list_download_round_trip(self):
         """Upload → list → download with byte-for-byte verification."""
