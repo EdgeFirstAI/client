@@ -68,11 +68,11 @@ mod storage;
 pub use crate::{
     api::{
         AnnotationSetID, AppId, Artifact, DatasetID, DatasetParams, Experiment, ExperimentID,
-        ImageId, Job, Organization, OrganizationID, Parameter, PresignedUrl, Project, ProjectID,
-        SampleID, SamplesCountResult, SamplesPopulateParams, SamplesPopulateResult, SequenceId,
-        Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult, Stage, Task,
-        TaskDataList, TaskID, TaskInfo, TrainingSession, TrainingSessionID, ValidationSession,
-        ValidationSessionID,
+        ImageId, Job, NewValidationSession, Organization, OrganizationID, Parameter, PresignedUrl,
+        Project, ProjectID, SampleID, SamplesCountResult, SamplesPopulateParams,
+        SamplesPopulateResult, SequenceId, Snapshot, SnapshotFromDatasetResult, SnapshotID,
+        SnapshotRestoreResult, Stage, StartValidationRequest, Task, TaskDataList, TaskID, TaskInfo,
+        TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
     },
     client::{Client, Progress},
     dataset::{

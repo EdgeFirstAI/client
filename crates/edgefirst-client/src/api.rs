@@ -1301,6 +1301,71 @@ impl ValidationSession {
     }
 }
 
+/// Inputs for [`client::Client::start_validation_session`].
+///
+/// The required fields mirror what Studio's `cloud.server.start` endpoint
+/// needs to create a validation session against a known training session
+/// (training_session_id, model_file, val_type) and a known target
+/// (dataset_id + annotation_set_id, *or* a snapshot_id).
+///
+/// `is_local: true` marks the resulting session as **user-managed** on
+/// the server: the row is created in the database and data uploads /
+/// downloads / metric updates all work normally, but no EC2 instance is
+/// provisioned and no automated validator pipeline is started. That is
+/// the mode our integration tests want — we get a real session to
+/// exercise the upload/list/download wrappers against, and we are
+/// responsible for tearing it down with
+/// [`client::Client::delete_validation_sessions`] when done.
+///
+/// `is_kubernetes: true` analogously routes the session to a Kubernetes
+/// manage type. Leave both flags `false` for the default AWS_EC2 path.
+#[derive(Debug, Clone)]
+pub struct StartValidationRequest {
+    pub project_id: ProjectID,
+    pub name: String,
+    pub training_session_id: TrainingSessionID,
+    pub model_file: String,
+    pub val_type: String,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+    pub description: Option<String>,
+    pub dataset_id: Option<DatasetID>,
+    pub annotation_set_id: Option<AnnotationSetID>,
+    pub snapshot_id: Option<SnapshotID>,
+}
+
+/// Result of [`client::Client::start_validation_session`].
+///
+/// Studio's `cloud.server.start` returns the freshly-created
+/// `BackgroundTask` row. The interesting fields for downstream code are
+/// the task id (which `task_info` / `tasks` / `job_stop` accept) and the
+/// embedded validation-session id (the handle to the new session, the
+/// thing you pass to `delete_validation_sessions` and to
+/// `validation_session`).
+///
+/// `session_id` is `Option` because the same endpoint also returns
+/// non-validation tasks (trainer, dataset import, …) and those don't
+/// populate `val_session_id`. For our test fixture path the field is
+/// always `Some(_)`; callers can `unwrap()` if they passed
+/// `type = "validation"` semantics in the request.
+#[derive(Deserialize, Debug, Clone)]
+pub struct NewValidationSession {
+    #[serde(rename = "id")]
+    pub task_id: TaskID,
+    #[serde(rename = "val_session_id", default)]
+    pub session_id: Option<ValidationSessionID>,
+}
+
+impl Display for NewValidationSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.session_id {
+            Some(id) => write!(f, "task {} session {}", self.task_id, id),
+            None => write!(f, "task {} (no session)", self.task_id),
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct DatasetParams {
     dataset_id: DatasetID,

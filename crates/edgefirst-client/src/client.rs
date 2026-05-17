@@ -4,12 +4,12 @@
 use crate::{
     Annotation, Error, Sample, Task,
     api::{
-        AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult, Organization,
-        Project, ProjectID, SampleID, SamplesCountResult, SamplesListParams, SamplesListResult,
-        Snapshot, SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID,
-        SnapshotRestore, SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus,
-        TasksListParams, TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
-        ValidationSessionID,
+        AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
+        NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
+        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset,
+        SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
+        StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
+        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -4071,6 +4071,118 @@ impl Client {
         let params = HashMap::from([("validate_session_id", session_id)]);
         self.rpc("validate.session.get".to_owned(), Some(params))
             .await
+    }
+
+    /// Create a new validation session via Studio's `cloud.server.start`.
+    ///
+    /// Pass `is_local: true` in the [`StartValidationRequest`] to create
+    /// a **user-managed** session: the database row is created and the
+    /// session is fully usable for data uploads / downloads / metrics,
+    /// but no EC2 instance is provisioned and no automated validator
+    /// pipeline is started. That is the mode our integration tests use
+    /// — they create a session, exercise the wrapper APIs against it,
+    /// then call [`Client::delete_validation_sessions`] in teardown so
+    /// no stray sessions accumulate on the test account.
+    ///
+    /// Returns a [`NewValidationSession`] carrying the backing task id
+    /// and the freshly-minted validation session id.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `cloud.server.start`. Common cases:
+    /// `RpcError(101, …)` if a required entity is missing (project,
+    /// training session, dataset, …); `PermissionDenied` if the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_validation_session(
+        &self,
+        req: StartValidationRequest,
+    ) -> Result<NewValidationSession, Error> {
+        // Build the params shape the server expects. `cloud.server.start`
+        // is intentionally generic — different server types pull
+        // different fields out of `params` — so we serialize manually to
+        // match the JS frontend's call site verbatim (see
+        // `dve-frontend/src/components/ValidationPage/StartValidatorModal.vue`).
+        let mut body = serde_json::Map::new();
+        body.insert("type".into(), serde_json::Value::String("validation".into()));
+        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert(
+            "project_id".into(),
+            serde_json::to_value(req.project_id)?,
+        );
+        body.insert(
+            "training_session_id".into(),
+            serde_json::to_value(req.training_session_id)?,
+        );
+        body.insert(
+            "model_file".into(),
+            serde_json::Value::String(req.model_file),
+        );
+        body.insert(
+            "val_type".into(),
+            serde_json::Value::String(req.val_type),
+        );
+        body.insert(
+            "is_local".into(),
+            serde_json::Value::Bool(req.is_local),
+        );
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // `validate.session` reads its config from `params.params` (one
+        // extra envelope level). The outer `params` wrapper is required
+        // even when the inner map is empty.
+        let inner = serde_json::to_value(req.params)?;
+        let mut outer = serde_json::Map::new();
+        outer.insert("params".into(), inner);
+        body.insert("params".into(), serde_json::Value::Object(outer));
+
+        if let Some(d) = req.description {
+            body.insert("description".into(), serde_json::Value::String(d));
+        }
+        if let Some(id) = req.dataset_id {
+            body.insert("dataset_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.annotation_set_id {
+            body.insert("annotation_set_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.snapshot_id {
+            body.insert("snapshot_id".into(), serde_json::to_value(id)?);
+        }
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
+    }
+
+    /// Delete one or more validation sessions via
+    /// `validate.session.delete`.
+    ///
+    /// Used by integration tests to tear down sessions they created
+    /// with [`Client::start_validation_session`]; idempotent against
+    /// already-deleted ids on the server side (the RPC accepts the
+    /// list, deletes what it can, and surfaces an error only if none
+    /// of the ids were resolvable).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `validate.session.delete`. A
+    /// `PermissionDenied` indicates the caller lacks
+    /// `TrainerWrite` on at least one of the listed sessions.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_validation_sessions(
+        &self,
+        session_ids: &[ValidationSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "session_ids".into(),
+            serde_json::to_value(session_ids)?,
+        );
+        let _: serde_json::Value = self
+            .rpc("validate.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
     }
 
     /// List the artifacts for the specified trainer session.  The artifacts

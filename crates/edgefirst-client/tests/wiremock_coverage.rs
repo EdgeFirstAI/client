@@ -837,3 +837,113 @@ async fn val_data_download_writes_file() {
         .expect("val.data.download");
     assert_eq!(tokio::fs::read(tmp.path()).await.unwrap(), payload);
 }
+
+// ---------------------------------------------------------------------------
+// `Client::start_validation_session` / `Client::delete_validation_sessions`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn start_validation_session_round_trips_user_managed_request() {
+    let server = MockServer::start().await;
+
+    // The server returns a BackgroundTask row (subset of fields used by
+    // our deserializer). `val_session_id` is the freshly-minted session
+    // handle the caller will use for downstream data uploads and the
+    // matching delete on teardown.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        // The frontend send shape: `type` must be "validation" and
+        // `is_local: true` flips the server to user-managed mode.
+        .and(body_partial_json(json!({
+            "method": "cloud.server.start",
+            "params": {
+                "type": "validation",
+                "is_local": true,
+                "is_kubernetes": false,
+                "name": "smoke-session",
+                "training_session_id": 0x111,
+                "model_file": "best.pt",
+                "val_type": "modelpack",
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x1234,
+            "val_session_id": 0x5678,
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let req = edgefirst_client::StartValidationRequest {
+        project_id: edgefirst_client::ProjectID::from(0x222u64),
+        name: "smoke-session".into(),
+        training_session_id: edgefirst_client::TrainingSessionID::from(0x111u64),
+        model_file: "best.pt".into(),
+        val_type: "modelpack".into(),
+        params: std::collections::HashMap::new(),
+        is_local: true,
+        is_kubernetes: false,
+        description: None,
+        dataset_id: Some(edgefirst_client::DatasetID::from(0x333u64)),
+        annotation_set_id: Some(edgefirst_client::AnnotationSetID::from(0x444u64)),
+        snapshot_id: None,
+    };
+
+    let session = client
+        .start_validation_session(req)
+        .await
+        .expect("cloud.server.start via mock");
+    assert_eq!(session.task_id, TaskID::from(0x1234u64));
+    assert_eq!(
+        session.session_id,
+        Some(ValidationSessionID::from(0x5678u64))
+    );
+}
+
+#[tokio::test]
+async fn delete_validation_sessions_passes_session_ids_array() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "validate.session.delete",
+            "params": { "session_ids": [0x5678, 0x9abc] }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!("ok"))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .delete_validation_sessions(&[
+            ValidationSessionID::from(0x5678u64),
+            ValidationSessionID::from(0x9abcu64),
+        ])
+        .await
+        .expect("validate.session.delete via mock");
+}
+
+#[tokio::test]
+async fn delete_validation_sessions_maps_permission_denied() {
+    let server = MockServer::start().await;
+    // 100 = generic permission code on the Studio server.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("validate.session.delete"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_error(100, "permission denied")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .delete_validation_sessions(&[ValidationSessionID::from(0x5678u64)])
+        .await
+        .expect_err("expected permission failure");
+    assert!(
+        matches!(err, Error::PermissionDenied(_) | Error::RpcError(100, _)),
+        "expected PermissionDenied or RpcError(100), got {err:?}"
+    );
+}
