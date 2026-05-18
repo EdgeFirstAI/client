@@ -111,8 +111,16 @@ jobs:
 
       - name: Install Python dependencies
         if: success() || failure()
+        # `--require-hashes` forces pip to verify every artifact
+        # against the SHA-256 lock baked into ``requirements.txt``
+        # (regenerated via ``pip-compile --generate-hashes``).
+        # `--only-binary=:all:` blocks pip from falling back to sdist
+        # (which could run setup.py). Together they satisfy
+        # SonarCloud githubactions:S8541 and S8544 by hardening the
+        # supply-chain entrypoint. The `=` form is used so YAML
+        # doesn't misparse the `:all:` token as a mapping delimiter.
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes --only-binary=:all: -r requirements.txt
 
       - name: Build Python package
         if: success() || failure()
@@ -120,7 +128,22 @@ jobs:
 
       - name: Install Python package
         if: success() || failure()
-        run: pip install target/wheels/edgefirst_client-*.whl
+        # The target/wheels/*.whl was built from in-tree source in
+        # the previous step. To satisfy SonarCloud githubactions:S8544
+        # we compute the wheel's SHA-256 right here and feed pip a
+        # one-line constraints file with that hash, then install via
+        # `--require-hashes` so pip refuses to proceed if the wheel
+        # changes between hashing and installation. `--no-deps` keeps
+        # pip from re-resolving transitive deps (already installed
+        # from the hashed requirements.txt above) and
+        # `--only-binary=:all:` blocks any sdist fallback (S8541).
+        # Block scalar (`|`) is used so YAML doesn't parse the
+        # `:all:` token as a mapping separator.
+        run: |
+          WHEEL=$(ls "$PWD"/target/wheels/edgefirst_client-*.whl | head -1)
+          HASH=$(pip hash --algorithm sha256 "$WHEEL" | grep -E '^--hash=' | head -1)
+          printf 'edgefirst-client @ file://%s %s\n' "$WHEEL" "$HASH" > /tmp/wheel-constraint.txt
+          pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/wheel-constraint.txt
 
       - name: Run Python tests
         id: python_tests
@@ -315,7 +338,7 @@ jobs:
       - name: Verify coverage files
         run: |
           echo "=== Coverage files available ==="
-          ls -la *.info *.xml *.lcov 2>/dev/null || echo "No coverage files found"
+          ls -la -- *.info *.xml *.lcov 2>/dev/null || echo "No coverage files found"
 
           echo ""
           echo "=== Rust coverage (from lint-and-test) ==="
@@ -407,10 +430,14 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build uniffi-bindgen
-        run: cargo build --release -p uniffi-bindgen
+        # --locked refuses to update Cargo.lock during the build; the
+        # lock file is the single source of truth for resolved versions
+        # so CI is reproducible and a tampered lockfile can't auto-fix
+        # itself silently. Satisfies SonarCloud githubactions:S8549.
+        run: cargo build --locked --release -p uniffi-bindgen
 
       - name: Build FFI Library (for binding generation only)
-        run: cargo build --release -p edgefirst-client-ffi
+        run: cargo build --locked --release -p edgefirst-client-ffi
 
       - name: Generate Swift bindings
         run: |
@@ -483,8 +510,10 @@ jobs:
 
       - name: Build FFI Library with coverage instrumentation
         run: |
-          # Build with coverage instrumentation for Rust FFI coverage
-          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build -p edgefirst-client-ffi
+          # Build with coverage instrumentation for Rust FFI coverage.
+          # --locked keeps Cargo.lock authoritative (satisfies
+          # SonarCloud githubactions:S8549).
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --locked -p edgefirst-client-ffi
 
       - name: Create macOS framework for testing
         run: |
@@ -546,8 +575,21 @@ jobs:
 
       - name: Generate Rust FFI coverage report (lcov format)
         run: |
-          # Generate Rust FFI coverage from Swift test execution
-          # This captures coverage of the Rust code exercised via Swift FFI calls
+          # Generate Rust FFI coverage from Swift test execution. This
+          # captures coverage of the Rust code exercised via Swift FFI calls.
+          #
+          # The Swift xctest bundle is a separate binary from the
+          # coverage-instrumented FFI library and the Swift test suite skips
+          # network-bound tests when STUDIO credentials are unavailable
+          # (e.g. on fork PRs). In that case no .profraw files are emitted
+          # and `cargo llvm-cov report` errors out. Treat that specific case
+          # as a soft failure — emit an empty-but-valid lcov so downstream
+          # steps and codecov uploads do not break.
+          if ! find target -name '*.profraw' -print -quit 2>/dev/null | grep -q .; then
+            echo "::warning::No .profraw files emitted by Swift tests; emitting empty Rust FFI lcov"
+            : > rust-ffi-coverage.lcov
+            exit 0
+          fi
           cargo llvm-cov report --lcov --output-path rust-ffi-coverage.lcov
           echo "Rust FFI coverage report generated:"
           wc -l rust-ffi-coverage.lcov
@@ -559,9 +601,10 @@ jobs:
           # Unset coverage environment variables
           unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS __CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES
 
-          # Clean and rebuild
+          # Clean and rebuild. --locked keeps Cargo.lock authoritative
+          # (satisfies SonarCloud githubactions:S8549).
           cargo clean -p edgefirst-client-ffi
-          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build -p edgefirst-client-ffi
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --locked -p edgefirst-client-ffi
 
           # Update framework with non-instrumented library
           cp target/debug/libedgefirst_client.a \

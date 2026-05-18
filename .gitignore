@@ -49,6 +49,14 @@ lcov*.info
 source-sbom*.json
 deps-sbom.json
 sbom-temp.json
+# The final merged SBOM is regenerated in CI on every release — keeping
+# it out of git prevents stale snapshots from drifting against the
+# committed manifest/lockfile.
+sbom.json
+# cargo-cyclonedx 0.5+ emits one .cdx.json per workspace member; the
+# SBOM script consumes and removes them, but ignore the pattern so a
+# half-finished local run doesn't try to commit them.
+crates/*/*.cdx.json
 
 # Generated man page
 *.1
@@ -77,3 +85,7 @@ server/
 swift/*.h
 swift/*.modulemap
 .build/
+
+# Local SonarCloud report cache (written when `env.sh` is sourced and the
+# sonarcloud skill saves results to ${REPORT_PATH:-sonar.json})
+sonar.json

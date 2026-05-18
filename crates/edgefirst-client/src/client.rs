@@ -4,11 +4,12 @@
 use crate::{
     Annotation, Error, Sample, Task,
     api::{
-        AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult, Organization,
-        Project, ProjectID, SampleID, SamplesCountResult, SamplesListParams, SamplesListResult,
-        Snapshot, SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID,
-        SnapshotRestore, SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus,
-        TasksListParams, TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
+        AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
+        NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
+        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset,
+        SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
+        StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
+        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
         ValidationSessionID,
     },
     dataset::{
@@ -47,6 +48,88 @@ use walkdir::WalkDir;
 
 #[cfg(feature = "polars")]
 use polars::prelude::*;
+
+/// Maps a JSON-RPC error code to a typed `Error` variant when the code is
+/// well-known; otherwise returns `Error::RpcError(code, message)` unchanged.
+///
+/// Scoped to the new DE-2565 methods. Existing methods continue to return
+/// `Error::RpcError` directly.
+///
+/// Server error codes (from `api.go` via `jrpc.Fail`):
+/// - `1`   – generic server error
+/// - `3`   – validation / bad request
+/// - `10`  – internal server error
+/// - `101` – resource not found (e.g. "Cannot find task...", "not found in DB")
+/// - `401` – unauthenticated
+/// - `403` – forbidden
+/// - `413` – payload too large
+pub(crate) fn map_rpc_error(
+    method: &str,
+    code: i32,
+    message: String,
+    task_id: Option<crate::api::TaskID>,
+) -> Error {
+    // Server emits "Cannot find task...", "not found in DB", and other phrasings
+    // for code 101. Code 101 with a task_id is task-not-found by contract
+    // (see api.go), so we return the typed variant unconditionally when the
+    // caller supplied a task_id — message phrasing is treated as informational
+    // and is preserved by the RPC layer for diagnostic logging upstream.
+    if code == 101
+        && let Some(id) = task_id
+    {
+        return Error::TaskNotFound(id);
+    }
+    match code {
+        401 | 403 => Error::PermissionDenied(method.to_string()),
+        413 => Error::PayloadTooLarge {
+            method: method.to_string(),
+            size_hint: None,
+        },
+        _ => Error::RpcError(code, message),
+    }
+}
+
+/// Returns true if `val` is structurally a JSON-RPC 2.0 *error* envelope.
+///
+/// A real envelope must:
+/// 1. Be a JSON object,
+/// 2. Carry a `"jsonrpc"` member (the protocol-version sentinel — JSON-RPC
+///    2.0 §5 mandates this on every response object),
+/// 3. Carry an `"error"` object that includes a numeric `"code"` field.
+///
+/// This is intentionally stricter than a "looks for a top-level `error`
+/// key" check so that legitimate JSON file payloads (validation traces,
+/// metrics dumps, diagnostics) which happen to include a free-form `error`
+/// field are *not* misclassified as RPC failures.
+///
+/// Extracted so it can be unit-tested without a live server.
+pub(crate) fn is_jsonrpc_error_envelope(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    // Protocol-version sentinel — only JSON-RPC envelopes carry this.
+    if !obj.contains_key("jsonrpc") {
+        return false;
+    }
+    let Some(err) = obj.get("error").and_then(|e| e.as_object()) else {
+        return false;
+    };
+    err.get("code")
+        .map(|c| c.is_i64() || c.is_u64())
+        .unwrap_or(false)
+}
+
+/// Validates that `group` and `name` are both non-empty strings for chart
+/// operations (`add_chart`, `get_chart`). Extracted so it can be unit-tested
+/// without a live server.
+pub(crate) fn validate_chart_args(group: &str, name: &str) -> Result<(), Error> {
+    if group.is_empty() || name.is_empty() {
+        return Err(Error::InvalidParameters(
+            "chart: group and name must be non-empty".into(),
+        ));
+    }
+    Ok(())
+}
 
 static PART_SIZE: usize = 100 * 1024 * 1024;
 
@@ -131,6 +214,26 @@ where
     });
 
     filtered
+}
+
+/// Whether `host` refers to a loopback (machine-local) endpoint.
+///
+/// Used by [`Client::with_url`] to decide whether a plain-`http://` URL is
+/// safe to accept. Loopback traffic never leaves the machine, so the
+/// usual concern about leaking the Studio bearer token in plaintext does
+/// not apply — that's how wiremock and local dev servers connect.
+fn is_loopback_host(host: Option<&url::Host<&str>>) -> bool {
+    match host {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // RFC 6761 reserves "localhost" (and `*.localhost`) as a loopback
+        // name. Compare case-insensitively because URL hosts are matched
+        // that way and developers do type capitalized variants.
+        Some(url::Host::Domain(d)) => {
+            d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost")
+        }
+        None => false,
+    }
 }
 
 fn sanitize_path_component(name: &str) -> String {
@@ -464,6 +567,126 @@ struct FetchContext<'a> {
     labels: &'a HashMap<String, u64>,
 }
 
+#[derive(Debug, Serialize)]
+struct JobsListRequest {}
+
+#[derive(Debug, Serialize)]
+struct JobRunRequest {
+    name: String,
+    job_name: String,
+    env: std::collections::HashMap<String, String>,
+    data: std::collections::HashMap<String, crate::api::Parameter>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobStopRequest {
+    task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataListRequest {
+    pub(crate) task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataDownloadRequest {
+    pub(crate) task_id: u64,
+    pub(crate) folder: String,
+    pub(crate) file: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartAddRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+    pub(crate) params: Option<crate::api::Parameter>,
+    pub(crate) data: crate::api::Parameter,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartListRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartGetRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataDownloadRequest {
+    pub(crate) session_id: u64,
+    pub(crate) filename: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataListRequest {
+    pub(crate) session_id: u64,
+}
+
+/// Streams the body of a successful `reqwest` response to a file on disk,
+/// emitting optional progress events.
+///
+/// Both `download_artifact` and `rpc_download` share this logic. The caller is
+/// responsible for creating any required parent directories before calling this
+/// function.
+///
+/// # Arguments
+/// * `resp`     - A successful (HTTP 2xx) `reqwest::Response` whose body will
+///   be streamed to `path`.
+/// * `path`     - Destination file path (created or truncated).
+/// * `progress` - Optional channel; events carry bytes received and
+///   `Content-Length` total (0 if the server omits it).
+///
+/// # Errors
+/// Returns `Error::IoError` on file I/O failures or propagates stream errors.
+async fn stream_response_to_file(
+    resp: reqwest::Response,
+    path: &std::path::Path,
+    progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+) -> Result<(), Error> {
+    use tokio::io::AsyncWriteExt as _;
+    let total = resp.content_length().unwrap_or(0) as usize;
+    let mut stream = resp.bytes_stream();
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut current = 0usize;
+
+    if let Some(ref tx) = progress {
+        let _ = tx
+            .send(Progress {
+                current: 0,
+                total,
+                status: None,
+            })
+            .await;
+    }
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        current += chunk.len();
+        if let Some(ref tx) = progress {
+            let _ = tx
+                .send(Progress {
+                    current,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+    }
+
+    // Flush tokio's internal write buffer to the OS before returning.
+    // tokio::fs::File buffers writes internally; without this, the buffer
+    // may not reach the filesystem before the caller reads the file.
+    file.flush().await?;
+    Ok(())
+}
+
 impl Client {
     /// Create a new unauthenticated client with the default saas server.
     ///
@@ -635,13 +858,26 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
-        let url = match server {
-            "" | "saas" => "https://edgefirst.studio".to_string(),
-            name => format!("https://{}.edgefirst.studio", name),
+        // Resolve the target URL. Full URLs (self-hosted Studio,
+        // wiremock) are validated through `with_url` so the HTTPS rules
+        // there apply uniformly. Short names map to the SaaS pattern.
+        // We extract only the URL string and rebuild the Client below,
+        // because `with_url` preserves the in-memory token (the contract
+        // for self-hosted deployments) whereas `with_server` deliberately
+        // clears it (a different server means a stale token).
+        let url = if server.starts_with("http://") || server.starts_with("https://") {
+            self.with_url(server)?.url().to_string()
+        } else {
+            match server {
+                "" | "saas" => "https://edgefirst.studio".to_string(),
+                name => format!("https://{}.edgefirst.studio", name),
+            }
         };
 
         // Clear token from storage when changing servers to prevent
-        // authentication issues with stale tokens from different instances
+        // authentication issues with stale tokens from different
+        // instances. This runs whether the caller passed a short name
+        // or a full URL — both reach a new server.
         if let Some(ref storage) = self.storage
             && let Err(e) = storage.clear()
         {
@@ -654,6 +890,41 @@ impl Client {
         Ok(Client {
             url,
             token: Arc::new(tokio::sync::RwLock::new(String::new())),
+            ..self.clone()
+        })
+    }
+
+    /// Returns a new client pointed at an explicit URL.
+    ///
+    /// Used for self-hosted Studio deployments (e.g.
+    /// `https://studio.example.com`) and for offline integration tests
+    /// against a mock HTTP server (e.g. `http://127.0.0.1:8080`). The
+    /// token is preserved so callers can chain
+    /// `Client::new()?.with_url(...)?.with_token(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UrlParseError`] for syntactically invalid URLs and
+    /// [`Error::InsecureUrl`] for plain `http://` URLs that resolve to a
+    /// non-loopback host: the Studio bearer token rides in the
+    /// `Authorization` header, and plain HTTP would leak it in the clear.
+    /// Loopback URLs (`127.0.0.1`, `::1`, `localhost`, `*.localhost`) are
+    /// permitted because traffic never leaves the machine — wiremock and
+    /// local dev servers go through that path.
+    pub fn with_url(&self, url: &str) -> Result<Self, Error> {
+        // Reject malformed inputs early so test failures point at the test
+        // rather than a downstream reqwest send.
+        let parsed = url::Url::parse(url)?;
+        let scheme = parsed.scheme();
+        if scheme == "http" {
+            if !is_loopback_host(parsed.host().as_ref()) {
+                return Err(Error::InsecureUrl(url.to_string()));
+            }
+        } else if scheme != "https" {
+            return Err(Error::InsecureUrl(url.to_string()));
+        }
+        Ok(Client {
+            url: url.trim_end_matches('/').to_string(),
             ..self.clone()
         })
     }
@@ -3809,6 +4080,109 @@ impl Client {
             .await
     }
 
+    /// Create a new validation session via Studio's `cloud.server.start`.
+    ///
+    /// Pass `is_local: true` in the [`StartValidationRequest`] to create
+    /// a **user-managed** session: the database row is created and the
+    /// session is fully usable for data uploads / downloads / metrics,
+    /// but no EC2 instance is provisioned and no automated validator
+    /// pipeline is started. That is the mode our integration tests use
+    /// — they create a session, exercise the wrapper APIs against it,
+    /// then call [`Client::delete_validation_sessions`] in teardown so
+    /// no stray sessions accumulate on the test account.
+    ///
+    /// Returns a [`NewValidationSession`] carrying the backing task id
+    /// and the freshly-minted validation session id.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `cloud.server.start`. Common cases:
+    /// `RpcError(101, …)` if a required entity is missing (project,
+    /// training session, dataset, …); `PermissionDenied` if the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_validation_session(
+        &self,
+        req: StartValidationRequest,
+    ) -> Result<NewValidationSession, Error> {
+        // Build the params shape the server expects. `cloud.server.start`
+        // is intentionally generic — different server types pull
+        // different fields out of `params` — so we serialize manually to
+        // match the JS frontend's call site verbatim (see
+        // `dve-frontend/src/components/ValidationPage/StartValidatorModal.vue`).
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "type".into(),
+            serde_json::Value::String("validation".into()),
+        );
+        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
+        body.insert(
+            "training_session_id".into(),
+            serde_json::to_value(req.training_session_id)?,
+        );
+        body.insert(
+            "model_file".into(),
+            serde_json::Value::String(req.model_file),
+        );
+        body.insert("val_type".into(), serde_json::Value::String(req.val_type));
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // `validate.session` reads its config from `params.params` (one
+        // extra envelope level). The outer `params` wrapper is required
+        // even when the inner map is empty.
+        let inner = serde_json::to_value(req.params)?;
+        let mut outer = serde_json::Map::new();
+        outer.insert("params".into(), inner);
+        body.insert("params".into(), serde_json::Value::Object(outer));
+
+        if let Some(d) = req.description {
+            body.insert("description".into(), serde_json::Value::String(d));
+        }
+        if let Some(id) = req.dataset_id {
+            body.insert("dataset_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.annotation_set_id {
+            body.insert("annotation_set_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.snapshot_id {
+            body.insert("snapshot_id".into(), serde_json::to_value(id)?);
+        }
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
+    }
+
+    /// Delete one or more validation sessions via
+    /// `validate.session.delete`.
+    ///
+    /// Used by integration tests to tear down sessions they created
+    /// with [`Client::start_validation_session`]; idempotent against
+    /// already-deleted ids on the server side (the RPC accepts the
+    /// list, deletes what it can, and surfaces an error only if none
+    /// of the ids were resolvable).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `validate.session.delete`. A
+    /// `PermissionDenied` indicates the caller lacks
+    /// `TrainerWrite` on at least one of the listed sessions.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_validation_sessions(
+        &self,
+        session_ids: &[ValidationSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
+        let _: serde_json::Value = self
+            .rpc("validate.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
+    }
+
     /// List the artifacts for the specified trainer session.  The artifacts
     /// are returned as a vector of strings.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
@@ -3859,43 +4233,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Download the model checkpoint associated with the specified trainer
@@ -3940,43 +4278,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Return a list of tasks for the current user.
@@ -4031,6 +4333,91 @@ impl Client {
         }
 
         Ok(tasks)
+    }
+
+    /// Submits a job (app run) to the server and returns the resulting `Job`
+    /// record (which carries the linked task id alongside the cloud-batch
+    /// metadata).
+    ///
+    /// # Arguments
+    /// * `app_name` - The name of the registered app to run (e.g., `"edgefirst-validator"`).
+    /// * `job_name` - A user-defined label for this run.
+    /// * `env` - Environment variables passed to the job (string-string map).
+    /// * `data` - Job input payload (e.g., session ids, parameters).
+    ///
+    /// # Returns
+    /// The full `Job` record returned by the server (wraps the BK_BATCH object),
+    /// including AWS Batch job ID, state, and the linked `task_id`. Callers that
+    /// only need the task ID can call `.task_id()` on the returned `Job`.
+    pub async fn job_run(
+        &self,
+        app_name: &str,
+        job_name: &str,
+        env: std::collections::HashMap<String, String>,
+        data: std::collections::HashMap<String, crate::api::Parameter>,
+    ) -> Result<crate::api::Job, Error> {
+        let req = JobRunRequest {
+            name: app_name.to_owned(),
+            job_name: job_name.to_owned(),
+            env,
+            data,
+        };
+        let resp: crate::api::Job = match self.rpc("job.run".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.run", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(resp)
+    }
+
+    /// Requests a running job task be stopped.
+    ///
+    /// Returns `Ok(())` if the stop request was accepted by the server. The
+    /// task may still take time to fully terminate; poll `task_info` if you
+    /// need to wait for shutdown.
+    pub async fn job_stop(&self, task_id: crate::api::TaskID) -> Result<(), Error> {
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        // We don't care about the response body; deserialize as serde_json::Value.
+        let _resp: serde_json::Value = match self.rpc("job.stop".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.stop", code, msg, Some(task_id)));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(())
+    }
+
+    /// Lists job (app-run) entries visible to the authenticated user.
+    ///
+    /// The server returns AWS Batch-wrapper entries (not bare `Task` objects),
+    /// surfacing cloud-batch state (`RUNNING`/`SUCCEEDED`/...) and the linked
+    /// `task_id`. Use `Job::task_id()` + `Client::task_info` to fetch the
+    /// underlying task details.
+    ///
+    /// The server does not support server-side filters, so the optional
+    /// `name` argument is applied client-side as a substring match against
+    /// each job's `job_name`.
+    pub async fn jobs(&self, name: Option<&str>) -> Result<Vec<crate::api::Job>, Error> {
+        let req = JobsListRequest {};
+        let mut jobs: Vec<crate::api::Job> = match self.rpc("job.list".to_owned(), Some(&req)).await
+        {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.list", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(name) = name {
+            let needle = name.to_lowercase();
+            jobs.retain(|j| j.job_name.to_lowercase().contains(&needle));
+            jobs.sort_by(|a, b| a.job_name.cmp(&b.job_name));
+        }
+        Ok(jobs)
     }
 
     /// Retrieve the task information and status.
@@ -4126,8 +4513,18 @@ impl Client {
     /// Sends a multipart post request to the server.  This is used by the
     /// upload and download APIs which do not use JSON-RPC but instead transfer
     /// files using multipart/form-data.
+    ///
+    /// The result field is deserialized as `serde_json::Value` rather than
+    /// `String` because different server endpoints return different shapes —
+    /// `val.data.upload` returns a plain string while `task.data.upload`
+    /// returns an object `{"message":…,"path":…,"size":…}`.  All current
+    /// callers discard the return value so this is backwards-compatible.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, form)))]
-    pub async fn post_multipart(&self, method: &str, form: Form) -> Result<String, Error> {
+    pub async fn post_multipart(
+        &self,
+        method: &str,
+        form: Form,
+    ) -> Result<serde_json::Value, Error> {
         let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -4153,7 +4550,7 @@ impl Client {
                 );
             }
 
-            let response: RpcResponse<String> = match serde_json::from_slice(&body) {
+            let response: RpcResponse<serde_json::Value> = match serde_json::from_slice(&body) {
                 Ok(response) => response,
                 Err(err) => {
                     error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
@@ -4169,9 +4566,139 @@ impl Client {
                 Err(Error::InvalidResponse)
             }
         } else {
+            // HTTP-level failure on the multipart upload. Map 413 to the
+            // typed `PayloadTooLarge` variant so callers see the same error
+            // type from both single-file rpc_download paths and multipart
+            // upload paths; everything else falls through to HttpError.
+            let status = resp.status();
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
             let err = resp.error_for_status_ref().unwrap_err();
             Err(Error::HttpError(err))
         }
+    }
+
+    /// Internal helper: POST a JSON-RPC request and stream the binary response
+    /// to `output_path`. The response is assumed to be raw binary (not a JSON
+    /// envelope). Use for endpoints that return file contents directly.
+    ///
+    /// On HTTP non-success, the response body is read as text and surfaced
+    /// via `Error::RpcError(status_code, body)`.
+    pub(crate) async fn rpc_download<P: Serialize>(
+        &self,
+        method: &str,
+        params: &P,
+        output_path: &std::path::Path,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": method,
+            "params": params,
+        });
+
+        let url = format!("{}/api", self.url);
+        let resp = self
+            .bulk_http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token().await))
+            .json(&envelope)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::RpcError(status.as_u16() as i32, body));
+        }
+
+        // HTTP 200 with Content-Type: application/json can mean two things:
+        //   (a) a JSON-RPC error envelope when the server failed mid-way
+        //       (e.g. {"jsonrpc":"2.0","error":{"code":N,"message":"..."}}),
+        //   (b) a legitimate JSON file payload — validation traces, chart
+        //       bodies, metrics, etc., are typically served with this MIME.
+        //
+        // Disambiguate structurally: a JSON-RPC 2.0 envelope is required to
+        // carry a `jsonrpc` member, and an *error* envelope further requires
+        // an `error.code` integer (per RFC 8259 + JSON-RPC 2.0 §5). Only
+        // decode the body as an error if both markers are present. This is
+        // strict enough to leave legitimate JSON artifacts that happen to
+        // contain a free-form `error` field (metrics, diagnostics, log
+        // dumps) untouched, while still catching every real server
+        // failure.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        if content_type.contains("application/json") {
+            let body = resp.bytes().await?;
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body)
+                && is_jsonrpc_error_envelope(&val)
+                && let Some(err_obj) = val.get("error")
+            {
+                let code = err_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
+                let message = err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string();
+                return Err(Error::RpcError(code, message));
+            }
+            // Not an error envelope — body is a JSON file. Write it to disk
+            // and emit a single completion progress event so callers (e.g.,
+            // Python download_data progress callbacks) see the download
+            // finish.
+            //
+            // `Path::parent` returns `Some("")` for a bare filename like
+            // "metrics.json"; `create_dir_all("")` errors out with
+            // `NotFound`, so only create the parent when it actually names
+            // a directory.
+            if let Some(parent) = output_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let mut file = tokio::fs::File::create(output_path).await?;
+            file.write_all(&body).await?;
+            file.flush().await?;
+            if let Some(tx) = progress {
+                let total = body.len();
+                // Use the awaited send for the final event so completion
+                // handlers are never silently dropped.
+                let _ = tx
+                    .send(Progress {
+                        current: total,
+                        total,
+                        status: None,
+                    })
+                    .await;
+            }
+            return Ok(());
+        }
+
+        // Same empty-parent guard for the streaming download path: passing
+        // a bare filename like "metrics.json" must write to the current
+        // directory rather than failing on `create_dir_all("")`.
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        stream_response_to_file(resp, output_path, progress).await
     }
 
     /// Send a JSON-RPC request to the server.  The method is the name of the
@@ -5394,5 +5921,806 @@ mod tests {
 
         // Verify storage was cleared
         assert_eq!(storage.load().unwrap(), None);
+    }
+
+    #[test]
+    fn test_with_server_clears_storage_even_for_full_url() {
+        // Regression: `with_server` used to short-circuit to `with_url`
+        // when given a full URL, which preserved the bearer token. The
+        // contract for `with_server` is that switching servers means
+        // the token from the old server is no longer trusted.
+        use crate::storage::MemoryTokenStorage;
+
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store("token-from-old-server").unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+        assert_eq!(
+            storage.load().unwrap(),
+            Some("token-from-old-server".to_string())
+        );
+
+        // Switch to a self-hosted Studio (full URL). Storage must be
+        // cleared, and the new client must have a blank in-memory token.
+        let new_client = client
+            .with_server("https://studio.example.com")
+            .expect("https full URL through with_server");
+        assert_eq!(storage.load().unwrap(), None);
+        assert_eq!(new_client.url(), "https://studio.example.com");
+
+        // The new client should not carry the old token in memory either.
+        let in_mem = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { new_client.token.read().await.clone() });
+        assert!(in_mem.is_empty(), "expected blank token, got {in_mem:?}");
+    }
+
+    #[test]
+    fn test_with_server_rejects_insecure_full_url() {
+        // `with_server` validates full URLs through `with_url`, so the
+        // HTTPS rule applies uniformly. Plain http to a public host
+        // must be rejected — the bearer token would otherwise leak in
+        // plaintext when the caller next authenticates.
+        let client = Client::new().unwrap();
+        let err = client.with_server("http://studio.example.com").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+
+    // ===== with_url HTTPS enforcement =====
+    //
+    // The bearer token rides in the Authorization header, so plain
+    // http:// to a public host would leak it in the clear. The function
+    // must reject those URLs, but still let wiremock / local-dev URLs
+    // through (loopback addresses, "localhost", "*.localhost").
+
+    #[test]
+    fn with_url_accepts_https_public_host() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("https://studio.example.com")
+            .expect("https public host must be accepted");
+        assert_eq!(out.url(), "https://studio.example.com");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv4() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://127.0.0.1:8080")
+            .expect("http://127.0.0.1 must be accepted (loopback)");
+        assert_eq!(out.url(), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv6() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://[::1]:8080")
+            .expect("http://[::1] must be accepted (loopback)");
+        assert!(out.url().starts_with("http://[::1]"));
+    }
+
+    #[test]
+    fn with_url_accepts_http_localhost() {
+        let client = Client::new().unwrap();
+        client
+            .with_url("http://localhost:8080")
+            .expect("http://localhost must be accepted");
+        client
+            .with_url("http://LOCALHOST")
+            .expect("http://LOCALHOST must be accepted (case-insensitive)");
+        client
+            .with_url("http://wiremock.localhost")
+            .expect("http://*.localhost must be accepted");
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_host() {
+        let client = Client::new().unwrap();
+        let err = client.with_url("http://studio.example.com").unwrap_err();
+        match err {
+            Error::InsecureUrl(u) => assert_eq!(u, "http://studio.example.com"),
+            other => panic!("expected InsecureUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_ip() {
+        let client = Client::new().unwrap();
+        // 8.8.8.8 is not loopback; must be rejected.
+        let err = client.with_url("http://8.8.8.8").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+
+    #[test]
+    fn with_url_rejects_non_http_scheme() {
+        let client = Client::new().unwrap();
+        // file:// would otherwise parse, but it's not a transport we
+        // can use for RPC and we don't want to silently accept it.
+        let err = client.with_url("file:///etc/passwd").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests_map_rpc_error {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn maps_not_found_with_task_id_to_typed_variant() {
+        // Server code 101 + "not found" message + task_id present → TaskNotFound
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "task not found".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_cannot_find_phrasing_to_typed_variant() {
+        // The DVE server emits "Cannot find task..." — the original "not found"
+        // substring match missed this and the caller saw a generic RpcError.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "Cannot find task with id 6789".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "'Cannot find task' should map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn maps_does_not_exist_phrasing_to_typed_variant() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.chart.get",
+            101,
+            "task does not exist".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_code_101_with_unknown_phrasing_when_task_id_supplied() {
+        // Server contract for code 101 is "resource not found"; even if the
+        // phrasing is novel, the typed variant should be returned so callers
+        // can write a stable `match`.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "completely novel server message".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "code 101 + task_id should always map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn maps_permission_codes_to_typed_variant() {
+        for code in [401, 403] {
+            let err = map_rpc_error("task.chart.add", code, "denied".to_string(), None);
+            assert!(
+                matches!(err, Error::PermissionDenied(_)),
+                "code {} did not map",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn permission_denied_records_method_for_diagnostics() {
+        let err = map_rpc_error("task.data.upload", 403, "forbidden".to_string(), None);
+        match err {
+            Error::PermissionDenied(method) => assert_eq!(method, "task.data.upload"),
+            other => panic!("expected PermissionDenied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn maps_payload_too_large_to_typed_variant() {
+        let err = map_rpc_error("val.data.upload", 413, "request too large".into(), None);
+        match err {
+            Error::PayloadTooLarge { method, size_hint } => {
+                assert_eq!(method, "val.data.upload");
+                assert!(size_hint.is_none());
+            }
+            other => panic!("expected PayloadTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn falls_through_to_generic_rpc_error_for_unknown_codes() {
+        let err = map_rpc_error("task.data.list", -99999, "weird".to_string(), None);
+        match err {
+            Error::RpcError(code, msg) => {
+                assert_eq!(code, -99999);
+                assert_eq!(msg, "weird");
+            }
+            other => panic!("expected RpcError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_found_without_task_id_falls_through() {
+        // Code 101 without task_id → generic RpcError (no task to name)
+        let err = map_rpc_error("task.data.list", 101, "not found".to_string(), None);
+        assert!(matches!(err, Error::RpcError(101, _)));
+    }
+
+    #[test]
+    fn code_101_with_task_id_always_maps_even_with_unrelated_message() {
+        // Previously the test asserted fall-through for non-"not found"
+        // messages, but the contract for code 101 is "resource not found"
+        // (see api.go), so when a task_id is present the typed variant is
+        // returned unconditionally to give callers a stable error type.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "permission denied".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests_jobs {
+    use super::*;
+
+    #[test]
+    fn jobs_list_request_serializes_to_empty_object() {
+        let req = JobsListRequest {};
+        assert_eq!(serde_json::to_value(&req).unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn job_deserializes_from_bk_batch_shape() {
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "smoke-test",
+            "job_id": "aws-batch-abc",
+            "state": "RUNNING",
+            "launch": "2026-05-14T15:00:00Z",
+            "task_id": 6789,
+            "docker_task": {},
+            "extra_field": "ignored"
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.code, "edgefirst-validator:2.9.5");
+        assert_eq!(job.state, "RUNNING");
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.task_id().value(), 6789);
+    }
+}
+
+#[cfg(test)]
+mod tests_job_run {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn job_run_request_serializes_with_expected_fields() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "post-profile-run".into(),
+            env: HashMap::from([("LOG_LEVEL".into(), "info".into())]),
+            data: HashMap::from([("validation_session_id".into(), Parameter::Integer(2707))]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["job_name"], "post-profile-run");
+        assert_eq!(json["env"]["LOG_LEVEL"], "info");
+        assert_eq!(json["data"]["validation_session_id"], 2707);
+    }
+
+    #[test]
+    fn job_run_response_deserializes_as_job() {
+        // job.run now returns the full BK_BATCH record; deserialize as Job.
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "post-profile-run",
+            "job_id": "aws-batch-job-xxx",
+            "state": "SUBMITTED",
+            "task_id": 6789
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.job_id, "aws-batch-job-xxx");
+        assert_eq!(job.state, "SUBMITTED");
+    }
+}
+
+#[cfg(test)]
+mod tests_job_stop {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn job_stop_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_list_request {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_list_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_download {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_download_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "predictions".into(),
+            file: "predictions.parquet".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["folder"], "predictions");
+        assert_eq!(json["file"], "predictions.parquet");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_add {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn task_chart_add_request_serializes_with_correct_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: None,
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+        assert_eq!(json["data"]["type"], "line");
+        assert!(json["params"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_list {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_list_request_omits_empty_group_name() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartListRequest {
+            task_id: task_id.value(),
+            group_name: String::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_get {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_get_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartGetRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_download {
+    use super::*;
+
+    #[test]
+    fn val_data_download_request_serializes() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "trace/imx95.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["session_id"], 2707);
+        assert_eq!(json["filename"], "trace/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_list {
+    use super::*;
+
+    #[test]
+    fn val_data_list_request_serializes() {
+        let req = ValDataListRequest { session_id: 2707 };
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::json!({"session_id": 2707})
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_jsonrpc_envelope_detection {
+    use super::*;
+
+    #[test]
+    fn detects_real_envelope() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "error": { "code": 101, "message": "Cannot find task" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_plain_json_artifact_with_error_field() {
+        // A diagnostics file with a free-form `error` object — must not be
+        // misread as an RPC envelope just because the key collides.
+        let v = serde_json::json!({
+            "metric": "loss",
+            "value": 0.42,
+            "error": { "code": "ENV_NOT_FOUND", "message": "missing var" },
+        });
+        assert!(
+            !is_jsonrpc_error_envelope(&v),
+            "missing jsonrpc sentinel should mean 'not an envelope'"
+        );
+    }
+
+    #[test]
+    fn rejects_envelope_missing_jsonrpc_sentinel() {
+        // Bare `error` block without the protocol-version marker.
+        let v = serde_json::json!({
+            "id": 0,
+            "error": { "code": 101, "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_object_error_field() {
+        // A diagnostics file shaped like JSON-RPC accidentally but using
+        // a string for `error`.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": "something went wrong",
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_without_error_code() {
+        // Real envelopes always carry an integer error.code; missing one
+        // is suspicious enough to refuse the envelope classification.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "message": "no code" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_numeric_error_code() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": "ENOENT", "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_non_object_root() {
+        // A JSON file whose root is an array — common for metrics dumps —
+        // must not be misread.
+        let v = serde_json::json!([1, 2, 3]);
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn accepts_unsigned_error_code() {
+        // The server's code is technically i32 but JSON has no signed/
+        // unsigned distinction — accept both shapes.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": 101u32, "message": "x" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
+    }
+}
+
+#[cfg(test)]
+mod tests_validate_chart_args {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_group() {
+        let err = validate_chart_args("", "name").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let err = validate_chart_args("group", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn rejects_both_empty() {
+        let err = validate_chart_args("", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn accepts_valid_args() {
+        assert!(validate_chart_args("group", "name").is_ok());
+    }
+
+    #[test]
+    fn accepts_unicode_args() {
+        // Unicode names are allowed; only emptiness is rejected.
+        assert!(validate_chart_args("metrics-集合", "损失").is_ok());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional offline tests for request shapes + helpers added in DE-2565.
+//
+// These focus on the wire-shape and helper logic that does not require a
+// live Studio server — they significantly boost coverage of client.rs.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_job_run_request_shape {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn empty_env_and_data_serialize_as_empty_objects() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "smoke".into(),
+            env: HashMap::new(),
+            data: HashMap::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["env"], serde_json::json!({}));
+        assert_eq!(json["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn data_passes_through_parameter_object_payloads() {
+        // Confirms the Parameter wrapper survives JSON serialization round-trip
+        // for the kind of structured chart payload that exercises Parameter
+        // variants (Real, Integer, String, Array, Object, Boolean).
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "feat".into(),
+            env: HashMap::new(),
+            data: HashMap::from([
+                ("flag".into(), Parameter::Boolean(true)),
+                ("epochs".into(), Parameter::Integer(50)),
+                ("lr".into(), Parameter::Real(1e-3)),
+                ("name".into(), Parameter::String("hello".into())),
+            ]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["data"]["flag"], true);
+        assert_eq!(json["data"]["epochs"], 50);
+        assert!(json["data"]["lr"].as_f64().unwrap() > 0.0);
+        assert_eq!(json["data"]["name"], "hello");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_chart_request_shape {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn chart_add_request_with_params_serializes_object() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let params = Parameter::Object(std::collections::HashMap::from([(
+            "y_axis".into(),
+            Parameter::String("log".into()),
+        )]));
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: Some(params),
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["params"]["y_axis"], "log");
+    }
+
+    #[test]
+    fn task_data_list_request_round_trips() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        // Field order is stable for a single-field struct, so an exact match
+        // is meaningful here.
+        assert_eq!(json, format!("{{\"task_id\":{}}}", task_id.value()));
+    }
+
+    #[test]
+    fn task_data_download_request_treats_folder_and_file_independently() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "validation/run-01".into(),
+            file: "metrics.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        // Server takes folder + file separately (not a single combined path)
+        // so callers don't have to escape slashes themselves.
+        assert_eq!(json["folder"], "validation/run-01");
+        assert_eq!(json["file"], "metrics.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_request_shape {
+    use super::*;
+
+    #[test]
+    fn val_data_list_round_trips() {
+        let req = ValDataListRequest { session_id: 2707 };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+    }
+
+    #[test]
+    fn val_data_download_round_trips_with_nested_path() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "subfolder/imx95.json".into(),
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+        assert_eq!(back["filename"], "subfolder/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_progress_struct {
+    use super::*;
+
+    #[test]
+    fn progress_can_be_constructed_with_zero_total() {
+        // Servers sometimes omit Content-Length; progress events should still
+        // be representable. This guards the public field-level API.
+        let p = Progress {
+            current: 0,
+            total: 0,
+            status: None,
+        };
+        assert_eq!(p.current, 0);
+        assert_eq!(p.total, 0);
+        assert!(p.status.is_none());
+    }
+
+    #[test]
+    fn progress_tracks_current_independently_of_total() {
+        let p = Progress {
+            current: 123,
+            total: 456,
+            status: Some("Downloading".into()),
+        };
+        assert_eq!(p.current, 123);
+        assert_eq!(p.total, 456);
+        assert_eq!(p.status.as_deref(), Some("Downloading"));
+    }
+
+    #[test]
+    fn progress_can_be_cloned() {
+        // Progress is consumed by progress sinks which may need to retain a
+        // copy independently of the channel — derive(Clone) must hold.
+        let p = Progress {
+            current: 10,
+            total: 20,
+            status: Some("phase".into()),
+        };
+        let q = p.clone();
+        assert_eq!(q.current, p.current);
+        assert_eq!(q.total, p.total);
+        assert_eq!(q.status, p.status);
+    }
+}
+
+#[cfg(test)]
+mod tests_bare_filename_parent {
+    // Documents the empty-parent guard added for `rpc_download` so that
+    // callers passing a bare filename like "metrics.json" download to the
+    // current directory instead of erroring on `create_dir_all("")`.
+    use std::path::Path;
+
+    #[test]
+    fn bare_filename_parent_is_empty_path() {
+        // This is the invariant our guard depends on. If a future Rust
+        // release ever changed `Path::parent` for bare filenames, the guard
+        // would need revisiting.
+        let p = Path::new("metrics.json");
+        let parent = p.parent().expect("bare filename always has Some parent");
+        assert!(
+            parent.as_os_str().is_empty(),
+            "Path::parent for bare filename should be empty, got: {parent:?}"
+        );
+    }
+
+    #[test]
+    fn path_with_directory_has_non_empty_parent() {
+        // The companion case: when the path includes a directory, the
+        // parent is non-empty and `create_dir_all` should be invoked.
+        let p = Path::new("dir/metrics.json");
+        let parent = p.parent().expect("path-with-dir always has Some parent");
+        assert!(!parent.as_os_str().is_empty());
+        assert_eq!(parent, Path::new("dir"));
     }
 }

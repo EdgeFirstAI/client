@@ -1,6 +1,16 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
+# Platform detection: library extension and sed -i variant differ between macOS and Linux
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    LIB_EXT := dylib
+    SED_INPLACE := sed -i ''
+else
+    LIB_EXT := so
+    SED_INPLACE := sed -i
+endif
+
 .PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check \
         security-audit swift swift-format swift-test kotlin xcframework
 
@@ -297,12 +307,12 @@ swift:
 	@echo "Generating Swift code..."
 	@mkdir -p swift
 	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.dylib \
+		--library target/release/libedgefirst_client.$(LIB_EXT) \
 		--language swift \
 		--config crates/edgefirst-client-ffi/uniffi.toml \
 		--out-dir swift
 	@# Add 'framework' qualifier since this is packaged in a .framework bundle
-	@sed -i '' 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' swift/EdgeFirstClientFFI.modulemap
+	@$(SED_INPLACE) 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' swift/EdgeFirstClientFFI.modulemap
 	@echo "✅ Swift bindings generated in swift/"
 	@echo "   - EdgeFirstClient.swift (user-facing Swift API)"
 	@echo "   - EdgeFirstClientFFI.h (internal FFI header)"
@@ -318,7 +328,7 @@ kotlin:
 	@echo "Generating Kotlin code..."
 	@mkdir -p artifacts/kotlin
 	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.dylib \
+		--library target/release/libedgefirst_client.$(LIB_EXT) \
 		--language kotlin \
 		--out-dir artifacts/kotlin
 	@echo "✅ Kotlin bindings generated: artifacts/kotlin/"

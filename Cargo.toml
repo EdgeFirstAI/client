@@ -10,7 +10,7 @@ homepage = "https://edgefirst.ai"
 repository = "https://github.com/EdgeFirstAI/client"
 readme = "README.md"
 license = "Apache-2.0"
-version = "2.9.5"
+version = "2.10.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -26,7 +26,7 @@ clap = { version = "4.6.0", features = ["derive", "env"] }
 config = "0.15.21"
 ctor = "0.6.2"
 directories = "6.0.0"
-edgefirst-client = { version = "2.5.0", path = "crates/edgefirst-client" }
+edgefirst-client = { version = "2.10.0", path = "crates/edgefirst-client" }
 env_logger = "0.11.9"
 futures = "0.3.32"
 imagesize = "0.14.0"
@@ -65,7 +65,7 @@ sha1 = "0.10.6"
 sha2 = "0.10.8"
 tempfile = "3.27.0"
 tokio = { version = "1.50.0", features = ["full", "rt-multi-thread"] }
-tokio-util = { version = "0.7.18", features = ["codec"] }
+tokio-util = { version = "0.7.18", features = ["codec", "io"] }
 tokio-wrap = "0.0.3"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"

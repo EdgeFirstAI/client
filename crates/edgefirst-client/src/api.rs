@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-use crate::{AnnotationSet, Client, Dataset, Error, Sample, client};
+use crate::{AnnotationSet, Client, Dataset, Error, Progress, Sample, client};
 use chrono::{DateTime, Utc};
 use log::trace;
 use reqwest::multipart::{Form, Part};
@@ -1123,26 +1123,246 @@ impl ValidationSession {
         Ok(())
     }
 
-    pub async fn upload(
+    /// Uploads files to this validation session's data folder.
+    ///
+    /// **Breaking change**: this method replaces the former `upload`.
+    /// It targets the new `val.data.upload` endpoint (which supports an optional
+    /// `folder` argument and uses session-scoped permissions). The semantics
+    /// differ from the old endpoint — the old `upload` cannot be silently
+    /// repointed because the wire shapes differ (singular session_id, folder
+    /// argument, different return shape).
+    ///
+    /// # Arguments
+    /// * `client`   - The authenticated client instance.
+    /// * `files`    - List of `(filename, path)` pairs to upload.
+    /// * `folder`   - Optional logical subdirectory under the session data root.
+    /// * `progress` - Optional progress channel. Emits `Progress { current,
+    ///   total, status: None }` events as bytes are streamed to the server.
+    ///   `total` equals the sum of all file sizes in bytes; `current` tracks
+    ///   aggregate bytes sent across all files using a shared atomic counter.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// Returns `Error::PermissionDenied` if the server rejects the request, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn upload_data(
         &self,
         client: &client::Client,
-        files: &[(String, PathBuf)],
+        files: &[(String, std::path::PathBuf)],
+        folder: Option<&str>,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
     ) -> Result<(), Error> {
-        let mut parts = Form::new().part(
-            "params",
-            Part::text(format!("{{ \"session_id\": {} }}", self.id().value())),
-        );
+        use futures::StreamExt;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio_util::io::ReaderStream;
 
+        // Pre-compute total size across all files.
+        let mut total: usize = 0;
+        let mut file_meta = Vec::with_capacity(files.len());
         for (name, path) in files {
-            let file_part = Part::file(path).await?.file_name(name.to_owned());
-            parts = parts.part("file", file_part);
+            let f = tokio::fs::File::open(path).await?;
+            let len = f.metadata().await?.len() as usize;
+            total += len;
+            file_meta.push((name.clone(), f, len));
         }
 
-        let result = client
-            .post_multipart("validate.upload.files", parts)
-            .await?;
-        trace!("ValidationSession::upload: {:?}", result);
-        Ok(())
+        // Shared atomic counter so all file parts bump the same sent counter.
+        let sent = Arc::new(AtomicUsize::new(0));
+
+        let mut form = Form::new().text("session_id", self.id().value().to_string());
+        if let Some(folder) = folder.filter(|s| !s.is_empty()) {
+            form = form.text("folder", folder.to_owned());
+        }
+
+        for (name, file, len) in file_meta {
+            let reader_stream = ReaderStream::new(file);
+            let sent_clone = sent.clone();
+            let progress_clone = progress.clone();
+            let progress_stream = reader_stream.inspect(move |chunk_result| {
+                if let Ok(chunk) = chunk_result {
+                    let current =
+                        sent_clone.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                    // Intermediate progress is sampled with try_send so a slow
+                    // consumer never blocks the upload pipeline; the
+                    // guaranteed completion event is emitted after the
+                    // multipart POST returns below.
+                    if let Some(tx) = &progress_clone {
+                        let _ = tx.try_send(Progress {
+                            current,
+                            total,
+                            status: None,
+                        });
+                    }
+                }
+            });
+            let body = reqwest::Body::wrap_stream(progress_stream);
+            let part = Part::stream_with_length(body, len as u64).file_name(name);
+            form = form.part("file", part);
+        }
+
+        let result = match client.post_multipart("val.data.upload", form).await {
+            Ok(_) => Ok(()),
+            Err(Error::RpcError(code, msg)) => {
+                Err(client::map_rpc_error("val.data.upload", code, msg, None))
+            }
+            Err(e) => Err(e),
+        };
+
+        // Guarantee a terminal `current == total` event reaches the consumer
+        // so completion handlers (Python callbacks, UniFFI progress bridges)
+        // always observe the finished state. Use `send().await` rather than
+        // `try_send` here so the event is never dropped.
+        if result.is_ok()
+            && let Some(tx) = progress
+        {
+            let _ = tx
+                .send(Progress {
+                    current: total,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+        result
+    }
+
+    /// Streams a file from this validation session's data folder to `output_path`.
+    ///
+    /// # Arguments
+    /// * `client`      - The authenticated client instance.
+    /// * `filename`    - Name of the file to download (relative to the session data root).
+    /// * `output_path` - Local path to write the downloaded file.
+    /// * `progress`    - Optional progress channel; events carry bytes received
+    ///   and `Content-Length` total (0 if server omits it).
+    ///
+    /// # Returns
+    /// `Ok(())` when the file has been written and flushed.
+    ///
+    /// # Errors
+    /// Returns `Error::PermissionDenied` if authorization fails,
+    /// `Error::RpcError` if the server returns a JSON-RPC error envelope
+    /// (decoded from the `Content-Type: application/json` body), or
+    /// `Error::IoError` on file write failures. Legitimate JSON file
+    /// payloads (e.g. trace JSON) are persisted normally rather than
+    /// treated as an error.
+    pub async fn download_data(
+        &self,
+        client: &client::Client,
+        filename: &str,
+        output_path: &std::path::Path,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        let req = client::ValDataDownloadRequest {
+            session_id: self.id().value(),
+            filename: filename.to_owned(),
+        };
+        match client
+            .rpc_download("val.data.download", &req, output_path, progress)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(Error::RpcError(code, msg)) => {
+                Err(client::map_rpc_error("val.data.download", code, msg, None))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Lists files attached to this validation session's data folder.
+    ///
+    /// The server returns a flat list of relative file paths
+    /// (slash-separated, e.g. `"folder/file.txt"`), sorted lexicographically.
+    ///
+    /// # Arguments
+    /// * `client` - The authenticated client instance.
+    ///
+    /// # Returns
+    /// A flat `Vec<String>` of relative file paths within the session data folder.
+    ///
+    /// # Errors
+    /// Returns `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn data_list(&self, client: &client::Client) -> Result<Vec<String>, Error> {
+        let req = client::ValDataListRequest {
+            session_id: self.id().value(),
+        };
+        match client.rpc("val.data.list".to_owned(), Some(&req)).await {
+            Ok(r) => Ok(r),
+            Err(Error::RpcError(code, msg)) => {
+                Err(client::map_rpc_error("val.data.list", code, msg, None))
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Inputs for [`client::Client::start_validation_session`].
+///
+/// The required fields mirror what Studio's `cloud.server.start` endpoint
+/// needs to create a validation session against a known training session
+/// (training_session_id, model_file, val_type) and a known target
+/// (dataset_id + annotation_set_id, *or* a snapshot_id).
+///
+/// `is_local: true` marks the resulting session as **user-managed** on
+/// the server: the row is created in the database and data uploads /
+/// downloads / metric updates all work normally, but no EC2 instance is
+/// provisioned and no automated validator pipeline is started. That is
+/// the mode our integration tests want — we get a real session to
+/// exercise the upload/list/download wrappers against, and we are
+/// responsible for tearing it down with
+/// [`client::Client::delete_validation_sessions`] when done.
+///
+/// `is_kubernetes: true` analogously routes the session to a Kubernetes
+/// manage type. Leave both flags `false` for the default AWS_EC2 path.
+#[derive(Debug, Clone)]
+pub struct StartValidationRequest {
+    pub project_id: ProjectID,
+    pub name: String,
+    pub training_session_id: TrainingSessionID,
+    pub model_file: String,
+    pub val_type: String,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+    pub description: Option<String>,
+    pub dataset_id: Option<DatasetID>,
+    pub annotation_set_id: Option<AnnotationSetID>,
+    pub snapshot_id: Option<SnapshotID>,
+}
+
+/// Result of [`client::Client::start_validation_session`].
+///
+/// Studio's `cloud.server.start` returns the freshly-created
+/// `BackgroundTask` row. The interesting fields for downstream code are
+/// the task id (which `task_info` / `tasks` / `job_stop` accept) and the
+/// embedded validation-session id (the handle to the new session, the
+/// thing you pass to `delete_validation_sessions` and to
+/// `validation_session`).
+///
+/// `session_id` is `Option` because the same endpoint also returns
+/// non-validation tasks (trainer, dataset import, …) and those don't
+/// populate `val_session_id`. For our test fixture path the field is
+/// always `Some(_)`; callers can `unwrap()` if they passed
+/// `type = "validation"` semantics in the request.
+#[derive(Deserialize, Debug, Clone)]
+pub struct NewValidationSession {
+    #[serde(rename = "id")]
+    pub task_id: TaskID,
+    #[serde(rename = "val_session_id", default)]
+    pub session_id: Option<ValidationSessionID>,
+}
+
+impl Display for NewValidationSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.session_id {
+            Some(id) => write!(f, "task {} session {}", self.task_id, id),
+            None => write!(f, "task {} (no session)", self.task_id),
+        }
     }
 }
 
@@ -1184,6 +1404,64 @@ pub struct TasksListParams {
     pub manager: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<Vec<String>>,
+}
+
+/// List of data and chart artefacts attached to a task.
+///
+/// Returned by `TaskInfo::data_list` and `TaskInfo::list_charts`. The `data`
+/// map encodes the folder layout: keys are folder names, values are filenames
+/// within that folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDataList {
+    pub server: String,
+    #[serde(rename = "organization_uid")]
+    pub organization_uid: String,
+    #[serde(default)]
+    pub traces: Vec<String>,
+    #[serde(default)]
+    pub data: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// A job (app run) entry returned by `Client::jobs`.
+///
+/// Wraps the server's batch-job representation. The `task_id` field links
+/// back to the underlying task that can be polled via `Client::task_info`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Job {
+    /// App code (e.g. `"edgefirst-validator:2.9.5"`).
+    #[serde(default)]
+    pub code: String,
+    /// Display title from the app definition.
+    #[serde(default)]
+    pub title: String,
+    /// User-supplied job label provided at `job_run` time.
+    #[serde(default)]
+    pub job_name: String,
+    /// Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+    #[serde(default)]
+    pub job_id: String,
+    /// Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+    #[serde(default)]
+    pub state: String,
+    /// Job launch timestamp. Optional in case the server omits it for some states.
+    #[serde(default)]
+    pub launch: Option<DateTime<Utc>>,
+    /// The Studio task id linked to this job. Use with `Client::task_info`.
+    ///
+    /// The server emits this as Go `int64`; negative values are clamped to 0
+    /// when converting to `TaskID` via the `task_id()` accessor.
+    pub task_id: i64,
+}
+
+impl Job {
+    /// Returns the `TaskID` corresponding to this job, for chaining with
+    /// `Client::task_info`.
+    ///
+    /// Saturates at 0 for safety: the server should never emit a negative
+    /// task_id, but the Go `int64` type makes it representable.
+    pub fn task_id(&self) -> TaskID {
+        TaskID::from(self.task_id.max(0) as u64)
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -1250,21 +1528,33 @@ impl Display for Task {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct TaskInfo {
     id: TaskID,
     project_id: Option<ProjectID>,
-    #[serde(rename = "task_description")]
+    #[serde(rename = "task_description", alias = "description", default)]
     description: String,
     #[serde(rename = "type")]
     workflow: String,
     status: Option<String>,
     #[serde(default)]
     progress: TaskProgress,
-    #[serde(rename = "created_date")]
+    #[serde(
+        rename = "created_date",
+        alias = "created",
+        default = "default_datetime_utc"
+    )]
     created: DateTime<Utc>,
-    #[serde(rename = "end_date")]
+    #[serde(
+        rename = "end_date",
+        alias = "completed",
+        default = "default_datetime_utc"
+    )]
     completed: DateTime<Utc>,
+}
+
+fn default_datetime_utc() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
 }
 
 impl Display for TaskInfo {
@@ -1334,6 +1624,334 @@ impl TaskInfo {
         Ok(())
     }
 
+    /// Lists the data artefacts (non-chart files) attached to this task.
+    ///
+    /// The returned `TaskDataList::data` map is keyed by folder name.
+    /// Trace files are also surfaced separately in `traces`.
+    ///
+    /// # Arguments
+    /// * `client` - The authenticated client instance.
+    ///
+    /// # Returns
+    /// A `TaskDataList` where `data` maps folder names to lists of filenames.
+    ///
+    /// # Errors
+    /// Returns `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn data_list(&self, client: &client::Client) -> Result<TaskDataList, Error> {
+        let req = client::TaskDataListRequest {
+            task_id: self.id().value(),
+        };
+        match client.rpc("task.data.list".to_owned(), Some(&req)).await {
+            Ok(r) => Ok(r),
+            Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
+                "task.data.list",
+                code,
+                msg,
+                Some(self.id()),
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Uploads a data file to this task.
+    ///
+    /// # Arguments
+    /// * `client`   - The authenticated client instance.
+    /// * `path`     - Local file path to upload. The filename is derived from
+    ///   the path's last component.
+    /// * `folder`   - Optional logical subdirectory under the task data root.
+    ///   Empty-string is normalised to `None`.
+    /// * `progress` - Optional progress channel. Emits `Progress { current,
+    ///   total, status: None }` events as bytes are streamed to the server.
+    ///   `total` equals the file size in bytes; `current` tracks bytes sent.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidParameters` if the path has no valid filename,
+    /// `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn upload_data(
+        &self,
+        client: &client::Client,
+        path: &std::path::Path,
+        folder: Option<&str>,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        use futures::StreamExt;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio_util::io::ReaderStream;
+
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| Error::InvalidParameters("path must have a UTF-8 filename".into()))?
+            .to_owned();
+
+        let file = tokio::fs::File::open(path).await?;
+        let total = file.metadata().await?.len() as usize;
+        let sent = Arc::new(AtomicUsize::new(0));
+
+        let reader_stream = ReaderStream::new(file);
+        let sent_clone = sent.clone();
+        let progress_clone = progress.clone();
+        let progress_stream = reader_stream.inspect(move |chunk_result| {
+            if let Ok(chunk) = chunk_result {
+                let current = sent_clone.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                // Intermediate events are sampled with `try_send` so a slow
+                // consumer never stalls the upload pipeline; the terminal
+                // `current == total` event is emitted with an awaited send
+                // after the multipart POST returns below so completion
+                // handlers always fire.
+                if let Some(tx) = &progress_clone {
+                    let _ = tx.try_send(Progress {
+                        current,
+                        total,
+                        status: None,
+                    });
+                }
+            }
+        });
+
+        let body = reqwest::Body::wrap_stream(progress_stream);
+        let file_part = Part::stream_with_length(body, total as u64).file_name(file_name);
+
+        let mut form = Form::new().text("task_id", self.id().value().to_string());
+        if let Some(folder) = folder.filter(|s| !s.is_empty()) {
+            form = form.text("folder", folder.to_owned());
+        }
+        form = form.part("file", file_part);
+
+        let result = match client.post_multipart("task.data.upload", form).await {
+            Ok(_) => Ok(()),
+            Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
+                "task.data.upload",
+                code,
+                msg,
+                Some(self.id()),
+            )),
+            Err(e) => Err(e),
+        };
+
+        // Guaranteed completion event: send the terminal progress update
+        // with `send().await` so consumers always see `current == total`
+        // even if they were slow to drain intermediate samples.
+        if result.is_ok()
+            && let Some(tx) = progress
+        {
+            let _ = tx
+                .send(Progress {
+                    current: total,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+        result
+    }
+
+    /// Streams a data file from this task to `output_path`.
+    ///
+    /// `folder` is the logical subdirectory under the task data root;
+    /// pass `None` (or `Some("")`) to download from the root.
+    ///
+    /// Progress is reported via the optional `progress` channel; values
+    /// match the server-reported `Content-Length` when available.
+    ///
+    /// # Arguments
+    /// * `client`      - The authenticated client instance.
+    /// * `file`        - Filename to download.
+    /// * `folder`      - Optional logical subdirectory under the task data root;
+    ///   `None` or `Some("")` targets the root.
+    /// * `output_path` - Local path to write the downloaded file.
+    /// * `progress`    - Optional progress channel; events carry bytes received
+    ///   and `Content-Length` total (0 if server omits it).
+    ///
+    /// # Returns
+    /// `Ok(())` when the file has been written and flushed.
+    ///
+    /// # Errors
+    /// Returns `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails,
+    /// `Error::RpcError` if the server returns a JSON-RPC error envelope
+    /// (decoded from the `Content-Type: application/json` body), or
+    /// `Error::IoError` on file write failures. Legitimate JSON file
+    /// payloads (e.g. trace JSON, chart bodies) are persisted normally
+    /// rather than treated as an error.
+    pub async fn download_data(
+        &self,
+        client: &client::Client,
+        file: &str,
+        folder: Option<&str>,
+        output_path: &std::path::Path,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        let folder = folder.unwrap_or("").to_owned();
+        let req = client::TaskDataDownloadRequest {
+            task_id: self.id().value(),
+            folder,
+            file: file.to_owned(),
+        };
+        match client
+            .rpc_download("task.data.download", &req, output_path, progress)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
+                "task.data.download",
+                code,
+                msg,
+                Some(self.id()),
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Adds (or overwrites) a chart under `(group, name)` for this task.
+    ///
+    /// `data` is the chart body — arbitrary JSON via the `Parameter` enum.
+    /// `params` are optional chart-rendering parameters.
+    ///
+    /// The server's `task.chart.add` is upsert semantics: a chart with the
+    /// same `(group, name)` is overwritten.
+    ///
+    /// Returns `()` — the server does not return a chart id. Charts are
+    /// identified by `(group, name)` and the same key overwrites on subsequent
+    /// calls.
+    ///
+    /// # Arguments
+    /// * `client` - The authenticated client instance.
+    /// * `group`  - Chart group name (non-empty).
+    /// * `name`   - Chart name within the group (non-empty).
+    /// * `data`   - Chart body as a `Parameter` (arbitrary JSON).
+    /// * `params` - Optional chart-rendering parameters as a `Parameter`.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidParameters` if `group` or `name` is empty,
+    /// `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn add_chart(
+        &self,
+        client: &client::Client,
+        group: &str,
+        name: &str,
+        data: Parameter,
+        params: Option<Parameter>,
+    ) -> Result<(), Error> {
+        client::validate_chart_args(group, name)?;
+        let req = client::TaskChartAddRequest {
+            task_id: self.id().value(),
+            group_name: group.to_owned(),
+            chart_name: name.to_owned(),
+            params,
+            data,
+        };
+        let _resp: serde_json::Value =
+            match client.rpc("task.chart.add".to_owned(), Some(&req)).await {
+                Ok(r) => r,
+                Err(Error::RpcError(code, msg)) => {
+                    return Err(client::map_rpc_error(
+                        "task.chart.add",
+                        code,
+                        msg,
+                        Some(self.id()),
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+        Ok(())
+    }
+
+    /// Lists charts attached to this task, optionally filtered to a single group.
+    ///
+    /// Returns the same `TaskDataList` shape as `data_list`, where the `data`
+    /// map encodes `group -> [chart_filenames]`.
+    ///
+    /// # Arguments
+    /// * `client` - The authenticated client instance.
+    /// * `group`  - Optional group name to filter results; `None` returns all groups.
+    ///
+    /// # Returns
+    /// A `TaskDataList` where `data` maps group names to lists of chart filenames.
+    ///
+    /// # Errors
+    /// Returns `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn list_charts(
+        &self,
+        client: &client::Client,
+        group: Option<&str>,
+    ) -> Result<TaskDataList, Error> {
+        let req = client::TaskChartListRequest {
+            task_id: self.id().value(),
+            group_name: group.unwrap_or("").to_owned(),
+        };
+        match client.rpc("task.chart.list".to_owned(), Some(&req)).await {
+            Ok(r) => Ok(r),
+            Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
+                "task.chart.list",
+                code,
+                msg,
+                Some(self.id()),
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetches the raw chart body for `(group, name)` on this task.
+    ///
+    /// The returned `Parameter` is the deserialized chart JSON; the caller
+    /// is responsible for interpreting the shape (line, bar, scatter, etc.).
+    ///
+    /// # Arguments
+    /// * `client` - The authenticated client instance.
+    /// * `group`  - Chart group name (non-empty).
+    /// * `name`   - Chart name within the group (non-empty).
+    ///
+    /// # Returns
+    /// The chart body deserialized as a `Parameter`.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidParameters` if `group` or `name` is empty,
+    /// `Error::TaskNotFound` if the task does not exist,
+    /// `Error::PermissionDenied` if authorization fails, or
+    /// `Error::RpcError` for other server-side failures.
+    pub async fn get_chart(
+        &self,
+        client: &client::Client,
+        group: &str,
+        name: &str,
+    ) -> Result<Parameter, Error> {
+        client::validate_chart_args(group, name)?;
+        let req = client::TaskChartGetRequest {
+            task_id: self.id().value(),
+            group_name: group.to_owned(),
+            chart_name: name.to_owned(),
+        };
+        match client.rpc("task.chart.get".to_owned(), Some(&req)).await {
+            Ok(r) => Ok(r),
+            Err(Error::RpcError(code, msg)) => Err(client::map_rpc_error(
+                "task.chart.get",
+                code,
+                msg,
+                Some(self.id()),
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn created(&self) -> &DateTime<Utc> {
         &self.created
     }
@@ -1343,7 +1961,7 @@ impl TaskInfo {
     }
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, Clone)]
 pub struct TaskProgress {
     stages: Option<HashMap<String, Stage>>,
 }
@@ -2285,4 +2903,372 @@ mod tests {
     test_typeid_conversions!(test_app_id_conversions, AppId, "app", "p");
     test_typeid_conversions!(test_image_id_conversions, ImageId, "im", "se");
     test_typeid_conversions!(test_sequence_id_conversions, SequenceId, "se", "im");
+}
+
+#[cfg(test)]
+mod tests_task_data_list {
+    use super::*;
+
+    #[test]
+    fn task_data_list_deserializes_from_server_shape() {
+        let json = r#"{
+            "server": "test.edgefirst.studio",
+            "organization_uid": "org-abc123",
+            "traces": ["trace/imx95.json"],
+            "data": {
+                "predictions": ["predictions.parquet"],
+                "trace": ["imx95.json"]
+            }
+        }"#;
+        let parsed: TaskDataList = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.server, "test.edgefirst.studio");
+        assert_eq!(parsed.organization_uid, "org-abc123");
+        assert_eq!(parsed.traces, vec!["trace/imx95.json"]);
+        assert_eq!(
+            parsed.data.get("predictions").unwrap(),
+            &vec!["predictions.parquet".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_upload_data {
+    // Documents the empty-folder collapse rule used by upload_data:
+    // folder=Some("") must behave as None to avoid sending an empty form
+    // field that the server might interpret incorrectly.
+    #[test]
+    fn folder_empty_string_is_normalised() {
+        let folder: Option<&str> = Some("");
+        assert!(folder.filter(|s| !s.is_empty()).is_none());
+
+        let folder_real: Option<&str> = Some("predictions");
+        assert!(folder_real.filter(|s| !s.is_empty()).is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests_job_struct {
+    use super::*;
+
+    #[test]
+    fn job_deserializes_with_all_fields() {
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "smoke-test",
+            "job_id": "aws-batch-abc",
+            "state": "RUNNING",
+            "launch": "2026-05-14T15:00:00Z",
+            "task_id": 6789
+        }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.code, "edgefirst-validator:2.9.5");
+        assert_eq!(job.title, "EdgeFirst Validator");
+        assert_eq!(job.job_name, "smoke-test");
+        assert_eq!(job.job_id, "aws-batch-abc");
+        assert_eq!(job.state, "RUNNING");
+        assert!(job.launch.is_some());
+        assert_eq!(job.task_id, 6789);
+    }
+
+    #[test]
+    fn job_tolerates_missing_optional_fields() {
+        // The server occasionally omits everything except task_id (e.g. for
+        // jobs that never reached the batch system). #[serde(default)] should
+        // fill in empty strings / None.
+        let json = r#"{ "task_id": 42 }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 42);
+        assert!(job.code.is_empty());
+        assert!(job.title.is_empty());
+        assert!(job.job_name.is_empty());
+        assert!(job.job_id.is_empty());
+        assert!(job.state.is_empty());
+        assert!(job.launch.is_none());
+    }
+
+    #[test]
+    fn job_task_id_accessor_saturates_negative_to_zero() {
+        // Go emits int64; negative values are nonsense but the wire type
+        // makes them representable. The accessor must clamp at 0 rather
+        // than wrapping into a huge u64 (which would point at a different
+        // task).
+        let job = Job {
+            code: String::new(),
+            title: String::new(),
+            job_name: String::new(),
+            job_id: String::new(),
+            state: String::new(),
+            launch: None,
+            task_id: -1,
+        };
+        assert_eq!(job.task_id().value(), 0);
+    }
+
+    #[test]
+    fn job_task_id_accessor_passes_through_positive_values() {
+        let job = Job {
+            code: String::new(),
+            title: String::new(),
+            job_name: String::new(),
+            job_id: String::new(),
+            state: String::new(),
+            launch: None,
+            task_id: 12345,
+        };
+        assert_eq!(job.task_id().value(), 12345);
+    }
+
+    #[test]
+    fn job_ignores_unknown_fields() {
+        // The server BK_BATCH wrapper carries a number of fields we don't
+        // care about (docker_task, aws_region, etc.). Deserialization must
+        // not break when these are present.
+        let json = r#"{
+            "code": "x",
+            "task_id": 1,
+            "docker_task": { "image": "x" },
+            "aws_region": "us-east-1",
+            "tags": ["a", "b"]
+        }"#;
+        let job: Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 1);
+    }
+}
+
+#[cfg(test)]
+mod tests_task_info_schema_tolerance {
+    use super::*;
+
+    // TaskID derives a transparent numeric Serialize/Deserialize on the wire
+    // (the hex prefix is the Display form, not the JSON form), so the test
+    // fixtures encode `id` as a number.
+
+    #[test]
+    fn task_info_accepts_task_description_field() {
+        // New server: emits `task_description`.
+        let json = r#"{
+            "id": 6699,
+            "type": "edgefirst-validator:2.9.5",
+            "task_description": "Profiler run for IMX95",
+            "status": "running"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.description(), "Profiler run for IMX95");
+    }
+
+    #[test]
+    fn task_info_accepts_legacy_description_field() {
+        // Older server / fixtures: emit `description` (aliased).
+        let json = r#"{
+            "id": 6699,
+            "type": "edgefirst-validator:2.9.5",
+            "description": "Legacy description"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.description(), "Legacy description");
+    }
+
+    #[test]
+    fn task_info_tolerates_missing_description() {
+        // Neither field present → empty string (default).
+        let json = r#"{
+            "id": 6699,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert!(info.description().is_empty());
+    }
+
+    #[test]
+    fn task_info_tolerates_missing_dates_via_default() {
+        // Server may omit `created_date` / `end_date` for early-stage tasks.
+        let json = r#"{
+            "id": 6699,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        // Defaults to UNIX_EPOCH per `default_datetime_utc()`.
+        assert_eq!(info.id().value(), 6699);
+    }
+
+    #[test]
+    fn task_info_status_accessor_returns_option() {
+        let json = r#"{
+            "id": 1,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        assert!(info.status().is_none());
+    }
+
+    #[test]
+    fn task_info_stages_returns_empty_map_when_unset() {
+        let json = r#"{
+            "id": 1,
+            "type": "x"
+        }"#;
+        let info: TaskInfo = serde_json::from_str(json).unwrap();
+        let stages = info.stages();
+        assert!(stages.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests_stage_struct {
+    use super::*;
+
+    #[test]
+    fn stage_new_sets_only_supplied_fields() {
+        let stage = Stage::new(
+            None,
+            "download".into(),
+            Some("running".into()),
+            Some("fetching".into()),
+            42,
+        );
+        assert!(stage.task_id().is_none());
+        assert_eq!(stage.stage(), "download");
+        assert_eq!(stage.status().as_deref(), Some("running"));
+        assert_eq!(stage.message().as_deref(), Some("fetching"));
+        assert_eq!(stage.percentage(), 42);
+        // `new` does not populate `description`.
+        assert!(stage.description().is_none());
+    }
+
+    #[test]
+    fn stage_serializes_without_optional_none_fields() {
+        // skip_serializing_if=Option::is_none must omit None status/message.
+        let stage = Stage::new(None, "init".into(), None, None, 0);
+        let json = serde_json::to_value(&stage).unwrap();
+        assert!(json.get("status").is_none(), "got: {json}");
+        assert!(json.get("message").is_none(), "got: {json}");
+        assert!(json.get("docker_task_id").is_none(), "got: {json}");
+        // Required field is present.
+        assert_eq!(json["stage"], "init");
+        assert_eq!(json["percentage"], 0);
+    }
+
+    #[test]
+    fn stage_serializes_task_id_when_present() {
+        let task_id = TaskID::from(0xdeadu64);
+        let stage = Stage::new(Some(task_id), "x".into(), None, None, 0);
+        let json = serde_json::to_value(&stage).unwrap();
+        // Stage carries the task_id under the `docker_task_id` legacy key on
+        // the wire.
+        assert!(json.get("docker_task_id").is_some());
+    }
+
+    #[test]
+    fn stage_round_trips_through_json() {
+        let stage = Stage::new(
+            None,
+            "train".into(),
+            Some("done".into()),
+            Some("epoch 100".into()),
+            100,
+        );
+        let s = serde_json::to_string(&stage).unwrap();
+        let back: Stage = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.stage(), "train");
+        assert_eq!(back.status().as_deref(), Some("done"));
+        assert_eq!(back.message().as_deref(), Some("epoch 100"));
+        assert_eq!(back.percentage(), 100);
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_list_extra {
+    use super::*;
+
+    #[test]
+    fn task_data_list_with_empty_data_map() {
+        let json = r#"{
+            "server": "studio",
+            "organization_uid": "org-1",
+            "traces": [],
+            "data": {}
+        }"#;
+        let parsed: TaskDataList = serde_json::from_str(json).unwrap();
+        assert!(parsed.traces.is_empty());
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn task_data_list_multiple_folders() {
+        let json = r#"{
+            "server": "studio",
+            "organization_uid": "org-1",
+            "traces": ["t1", "t2"],
+            "data": {
+                "predictions": ["a.parquet", "b.parquet"],
+                "metrics": ["loss.json"]
+            }
+        }"#;
+        let parsed: TaskDataList = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.traces.len(), 2);
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.data["predictions"].len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod tests_artifact_struct {
+    use super::*;
+
+    #[test]
+    fn artifact_accessors_return_strs() {
+        // Artifact uses serde(rename) for modelType → model_type. Make sure
+        // the JSON shape coming off the wire round-trips through accessors.
+        let json = r#"{ "name": "best.onnx", "modelType": "yolo" }"#;
+        let a: Artifact = serde_json::from_str(json).unwrap();
+        assert_eq!(a.name(), "best.onnx");
+        assert_eq!(a.model_type(), "yolo");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_status_serialize {
+    use super::*;
+
+    #[test]
+    fn task_status_uses_docker_task_id_wire_field() {
+        let s = TaskStatus {
+            task_id: TaskID::from(0x1a2bu64),
+            status: "training".into(),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        // Server takes legacy field name.
+        assert!(json.get("docker_task_id").is_some(), "got: {json}");
+        assert_eq!(json["status"], "training");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_stages_serialize {
+    use super::*;
+
+    #[test]
+    fn task_stages_omits_empty_vec() {
+        let stages = TaskStages {
+            task_id: TaskID::from(1u64),
+            stages: Vec::new(),
+        };
+        let json = serde_json::to_value(&stages).unwrap();
+        // `skip_serializing_if = "Vec::is_empty"` means the field is absent.
+        assert!(json.get("stages").is_none(), "got: {json}");
+    }
+
+    #[test]
+    fn task_stages_serializes_non_empty_vec() {
+        let stages = TaskStages {
+            task_id: TaskID::from(1u64),
+            stages: vec![std::collections::HashMap::from([(
+                "stage".to_string(),
+                "download".to_string(),
+            )])],
+        };
+        let json = serde_json::to_value(&stages).unwrap();
+        assert_eq!(json["stages"][0]["stage"], "download");
+    }
 }

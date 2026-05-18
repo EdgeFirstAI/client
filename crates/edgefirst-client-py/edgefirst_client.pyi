@@ -2828,6 +2828,139 @@ class TaskInfo:
         """
         ...
 
+    def data_list(self, client: Client) -> TaskDataList:
+        """
+        List data artefacts (non-chart files) attached to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            TaskDataList: Data artefacts keyed by folder name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def upload_data(
+        self,
+        client: Client,
+        path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Upload a data file to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            path (Union[str, Path]): Local file path to upload.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the file size in bytes; ``current`` tracks
+                bytes sent. ``status`` is always ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        file: str,
+        output_path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a data file from this task to a local path.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            file (str): Filename to download.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def add_chart(
+        self,
+        client: Client,
+        group: str,
+        name: str,
+        data: Parameter,
+        params: Optional[Parameter] = None,
+    ) -> None:
+        """
+        Add (or overwrite) a chart under ``(group, name)`` for this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+            data (Parameter): Chart body as a ``Parameter`` (arbitrary JSON).
+            params (Optional[Parameter]): Optional chart-rendering parameters.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
+        """
+        ...
+
+    def list_charts(
+        self,
+        client: Client,
+        group: Optional[str] = None,
+    ) -> TaskDataList:
+        """
+        List charts attached to this task, optionally filtered to a group.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (Optional[str]): Optional group name to filter charts.
+
+        Returns:
+            TaskDataList: Charts keyed by group name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def get_chart(self, client: Client, group: str, name: str) -> Parameter:
+        """
+        Fetch the raw chart body for ``(group, name)`` on this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+
+        Returns:
+            Parameter: The deserialized chart JSON.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
+        """
+        ...
+
 class DatasetParams:
     """
     Represents the parameters for a dataset used in a training session.
@@ -2895,6 +3028,131 @@ class Artifact:
 
         Returns:
             str: The model type.
+        """
+        ...
+
+class TaskDataList:
+    """
+    List of data and chart artefacts attached to a task.
+
+    The ``data`` map encodes the folder layout: keys are folder names, values
+    are filenames within that folder.
+
+    Note: validation sessions use a flat ``list[str]`` of relative paths
+    (returned by :meth:`ValidationSession.data_list`), not this type.
+    """
+
+    @property
+    def server(self) -> str:
+        """
+        The server hostname for the underlying storage.
+
+        Returns:
+            str: The storage server hostname.
+        """
+        ...
+
+    @property
+    def organization_uid(self) -> str:
+        """
+        Owning organization identifier (e.g. ``'org-abc123'``).
+
+        Returns:
+            str: The organization UID.
+        """
+        ...
+
+    @property
+    def traces(self) -> List[str]:
+        """
+        Trace files surfaced from the ``trace`` folder.
+
+        Returns:
+            List[str]: List of trace filenames.
+        """
+        ...
+
+    @property
+    def data(self) -> Dict[str, List[str]]:
+        """
+        Folder -> filename map of artefacts.
+
+        Returns:
+            Dict[str, List[str]]: Map of folder names to lists of filenames.
+        """
+        ...
+
+class Job:
+    """
+    A job (app run) entry returned by ``Client.job_run`` and ``Client.jobs``.
+
+    The ``task_id`` field links back to the underlying task that can be polled
+    via ``Client.task_info``.
+
+    Note:
+        The ``launch`` timestamp present on the underlying Rust ``Job`` struct
+        is not exposed in the Python bindings. Use ``state`` to distinguish
+        completed runs.
+    """
+
+    @property
+    def code(self) -> str:
+        """
+        App code (e.g. ``"edgefirst-validator:2.9.5"``).
+
+        Returns:
+            str: The app code.
+        """
+        ...
+
+    @property
+    def title(self) -> str:
+        """
+        Display title from the app definition.
+
+        Returns:
+            str: The job title.
+        """
+        ...
+
+    @property
+    def job_name(self) -> str:
+        """
+        User-supplied job label provided at ``job_run`` time.
+
+        Returns:
+            str: The job name.
+        """
+        ...
+
+    @property
+    def job_id(self) -> str:
+        """
+        Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+
+        Returns:
+            str: The batch job identifier.
+        """
+        ...
+
+    @property
+    def state(self) -> str:
+        """
+        Cloud-batch state (e.g. ``"RUNNING"``, ``"SUCCEEDED"``, ``"FAILED"``).
+
+        Returns:
+            str: The current job state.
+        """
+        ...
+
+    def task_id(self) -> TaskID:
+        """
+        Returns the ``TaskID`` corresponding to this job.
+
+        Use with ``Client.task_info`` to fetch the underlying task details.
+
+        Returns:
+            TaskID: The task ID linked to this job.
         """
         ...
 
@@ -3061,7 +3319,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads an artifact file to the training session.
@@ -3110,7 +3368,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads a checkpoint file to the training session.
@@ -3157,8 +3415,8 @@ class TrainingSession:
 
     def upload(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        files_or_client: Union[List[Tuple[str, Union[str, Path]]], Client],
+        files: Optional[List[Tuple[str, Union[str, Path]]]] = None,
     ) -> None:
         """
         Uploads files to the training session.  This can be used to upload
@@ -3212,6 +3470,33 @@ class TrainingSession:
             Use ``session.download(filename)`` instead.
         """
         ...
+
+class NewValidationSession:
+    """Result of :py:meth:`Client.start_validation_session`.
+
+    The handle returned when a session is freshly created via
+    ``cloud.server.start``. The session_id is what downstream data
+    uploads / metrics use and what :py:meth:`Client.
+    delete_validation_sessions` consumes in test teardown.
+    """
+
+    @property
+    def task_id(self) -> TaskID:
+        """Backing BackgroundTask row id (acceptable to
+        ``task_info`` / ``task_status`` / ``job_stop``)."""
+        ...
+
+    @property
+    def session_id(self) -> Optional[ValidationSessionID]:
+        """Freshly-minted validation session id.
+
+        Optional because the underlying ``cloud.server.start`` endpoint
+        also returns non-validation tasks (e.g. trainer). For a
+        validation start request this is always populated.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
 
 class ValidationSession:
     """
@@ -3389,25 +3674,78 @@ class ValidationSession:
         """
         ...
 
-    def upload(
+    def upload_data(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        client: Client,
+        files: List[Tuple[str, Union[str, Path]]],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
     ) -> None:
         """
-        Uploads the specified files to the validation session.
-
-        New API (v2.6.0+): ``session.upload(files)``
-        Deprecated API: ``session.upload(client, files)``
+        Upload files to this validation session's data folder.
 
         Args:
-            files_or_client: Either files list (new API) or Client
-                (deprecated).
-            files: The files list when using deprecated API.
+            client (Client): The authenticated EdgeFirst client.
+            files (List[Tuple[str, Union[str, Path]]]): List of ``(filename,
+                path)`` tuples to upload. The path may be either a ``str``
+                or a ``pathlib.Path``; PyO3 accepts any ``os.PathLike``.
+            folder (Optional[str]): Optional logical subdirectory under the
+                session data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
 
-        .. deprecated::
-            Passing ``client`` is deprecated and will be removed in v3.0.0.
-            Use ``session.upload(files)`` instead.
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the sum of all file sizes in bytes;
+                ``current`` tracks aggregate bytes sent across all files
+                using a shared atomic counter. ``status`` is always
+                ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        filename: str,
+        output_path: Union[str, Path],
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a file from this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            filename (str): Name of the file to download.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def data_list(self, client: Client) -> List[str]:
+        """
+        List files attached to this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            List[str]: Flat list of relative file paths
+            (e.g. ``"folder/file.txt"``), sorted lexicographically.
+
+        Raises:
+            RuntimeError: If the request fails.
         """
         ...
 
@@ -5089,6 +5427,82 @@ class Client:
         """
         ...
 
+    def start_validation_session(
+        self,
+        project_id: ProjectUID,
+        name: str,
+        training_session_id: TrainingSessionUID,
+        model_file: str,
+        val_type: str,
+        params: Dict[str, Any] = {},
+        is_local: bool = False,
+        is_kubernetes: bool = False,
+        description: Optional[str] = None,
+        dataset_id: Optional[DatasetUID] = None,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        snapshot_id: Optional[SnapshotUID] = None,
+    ) -> "NewValidationSession":
+        """Create a new validation session (Studio ``cloud.server.start``).
+
+        Pass ``is_local=True`` to create a **user-managed** session: the
+        DB row is created and the session is fully usable for data
+        uploads / downloads / metric updates, but no EC2 instance is
+        provisioned and no automated validator pipeline runs. That is
+        the mode the integration tests use — the caller is responsible
+        for cleanup via :py:meth:`delete_validation_sessions`.
+
+        Args:
+            project_id: Project that owns the new session.
+            name: Session display name.
+            training_session_id: Source training session (the session
+                being validated).
+            model_file: Path/name of the model artifact relative to the
+                training session's artifacts.
+            val_type: Validator schema name, e.g. ``"modelpack"``.
+            params: Inner ``params.params`` dict the validator schema
+                consumes; pass an empty dict for the default config.
+            is_local: ``True`` for a user-managed session with no cloud
+                EC2/Kubernetes provisioning.
+            is_kubernetes: ``True`` to route the session to a Kubernetes
+                worker pool instead of EC2.
+            description: Optional session description.
+            dataset_id: Validation dataset id (one of dataset_id+
+                annotation_set_id *or* snapshot_id is required).
+            annotation_set_id: Annotation set on the dataset to validate
+                against.
+            snapshot_id: Snapshot id (alternative to dataset_id/
+                annotation_set_id when the validator runs against a
+                frozen snapshot).
+
+        Returns:
+            NewValidationSession: Backing task id and the freshly-minted
+            ``ValidationSessionID``.
+
+        Raises:
+            Error: ``RpcError(101, ...)`` if a referenced entity is
+                missing; ``PermissionDenied`` if the caller can't write
+                to the target project.
+        """
+        ...
+
+    def delete_validation_sessions(
+        self, session_ids: List[ValidationSessionUID]
+    ) -> None:
+        """Delete one or more validation sessions
+        (Studio ``validate.session.delete``).
+
+        Idempotent against already-deleted ids on the server side.
+
+        Args:
+            session_ids: Sessions to remove; each accepts the
+                :py:data:`ValidationSessionUID` typing.
+
+        Raises:
+            Error: ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on at least one session.
+        """
+        ...
+
     def snapshots(self) -> List[Snapshot]:
         """
         Returns a list of all snapshots available to the user.
@@ -5369,7 +5783,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         modelname: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5381,9 +5795,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the model belongs to.
             modelname (str): Name of the model file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       artifact.  If not specified, the
-                                       modelname is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded artifact.  Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the modelname is used as
+                                       the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
@@ -5401,7 +5817,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         checkpoint: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5413,9 +5829,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the checkpoint belongs to.
             checkpoint (str): Name of the checkpoint file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       checkpoint.  If not specified, the
-                                       checkpoint name is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded checkpoint. Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the checkpoint name is
+                                       used as the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
@@ -5534,6 +5952,65 @@ class Client:
 
         Raises:
             Error: If the task or stage does not exist or the request fails.
+        """
+        ...
+
+    def job_run(
+        self,
+        app_name: str,
+        job_name: str,
+        env: Optional[Dict[str, str]] = None,
+        data: Optional[Dict[str, Parameter]] = None,
+    ) -> Job:
+        """
+        Launch a job (app run) on EdgeFirst Studio.
+
+        Args:
+            app_name (str): The app code to run
+                (e.g. ``"edgefirst-validator"``).
+            job_name (str): A user-supplied label for this job run.
+            env (Optional[Dict[str, str]]): Optional environment variables to
+                pass to the job.
+            data (Optional[Dict[str, Parameter]]): Optional data parameters for
+                the job (arbitrary JSON via ``Parameter``).
+
+        Returns:
+            Job: The full job record returned by the server (BK_BATCH wrapper),
+            including AWS Batch job ID, state, and the linked task ID. Call
+            ``.task_id()`` on the result to obtain a ``TaskID`` for use with
+            ``client.task_info(task_id)``.
+
+        Raises:
+            RuntimeError: If the server rejects the request.
+        """
+        ...
+
+    def jobs(self, name: Optional[str] = None) -> List[Job]:
+        """
+        List job (app-run) entries visible to the authenticated user.
+
+        Args:
+            name (Optional[str]): Optional substring filter applied
+                client-side against each job's ``job_name``.
+
+        Returns:
+            List[Job]: Jobs visible to the current user.
+
+        Raises:
+            RuntimeError: If the server returns an error.
+        """
+        ...
+
+    def job_stop(self, task_id: TaskUID) -> None:
+        """
+        Request that a running job task be stopped.
+
+        Args:
+            task_id (Union[TaskID, int, str]): The task ID of the job to stop
+                (from ``job_run`` or ``jobs``).
+
+        Raises:
+            RuntimeError: If the server rejects the request.
         """
         ...
 
