@@ -14,7 +14,7 @@ import PackageDescription
 // [skip ci]`) refreshes the checksum once the artifact is published.
 // =============================================================================
 let version = "2.10.0"
-let checksum = "b36264098a5691b2fa46c325844592be1f8b76d7332b11d15d68a8bcb26779af"
+let checksum = "c429c60ad615d3051218ccc135cd09bf2fd6f009240b419f4a156d74452269ec"
 
 // Toggle for local development vs release distribution
 // Set USE_LOCAL_FRAMEWORK=true environment variable for local XCFramework
