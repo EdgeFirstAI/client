@@ -2136,9 +2136,13 @@ impl Client {
 
     /// Backfill missing image dimensions for a dataset.
     ///
-    /// Downloads image data for samples that are missing width/height,
-    /// extracts dimensions from the image headers, and updates the server.
+    /// Downloads images for samples that are missing width/height,
+    /// extracts dimensions, and updates the server.
     /// Returns the number of samples whose dimensions were updated.
+    ///
+    /// Note: This method does not support progress callbacks. For
+    /// long-running operations on large datasets, use the Python or
+    /// Rust API which provides progress reporting.
     pub fn backfill_sample_dimensions(&self, dataset_id: DatasetId) -> Result<u64, ClientError> {
         Ok(self.runtime.block_on(
             self.inner

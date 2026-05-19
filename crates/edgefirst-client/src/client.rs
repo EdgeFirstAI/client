@@ -3108,9 +3108,8 @@ impl Client {
         dataset_id: DatasetID,
         progress: Option<Sender<Progress>>,
     ) -> Result<u64, Error> {
-        // Fetch all samples without annotation data (faster, we only need IDs and URLs).
-        // Use a separate internal progress channel to avoid interleaving listing
-        // progress with the dimension-computing progress on the caller's channel.
+        // Fetch all samples; listing progress is not forwarded to the caller
+        // since it would interleave with the dimension-computing phase.
         let samples = self.samples(dataset_id, None, &[], &[], &[], None).await?;
 
         // Filter to samples missing dimensions
@@ -3130,31 +3129,14 @@ impl Client {
             let current = i + 1;
 
             let Some(id) = sample.id() else {
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
 
-            // Try to get image URL for downloading
             let Some(url) = sample.image_url() else {
                 #[cfg(feature = "profiling")]
                 tracing::warn!(sample_id = %id, "skipping sample: no image URL");
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
 
@@ -3163,29 +3145,22 @@ impl Client {
             let Ok(resp) = resp else {
                 #[cfg(feature = "profiling")]
                 tracing::warn!(sample_id = %id, "skipping sample: download failed");
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
+
+            // Skip non-success responses (e.g. 404, 500) rather than parsing error pages
+            if !resp.status().is_success() {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, status = %resp.status(), "skipping sample: non-success HTTP status");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            }
+
             let Ok(bytes) = resp.bytes().await else {
                 #[cfg(feature = "profiling")]
-                tracing::warn!(sample_id = %id, "skipping sample: failed to read response");
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                tracing::warn!(sample_id = %id, "skipping sample: failed to read response body");
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
 
@@ -3193,15 +3168,7 @@ impl Client {
             let Ok(size) = imagesize::blob_size(&bytes) else {
                 #[cfg(feature = "profiling")]
                 tracing::warn!(sample_id = %id, "skipping sample: could not determine dimensions");
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
 
@@ -3209,33 +3176,29 @@ impl Client {
             else {
                 #[cfg(feature = "profiling")]
                 tracing::warn!(sample_id = %id, width = size.width, height = size.height, "skipping sample: dimensions overflow u32");
-                if let Some(progress) = &progress {
-                    let _ = progress
-                        .send(Progress {
-                            current,
-                            total,
-                            status: Some("Computing dimensions".to_string()),
-                        })
-                        .await;
-                }
+                Self::send_progress(&progress, current, total).await;
                 continue;
             };
 
             updates.push(crate::SampleDimensionUpdate { id, width, height });
-
-            if let Some(progress) = &progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: Some("Computing dimensions".to_string()),
-                    })
-                    .await;
-            }
+            Self::send_progress(&progress, current, total).await;
         }
 
         // Send updates to server
         self.update_sample_dimensions(dataset_id, updates).await
+    }
+
+    /// Emit a progress event if a progress channel is provided.
+    async fn send_progress(progress: &Option<Sender<Progress>>, current: usize, total: usize) {
+        if let Some(tx) = progress {
+            let _ = tx
+                .send(Progress {
+                    current,
+                    total,
+                    status: Some("Computing dimensions".to_string()),
+                })
+                .await;
+        }
     }
 
     /// List available snapshots.  If a name is provided, only snapshots

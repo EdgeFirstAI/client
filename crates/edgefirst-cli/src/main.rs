@@ -688,10 +688,9 @@ enum Command {
     },
     /// Update missing image dimensions for a dataset.
     ///
-    /// Downloads image headers for samples that are missing width/height
-    /// metadata, extracts the dimensions, and updates the server in-place.
-    /// This is useful for datasets uploaded before dimension extraction was
-    /// added.
+    /// Downloads images for samples that are missing width/height metadata,
+    /// extracts the dimensions, and updates the server in-place. This is
+    /// useful for datasets uploaded before dimension extraction was added.
     ///
     /// Examples:
     ///   edgefirst update-dimensions dataset-123

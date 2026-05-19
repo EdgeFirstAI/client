@@ -1248,9 +1248,7 @@ async fn test_backfill_sample_dimensions_no_image_url_with_progress() {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("samples.count"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
         .mount(&server)
         .await;
 
@@ -1303,9 +1301,7 @@ async fn test_backfill_sample_dimensions_download_failure() {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("samples.count"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
         .mount(&server)
         .await;
 
@@ -1344,6 +1340,65 @@ async fn test_backfill_sample_dimensions_download_failure() {
 
 #[tokio::test]
 #[serial]
+async fn test_backfill_sample_dimensions_http_error_status() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    // Sample with image_url that returns HTTP 404
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 45,
+                "image_name": "missing.png",
+                "image_url": format!("{}/images/missing.png", server.uri()),
+                "group_name": "train",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    // Image download returns 404 Not Found
+    Mock::given(method("GET"))
+        .and(path("/images/missing.png"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+    let updated = client
+        .backfill_sample_dimensions(DatasetID::from(1u64), Some(tx))
+        .await
+        .expect("backfill should succeed even with HTTP error");
+    assert_eq!(updated, 0);
+
+    // Progress still emitted for skipped sample
+    let mut progress_messages = vec![];
+    while let Ok(p) = rx.try_recv() {
+        progress_messages.push(p);
+    }
+    assert_eq!(progress_messages.len(), 1);
+}
+
+#[tokio::test]
+#[serial]
 async fn test_backfill_sample_dimensions_invalid_image_data() {
     let server = MockServer::start().await;
 
@@ -1357,9 +1412,7 @@ async fn test_backfill_sample_dimensions_invalid_image_data() {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("samples.count"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
         .mount(&server)
         .await;
 
@@ -1420,9 +1473,7 @@ async fn test_backfill_sample_dimensions_null_id_with_progress() {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("samples.count"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
         .mount(&server)
         .await;
 

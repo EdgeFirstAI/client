@@ -5093,9 +5093,8 @@ class Client:
         """
         Backfill missing image dimensions for a dataset.
 
-        Downloads image data for samples missing width/height, extracts
-        dimensions from the image headers, and updates the server with
-        the computed values.
+        Downloads images for samples missing width/height, extracts
+        dimensions, and updates the server with the computed values.
 
         Args:
             dataset_id (Union[DatasetID, int, str]): ID of the dataset.
