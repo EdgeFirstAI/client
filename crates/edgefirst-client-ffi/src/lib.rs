@@ -2128,9 +2128,10 @@ impl Client {
                 height: u.height,
             })
             .collect();
-        Ok(self
-            .runtime
-            .block_on(self.inner.update_sample_dimensions(dataset_id.into(), updates))?)
+        Ok(self.runtime.block_on(
+            self.inner
+                .update_sample_dimensions(dataset_id.into(), updates),
+        )?)
     }
 
     /// Backfill missing image dimensions for a dataset.
@@ -2138,13 +2139,11 @@ impl Client {
     /// Downloads image data for samples that are missing width/height,
     /// extracts dimensions from the image headers, and updates the server.
     /// Returns the number of samples whose dimensions were updated.
-    pub fn backfill_sample_dimensions(
-        &self,
-        dataset_id: DatasetId,
-    ) -> Result<u64, ClientError> {
-        Ok(self
-            .runtime
-            .block_on(self.inner.backfill_sample_dimensions(dataset_id.into(), None))?)
+    pub fn backfill_sample_dimensions(&self, dataset_id: DatasetId) -> Result<u64, ClientError> {
+        Ok(self.runtime.block_on(
+            self.inner
+                .backfill_sample_dimensions(dataset_id.into(), None),
+        )?)
     }
 
     // =========================================================================

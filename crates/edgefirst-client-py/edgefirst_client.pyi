@@ -5076,7 +5076,9 @@ class Client:
 
         Args:
             dataset_id (Union[DatasetID, int, str]): ID of the dataset.
-            updates (List[tuple]): List of (sample_id, width, height) tuples.
+            updates (List[tuple[SampleUID, int, int]]): List of
+                (sample_id, width, height) tuples where sample_id is a
+                SampleUID/int/str and width/height are pixel dimensions.
 
         Returns:
             int: Number of samples successfully updated.

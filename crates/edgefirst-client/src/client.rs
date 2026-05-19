@@ -3108,10 +3108,10 @@ impl Client {
         dataset_id: DatasetID,
         progress: Option<Sender<Progress>>,
     ) -> Result<u64, Error> {
-        // Fetch all samples without annotation data (faster, we only need IDs and URLs)
-        let samples = self
-            .samples(dataset_id, None, &[], &[], &[], progress.clone())
-            .await?;
+        // Fetch all samples without annotation data (faster, we only need IDs and URLs).
+        // Use a separate internal progress channel to avoid interleaving listing
+        // progress with the dimension-computing progress on the caller's channel.
+        let samples = self.samples(dataset_id, None, &[], &[], &[], None).await?;
 
         // Filter to samples missing dimensions
         let missing: Vec<&Sample> = samples
@@ -3130,32 +3130,98 @@ impl Client {
             let current = i + 1;
 
             let Some(id) = sample.id() else {
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
                 continue;
             };
 
             // Try to get image URL for downloading
             let Some(url) = sample.image_url() else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: no image URL");
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
                 continue;
             };
 
-            // Download enough bytes to determine dimensions (most formats
-            // store size in the first few KB)
+            // Download image data to determine dimensions
             let resp = self.bulk_http.get(url).send().await;
-            let Ok(resp) = resp else { continue };
+            let Ok(resp) = resp else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: download failed");
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
+                continue;
+            };
             let Ok(bytes) = resp.bytes().await else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: failed to read response");
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
                 continue;
             };
 
             // Extract dimensions from the downloaded image
             let Ok(size) = imagesize::blob_size(&bytes) else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: could not determine dimensions");
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
                 continue;
             };
 
-            updates.push(crate::SampleDimensionUpdate {
-                id,
-                width: size.width as u32,
-                height: size.height as u32,
-            });
+            let (Ok(width), Ok(height)) = (u32::try_from(size.width), u32::try_from(size.height))
+            else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, width = size.width, height = size.height, "skipping sample: dimensions overflow u32");
+                if let Some(progress) = &progress {
+                    let _ = progress
+                        .send(Progress {
+                            current,
+                            total,
+                            status: Some("Computing dimensions".to_string()),
+                        })
+                        .await;
+                }
+                continue;
+            };
+
+            updates.push(crate::SampleDimensionUpdate { id, width, height });
 
             if let Some(progress) = &progress {
                 let _ = progress

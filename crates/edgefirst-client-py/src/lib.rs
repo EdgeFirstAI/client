@@ -5714,7 +5714,9 @@ impl Client {
                             .call1(py, (status.current, status.total, status.status.clone()))
                             .is_err()
                         {
-                            let _ = progress.call1(py, (status.current, status.total));
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
                         }
                     });
                 }

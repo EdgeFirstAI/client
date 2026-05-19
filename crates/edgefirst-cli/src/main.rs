@@ -5277,7 +5277,7 @@ async fn main() -> Result<(), Error> {
                     progress.status.as_deref().unwrap_or("")
                 );
             }
-            let updated = task.await.unwrap()?;
+            let updated = task.await.map_err(Error::JoinError)??;
             println!("Updated dimensions for {} samples", updated);
             Ok(())
         }
