@@ -630,6 +630,24 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func artifactsAsync(trainingSessionId: TrainingSessionId) async throws -> [Artifact]
 
   /**
+   * Backfill missing image dimensions for a dataset.
+   *
+   * Downloads images for samples that are missing width/height,
+   * extracts dimensions, and updates the server.
+   * Returns the number of samples whose dimensions were updated.
+   *
+   * Note: This method does not support progress callbacks. For
+   * long-running operations on large datasets, use the Python or
+   * Rust API which provides progress reporting.
+   */
+  func backfillSampleDimensions(datasetId: DatasetId) throws -> UInt64
+
+  /**
+   * Backfill missing image dimensions for a dataset (async).
+   */
+  func backfillSampleDimensionsAsync(datasetId: DatasetId) async throws -> UInt64
+
+  /**
    * Get a dataset by ID.
    */
   func dataset(id: DatasetId) throws -> Dataset
@@ -814,6 +832,21 @@ public protocol ClientProtocol: AnyObject, Sendable {
    */
   func trainingSessionsAsync(experimentId: ExperimentId, name: String?) async throws
     -> [TrainingSession]
+
+  /**
+   * Update image dimensions for existing samples in a dataset.
+   *
+   * Accepts a list of sample dimension updates and sends them to the server.
+   * Returns the number of samples successfully updated.
+   */
+  func updateSampleDimensions(datasetId: DatasetId, updates: [SampleDimensionUpdate]) throws
+    -> UInt64
+
+  /**
+   * Update image dimensions for existing samples (async).
+   */
+  func updateSampleDimensionsAsync(datasetId: DatasetId, updates: [SampleDimensionUpdate])
+    async throws -> UInt64
 
   /**
    * Get the current server URL.
@@ -1013,6 +1046,47 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
         freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
         liftFunc: FfiConverterSequenceTypeArtifact.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Backfill missing image dimensions for a dataset.
+   *
+   * Downloads images for samples that are missing width/height,
+   * extracts dimensions, and updates the server.
+   * Returns the number of samples whose dimensions were updated.
+   *
+   * Note: This method does not support progress callbacks. For
+   * long-running operations on large datasets, use the Python or
+   * Rust API which provides progress reporting.
+   */
+  open func backfillSampleDimensions(datasetId: DatasetId) throws -> UInt64 {
+    return try FfiConverterUInt64.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_backfill_sample_dimensions(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * Backfill missing image dimensions for a dataset (async).
+   */
+  open func backfillSampleDimensionsAsync(datasetId: DatasetId) async throws -> UInt64 {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_backfill_sample_dimensions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterUInt64.lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -1597,6 +1671,48 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
         freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
         liftFunc: FfiConverterSequenceTypeTrainingSession.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Update image dimensions for existing samples in a dataset.
+   *
+   * Accepts a list of sample dimension updates and sends them to the server.
+   * Returns the number of samples successfully updated.
+   */
+  open func updateSampleDimensions(datasetId: DatasetId, updates: [SampleDimensionUpdate]) throws
+    -> UInt64
+  {
+    return try FfiConverterUInt64.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_update_sample_dimensions(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterSequenceTypeSampleDimensionUpdate.lower(updates), $0
+        )
+      })
+  }
+
+  /**
+   * Update image dimensions for existing samples (async).
+   */
+  open func updateSampleDimensionsAsync(datasetId: DatasetId, updates: [SampleDimensionUpdate])
+    async throws -> UInt64
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_update_sample_dimensions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId),
+            FfiConverterSequenceTypeSampleDimensionUpdate.lower(updates)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterUInt64.lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -4596,6 +4712,88 @@ public func FfiConverterTypeSample_lower(_ value: Sample) -> RustBuffer {
   return FfiConverterTypeSample.lower(value)
 }
 
+/// A dimension update for a single sample image.
+public struct SampleDimensionUpdate: Equatable, Hashable {
+  /**
+   * Sample ID to update.
+   */
+  public let sampleId: SampleId
+  /**
+   * Image width in pixels.
+   */
+  public let width: UInt32
+  /**
+   * Image height in pixels.
+   */
+  public let height: UInt32
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Sample ID to update.
+     */
+    sampleId: SampleId,
+    /**
+     * Image width in pixels.
+     */
+    width: UInt32,
+    /**
+     * Image height in pixels.
+     */
+    height: UInt32
+  ) {
+    self.sampleId = sampleId
+    self.width = width
+    self.height = height
+  }
+
+}
+
+#if compiler(>=6)
+  extension SampleDimensionUpdate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSampleDimensionUpdate: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> SampleDimensionUpdate
+  {
+    return
+      try SampleDimensionUpdate(
+        sampleId: FfiConverterTypeSampleId.read(from: &buf),
+        width: FfiConverterUInt32.read(from: &buf),
+        height: FfiConverterUInt32.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: SampleDimensionUpdate, into buf: inout [UInt8]) {
+    FfiConverterTypeSampleId.write(value.sampleId, into: &buf)
+    FfiConverterUInt32.write(value.width, into: &buf)
+    FfiConverterUInt32.write(value.height, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSampleDimensionUpdate_lift(_ buf: RustBuffer) throws
+  -> SampleDimensionUpdate
+{
+  return try FfiConverterTypeSampleDimensionUpdate.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSampleDimensionUpdate_lower(_ value: SampleDimensionUpdate)
+  -> RustBuffer
+{
+  return FfiConverterTypeSampleDimensionUpdate.lower(value)
+}
+
 /// A file associated with a sample (e.g., LiDAR point cloud, radar data).
 public struct SampleFile: Equatable, Hashable {
   /**
@@ -7111,6 +7309,33 @@ private struct FfiConverterSequenceTypeProject: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeSampleDimensionUpdate: FfiConverterRustBuffer {
+  typealias SwiftType = [SampleDimensionUpdate]
+
+  public static func write(_ value: [SampleDimensionUpdate], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeSampleDimensionUpdate.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [SampleDimensionUpdate]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [SampleDimensionUpdate]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeSampleDimensionUpdate.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeSampleFile: FfiConverterRustBuffer {
   typealias SwiftType = [SampleFile]
 
@@ -7696,6 +7921,12 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_artifacts_async() != 51396 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_backfill_sample_dimensions() != 26474 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_backfill_sample_dimensions_async() != 56385 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_dataset() != 15504 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -7796,6 +8027,12 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_training_sessions_async() != 60165 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_sample_dimensions() != 21339 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_sample_dimensions_async() != 56639 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_url() != 10365 {
