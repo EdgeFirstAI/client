@@ -5646,6 +5646,85 @@ impl Client {
         Ok(df)
     }
 
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset containing the samples
+    ///     updates: List of tuples (sample_id, width, height)
+    ///
+    /// Returns:
+    ///     Number of samples successfully updated
+    #[pyo3(signature = (dataset_id, updates))]
+    #[tokio_wrap::sync]
+    pub fn update_sample_dimensions<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        updates: Vec<(Bound<'py, PyAny>, u32, u32)>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let updates: Vec<edgefirst_client::SampleDimensionUpdate> = updates
+            .into_iter()
+            .map(|(id, width, height)| {
+                let id: SampleID = id.try_into()?;
+                Ok(edgefirst_client::SampleDimensionUpdate {
+                    id: id.0,
+                    width,
+                    height,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+
+        Ok(self
+            .0
+            .update_sample_dimensions(dataset_id.0, updates)
+            .await?)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads image data for samples missing width/height, extracts
+    /// dimensions, and updates the server with the computed values.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset to backfill
+    ///     progress: Optional callback(current, total, status)
+    ///
+    /// Returns:
+    ///     Number of samples whose dimensions were updated
+    #[pyo3(signature = (dataset_id, progress = None))]
+    pub fn backfill_sample_dimensions<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.backfill_sample_dimensions_sync(dataset_id, Some(tx))
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            let _ = progress.call1(py, (status.current, status.total));
+                        }
+                    });
+                }
+
+                Ok(task.join().unwrap()?)
+            }
+            None => Ok(self.backfill_sample_dimensions_sync(dataset_id, None)?),
+        }
+    }
+
     #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image]))]
     #[tokio_wrap::sync]
     pub fn samples_count<'py>(
@@ -6941,6 +7020,17 @@ impl Client {
             )
             .await?;
         Ok(PyDataFrame(df))
+    }
+
+    #[tokio_wrap::sync]
+    fn backfill_sample_dimensions_sync(
+        &self,
+        dataset_id: DatasetID,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<u64, edgefirst_client::Error> {
+        self.0
+            .backfill_sample_dimensions(dataset_id.0, progress)
+            .await
     }
 
     #[tokio_wrap::sync]

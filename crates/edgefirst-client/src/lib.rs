@@ -69,10 +69,11 @@ pub use crate::{
     api::{
         AnnotationSetID, AppId, Artifact, DatasetID, DatasetParams, Experiment, ExperimentID,
         ImageId, Job, NewValidationSession, Organization, OrganizationID, Parameter, PresignedUrl,
-        Project, ProjectID, SampleID, SamplesCountResult, SamplesPopulateParams,
-        SamplesPopulateResult, SequenceId, Snapshot, SnapshotFromDatasetResult, SnapshotID,
-        SnapshotRestoreResult, Stage, StartValidationRequest, Task, TaskDataList, TaskID, TaskInfo,
-        TrainingSession, TrainingSessionID, ValidationSession, ValidationSessionID,
+        Project, ProjectID, SampleDimensionUpdate, SampleID, SamplesCountResult,
+        SamplesPopulateParams, SamplesPopulateResult, SamplesUpdateDimensionsResult, SequenceId,
+        Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult, Stage,
+        StartValidationRequest, Task, TaskDataList, TaskID, TaskInfo, TrainingSession,
+        TrainingSessionID, ValidationSession, ValidationSessionID,
     },
     client::{Client, Progress},
     dataset::{

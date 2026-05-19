@@ -4045,6 +4045,68 @@ mod tests {
 
     #[cfg(feature = "polars")]
     #[test]
+    fn test_samples_dataframe_size_column() {
+        // Samples with width/height should produce the size column
+        let sample1 = Sample {
+            image_name: Some("img1.jpg".to_string()),
+            width: Some(1920),
+            height: Some(1080),
+            ..Default::default()
+        };
+        let sample2 = Sample {
+            image_name: Some("img2.jpg".to_string()),
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample1, sample2]).unwrap();
+
+        // Size column should be present (not dropped by all-null rule)
+        let size_col = df
+            .column("size")
+            .expect("size column should be present when width/height are set");
+        assert_eq!(size_col.len(), 2);
+
+        // Each row should be an Array(UInt32, 2) with [width, height]
+        let arr = size_col.array().expect("size column should be Array dtype");
+        let row0 = arr.get_as_series(0).unwrap();
+        let row0_vals: Vec<u32> = row0.u32().unwrap().into_no_null_iter().collect();
+        assert_eq!(row0_vals, vec![1920, 1080]);
+
+        let row1 = arr.get_as_series(1).unwrap();
+        let row1_vals: Vec<u32> = row1.u32().unwrap().into_no_null_iter().collect();
+        assert_eq!(row1_vals, vec![640, 480]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_size_column_partial() {
+        // When only some samples have dimensions, size column should still be present
+        let sample1 = Sample {
+            image_name: Some("img1.jpg".to_string()),
+            width: Some(1920),
+            height: Some(1080),
+            ..Default::default()
+        };
+        let sample2 = Sample {
+            image_name: Some("img2.jpg".to_string()),
+            // No width/height
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample1, sample2]).unwrap();
+
+        // Size column should be present (not all null)
+        let size_col = df
+            .column("size")
+            .expect("size column should be present when at least one sample has dimensions");
+        assert_eq!(size_col.len(), 2);
+        assert_eq!(size_col.null_count(), 1, "one row should be null");
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
     fn test_samples_dataframe_score_columns() {
         let mut ann = Annotation::new();
         ann.set_name(Some("test".to_string()));

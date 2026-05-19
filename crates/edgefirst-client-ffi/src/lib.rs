@@ -503,6 +503,17 @@ impl From<SequenceId> for core::SequenceId {
     }
 }
 
+/// A dimension update for a single sample image.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SampleDimensionUpdate {
+    /// Sample ID to update.
+    pub sample_id: SampleId,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+}
+
 // =============================================================================
 // ID String Parse/Format Functions
 // =============================================================================
@@ -2100,6 +2111,42 @@ impl Client {
         Ok(labels.into_iter().map(Label::from).collect())
     }
 
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// Accepts a list of sample dimension updates and sends them to the server.
+    /// Returns the number of samples successfully updated.
+    pub fn update_sample_dimensions(
+        &self,
+        dataset_id: DatasetId,
+        updates: Vec<SampleDimensionUpdate>,
+    ) -> Result<u64, ClientError> {
+        let updates = updates
+            .into_iter()
+            .map(|u| core::SampleDimensionUpdate {
+                id: u.sample_id.into(),
+                width: u.width,
+                height: u.height,
+            })
+            .collect();
+        Ok(self
+            .runtime
+            .block_on(self.inner.update_sample_dimensions(dataset_id.into(), updates))?)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads image data for samples that are missing width/height,
+    /// extracts dimensions from the image headers, and updates the server.
+    /// Returns the number of samples whose dimensions were updated.
+    pub fn backfill_sample_dimensions(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<u64, ClientError> {
+        Ok(self
+            .runtime
+            .block_on(self.inner.backfill_sample_dimensions(dataset_id.into(), None))?)
+    }
+
     // =========================================================================
     // Experiments
     // =========================================================================
@@ -2362,6 +2409,45 @@ impl Client {
         async {
             let labels = self.inner.labels(dataset_id.into()).await?;
             Ok(labels.into_iter().map(Label::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Update image dimensions for existing samples (async).
+    pub async fn update_sample_dimensions_async(
+        &self,
+        dataset_id: DatasetId,
+        updates: Vec<SampleDimensionUpdate>,
+    ) -> Result<u64, ClientError> {
+        async {
+            let updates = updates
+                .into_iter()
+                .map(|u| core::SampleDimensionUpdate {
+                    id: u.sample_id.into(),
+                    width: u.width,
+                    height: u.height,
+                })
+                .collect();
+            Ok(self
+                .inner
+                .update_sample_dimensions(dataset_id.into(), updates)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Backfill missing image dimensions for a dataset (async).
+    pub async fn backfill_sample_dimensions_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<u64, ClientError> {
+        async {
+            Ok(self
+                .inner
+                .backfill_sample_dimensions(dataset_id.into(), None)
+                .await?)
         }
         .compat()
         .await

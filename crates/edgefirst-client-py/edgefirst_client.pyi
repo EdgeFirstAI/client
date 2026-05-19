@@ -5066,6 +5066,47 @@ class Client:
         """
         ...
 
+    def update_sample_dimensions(
+        self,
+        dataset_id: DatasetUID,
+        updates: List[tuple[SampleUID, int, int]],
+    ) -> int:
+        """
+        Update image dimensions for existing samples in a dataset.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            updates (List[tuple]): List of (sample_id, width, height) tuples.
+
+        Returns:
+            int: Number of samples successfully updated.
+        """
+        ...
+
+    def backfill_sample_dimensions(
+        self,
+        dataset_id: DatasetUID,
+        progress: Optional[Progress] = None,
+    ) -> int:
+        """
+        Backfill missing image dimensions for a dataset.
+
+        Downloads image data for samples missing width/height, extracts
+        dimensions from the image headers, and updates the server with
+        the computed values.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            progress (Optional[Progress]): Optional progress callback.
+                Supports:
+                - ``callback(current, total)`` - basic progress
+                - ``callback(current, total, status)`` - with status message
+
+        Returns:
+            int: Number of samples whose dimensions were updated.
+        """
+        ...
+
     def samples_count(
         self,
         dataset_id: DatasetUID,

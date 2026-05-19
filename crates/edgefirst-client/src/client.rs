@@ -2657,12 +2657,12 @@ impl Client {
     ///   local path. The method will replace the full path with just the
     ///   basename before sending to the server.
     /// - **Image dimensions are extracted automatically** for image files using
-    ///   the `imagesize` crate. The width/height are sent to the server, but
-    ///   note that the server currently doesn't return these fields when
-    ///   fetching samples back.
+    ///   the `imagesize` crate. The width/height are sent to the server and
+    ///   stored in the `image_files` table. These dimensions are returned by
+    ///   `samples.list` and used in [`samples_dataframe`](crate::samples_dataframe)
+    ///   to populate the `size` column.
     /// - **UUIDs are generated automatically** if not provided. If you need
-    ///   deterministic UUIDs, set `sample.uuid` explicitly before calling. Note
-    ///   that the server doesn't currently return UUIDs in sample queries.
+    ///   deterministic UUIDs, set `sample.uuid` explicitly before calling.
     ///
     /// # Arguments
     ///
@@ -3042,6 +3042,134 @@ impl Client {
             .samples(dataset_id, annotation_set_id, types, groups, &[], progress)
             .await?;
         samples_dataframe(&samples)
+    }
+
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// This is useful for backfilling width/height data on samples that were
+    /// uploaded before dimension extraction was added, or where dimensions
+    /// could not be determined at upload time.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset containing the samples
+    /// * `updates` - List of dimension updates (sample ID, width, height)
+    ///
+    /// # Returns
+    ///
+    /// The number of samples that were successfully updated.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, updates), fields(dataset_id = %dataset_id, count = updates.len())))]
+    pub async fn update_sample_dimensions(
+        &self,
+        dataset_id: DatasetID,
+        updates: Vec<crate::SampleDimensionUpdate>,
+    ) -> Result<u64, Error> {
+        use crate::api::SamplesUpdateDimensionsParams;
+
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        // Batch in groups of 500 to stay within server limits
+        let mut total_updated = 0u64;
+        for chunk in updates.chunks(500) {
+            let params = SamplesUpdateDimensionsParams {
+                dataset_id,
+                samples: chunk.to_vec(),
+            };
+            let result: crate::SamplesUpdateDimensionsResult = self
+                .rpc("samples.update_dimensions".to_owned(), Some(params))
+                .await?;
+            total_updated += result.updated;
+        }
+        Ok(total_updated)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads image data for samples that are missing width/height,
+    /// extracts the dimensions using the `imagesize` crate, and updates
+    /// the server with the computed values.
+    ///
+    /// This is a one-time repair operation for datasets that were uploaded
+    /// before the client added automatic dimension extraction.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to backfill
+    /// * `progress` - Optional progress channel
+    ///
+    /// # Returns
+    ///
+    /// The number of samples whose dimensions were updated.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(dataset_id = %dataset_id)))]
+    pub async fn backfill_sample_dimensions(
+        &self,
+        dataset_id: DatasetID,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<u64, Error> {
+        // Fetch all samples without annotation data (faster, we only need IDs and URLs)
+        let samples = self
+            .samples(dataset_id, None, &[], &[], &[], progress.clone())
+            .await?;
+
+        // Filter to samples missing dimensions
+        let missing: Vec<&Sample> = samples
+            .iter()
+            .filter(|s| s.width.is_none() || s.height.is_none())
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(0);
+        }
+
+        let total = missing.len();
+        let mut updates: Vec<crate::SampleDimensionUpdate> = Vec::with_capacity(total);
+
+        for (i, sample) in missing.into_iter().enumerate() {
+            let current = i + 1;
+
+            let Some(id) = sample.id() else {
+                continue;
+            };
+
+            // Try to get image URL for downloading
+            let Some(url) = sample.image_url() else {
+                continue;
+            };
+
+            // Download enough bytes to determine dimensions (most formats
+            // store size in the first few KB)
+            let resp = self.bulk_http.get(url).send().await;
+            let Ok(resp) = resp else { continue };
+            let Ok(bytes) = resp.bytes().await else {
+                continue;
+            };
+
+            // Extract dimensions from the downloaded image
+            let Ok(size) = imagesize::blob_size(&bytes) else {
+                continue;
+            };
+
+            updates.push(crate::SampleDimensionUpdate {
+                id,
+                width: size.width as u32,
+                height: size.height as u32,
+            });
+
+            if let Some(progress) = &progress {
+                let _ = progress
+                    .send(Progress {
+                        current,
+                        total,
+                        status: Some("Computing dimensions".to_string()),
+                    })
+                    .await;
+            }
+        }
+
+        // Send updates to server
+        self.update_sample_dimensions(dataset_id, updates).await
     }
 
     /// List available snapshots.  If a name is provided, only snapshots

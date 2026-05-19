@@ -509,6 +509,27 @@ pub struct SamplesListResult {
     pub continue_token: Option<String>,
 }
 
+/// A single sample dimension update entry.
+#[derive(Serialize, Clone, Debug)]
+pub struct SampleDimensionUpdate {
+    pub id: SampleID,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Parameters for the `samples.update_dimensions` API call.
+#[derive(Serialize, Clone, Debug)]
+pub struct SamplesUpdateDimensionsParams {
+    pub dataset_id: DatasetID,
+    pub samples: Vec<SampleDimensionUpdate>,
+}
+
+/// Result from the `samples.update_dimensions` API call.
+#[derive(Deserialize, Debug)]
+pub struct SamplesUpdateDimensionsResult {
+    pub updated: u64,
+}
+
 /// Parameters for populating (importing) samples into a dataset.
 ///
 /// Used with the `samples.populate2` API to create new samples in a dataset,
