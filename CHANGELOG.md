@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-05-19
+
+### Added
+
+- `Client::update_sample_dimensions` — batch-update image dimensions for
+  existing samples in a dataset
+- `Client::backfill_sample_dimensions` — one-time repair operation that
+  downloads images, extracts dimensions, and updates the server for legacy
+  datasets missing width/height metadata
+- CLI command `edgefirst update-dimensions <dataset_id>` — triggers dimension
+  backfill with progress reporting
+- Python bindings for both new methods with progress callback support
+- UniFFI (Swift/Kotlin) bindings for both new methods
+
+### Fixed
+
+- Multipart upload (`Val_Data_Upload`) now processes all files in a batch
+  instead of silently dropping every file after the first
+
 ## [2.10.0] - 2026-05-17
 
 ### Versioning note

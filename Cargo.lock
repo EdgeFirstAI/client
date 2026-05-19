@@ -1152,7 +1152,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "edgefirst-cli"
-version = "2.10.0"
+version = "2.10.1"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client"
-version = "2.10.0"
+version = "2.10.1"
 dependencies = [
  "base64",
  "chrono",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client-ffi"
-version = "2.10.0"
+version = "2.10.1"
 dependencies = [
  "async-compat",
  "chrono",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client-py"
-version = "2.10.0"
+version = "2.10.1"
 dependencies = [
  "edgefirst-client",
  "env_logger",
@@ -5034,9 +5034,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.11.1",
  "bytes",
@@ -5247,7 +5247,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "2.10.0"
+version = "2.10.1"
 dependencies = [
  "uniffi",
 ]
