@@ -1232,3 +1232,228 @@ async fn test_backfill_sample_dimensions_no_image_url() {
         .expect("backfill should succeed even with no image URL");
     assert_eq!(updated, 0);
 }
+
+#[tokio::test]
+#[serial]
+async fn test_backfill_sample_dimensions_no_image_url_with_progress() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
+        )
+        .mount(&server)
+        .await;
+
+    // Sample with no image_url and no dimensions
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 30,
+                "image_name": "img003.png",
+                "group_name": "test",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+    let updated = client
+        .backfill_sample_dimensions(DatasetID::from(1u64), Some(tx))
+        .await
+        .expect("backfill should succeed");
+    assert_eq!(updated, 0);
+
+    // Progress should still be emitted for the skipped sample
+    let mut progress_messages = vec![];
+    while let Ok(p) = rx.try_recv() {
+        progress_messages.push(p);
+    }
+    assert_eq!(progress_messages.len(), 1);
+    assert_eq!(progress_messages[0].current, 1);
+    assert_eq!(progress_messages[0].total, 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_backfill_sample_dimensions_download_failure() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
+        )
+        .mount(&server)
+        .await;
+
+    // Sample with image_url pointing to an unreachable host (connection refused)
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 40,
+                "image_name": "broken.png",
+                "image_url": "http://127.0.0.1:1/images/broken.png",
+                "group_name": "train",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+    let updated = client
+        .backfill_sample_dimensions(DatasetID::from(1u64), Some(tx))
+        .await
+        .expect("backfill should succeed even when download fails");
+    assert_eq!(updated, 0);
+
+    // Progress still emitted for skipped sample
+    let mut progress_messages = vec![];
+    while let Ok(p) = rx.try_recv() {
+        progress_messages.push(p);
+    }
+    assert_eq!(progress_messages.len(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_backfill_sample_dimensions_invalid_image_data() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
+        )
+        .mount(&server)
+        .await;
+
+    // Sample with image_url that returns garbage bytes
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 50,
+                "image_name": "garbage.png",
+                "image_url": format!("{}/images/garbage.png", server.uri()),
+                "group_name": "train",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    // Return non-image bytes (imagesize::blob_size will fail)
+    Mock::given(method("GET"))
+        .and(path("/images/garbage.png"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(b"this is not a valid image file".to_vec()),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+    let updated = client
+        .backfill_sample_dimensions(DatasetID::from(1u64), Some(tx))
+        .await
+        .expect("backfill should succeed even with invalid image data");
+    assert_eq!(updated, 0);
+
+    // Progress still emitted for skipped sample
+    let mut progress_messages = vec![];
+    while let Ok(p) = rx.try_recv() {
+        progress_messages.push(p);
+    }
+    assert_eq!(progress_messages.len(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_backfill_sample_dimensions_null_id_with_progress() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))),
+        )
+        .mount(&server)
+        .await;
+
+    // Sample with null id (missing dimensions, id is null)
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": null,
+                "image_name": "orphan.png",
+                "group_name": "train",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+    let updated = client
+        .backfill_sample_dimensions(DatasetID::from(1u64), Some(tx))
+        .await
+        .expect("backfill should succeed with null id sample");
+    assert_eq!(updated, 0);
+
+    // Progress still emitted
+    let mut progress_messages = vec![];
+    while let Ok(p) = rx.try_recv() {
+        progress_messages.push(p);
+    }
+    assert_eq!(progress_messages.len(), 1);
+}
