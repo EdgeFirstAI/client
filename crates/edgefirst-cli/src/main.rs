@@ -686,6 +686,18 @@ enum Command {
         #[clap(long)]
         output: Option<PathBuf>,
     },
+    /// Update missing image dimensions for a dataset.
+    ///
+    /// Downloads images for samples that are missing width/height metadata,
+    /// extracts the dimensions, and updates the server in-place. This is
+    /// useful for datasets uploaded before dimension extraction was added.
+    ///
+    /// Examples:
+    ///   edgefirst update-dimensions dataset-123
+    UpdateDimensions {
+        /// Dataset ID to update
+        dataset_id: String,
+    },
 }
 
 // Command handler functions
@@ -5246,6 +5258,27 @@ async fn main() -> Result<(), Error> {
                 update,
             };
             handle_import_coco(&client, args).await
+        }
+        Command::UpdateDimensions { dataset_id } => {
+            let dataset_id: DatasetID = dataset_id.try_into()?;
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let client_clone = client.clone();
+            let task = tokio::spawn(async move {
+                client_clone
+                    .backfill_sample_dimensions(dataset_id, Some(tx))
+                    .await
+            });
+            while let Some(progress) = rx.recv().await {
+                println!(
+                    "[{}/{}] {}",
+                    progress.current,
+                    progress.total,
+                    progress.status.as_deref().unwrap_or("")
+                );
+            }
+            let updated = task.await.map_err(Error::JoinError)??;
+            println!("Updated dimensions for {} samples", updated);
+            Ok(())
         }
         Command::ExportCoco {
             dataset_id,
