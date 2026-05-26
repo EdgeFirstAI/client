@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- `CLI.md`: documented the `update-dimensions` command shipped in 2.10.1 (was missing from the 2.10.1 docs); described batching, progress output, and the FFI no-progress limitation
+- `edgefirst_client.pyi`: added usage examples for `update_sample_dimensions` and `backfill_sample_dimensions`, and clarified that the progress `total` counts only samples missing dimensions (not the full dataset)
+
 ## [2.10.1] - 2026-05-19
 
 ### Added

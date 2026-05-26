@@ -5074,6 +5074,14 @@ class Client:
         """
         Update image dimensions for existing samples in a dataset.
 
+        Use this when you already know the width and height for each sample
+        (for example, from a sidecar manifest or from a local scan of the
+        image files). To compute dimensions from the server-hosted images,
+        use ``backfill_sample_dimensions`` instead.
+
+        Updates are sent to the server in batches of 500 via the
+        ``samples.update_dimensions`` JSON-RPC method.
+
         Args:
             dataset_id (Union[DatasetID, int, str]): ID of the dataset.
             updates (List[tuple[SampleUID, int, int]]): List of
@@ -5082,6 +5090,18 @@ class Client:
 
         Returns:
             int: Number of samples successfully updated.
+
+        Example:
+            >>> from edgefirst_client import Client
+            >>> client = Client()
+            >>> updates = [
+            ...     ("smpl-abc123", 1920, 1080),
+            ...     ("smpl-def456", 1280, 720),
+            ... ]
+            >>> updated = client.update_sample_dimensions(
+            ...     "ds-12345", updates
+            ... )
+            >>> print(f"Updated {updated} samples")
         """
         ...
 
@@ -5096,6 +5116,12 @@ class Client:
         Downloads images for samples missing width/height, extracts
         dimensions, and updates the server with the computed values.
 
+        This is a one-time repair operation for legacy datasets uploaded
+        before the client extracted dimensions at upload time. Samples
+        that already have width/height are skipped; samples whose image
+        URL is unavailable, returns a non-success HTTP status, or cannot
+        be parsed as a recognized image format are skipped silently.
+
         Args:
             dataset_id (Union[DatasetID, int, str]): ID of the dataset.
             progress (Optional[Progress]): Optional progress callback.
@@ -5103,8 +5129,25 @@ class Client:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with status message
 
+                The ``total`` reported is the number of samples missing
+                dimensions (not the full dataset size). ``status`` is the
+                literal string ``"Computing dimensions"``.
+
         Returns:
-            int: Number of samples whose dimensions were updated.
+            int: Number of samples whose dimensions were updated. May be
+                less than the progress ``total`` when some samples were
+                skipped (missing URL, download failure, unparseable image).
+
+        Example:
+            >>> from edgefirst_client import Client
+            >>> client = Client()
+            >>> updated = client.backfill_sample_dimensions(
+            ...     "ds-12345",
+            ...     lambda curr, total, status: print(
+            ...         f"[{curr}/{total}] {status}"
+            ...     ),
+            ... )
+            >>> print(f"Backfilled {updated} samples")
         """
         ...
 

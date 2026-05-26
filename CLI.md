@@ -3,7 +3,7 @@ title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
 footer: edgefirst-client 2.10.1
-date: 2026-05-19
+date: 2026-05-26
 ---
 
 # NAME
@@ -403,6 +403,58 @@ edgefirst-client upload-dataset 12345 \
 ```
 
 **Note:** Uploads are batched (500 samples per batch) with progress tracking. Arrow files must conform to the EdgeFirst Dataset Format.
+
+### update-dimensions
+
+Backfill missing image width/height metadata for an existing dataset. Useful for datasets uploaded before the client started extracting image dimensions at upload time, or for samples where dimensions could not be determined.
+
+**edgefirst-client update-dimensions** *DATASET_ID*
+
+**Arguments:**
+
+*DATASET_ID*
+:   The unique identifier of the dataset to backfill. Accepts integer IDs or the **ds-xxx** form shown in the Web UI.
+
+**Behavior:**
+
+1. Fetches every sample in the dataset and filters to those missing **width** or **height**. If none are missing, the command prints `Updated dimensions for 0 samples` and exits successfully.
+2. For each remaining sample, downloads the associated image, extracts the pixel dimensions locally, and queues a `(sample_id, width, height)` update. Samples that lack an image URL, return a non-success HTTP status (e.g. `404`, `500`), or cannot be parsed as a recognized image format are skipped silently — the command continues with the next sample.
+3. Sends queued updates to the server in batches of **500** via the `samples.update_dimensions` JSON-RPC method.
+
+**Progress output:**
+
+Progress is reported on stdout in the form:
+
+```text
+[CURRENT/TOTAL] Computing dimensions
+```
+
+`TOTAL` is the count of samples missing dimensions (not the full dataset), and `CURRENT` advances once per sample processed (including skipped ones). A final summary line is printed when the operation completes:
+
+```text
+Updated dimensions for N samples
+```
+
+`N` is the count returned by the server — the number of samples actually updated, which may be less than `TOTAL` if some samples were skipped.
+
+**Example:**
+
+```bash
+# Backfill dimensions for a legacy dataset
+edgefirst-client update-dimensions 12345
+
+# Using the ds- form
+edgefirst-client update-dimensions ds-12345
+```
+
+**Notes:**
+
+- This is a **one-time repair operation**. After it completes, the dataset's sample width/height columns are populated server-side and subsequent calls will report `Updated dimensions for 0 samples`.
+- The operation downloads each image in serial, so runtime scales linearly with the number of samples missing dimensions and the size of those images. For very large datasets, run the command from a host with good bandwidth to the EdgeFirst Studio object store.
+- Equivalent programmatic APIs:
+  - **Rust:** `Client::backfill_sample_dimensions(dataset_id, progress)` (and `Client::update_sample_dimensions` for already-known dimensions).
+  - **Python:** `client.backfill_sample_dimensions(dataset_id, progress=cb)`.
+  - **Swift/Kotlin (UniFFI):** `client.backfillSampleDimensions(datasetId)` — blocking, **no progress callback** in the FFI layer; for progress reporting on mobile, call the underlying `samples.update_dimensions` RPC directly or use the Python/Rust API on the server side.
 
 ## SNAPSHOTS
 
