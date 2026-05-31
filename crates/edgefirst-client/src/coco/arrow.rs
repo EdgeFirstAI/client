@@ -357,12 +357,11 @@ fn convert_image_annotations(
         })
         .collect();
 
-    // Emit sentinel for images with no annotations but with neg/exhaustive data.
-    // Without this, neg_category_ids would be silently lost for images that have
-    // verified-negative labels but no positive annotations.
-    if samples.is_empty()
-        && (image.neg_category_ids.is_some() || image.not_exhaustive_category_ids.is_some())
-    {
+    // Emit a placeholder row for any image with no annotations so the image is
+    // never dropped from the dataset. This preserves the image's group (dataset
+    // split) for every image, and carries any LVIS neg/exhaustive category data
+    // for images that have verified-negative labels but no positive annotations.
+    if samples.is_empty() {
         let mut sample = Sample {
             image_name: Some(sample_name.clone()),
             width: Some(image.width),
@@ -1419,7 +1418,12 @@ mod tests {
         let index = CocoIndex::from_dataset(&dataset);
         let samples = convert_image_annotations(&image, &index, true, None);
 
-        assert!(samples.is_empty());
+        // An image with no annotations must still emit one placeholder row so
+        // the image is never dropped from the dataset.
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].image_name, Some("empty".to_string()));
+        assert!(samples[0].annotations.is_empty());
+        assert_eq!(samples[0].group, None);
     }
 
     // =========================================================================
@@ -1976,5 +1980,109 @@ mod tests {
             "sentinel should preserve neg_label_indices"
         );
         assert_eq!(samples[0].neg_label_indices.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_convert_image_annotations_no_annotations_emits_placeholder() {
+        // A plain image with NO annotations and NO LVIS neg/exhaustive fields
+        // must still emit one placeholder sample so the image is never dropped
+        // and its dataset split (group) is preserved.
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "empty.jpg".to_string(),
+            ..Default::default()
+        };
+
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![],
+            ..Default::default()
+        };
+
+        let index = CocoIndex::from_dataset(&dataset);
+        let samples = convert_image_annotations(&image, &index, true, Some("train"));
+
+        assert_eq!(
+            samples.len(),
+            1,
+            "placeholder row must be emitted for an unannotated image"
+        );
+        assert_eq!(samples[0].image_name, Some("empty".to_string()));
+        assert!(
+            samples[0].annotations.is_empty(),
+            "placeholder should have no annotations"
+        );
+        assert_eq!(
+            samples[0].group,
+            Some("train".to_string()),
+            "group must be preserved on the placeholder row"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_coco_to_arrow_includes_unannotated_images() {
+        // coco-to-arrow must emit one row per image even when some images have
+        // no annotations, so dataset splits (group) cover every image.
+        let temp_dir = TempDir::new().unwrap();
+
+        let coco_json = r#"{
+            "images": [
+                {"id": 1, "width": 640, "height": 480, "file_name": "annotated.jpg"},
+                {"id": 2, "width": 640, "height": 480, "file_name": "empty.jpg"}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0}
+            ],
+            "categories": [
+                {"id": 1, "name": "person", "supercategory": "human"}
+            ]
+        }"#;
+
+        let coco_path = temp_dir.path().join("test.json");
+        std::fs::write(&coco_path, coco_json).unwrap();
+        let arrow_path = temp_dir.path().join("out.arrow");
+
+        let options = CocoToArrowOptions {
+            group: Some("train".to_string()),
+            ..Default::default()
+        };
+        let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
+            .await
+            .unwrap();
+
+        // 1 annotation row + 1 placeholder row for the unannotated image.
+        assert_eq!(count, 2, "every image must produce at least one row");
+
+        let mut file = std::fs::File::open(&arrow_path).unwrap();
+        let df = IpcReader::new(&mut file).finish().unwrap();
+        assert_eq!(df.height(), 2);
+
+        // The unannotated image must appear with its group set and a null label.
+        let names = df.column("name").unwrap().str().unwrap();
+        let empty_row = (0..df.height()).find(|&i| names.get(i) == Some("empty"));
+        assert!(
+            empty_row.is_some(),
+            "unannotated image 'empty' must appear in the Arrow output"
+        );
+        let i = empty_row.unwrap();
+        let group_col = df.column("group").unwrap().cast(&DataType::String).unwrap();
+        assert_eq!(
+            group_col.str().unwrap().get(i),
+            Some("train"),
+            "group must be set on the unannotated image's row"
+        );
+        let label_col = df.column("label").unwrap().cast(&DataType::String).unwrap();
+        assert_eq!(
+            label_col.str().unwrap().get(i),
+            None,
+            "unannotated image row must have a null label"
+        );
     }
 }

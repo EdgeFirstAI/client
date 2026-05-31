@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.2] - 2026-05-31
+
+### Fixed
+
+- `coco-to-arrow`: images without annotations are no longer dropped during
+  COCO→Arrow conversion. Every image in the COCO `images` array now produces a
+  row (null label, with the dataset `group` preserved), so train/val splits
+  cover all images. Previously a placeholder row was emitted only for LVIS
+  images carrying `neg_category_ids` / `not_exhaustive_category_ids`, silently
+  losing ordinary unannotated images (e.g. 1069 COCO 2017 images: 48 val +
+  1021 train)
+
 ### Documentation
 
 - `CLI.md`: documented the `update-dimensions` command shipped in 2.10.1 (was missing from the 2.10.1 docs); described batching, progress output, and the FFI no-progress limitation
