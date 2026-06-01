@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   images carrying `neg_category_ids` / `not_exhaustive_category_ids`, silently
   losing ordinary unannotated images (e.g. 1069 COCO 2017 images: 48 val +
   1021 train)
+- `upload-dataset`: fixed an O(n²) slowdown in Arrow parsing
+  (`parse_annotations_from_arrow`) that re-cast the entire Categorical `group`
+  and `label` columns on every row. The casts are now hoisted out of the row
+  loop, making parsing linear in the number of rows. Parsing the full COCO 2017
+  train Arrow (118,287 images / 861k annotation rows) dropped from ~37 h
+  (an effective hang) to ~10 s
 
 ### Documentation
 

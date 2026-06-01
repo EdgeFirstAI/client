@@ -1830,6 +1830,23 @@ fn parse_annotations_from_arrow(
         );
         progress.set_position(0);
 
+        let parse_start = std::time::Instant::now();
+
+        // Cast the Categorical `group` and `label` columns to String ONCE, before
+        // the row loop. Polars `Series::cast` is eager and materializes a new
+        // full-length column, so casting per-row re-cast the entire column on
+        // every iteration — O(rows²). Hoisting makes the loop O(rows).
+        let group_col = df
+            .column("group")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let group_str = group_col.as_ref().and_then(|c| c.str().ok());
+        let label_col = df
+            .column("label")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let label_str = label_col.as_ref().and_then(|c| c.str().ok());
+
         // Process each row in the DataFrame
         for idx in 0..total_rows {
             progress.set_position(idx as u64);
@@ -1894,13 +1911,9 @@ fn parse_annotations_from_arrow(
                 _ => base_name.to_string(),
             };
 
-            // Extract optional group designation (train/val/test)
-            // Handle both Categorical and String column types by casting to String
-            let sample_group = df
-                .column("group")
-                .ok()
-                .and_then(|c| c.cast(&DataType::String).ok())
-                .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
+            // Extract optional group designation (train/val/test) from the
+            // pre-cast String column (see hoisted cast above).
+            let sample_group = group_str.and_then(|s| s.get(idx).map(|v| v.to_string()));
 
             // Extract optional size [width, height] from Arrow file (2025.10 format)
             let (sample_width, sample_height) = parse_size_from_dataframe(&df, idx);
@@ -1956,13 +1969,10 @@ fn parse_annotations_from_arrow(
                     annotation.set_frame_number(Some(frame_num));
                 }
 
-                // Extract label if present and non-empty
-                // Handle both Categorical and String column types by casting to String
-                let label = df
-                    .column("label")
-                    .ok()
-                    .and_then(|c| c.cast(&DataType::String).ok())
-                    .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()))
+                // Extract label if present and non-empty, from the pre-cast
+                // String column (see hoisted cast above).
+                let label = label_str
+                    .and_then(|s| s.get(idx).map(|v| v.to_string()))
                     .filter(|s: &String| !s.is_empty());
 
                 if let Some(lbl) = label {
@@ -2032,6 +2042,12 @@ fn parse_annotations_from_arrow(
                 }
             }
         }
+        log::debug!(
+            "Parsed {} annotation rows into {} samples in {} ms",
+            total_rows,
+            samples_map.len(),
+            parse_start.elapsed().as_millis()
+        );
     }
 
     if samples_map.is_empty() {
