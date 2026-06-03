@@ -7,10 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.10.2] - 2026-05-31
+## [2.10.2] - 2026-06-03
+
+### Changed
+
+- `upload-dataset`: sample batches are now uploaded through a pipeline (up to 8
+  concurrent batches, configurable via the `EDGEFIRST_UPLOAD_BATCHES` env var)
+  instead of strictly one at a time. This overlaps each batch's
+  `samples.populate2` RPC with other batches' presigned-URL file uploads —
+  profiling a full COCO 2017 upload (123,287 samples) showed these were ~37% and
+  ~63% of wall time respectively and previously never overlapped because batches
+  ran serially. The bulk-transfer HTTP client also keeps more idle connections
+  warm (`pool_max_idle_per_host` 10 → 64) to reuse TLS connections across the
+  wider upload fan-out
 
 ### Fixed
 
+- `upload-dataset`: presigned-URL file uploads now retry transient transport
+  errors such as hyper's `IncompleteMessage` (a peer closing a keep-alive
+  connection mid-send), not just timeouts and connect failures. The upload body
+  is buffered in memory and the PUT is idempotent, so replaying is safe. These
+  transients are rare during serial uploads but common under high-concurrency
+  pipelined uploads, where a single unretried blip previously aborted the entire
+  upload
 - `coco-to-arrow`: images without annotations are no longer dropped during
   COCO→Arrow conversion. Every image in the COCO `images` array now produces a
   row (null label, with the dataset `group` preserved), so train/val splits

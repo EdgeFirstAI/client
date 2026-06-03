@@ -1161,6 +1161,7 @@ dependencies = [
  "directories",
  "edgefirst-client",
  "env_logger",
+ "futures",
  "indicatif",
  "inquire",
  "log",
