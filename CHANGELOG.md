@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.3] - 2026-06-04
+
+### Added
+
+- `Client::add_labels` — create multiple labels in one request (`label.add2`),
+  used to pre-create a dataset's full label set before a bulk upload
+
+### Changed
+
+- `upload-dataset`: sample batches now upload through a fixed pool of
+  `EDGEFIRST_UPLOAD_BATCHES` worker tasks (default **4**) instead of an 8-wide
+  `buffer_unordered` pipeline, giving deterministic concurrency. A validation
+  depth sweep showed throughput scaling cleanly with depth but strong diminishing
+  returns past 4 (≈93% of depth-8 throughput at half the concurrent
+  S3/`populate2` load), hence the default of 4
+- `upload-dataset`: the dataset's labels are now pre-created (and verified
+  committed) before the concurrent batches run, in addition to groups. Server
+  profiling showed concurrent `populate2` calls racing on per-annotation label
+  creation (`AddLabel`) was the dominant cost under concurrency; pre-creating the
+  known label set up front removes the contention
+
 ## [2.10.2] - 2026-06-03
 
 ### Changed

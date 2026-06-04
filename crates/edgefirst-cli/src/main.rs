@@ -2850,12 +2850,14 @@ async fn handle_upload_dataset(
     // but improves reliability for large uploads over unreliable connections.
     const BATCH_SIZE: usize = 50;
 
-    // Number of batches uploaded concurrently. Pipelining overlaps each batch's
-    // server `populate2` RPC with other batches' presigned-URL file uploads.
-    // Profiling a full COCO upload showed these were ~37% / ~63% of wall time yet
-    // never overlapped because batches ran strictly serially. Override with the
-    // EDGEFIRST_UPLOAD_BATCHES env var for tuning.
-    const DEFAULT_BATCH_CONCURRENCY: usize = 8;
+    // Number of batches uploaded concurrently. Each worker runs a batch's
+    // `populate2` RPC then its presigned-URL file uploads; running several
+    // concurrently overlaps one batch's RPC with another's uploads. A val depth
+    // sweep (1/2/4/8) showed throughput scaling cleanly with depth but strong
+    // diminishing returns past 4 — depth 4 reached ~93% of depth-8 throughput at
+    // half the concurrent S3/populate2 load — so 4 is the default sweet spot.
+    // Override with the EDGEFIRST_UPLOAD_BATCHES env var for tuning.
+    const DEFAULT_BATCH_CONCURRENCY: usize = 4;
     let batch_concurrency = std::env::var("EDGEFIRST_UPLOAD_BATCHES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -2883,6 +2885,54 @@ async fn handle_upload_dataset(
         }
     }
 
+    // Pre-create the dataset's labels serially before the pipelined upload, for
+    // the same reason as groups but it matters far more under concurrency: server
+    // tracing showed concurrent `populate2` calls racing on per-annotation
+    // AddLabel (find-or-create the label) is the dominant cost. We already know
+    // the full label set from the annotations, so create the missing ones once,
+    // up front, in a single request; every concurrent call then finds them.
+    {
+        let existing: std::collections::HashSet<String> = client
+            .labels(dataset_id_parsed)
+            .await?
+            .into_iter()
+            .map(|label| label.name().to_string())
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut to_create = Vec::new();
+        for label in samples
+            .iter()
+            .flat_map(|sample| sample.annotations())
+            .filter_map(|annotation| annotation.label())
+        {
+            if !existing.contains(label.as_str()) && seen.insert(label.as_str()) {
+                to_create.push(label.clone());
+            }
+        }
+        if !to_create.is_empty() {
+            log::debug!("Pre-creating {} labels before upload", to_create.len());
+            client.add_labels(dataset_id_parsed, &to_create).await?;
+
+            // Confirm every label is committed server-side BEFORE launching the
+            // concurrent batches, so populate2 never has to create a label under
+            // contention. `add_labels` is awaited above, but we verify rather than
+            // assume — a missing label here means the concurrent AddLabel race
+            // would reappear, so fail fast instead of starting the upload.
+            let now_present: std::collections::HashSet<String> = client
+                .labels(dataset_id_parsed)
+                .await?
+                .into_iter()
+                .map(|label| label.name().to_string())
+                .collect();
+            if let Some(missing) = to_create.iter().find(|n| !now_present.contains(n.as_str())) {
+                return Err(edgefirst_client::Error::InvalidParameters(format!(
+                    "label pre-creation did not complete: '{missing}' not present after creation"
+                )));
+            }
+            log::debug!("Verified {} labels present before upload", to_create.len());
+        }
+    }
+
     // Group samples by sequence to work around server bug where all samples in a
     // batch are assigned to the sequence of the first sample only.
     // Non-sequence samples (sequence_uuid == None) are grouped together.
@@ -2897,54 +2947,143 @@ async fn handle_upload_dataset(
     );
 
     #[cfg(feature = "profiling")]
-    let _upload_span = tracing::info_span!(
+    let upload_span = tracing::info_span!(
         "upload",
         total_batches = total_batches,
         total_samples = total_samples,
         batch_concurrency = batch_concurrency
-    )
-    .entered();
+    );
+    // Enter a clone on this task so the `upload` span gets a wall-clock duration;
+    // the original handle is cloned into each worker below as the explicit parent
+    // of its `batch` span (an entered-guard parent does not cross `spawn`).
+    #[cfg(feature = "profiling")]
+    let _upload_entered = upload_span.clone().entered();
 
-    use futures::stream::{StreamExt as _, TryStreamExt as _};
     #[cfg(feature = "profiling")]
     use tracing::Instrument as _;
 
-    // Pipeline batches: up to `batch_concurrency` populate_samples calls run at
-    // once, so one batch's RPC can overlap another's S3 file uploads. `try_concat`
-    // flattens the per-batch result vecs and aborts on the first error, matching
-    // the previous serial `?` behaviour. The move-closure owns the only remaining
-    // `tx`; dropping the stream after the await closes the channel and finishes
-    // the progress bar.
-    let all_results: Vec<edgefirst_client::SamplesPopulateResult> =
-        futures::stream::iter(batches.into_iter().enumerate())
-            .map(move |(batch_index, batch)| {
-                let tx = tx.clone();
+    // Reset reliable timing accumulators and start the upload-phase wall clock.
+    // This covers only the concurrent batch upload below, not group/label
+    // pre-creation. Unlike async tracing spans (which fragment across worker
+    // threads), these are `Instant`/atomic measurements safe to read as latency.
+    #[cfg(feature = "profiling")]
+    edgefirst_client::upload_stats::reset();
+    #[cfg(feature = "profiling")]
+    let upload_wall_start = std::time::Instant::now();
+
+    // Upload batches through a fixed pool of independently-scheduled worker tasks.
+    // A `buffer_unordered` combinator is driven by a single task and in practice
+    // collapsed to ~1 batch in flight after the initial burst; with a worker pool
+    // each worker is its own tokio task, so N batches genuinely run concurrently
+    // and one batch's `populate2` RPC overlaps another's S3 file uploads.
+    let n_workers = batch_concurrency.min(total_batches.max(1));
+
+    // Shared work queue. The mutex guards only the iterator's `.next()` (instant,
+    // never held across an await), so workers contend only momentarily to claim
+    // the next batch, never while uploading.
+    let queue = std::sync::Arc::new(tokio::sync::Mutex::new(batches.into_iter().enumerate()));
+
+    let mut workers: tokio::task::JoinSet<
+        Result<Vec<edgefirst_client::SamplesPopulateResult>, Error>,
+    > = tokio::task::JoinSet::new();
+
+    for _ in 0..n_workers {
+        let client = (*client).clone();
+        let queue = queue.clone();
+        let tx = tx.clone();
+        #[cfg(feature = "profiling")]
+        let upload_span = upload_span.clone();
+        workers.spawn(async move {
+            let mut results = Vec::new();
+            loop {
+                // Hold the lock only for `.next()`, then release before uploading.
+                let next = { queue.lock().await.next() };
+                let Some((batch_index, batch)) = next else {
+                    break;
+                };
+                #[cfg(feature = "profiling")]
+                let batch_size = batch.len();
                 #[cfg(not(feature = "profiling"))]
                 let _ = batch_index;
-                async move {
-                    #[cfg(feature = "profiling")]
-                    let batch_size = batch.len();
-                    let fut = client.populate_samples(
-                        dataset_id_parsed,
-                        annotation_set_id_parsed,
-                        batch,
-                        Some(tx),
-                    );
-                    #[cfg(feature = "profiling")]
-                    let fut = fut.instrument(tracing::info_span!(
-                        "batch",
-                        batch_num = batch_index + 1,
-                        size = batch_size
-                    ));
-                    fut.await
-                }
-            })
-            .buffer_unordered(batch_concurrency)
-            .try_concat()
-            .await?;
+                let fut = client.populate_samples(
+                    dataset_id_parsed,
+                    annotation_set_id_parsed,
+                    batch,
+                    Some(tx.clone()),
+                );
+                #[cfg(feature = "profiling")]
+                let fut = fut.instrument(tracing::info_span!(
+                    parent: &upload_span,
+                    "batch",
+                    batch_num = batch_index + 1,
+                    size = batch_size
+                ));
+                results.extend(fut.await?);
+            }
+            Ok(results)
+        });
+    }
+
+    // Drop our own progress sender so the consumer task finishes once every
+    // worker's clone is gone.
+    drop(tx);
+
+    // Collect results, aborting the whole upload on the first batch error to
+    // preserve the previous serial `?` semantics.
+    let mut all_results: Vec<edgefirst_client::SamplesPopulateResult> = Vec::new();
+    let mut first_error: Option<Error> = None;
+    while let Some(joined) = workers.join_next().await {
+        match joined {
+            Ok(Ok(batch_results)) => all_results.extend(batch_results),
+            Ok(Err(e)) => {
+                first_error.get_or_insert(e);
+                workers.abort_all();
+            }
+            Err(join_err) if join_err.is_cancelled() => {}
+            Err(join_err) => {
+                first_error.get_or_insert(Error::from(std::io::Error::other(format!(
+                    "upload worker panicked: {join_err}"
+                ))));
+                workers.abort_all();
+            }
+        }
+    }
 
     #[cfg(feature = "profiling")]
-    drop(_upload_span);
+    drop(_upload_entered);
+
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+
+    // Reliable upload-phase summary (profiling builds): wall-clock, effective
+    // bandwidth, and aggregate RPC vs file-upload time summed across batches.
+    // `(rpc + upload) / wall` is the effective parallelism actually achieved.
+    #[cfg(feature = "profiling")]
+    {
+        let wall = upload_wall_start
+            .elapsed()
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let (rpc_ns, upload_ns, bytes) = edgefirst_client::upload_stats::snapshot();
+        let rpc_s = rpc_ns as f64 / 1e9;
+        let upload_s = upload_ns as f64 / 1e9;
+        let mb = bytes as f64 / 1_048_576.0;
+        println!(
+            "Upload timing: {} samples in {:.1}s ({:.1} samp/s); {:.1} MB at {:.2} MB/s; \
+             RPC {:.1}s + file-upload {:.1}s across batches (effective parallelism {:.2}x, \
+             concurrency {})",
+            all_results.len(),
+            wall,
+            all_results.len() as f64 / wall,
+            mb,
+            mb / wall,
+            rpc_s,
+            upload_s,
+            (rpc_s + upload_s) / wall,
+            batch_concurrency,
+        );
+    }
 
     println!("Successfully uploaded {} samples", all_results.len());
     for result in all_results.iter().take(10) {

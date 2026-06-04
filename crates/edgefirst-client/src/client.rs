@@ -1489,6 +1489,29 @@ impl Client {
         Ok(())
     }
 
+    /// Add multiple labels to the dataset in a single request.
+    ///
+    /// Equivalent to calling [`add_label`](Self::add_label) for each name but in
+    /// one round-trip. Useful before a bulk/concurrent upload: pre-creating the
+    /// full label set serially avoids many concurrent `populate2` calls racing to
+    /// create the same label server-side. Names already present are not
+    /// duplicated by the server. A no-op when `names` is empty.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names), fields(dataset_id = %dataset_id, count = names.len())))]
+    pub async fn add_labels(&self, dataset_id: DatasetID, names: &[String]) -> Result<(), Error> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let new_label = NewLabel {
+            dataset_id,
+            labels: names
+                .iter()
+                .map(|name| NewLabelObject { name: name.clone() })
+                .collect(),
+        };
+        let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
+        Ok(())
+    }
+
     /// Removes the label with the specified ID from the dataset.  Label IDs are
     /// globally unique so the dataset_id is not required.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
@@ -2769,12 +2792,20 @@ impl Client {
         concurrency: Option<usize>,
     ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
         use crate::api::SamplesPopulateParams;
+        #[cfg(feature = "profiling")]
+        use tracing::Instrument as _;
 
         // Track which files need to be uploaded
         let mut files_to_upload: Vec<(String, String, FileSource, String)> = Vec::new();
 
-        // Process samples to detect local files and generate UUIDs
-        let samples = self.prepare_samples_for_upload(samples, &mut files_to_upload)?;
+        // Process samples to detect local files and generate UUIDs. This is
+        // synchronous CPU/metadata work; the span uses `.entered()` since it
+        // runs on the current task with no await inside.
+        let samples = {
+            #[cfg(feature = "profiling")]
+            let _prepare_span = tracing::info_span!("prepare_samples", n = samples.len()).entered();
+            self.prepare_samples_for_upload(samples, &mut files_to_upload)?
+        };
 
         let has_files_to_upload = !files_to_upload.is_empty();
 
@@ -2786,14 +2817,30 @@ impl Client {
             samples,
         };
 
+        #[cfg(feature = "profiling")]
+        let rpc_start = std::time::Instant::now();
         let results: Vec<crate::SamplesPopulateResult> = self
             .rpc("samples.populate2".to_owned(), Some(params))
             .await?;
+        #[cfg(feature = "profiling")]
+        upload_stats::add_rpc_nanos(rpc_start.elapsed().as_nanos() as u64);
 
-        // Upload files if we have any
+        // Upload files if we have any. The S3 fan-out is async, so the span is
+        // attached to the future with `.instrument()` (not `.entered()`) to stay
+        // correct when this batch overlaps others.
         if has_files_to_upload {
-            self.upload_sample_files(&results, files_to_upload, progress, concurrency)
-                .await?;
+            #[cfg(feature = "profiling")]
+            let n_files = files_to_upload.len();
+            #[cfg(feature = "profiling")]
+            let upload_start = std::time::Instant::now();
+            let upload_fut =
+                self.upload_sample_files(&results, files_to_upload, progress, concurrency);
+            #[cfg(feature = "profiling")]
+            let upload_fut =
+                upload_fut.instrument(tracing::info_span!("upload_files", files = n_files));
+            upload_fut.await?;
+            #[cfg(feature = "profiling")]
+            upload_stats::add_upload_nanos(upload_start.elapsed().as_nanos() as u64);
         }
 
         Ok(results)
@@ -5521,6 +5568,49 @@ fn is_retryable_upload_error(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
 }
 
+/// Reliable, `Instant`-based upload timing accumulators (profiling builds only).
+///
+/// Async `tracing` spans cannot measure per-await latency or task concurrency
+/// under a multi-threaded runtime — a future's span fragments across worker
+/// threads — so these atomics accumulate real measured durations and byte counts
+/// for a trustworthy phase breakdown. Durations are summed across concurrent
+/// batches, so totals can exceed wall-clock; `(rpc + upload) / wall` gives the
+/// effective parallelism, and `bytes / wall` the effective upload bandwidth.
+#[cfg(feature = "profiling")]
+pub mod upload_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RPC_NANOS: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_NANOS: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn add_rpc_nanos(n: u64) {
+        RPC_NANOS.fetch_add(n, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_nanos(n: u64) {
+        UPLOAD_NANOS.fetch_add(n, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_bytes(n: u64) {
+        UPLOAD_BYTES.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Zero all accumulators. Call once before starting an upload.
+    pub fn reset() {
+        RPC_NANOS.store(0, Ordering::Relaxed);
+        UPLOAD_NANOS.store(0, Ordering::Relaxed);
+        UPLOAD_BYTES.store(0, Ordering::Relaxed);
+    }
+
+    /// Snapshot of `(rpc_nanos, upload_nanos, upload_bytes)` accumulated so far.
+    pub fn snapshot() -> (u64, u64, u64) {
+        (
+            RPC_NANOS.load(Ordering::Relaxed),
+            UPLOAD_NANOS.load(Ordering::Relaxed),
+            UPLOAD_BYTES.load(Ordering::Relaxed),
+        )
+    }
+}
+
 async fn upload_file_to_presigned_url(
     http: reqwest::Client,
     url: &str,
@@ -5577,6 +5667,8 @@ async fn upload_file_to_presigned_url(
                             filename, file_size
                         );
                     }
+                    #[cfg(feature = "profiling")]
+                    upload_stats::add_upload_bytes(file_size as u64);
                     return Ok(());
                 }
 
@@ -5702,6 +5794,8 @@ async fn upload_bytes_to_presigned_url(
                             filename, file_size
                         );
                     }
+                    #[cfg(feature = "profiling")]
+                    upload_stats::add_upload_bytes(file_size as u64);
                     return Ok(());
                 }
 

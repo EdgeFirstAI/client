@@ -86,6 +86,9 @@ pub use crate::{
     storage::{FileTokenStorage, MemoryTokenStorage, StorageError, TokenStorage},
 };
 
+#[cfg(feature = "profiling")]
+pub use crate::client::upload_stats;
+
 #[cfg(feature = "polars")]
 pub use crate::dataset::samples_dataframe;
 
