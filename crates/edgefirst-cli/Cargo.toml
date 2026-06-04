@@ -28,6 +28,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 edgefirst-client = { workspace = true }
 env_logger = { workspace = true }
+futures = { workspace = true }
 indicatif = { workspace = true }
 inquire = { workspace = true }
 log = { workspace = true }

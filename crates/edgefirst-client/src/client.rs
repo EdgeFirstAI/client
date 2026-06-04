@@ -760,7 +760,11 @@ impl Client {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(read_timeout_secs))
             .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(10)
+            // Bulk file transfers fan out to many concurrent presigned-URL
+            // uploads — up to `EDGEFIRST_UPLOAD_BATCHES` pipelined batches ×
+            // `max_tasks()` uploads each. Keep enough idle connections warm to
+            // reuse across that fan-out instead of churning new TLS handshakes.
+            .pool_max_idle_per_host(64)
             .retry(create_retry_policy())
             .build()?;
 
@@ -5503,6 +5507,20 @@ async fn upload_part_streaming(
 ///
 /// Includes explicit retry logic with exponential backoff for transient
 /// failures.
+/// Classify a reqwest transport error (one where no HTTP response was received)
+/// as a transient failure worth retrying.
+///
+/// Presigned-URL uploads buffer the body in memory and a PUT to the same object
+/// key is idempotent, so replaying any transport-level failure is safe. Besides
+/// timeouts and connect failures this covers request/body send errors such as
+/// hyper's `IncompleteMessage` (a peer closing a keep-alive connection mid-send)
+/// — transients that pipelined, high-concurrency uploads provoke far more often
+/// than serial ones, and which the previous `is_timeout() || is_connect()` gate
+/// missed (aborting the whole upload on a single blip).
+fn is_retryable_upload_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
+}
+
 async fn upload_file_to_presigned_url(
     http: reqwest::Client,
     url: &str,
@@ -5596,20 +5614,12 @@ async fn upload_file_to_presigned_url(
                 )));
             }
             Err(e) => {
-                // Transport error (timeout, connection failure, etc.)
-                let is_timeout = e.is_timeout();
-                let is_connect = e.is_connect();
-
-                if (is_timeout || is_connect) && attempt < max_retries {
-                    warn!(
-                        "Upload '{}' transport error (retrying): {}",
-                        filename,
-                        if is_timeout {
-                            "timeout"
-                        } else {
-                            "connection failed"
-                        }
-                    );
+                // Transport error: no HTTP response was received. The body is
+                // buffered in memory and the PUT is idempotent, so any transient
+                // transport failure is safe to replay (see
+                // `is_retryable_upload_error`).
+                if is_retryable_upload_error(&e) && attempt < max_retries {
+                    warn!("Upload '{}' transport error (retrying): {}", filename, e);
                     last_error = Some(Error::HttpError(e));
                     continue;
                 }
@@ -5729,20 +5739,12 @@ async fn upload_bytes_to_presigned_url(
                 )));
             }
             Err(e) => {
-                // Transport error (timeout, connection failure, etc.)
-                let is_timeout = e.is_timeout();
-                let is_connect = e.is_connect();
-
-                if (is_timeout || is_connect) && attempt < max_retries {
-                    warn!(
-                        "Upload '{}' transport error (retrying): {}",
-                        filename,
-                        if is_timeout {
-                            "timeout"
-                        } else {
-                            "connection failed"
-                        }
-                    );
+                // Transport error: no HTTP response was received. The body is
+                // buffered in memory and the PUT is idempotent, so any transient
+                // transport failure is safe to replay (see
+                // `is_retryable_upload_error`).
+                if is_retryable_upload_error(&e) && attempt < max_retries {
+                    warn!("Upload '{}' transport error (retrying): {}", filename, e);
                     last_error = Some(Error::HttpError(e));
                     continue;
                 }

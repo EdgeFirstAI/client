@@ -1830,6 +1830,23 @@ fn parse_annotations_from_arrow(
         );
         progress.set_position(0);
 
+        let parse_start = std::time::Instant::now();
+
+        // Cast the Categorical `group` and `label` columns to String ONCE, before
+        // the row loop. Polars `Series::cast` is eager and materializes a new
+        // full-length column, so casting per-row re-cast the entire column on
+        // every iteration — O(rows²). Hoisting makes the loop O(rows).
+        let group_col = df
+            .column("group")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let group_str = group_col.as_ref().and_then(|c| c.str().ok());
+        let label_col = df
+            .column("label")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let label_str = label_col.as_ref().and_then(|c| c.str().ok());
+
         // Process each row in the DataFrame
         for idx in 0..total_rows {
             progress.set_position(idx as u64);
@@ -1894,13 +1911,9 @@ fn parse_annotations_from_arrow(
                 _ => base_name.to_string(),
             };
 
-            // Extract optional group designation (train/val/test)
-            // Handle both Categorical and String column types by casting to String
-            let sample_group = df
-                .column("group")
-                .ok()
-                .and_then(|c| c.cast(&DataType::String).ok())
-                .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
+            // Extract optional group designation (train/val/test) from the
+            // pre-cast String column (see hoisted cast above).
+            let sample_group = group_str.and_then(|s| s.get(idx).map(|v| v.to_string()));
 
             // Extract optional size [width, height] from Arrow file (2025.10 format)
             let (sample_width, sample_height) = parse_size_from_dataframe(&df, idx);
@@ -1956,13 +1969,10 @@ fn parse_annotations_from_arrow(
                     annotation.set_frame_number(Some(frame_num));
                 }
 
-                // Extract label if present and non-empty
-                // Handle both Categorical and String column types by casting to String
-                let label = df
-                    .column("label")
-                    .ok()
-                    .and_then(|c| c.cast(&DataType::String).ok())
-                    .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()))
+                // Extract label if present and non-empty, from the pre-cast
+                // String column (see hoisted cast above).
+                let label = label_str
+                    .and_then(|s| s.get(idx).map(|v| v.to_string()))
                     .filter(|s: &String| !s.is_empty());
 
                 if let Some(lbl) = label {
@@ -2032,6 +2042,12 @@ fn parse_annotations_from_arrow(
                 }
             }
         }
+        log::debug!(
+            "Parsed {} annotation rows into {} samples in {} ms",
+            total_rows,
+            samples_map.len(),
+            parse_start.elapsed().as_millis()
+        );
     }
 
     if samples_map.is_empty() {
@@ -2816,18 +2832,15 @@ async fn handle_upload_dataset(
         .progress_chars("█▇▆▅▄▃▂▁  "),
     );
 
-    // Track cumulative offset of completed samples from previous batches
-    let offset = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let offset_for_task = offset.clone();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
+    // Progress: each populate_samples call emits one Progress message per sample
+    // whose files have finished uploading. With pipelined (concurrent) batches
+    // these messages interleave across batches, so we advance the bar by one per
+    // message (globally correct) rather than tracking a per-batch offset, which
+    // only worked while batches ran one at a time.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(64);
     tokio::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            if progress.total > 0 {
-                // Add offset from previous batches to get cumulative progress
-                let batch_offset = offset_for_task.load(std::sync::atomic::Ordering::SeqCst);
-                bar.set_position((batch_offset + progress.current) as u64);
-            }
+        while rx.recv().await.is_some() {
+            bar.inc(1);
         }
         bar.finish_with_message("Upload complete");
     });
@@ -2836,7 +2849,18 @@ async fn handle_upload_dataset(
     // samples need to be retried instead of 500. This adds ~10x more API calls
     // but improves reliability for large uploads over unreliable connections.
     const BATCH_SIZE: usize = 50;
-    let mut all_results = Vec::new();
+
+    // Number of batches uploaded concurrently. Pipelining overlaps each batch's
+    // server `populate2` RPC with other batches' presigned-URL file uploads.
+    // Profiling a full COCO upload showed these were ~37% / ~63% of wall time yet
+    // never overlapped because batches ran strictly serially. Override with the
+    // EDGEFIRST_UPLOAD_BATCHES env var for tuning.
+    const DEFAULT_BATCH_CONCURRENCY: usize = 8;
+    let batch_concurrency = std::env::var("EDGEFIRST_UPLOAD_BATCHES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_BATCH_CONCURRENCY);
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
     let annotation_set_id_parsed = if should_upload_annotations {
@@ -2845,53 +2869,82 @@ async fn handle_upload_dataset(
         None
     };
 
+    // Pre-create the dataset's groups serially before the pipelined upload below.
+    // `populate2` creates a group only when it is missing; with batches uploading
+    // concurrently, the first wave would otherwise each find the group absent and
+    // race to create it, and all but one fail with "Group already exists". Creating
+    // the groups up front makes every concurrent call take the existing-group path.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for group in samples.iter().filter_map(|s| s.group()) {
+            if seen.insert(group.as_str()) {
+                client.get_or_create_group(dataset_id_parsed, group).await?;
+            }
+        }
+    }
+
     // Group samples by sequence to work around server bug where all samples in a
     // batch are assigned to the sequence of the first sample only.
     // Non-sequence samples (sequence_uuid == None) are grouped together.
     let batches = create_sequence_aware_batches(samples, BATCH_SIZE);
+    let total_batches = batches.len();
 
     log::debug!(
-        "Created {} batches (grouped by sequence+group to avoid server bugs)",
-        batches.len()
+        "Created {} batches (grouped by sequence+group to avoid server bugs), \
+         uploading up to {} concurrently",
+        total_batches,
+        batch_concurrency
     );
 
     #[cfg(feature = "profiling")]
     let _upload_span = tracing::info_span!(
         "upload",
-        total_batches = batches.len(),
-        total_samples = total_samples
+        total_batches = total_batches,
+        total_samples = total_samples,
+        batch_concurrency = batch_concurrency
     )
     .entered();
 
-    for (_batch_num, batch) in batches.iter().enumerate() {
-        #[cfg(feature = "profiling")]
-        let batch_num = _batch_num; // Shadow with non-underscore name for Tracy
+    use futures::stream::{StreamExt as _, TryStreamExt as _};
+    #[cfg(feature = "profiling")]
+    use tracing::Instrument as _;
 
-        let batch_size = batch.len();
-
-        #[cfg(feature = "profiling")]
-        let _batch_span =
-            tracing::info_span!("batch", batch_num = batch_num + 1, size = batch_size).entered();
-
-        let results = client
-            .populate_samples(
-                dataset_id_parsed,
-                annotation_set_id_parsed,
-                batch.clone(),
-                Some(tx.clone()),
-            )
+    // Pipeline batches: up to `batch_concurrency` populate_samples calls run at
+    // once, so one batch's RPC can overlap another's S3 file uploads. `try_concat`
+    // flattens the per-batch result vecs and aborts on the first error, matching
+    // the previous serial `?` behaviour. The move-closure owns the only remaining
+    // `tx`; dropping the stream after the await closes the channel and finishes
+    // the progress bar.
+    let all_results: Vec<edgefirst_client::SamplesPopulateResult> =
+        futures::stream::iter(batches.into_iter().enumerate())
+            .map(move |(batch_index, batch)| {
+                let tx = tx.clone();
+                #[cfg(not(feature = "profiling"))]
+                let _ = batch_index;
+                async move {
+                    #[cfg(feature = "profiling")]
+                    let batch_size = batch.len();
+                    let fut = client.populate_samples(
+                        dataset_id_parsed,
+                        annotation_set_id_parsed,
+                        batch,
+                        Some(tx),
+                    );
+                    #[cfg(feature = "profiling")]
+                    let fut = fut.instrument(tracing::info_span!(
+                        "batch",
+                        batch_num = batch_index + 1,
+                        size = batch_size
+                    ));
+                    fut.await
+                }
+            })
+            .buffer_unordered(batch_concurrency)
+            .try_concat()
             .await?;
-
-        all_results.extend(results);
-
-        // Update offset for next batch so progress continues from where we left off
-        offset.fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
-    }
 
     #[cfg(feature = "profiling")]
     drop(_upload_span);
-
-    drop(tx);
 
     println!("Successfully uploaded {} samples", all_results.len());
     for result in all_results.iter().take(10) {
