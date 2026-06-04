@@ -2869,6 +2869,20 @@ async fn handle_upload_dataset(
         None
     };
 
+    // Pre-create the dataset's groups serially before the pipelined upload below.
+    // `populate2` creates a group only when it is missing; with batches uploading
+    // concurrently, the first wave would otherwise each find the group absent and
+    // race to create it, and all but one fail with "Group already exists". Creating
+    // the groups up front makes every concurrent call take the existing-group path.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for group in samples.iter().filter_map(|s| s.group()) {
+            if seen.insert(group.as_str()) {
+                client.get_or_create_group(dataset_id_parsed, group).await?;
+            }
+        }
+    }
+
     // Group samples by sequence to work around server bug where all samples in a
     // batch are assigned to the sequence of the first sample only.
     // Non-sequence samples (sequence_uuid == None) are grouped together.
