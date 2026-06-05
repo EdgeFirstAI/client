@@ -1631,9 +1631,9 @@ class Box2d:
         the image dimensions.
 
         Args:
-            x (float): The normalized x-center or xmin coordinate
+            left (float): The normalized x-center or xmin coordinate
                        of the bounding box.
-            y (float): The normalized y-center or ymin coordinate
+            top (float): The normalized y-center or ymin coordinate
                        of the bounding box.
             width (float): The normalized width of the bounding box.
             height (float): The normalized height of the bounding box.
