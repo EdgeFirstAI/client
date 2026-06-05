@@ -6003,8 +6003,8 @@ class Client:
 
         Args:
             task_id (Union[TaskID, int, str]): The ID of the task to update.
-            stages (Dict[str, str]): A dictionary representing the new stages
-                                      for the task.
+            stages (List[Tuple[str, str]]): A list of (name, description) tuples
+                                            representing the new stages for the task.
 
         Returns:
             None
