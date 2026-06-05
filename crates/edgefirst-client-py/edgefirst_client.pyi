@@ -1622,7 +1622,7 @@ class Box2d:
     """
 
     def __init__(
-        self, left: float, top: float, width: float, height: float
+        self, x: float, y: float, width: float, height: float
     ) -> None:
         """
         Create a new bounding box representation given the coordinates
@@ -1631,9 +1631,9 @@ class Box2d:
         the image dimensions.
 
         Args:
-            left (float): The normalized x-center or xmin coordinate
+            x (float): The normalized x-center or xmin coordinate
                        of the bounding box.
-            top (float): The normalized y-center or ymin coordinate
+            y (float): The normalized y-center or ymin coordinate
                        of the bounding box.
             width (float): The normalized width of the bounding box.
             height (float): The normalized height of the bounding box.
