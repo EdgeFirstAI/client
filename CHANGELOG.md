@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated Rust workspace dependencies (Polars 0.54, PyO3 0.28, pyo3-polars 0.27, and related crates)
+- Upgraded `ctor` 1.0, `sha1`/`sha2` 0.11, `png` 0.18, `dirs` 6.0, and `thiserror` 2.0 for project hygiene
+- Added `#[pyclass(from_py_object)]` on Python binding types that implement `Clone` (PyO3 0.28 migration)
+- Refreshed hash-locked Python test/build dependencies in `requirements.txt`
+
+### Security
+
+- Added `.cargo/audit.toml` ignores for [RUSTSEC-2026-0176](https://rustsec.org/advisories/RUSTSEC-2026-0176) and [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177) until `pyo3-polars` and `rust-numpy` publish PyO3 0.29-compatible releases (same upstream blocker as [pola-rs/polars#27949](https://github.com/pola-rs/polars/pull/27949))
+
 ## [2.10.3] - 2026-06-04
 
 ### Added
