@@ -580,6 +580,7 @@ class TestLabelIndexRoundtrip(unittest.TestCase):
                 str(self.cli),
                 "download-dataset",
                 str(self.source_dataset.id),
+                "--output",
                 str(images_dir),
             ],
             check=True,
