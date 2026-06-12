@@ -1477,56 +1477,95 @@ impl Client {
     }
 
     /// Add a new label to the dataset with the specified name.
-    ///
-    /// When `index` is set, the label is created (if missing) then its table index
-    /// is assigned via `label.update` using a two-pass reassignment to avoid
-    /// collisions within the batch.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
-    pub async fn add_label(
-        &self,
-        dataset_id: DatasetID,
-        name: &str,
-        index: Option<u64>,
-    ) -> Result<(), Error> {
-        let names = [name.to_owned()];
-        self.add_labels(dataset_id, &names, Some(&[index])).await
+    pub async fn add_label(&self, dataset_id: DatasetID, name: &str) -> Result<(), Error> {
+        self.add_labels(dataset_id, std::slice::from_ref(&name.to_owned()))
+            .await
     }
 
     /// Add multiple labels to the dataset in a single request.
     ///
-    /// Creates missing labels via `label.add2` (names only). When `indices` is
-    /// provided, assigns label table indices via `label.update` after creation
-    /// (including for labels that already existed on the dataset). Each
-    /// `indices[i]` of `None` leaves that label at the server-assigned index.
-    /// Uses a two-pass update (see `examples/coco.py`) to avoid index collisions
-    /// among labels in this batch. Returns an error if a desired index is already
-    /// held by an unrelated label on the server.
+    /// Equivalent to calling [`add_label`](Self::add_label) for each name but in
+    /// one round-trip. Useful before a bulk/concurrent upload: pre-creating the
+    /// full label set serially avoids many concurrent `populate2` calls racing to
+    /// create the same label server-side. Names already present are not
+    /// duplicated by the server. A no-op when `names` is empty.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names), fields(dataset_id = %dataset_id, count = names.len())))]
+    pub async fn add_labels(&self, dataset_id: DatasetID, names: &[String]) -> Result<(), Error> {
+        if names.is_empty() {
+            return Ok(());
+        }
+
+        let existing = self.labels(dataset_id).await?;
+        let existing_names: std::collections::HashSet<String> = existing
+            .iter()
+            .map(|l| l.name().to_string())
+            .collect();
+
+        let to_create: Vec<&String> = names
+            .iter()
+            .filter(|name| !existing_names.contains(name.as_str()))
+            .collect();
+
+        if to_create.is_empty() {
+            return Ok(());
+        }
+
+        let new_label = NewLabel {
+            dataset_id,
+            labels: to_create
+                .iter()
+                .map(|name| NewLabelObject {
+                    name: (*name).clone(),
+                })
+                .collect(),
+        };
+        let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
+        Ok(())
+    }
+
+    /// Add a label and assign a source-faithful table index via `label.update`.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn add_label_with_index(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+        index: u64,
+    ) -> Result<(), Error> {
+        let names = [name.to_owned()];
+        let indices = [Some(index)];
+        self.add_labels_with_indices(dataset_id, &names, &indices)
+            .await
+    }
+
+    /// Add multiple labels and optionally assign source-faithful table indices.
     ///
-    /// Useful before a bulk/concurrent upload: pre-creating the full label set
-    /// serially avoids many concurrent `populate2` calls racing to create labels
-    /// server-side. A no-op when `names` is empty.
+    /// Creates missing labels via `label.add2` (names only), then assigns indices
+    /// via `label.update` for entries where `indices[i]` is `Some`. Each `None`
+    /// leaves that label at the server-assigned index. Uses a two-pass update
+    /// (see `examples/coco.py`) to avoid index collisions among labels in this
+    /// batch. Returns an error if a desired index is already held by an unrelated
+    /// label on the server.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names, indices), fields(dataset_id = %dataset_id, count = names.len())))]
-    pub async fn add_labels(
+    pub async fn add_labels_with_indices(
         &self,
         dataset_id: DatasetID,
         names: &[String],
-        indices: Option<&[Option<u64>]>,
+        indices: &[Option<u64>],
     ) -> Result<(), Error> {
         if names.is_empty() {
             return Ok(());
         }
 
-        if let Some(indices) = indices {
-            if indices.len() != names.len() {
-                return Err(Error::InvalidParameters(format!(
-                    "add_labels: names and indices length mismatch ({} vs {})",
-                    names.len(),
-                    indices.len()
-                )));
-            }
+        if indices.len() != names.len() {
+            return Err(Error::InvalidParameters(format!(
+                "add_labels_with_indices: names and indices length mismatch ({} vs {})",
+                names.len(),
+                indices.len()
+            )));
         }
 
-        Self::validate_label_batch(names, indices)?;
+        Self::validate_label_batch(names, Some(indices))?;
 
         let existing = self.labels(dataset_id).await?;
         let existing_names: std::collections::HashSet<String> = existing
@@ -1552,11 +1591,7 @@ impl Client {
             let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
         }
 
-        if let Some(indices) = indices {
-            self.apply_label_indices(dataset_id, names, indices).await?;
-        }
-
-        Ok(())
+        self.apply_label_indices(dataset_id, names, indices).await
     }
 
     /// Removes the label with the specified ID from the dataset.  Label IDs are
@@ -1651,7 +1686,7 @@ impl Client {
     const LABEL_INDEX_ASSIGN_TEMP_OFFSET: u64 = 100_000;
 
     /// Collect parallel label name/index arrays from upload samples for
-    /// [`add_labels`](Self::add_labels).
+    /// [`add_labels_with_indices`](Self::add_labels_with_indices).
     ///
     /// Annotations without `label_index` contribute `None` at the matching position.
     /// Returns an error if the same label name maps to different indices.
@@ -1767,6 +1802,21 @@ impl Client {
                         "label_index {target_index} already used by '{}' \
                          (needed for '{name}'); use a clean dataset or resolve the conflict",
                         label.name()
+                    )));
+                }
+            }
+            // Batch labels without an explicit index that occupy the target block reassignment.
+            for (batch_name, batch_index) in names.iter().zip(indices.iter()) {
+                if batch_index.is_some() || batch_name == name {
+                    continue;
+                }
+                if let Some(label) = by_name.get(batch_name.as_str())
+                    && label.index() == *target_index
+                {
+                    return Err(Error::InvalidParameters(format!(
+                        "label '{batch_name}' occupies label_index {target_index} \
+                         (needed for '{name}') but no index was specified; \
+                         assign explicit indices for all labels in the batch or use a clean dataset"
                     )));
                 }
             }

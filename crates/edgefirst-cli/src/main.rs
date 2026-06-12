@@ -2896,10 +2896,10 @@ async fn handle_upload_dataset(
         if !label_names.is_empty() {
             log::debug!("Pre-creating {} labels before upload", label_names.len());
             client
-                .add_labels(
+                .add_labels_with_indices(
                     dataset_id_parsed,
                     &label_names,
-                    Some(label_indices.as_slice()),
+                    label_indices.as_slice(),
                 )
                 .await?;
 

@@ -397,13 +397,17 @@ impl Dataset {
         client.labels(self.id).await
     }
 
-    pub async fn add_label(
+    pub async fn add_label(&self, client: &Client, name: &str) -> Result<(), Error> {
+        client.add_label(self.id, name).await
+    }
+
+    pub async fn add_label_with_index(
         &self,
         client: &Client,
         name: &str,
-        index: Option<u64>,
+        index: u64,
     ) -> Result<(), Error> {
-        client.add_label(self.id, name, index).await
+        client.add_label_with_index(self.id, name, index).await
     }
 
     pub async fn remove_label(&self, client: &Client, name: &str) -> Result<(), Error> {

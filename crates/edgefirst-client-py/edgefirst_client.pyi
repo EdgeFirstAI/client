@@ -4712,8 +4712,8 @@ class Client:
         """
         Add a label to the dataset.
 
-        When ``index`` is set, the label table index is assigned via ``label.update``
-        after creation (two-pass reassignment to avoid collisions within the batch).
+        When ``index`` is ``None``, uses the name-only API. When set, delegates to
+        ``add_label_with_index`` (two-pass ``label.update`` after creation).
         """
         ...
 
@@ -4724,13 +4724,10 @@ class Client:
         indices: Optional[List[Optional[int]]] = None,
     ) -> None:
         """
-        Add multiple labels in one request, optionally with source-faithful indices.
+        Add multiple labels in one request.
 
-        Args:
-            dataset_id: Target dataset ID.
-            names: Label names to add.
-            indices: Optional per-label ``label_index`` values (``None`` entries use
-                server-assigned indices). Must match ``names`` length when provided.
+        When ``indices`` is ``None``, uses the name-only API. When provided, delegates
+        to ``add_labels_with_indices`` (must match ``names`` length).
 
         Raises:
             Error: If indices conflict within the batch or with unrelated existing labels.

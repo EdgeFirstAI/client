@@ -2086,10 +2086,16 @@ impl Dataset {
             let label_name = name.ok_or_else(|| {
                 Error::TypeError("add_label(client, name) requires name parameter".to_string())
             })?;
-            client
-                .0
-                .add_label(self.inner.id(), &label_name, index)
-                .await?;
+            match index {
+                None => client
+                    .0
+                    .add_label(self.inner.id(), &label_name)
+                    .await?,
+                Some(i) => client
+                    .0
+                    .add_label_with_index(self.inner.id(), &label_name, i)
+                    .await?,
+            }
             return Ok(());
         }
 
@@ -2101,10 +2107,14 @@ impl Dataset {
                         .to_string(),
                 )
             })?;
-            client_ref
-                .0
-                .add_label(self.inner.id(), &label_name, index)
-                .await?;
+            match index {
+                None => client_ref.add_label(self.inner.id(), &label_name).await?,
+                Some(i) => {
+                    client_ref
+                        .add_label_with_index(self.inner.id(), &label_name, i)
+                        .await?
+                }
+            }
             return Ok(());
         }
 
@@ -5318,16 +5328,20 @@ impl Client {
         index: Option<u64>,
     ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        Ok(self.0.add_label(dataset_id.0, name, index).await?)
+        match index {
+            None => Ok(self.0.add_label(dataset_id.0, name).await?),
+            Some(i) => Ok(self
+                .0
+                .add_label_with_index(dataset_id.0, name, i)
+                .await?),
+        }
     }
 
     /// Add multiple labels, optionally assigning source-faithful indices.
     ///
-    /// Args:
-    ///     dataset_id: Target dataset ID.
-    ///     names: Label names to add.
-    ///     indices: Optional per-label ``label_index`` values (``None`` entries use
-    ///         server-assigned indices). Must match ``names`` length when provided.
+    /// When ``indices`` is ``None``, delegates to the name-only
+    /// [`add_labels`](Self::add_labels). Otherwise calls
+    /// ``add_labels_with_indices`` on the Rust client.
     #[pyo3(signature = (dataset_id, names, indices=None))]
     #[tokio_wrap::sync]
     pub fn add_labels<'py>(
@@ -5337,11 +5351,13 @@ impl Client {
         indices: Option<Vec<Option<u64>>>,
     ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        let indices_ref = indices.as_ref().map(|v| v.as_slice());
-        Ok(self
-            .0
-            .add_labels(dataset_id.0, &names, indices_ref)
-            .await?)
+        match indices {
+            None => Ok(self.0.add_labels(dataset_id.0, &names).await?),
+            Some(indices) => Ok(self
+                .0
+                .add_labels_with_indices(dataset_id.0, &names, &indices)
+                .await?),
+        }
     }
 
     #[tokio_wrap::sync]
