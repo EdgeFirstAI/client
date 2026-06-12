@@ -1477,38 +1477,85 @@ impl Client {
     }
 
     /// Add a new label to the dataset with the specified name.
+    ///
+    /// When `index` is set, the label is created (if missing) then its table index
+    /// is assigned via `label.update` using a two-pass reassignment to avoid
+    /// collisions within the batch.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
-    pub async fn add_label(&self, dataset_id: DatasetID, name: &str) -> Result<(), Error> {
-        let new_label = NewLabel {
-            dataset_id,
-            labels: vec![NewLabelObject {
-                name: name.to_owned(),
-            }],
-        };
-        let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
-        Ok(())
+    pub async fn add_label(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+        index: Option<u64>,
+    ) -> Result<(), Error> {
+        let names = [name.to_owned()];
+        self.add_labels(dataset_id, &names, Some(&[index])).await
     }
 
     /// Add multiple labels to the dataset in a single request.
     ///
-    /// Equivalent to calling [`add_label`](Self::add_label) for each name but in
-    /// one round-trip. Useful before a bulk/concurrent upload: pre-creating the
-    /// full label set serially avoids many concurrent `populate2` calls racing to
-    /// create the same label server-side. Names already present are not
-    /// duplicated by the server. A no-op when `names` is empty.
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names), fields(dataset_id = %dataset_id, count = names.len())))]
-    pub async fn add_labels(&self, dataset_id: DatasetID, names: &[String]) -> Result<(), Error> {
+    /// Creates missing labels via `label.add2` (names only). When `indices` is
+    /// provided, assigns label table indices via `label.update` after creation
+    /// (including for labels that already existed on the dataset). Each
+    /// `indices[i]` of `None` leaves that label at the server-assigned index.
+    /// Uses a two-pass update (see `examples/coco.py`) to avoid index collisions
+    /// among labels in this batch. Returns an error if a desired index is already
+    /// held by an unrelated label on the server.
+    ///
+    /// Useful before a bulk/concurrent upload: pre-creating the full label set
+    /// serially avoids many concurrent `populate2` calls racing to create labels
+    /// server-side. A no-op when `names` is empty.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names, indices), fields(dataset_id = %dataset_id, count = names.len())))]
+    pub async fn add_labels(
+        &self,
+        dataset_id: DatasetID,
+        names: &[String],
+        indices: Option<&[Option<u64>]>,
+    ) -> Result<(), Error> {
         if names.is_empty() {
             return Ok(());
         }
-        let new_label = NewLabel {
-            dataset_id,
-            labels: names
-                .iter()
-                .map(|name| NewLabelObject { name: name.clone() })
-                .collect(),
-        };
-        let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
+
+        if let Some(indices) = indices {
+            if indices.len() != names.len() {
+                return Err(Error::InvalidParameters(format!(
+                    "add_labels: names and indices length mismatch ({} vs {})",
+                    names.len(),
+                    indices.len()
+                )));
+            }
+        }
+
+        Self::validate_label_batch(names, indices)?;
+
+        let existing = self.labels(dataset_id).await?;
+        let existing_names: std::collections::HashSet<String> = existing
+            .iter()
+            .map(|l| l.name().to_string())
+            .collect();
+
+        let to_create: Vec<&String> = names
+            .iter()
+            .filter(|name| !existing_names.contains(name.as_str()))
+            .collect();
+
+        if !to_create.is_empty() {
+            let new_label = NewLabel {
+                dataset_id,
+                labels: to_create
+                    .iter()
+                    .map(|name| NewLabelObject {
+                        name: (*name).clone(),
+                    })
+                    .collect(),
+            };
+            let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
+        }
+
+        if let Some(indices) = indices {
+            self.apply_label_indices(dataset_id, names, indices).await?;
+        }
+
         Ok(())
     }
 
@@ -1596,6 +1643,150 @@ impl Client {
                 }),
             )
             .await?;
+        Ok(())
+    }
+
+    /// Temporary offset for the two-pass label index assignment (avoids collisions
+    /// during reassignment). Chosen to clear real COCO/LVIS category IDs (up to ~1723).
+    const LABEL_INDEX_ASSIGN_TEMP_OFFSET: u64 = 100_000;
+
+    /// Collect parallel label name/index arrays from upload samples for
+    /// [`add_labels`](Self::add_labels).
+    ///
+    /// Annotations without `label_index` contribute `None` at the matching position.
+    /// Returns an error if the same label name maps to different indices.
+    pub fn collect_labels_from_samples(
+        samples: &[Sample],
+    ) -> Result<(Vec<String>, Vec<Option<u64>>), Error> {
+        let mut specs: HashMap<String, Option<u64>> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for annotation in samples.iter().flat_map(|s| s.annotations()) {
+            let Some(name) = annotation.label() else {
+                continue;
+            };
+            match (specs.get(name), annotation.label_index()) {
+                (Some(&Some(existing)), Some(index)) if existing != index => {
+                    return Err(Error::InvalidParameters(format!(
+                        "inconsistent label_index for '{name}': {existing} vs {index}"
+                    )));
+                }
+                (Some(&Some(_)), _) => {}
+                (Some(&None), Some(index)) => {
+                    specs.insert(name.clone(), Some(index));
+                }
+                (None, Some(index)) => {
+                    order.push(name.clone());
+                    specs.insert(name.clone(), Some(index));
+                }
+                (None, None) => {
+                    order.push(name.clone());
+                    specs.insert(name.clone(), None);
+                }
+                (Some(&None), None) => {}
+            }
+        }
+        let indices: Vec<Option<u64>> = order.iter().map(|name| specs[name]).collect();
+        Ok((order, indices))
+    }
+
+    /// Validate label batch: unique names and unique indices among entries with `Some(index)`.
+    fn validate_label_batch(
+        names: &[String],
+        indices: Option<&[Option<u64>]>,
+    ) -> Result<(), Error> {
+        let mut seen_names = HashMap::new();
+        let mut index_to_name = HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            if let Some(prev) = seen_names.insert(name.as_str(), ()) {
+                let _ = prev;
+                return Err(Error::InvalidParameters(format!(
+                    "duplicate label name '{name}'"
+                )));
+            }
+            if let Some(indices) = indices
+                && let Some(index) = indices[i]
+                && let Some(other) = index_to_name.insert(index, name.as_str())
+            {
+                return Err(Error::InvalidParameters(format!(
+                    "duplicate label_index {index} for labels '{other}' and '{name}'"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Assign label table indices (two-pass update).
+    async fn apply_label_indices(
+        &self,
+        dataset_id: DatasetID,
+        names: &[String],
+        indices: &[Option<u64>],
+    ) -> Result<(), Error> {
+        let batch_names: HashMap<&str, ()> = names.iter().map(|n| (n.as_str(), ())).collect();
+
+        let with_index: HashMap<&str, u64> = names
+            .iter()
+            .zip(indices.iter())
+            .filter_map(|(name, index)| index.map(|i| (name.as_str(), i)))
+            .collect();
+
+        if with_index.is_empty() {
+            return Ok(());
+        }
+
+        let current = self.labels(dataset_id).await?;
+        let by_name: HashMap<String, Label> = current
+            .iter()
+            .map(|l| (l.name().to_string(), l.clone()))
+            .collect();
+
+        let mut to_sync = Vec::new();
+        for (name, &target_index) in &with_index {
+            let label = by_name.get(*name).ok_or_else(|| {
+                Error::InvalidParameters(format!(
+                    "label '{name}' not found in dataset after label.add2"
+                ))
+            })?;
+            if label.index() != target_index {
+                to_sync.push((name.to_string(), target_index));
+            }
+        }
+
+        if to_sync.is_empty() {
+            return Ok(());
+        }
+
+        // Unrelated labels (not in this batch) occupying a target index block reassignment.
+        for (name, target_index) in &to_sync {
+            for label in &current {
+                if label.index() == *target_index
+                    && label.name() != name.as_str()
+                    && !batch_names.contains_key(label.name())
+                {
+                    return Err(Error::InvalidParameters(format!(
+                        "label_index {target_index} already used by '{}' \
+                         (needed for '{name}'); use a clean dataset or resolve the conflict",
+                        label.name()
+                    )));
+                }
+            }
+        }
+
+        for (name, target_index) in &to_sync {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label
+                .set_index(
+                    self,
+                    Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET + target_index,
+                )
+                .await?;
+        }
+
+        for (name, target_index) in &to_sync {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label.set_index(self, *target_index).await?;
+        }
+
         Ok(())
     }
 
@@ -5923,6 +6114,44 @@ mod tests {
         ];
         let result = filter_and_sort_by_name(items, "Test", |s| s.as_str());
         assert_eq!(result, vec!["TestA", "TestB", "TestC"]);
+    }
+
+    #[test]
+    fn test_collect_labels_from_samples() {
+        let mut sample = Sample::new();
+        let mut ann = Annotation::new();
+        ann.set_label(Some("ace".to_string()));
+        ann.set_label_index(Some(12));
+        sample.annotations.push(ann);
+        let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
+        assert_eq!(names, vec!["ace".to_string()]);
+        assert_eq!(indices, vec![Some(12)]);
+    }
+
+    #[test]
+    fn test_collect_labels_from_samples_inconsistent_name() {
+        let mut s1 = Sample::new();
+        let mut a1 = Annotation::new();
+        a1.set_label(Some("ace".to_string()));
+        a1.set_label_index(Some(12));
+        s1.annotations.push(a1);
+
+        let mut s2 = Sample::new();
+        let mut a2 = Annotation::new();
+        a2.set_label(Some("ace".to_string()));
+        a2.set_label_index(Some(2));
+        s2.annotations.push(a2);
+
+        let err = Client::collect_labels_from_samples(&[s1, s2]).unwrap_err();
+        assert!(err.to_string().contains("inconsistent label_index"));
+    }
+
+    #[test]
+    fn test_validate_label_batch_duplicate_index() {
+        let names = vec!["ace".to_string(), "king".to_string()];
+        let indices = [Some(12_u64), Some(12)];
+        let err = Client::validate_label_batch(&names, Some(&indices)).unwrap_err();
+        assert!(err.to_string().contains("duplicate label_index"));
     }
 
     #[test]

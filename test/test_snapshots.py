@@ -12,11 +12,15 @@ Tests cover:
 """
 
 import os
+import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from test import get_client
+import polars as pl
+
+from test import TEST_PROJECT_NAME, get_client, get_test_data_dir
 
 
 class TestSnapshotAPI(unittest.TestCase):
@@ -449,6 +453,281 @@ class TestCreateSnapshotFromDataset(unittest.TestCase):
             self.client.delete_snapshot(result.id)
         except Exception:
             pass
+
+
+def _find_edgefirst_cli() -> Path:
+    """Locate the edgefirst-client binary built by cargo."""
+    root = Path(__file__).parent.parent
+    for candidate in (
+        root / "target" / "release" / "edgefirst-client",
+        root / "target" / "debug" / "edgefirst-client",
+    ):
+        if candidate.exists():
+            return candidate
+    raise RuntimeError(
+        "edgefirst-client binary not found; run `cargo build -p edgefirst-cli` first"
+    )
+
+
+def _extract_label_index_pairs(arrow_path: Path) -> set[tuple[str, int]]:
+    """Return unique (label, label_index) pairs from an annotations Arrow file."""
+    df = pl.read_ipc(arrow_path)
+    if "label" not in df.columns or "label_index" not in df.columns:
+        return set()
+    pairs = (
+        df.filter(pl.col("label").is_not_null() & pl.col("label_index").is_not_null())
+        .select(["label", "label_index"])
+        .unique()
+    )
+    return {
+        (row["label"], int(row["label_index"]))
+        for row in pairs.iter_rows(named=True)
+    }
+
+
+def _get_label_index_test_dataset() -> str:
+    return os.getenv("TEST_LABEL_INDEX_DATASET", "Coffee Cup")
+
+
+class TestLabelIndexRoundtrip(unittest.TestCase):
+    """DE-2709: label_index must survive upload-dataset → snapshot export."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_client()
+        cls.cli = _find_edgefirst_cli()
+        dataset_name = _get_label_index_test_dataset()
+        projects = cls.client.projects(TEST_PROJECT_NAME)
+        if not projects:
+            raise RuntimeError(f"{TEST_PROJECT_NAME} project not found")
+        project = projects[0]
+        if dataset_name.startswith("ds-"):
+            cls.source_dataset = cls.client.dataset(dataset_name)
+        else:
+            matches = project.datasets(name=dataset_name)
+            if not matches:
+                raise RuntimeError(
+                    f"Dataset '{dataset_name}' not found for label_index tests"
+                )
+            cls.source_dataset = matches[0]
+        annotation_sets = cls.client.annotation_sets(cls.source_dataset.id)
+        if not annotation_sets:
+            raise RuntimeError("Source dataset has no annotation sets")
+        cls.source_annotation_set_id = annotation_sets[0].id
+
+    def test_add_labels_with_indices_api(self):
+        """add_labels assigns source-faithful indices on a fresh dataset."""
+        source_labels = self.source_dataset.labels(self.client)
+        names = [label.name for label in source_labels]
+        indices = [int(label.index) for label in source_labels]
+        self.assertGreater(len(names), 0, "Source dataset should have labels")
+
+        timestamp = int(time.time())
+        projects = self.client.projects(TEST_PROJECT_NAME)
+        project = projects[0]
+        new_name = f"QA LabelIndex API {timestamp}"
+        new_dataset_id = self.client.create_dataset(
+            str(project.id), new_name, "DE-2709 add_labels index test"
+        )
+        try:
+            self.client.add_labels(new_dataset_id, names, indices)
+
+            synced = {
+                label.name: int(label.index)
+                for label in self.client.labels(new_dataset_id)
+            }
+            self.assertEqual(dict(zip(names, indices, strict=True)), synced)
+        finally:
+            try:
+                self.client.delete_dataset(new_dataset_id)
+            except Exception:
+                pass
+
+    def test_upload_snapshot_preserves_label_index(self):
+        """Upload → snapshot round-trip preserves (label, label_index) pairs."""
+        test_dir = get_test_data_dir() / "label_index_python_roundtrip"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = int(time.time())
+        annotations_path = test_dir / f"annotations_{timestamp}.arrow"
+        images_dir = test_dir / f"images_{timestamp}"
+        snapshot_dir = test_dir / f"snapshot_{timestamp}"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        subprocess.run(
+            [
+                str(self.cli),
+                "download-annotations",
+                str(self.source_annotation_set_id),
+                "--types",
+                "box2d",
+                str(annotations_path),
+            ],
+            check=True,
+            env=env,
+            timeout=120,
+        )
+        baseline_pairs = _extract_label_index_pairs(annotations_path)
+        self.assertGreater(
+            len(baseline_pairs),
+            0,
+            "Source annotations should contain label_index pairs",
+        )
+
+        subprocess.run(
+            [
+                str(self.cli),
+                "download-dataset",
+                str(self.source_dataset.id),
+                str(images_dir),
+            ],
+            check=True,
+            env=env,
+            timeout=300,
+        )
+
+        projects = self.client.projects(TEST_PROJECT_NAME)
+        project = projects[0]
+        new_name = f"QA LabelIndex CLI {timestamp}"
+        new_dataset_id = None
+        snapshot_id = None
+        try:
+            create_ds = subprocess.run(
+                [
+                    str(self.cli),
+                    "create-dataset",
+                    str(project.id),
+                    new_name,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            new_dataset_id = next(
+                line.removeprefix("Created dataset with ID: ").strip()
+                for line in create_ds.stdout.splitlines()
+                if line.startswith("Created dataset with ID:")
+            )
+
+            ann_set_name = f"{new_name} Annotations"
+            create_as = subprocess.run(
+                [
+                    str(self.cli),
+                    "create-annotation-set",
+                    new_dataset_id,
+                    ann_set_name,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            new_annotation_set_id = next(
+                line.removeprefix("Created annotation set with ID: ").strip()
+                for line in create_as.stdout.splitlines()
+                if line.startswith("Created annotation set with ID:")
+            )
+
+            subprocess.run(
+                [
+                    str(self.cli),
+                    "upload-dataset",
+                    new_dataset_id,
+                    "--annotations",
+                    str(annotations_path),
+                    "--annotation-set-id",
+                    new_annotation_set_id,
+                    "--images",
+                    str(images_dir),
+                ],
+                check=True,
+                env=env,
+                timeout=600,
+            )
+
+            export = subprocess.run(
+                [
+                    str(self.cli),
+                    "create-snapshot",
+                    new_dataset_id,
+                    "--description",
+                    f"QA LabelIndex {timestamp}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            snapshot_id = None
+            task_id = None
+            for line in export.stdout.splitlines():
+                if snapshot_id is None and "[ss-" in line:
+                    start = line.find("[ss-")
+                    end = line.find("]", start)
+                    if end != -1:
+                        snapshot_id = line[start + 1 : end]
+                if task_id is None and "[task-" in line:
+                    start = line.find("[task-")
+                    end = line.find("]", start)
+                    if end != -1:
+                        task_id = line[start + 1 : end]
+            self.assertIsNotNone(snapshot_id, "create-snapshot output missing snapshot ID")
+            assert snapshot_id is not None
+
+            if task_id:
+                subprocess.run(
+                    [str(self.cli), "task", task_id, "--monitor"],
+                    check=True,
+                    env=env,
+                    timeout=600,
+                )
+            else:
+                deadline = time.time() + 120
+                while time.time() < deadline:
+                    snap = self.client.snapshot(snapshot_id)
+                    if snap.status in ("available", "completed"):
+                        break
+                    if snap.status in ("failed", "error"):
+                        self.fail(f"Snapshot export failed: {snap.status}")
+                    time.sleep(1)
+                else:
+                    self.fail("Snapshot did not become available within 120s")
+
+            subprocess.run(
+                [
+                    str(self.cli),
+                    "download-snapshot",
+                    snapshot_id,
+                    "--output",
+                    str(snapshot_dir),
+                ],
+                check=True,
+                env=env,
+                timeout=300,
+            )
+
+            snapshot_arrow = snapshot_dir / "dataset.arrow"
+            self.assertTrue(snapshot_arrow.exists(), "snapshot missing dataset.arrow")
+            roundtrip_pairs = _extract_label_index_pairs(snapshot_arrow)
+            self.assertEqual(
+                baseline_pairs,
+                roundtrip_pairs,
+                "label_index pairs changed after upload→snapshot roundtrip",
+            )
+        finally:
+            if new_dataset_id:
+                subprocess.run(
+                    [str(self.cli), "delete-dataset", new_dataset_id],
+                    env=env,
+                )
+            if snapshot_id:
+                try:
+                    self.client.delete_snapshot(snapshot_id)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

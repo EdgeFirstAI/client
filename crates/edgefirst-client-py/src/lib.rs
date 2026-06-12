@@ -2071,13 +2071,14 @@ impl Dataset {
     /// New API (v2.6.0+): `dataset.add_label("name")` - uses embedded client
     /// reference Deprecated API: `dataset.add_label(client, "name")` -
     /// passing client explicitly
-    #[pyo3(signature = (name_or_client, name=None))]
+    #[pyo3(signature = (name_or_client, name=None, index=None))]
     #[tokio_wrap::sync]
     pub fn add_label(
         &self,
         py: Python<'_>,
         name_or_client: &Bound<'_, PyAny>,
         name: Option<String>,
+        index: Option<u64>,
     ) -> Result<(), Error> {
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = name_or_client.extract::<PyRef<Client>>() {
@@ -2085,7 +2086,10 @@ impl Dataset {
             let label_name = name.ok_or_else(|| {
                 Error::TypeError("add_label(client, name) requires name parameter".to_string())
             })?;
-            client.0.add_label(self.inner.id(), &label_name).await?;
+            client
+                .0
+                .add_label(self.inner.id(), &label_name, index)
+                .await?;
             return Ok(());
         }
 
@@ -2097,7 +2101,10 @@ impl Dataset {
                         .to_string(),
                 )
             })?;
-            client_ref.add_label(self.inner.id(), &label_name).await?;
+            client_ref
+                .0
+                .add_label(self.inner.id(), &label_name, index)
+                .await?;
             return Ok(());
         }
 
@@ -5302,10 +5309,39 @@ impl Client {
         Ok(labels)
     }
 
+    #[pyo3(signature = (dataset_id, name, index=None))]
     #[tokio_wrap::sync]
-    pub fn add_label<'py>(&self, dataset_id: Bound<'py, PyAny>, name: &str) -> Result<(), Error> {
+    pub fn add_label<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+        index: Option<u64>,
+    ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        Ok(self.0.add_label(dataset_id.0, name).await?)
+        Ok(self.0.add_label(dataset_id.0, name, index).await?)
+    }
+
+    /// Add multiple labels, optionally assigning source-faithful indices.
+    ///
+    /// Args:
+    ///     dataset_id: Target dataset ID.
+    ///     names: Label names to add.
+    ///     indices: Optional per-label ``label_index`` values (``None`` entries use
+    ///         server-assigned indices). Must match ``names`` length when provided.
+    #[pyo3(signature = (dataset_id, names, indices=None))]
+    #[tokio_wrap::sync]
+    pub fn add_labels<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        names: Vec<String>,
+        indices: Option<Vec<Option<u64>>>,
+    ) -> Result<(), Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let indices_ref = indices.as_ref().map(|v| v.as_slice());
+        Ok(self
+            .0
+            .add_labels(dataset_id.0, &names, indices_ref)
+            .await?)
     }
 
     #[tokio_wrap::sync]

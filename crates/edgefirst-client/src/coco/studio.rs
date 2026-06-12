@@ -950,7 +950,7 @@ async fn ensure_labels_exist(
             missing_labels.len()
         );
         for label_name in &missing_labels {
-            client.add_label(*dataset_id, label_name).await?;
+            client.add_label(*dataset_id, label_name, None).await?;
         }
     }
 

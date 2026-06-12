@@ -4706,8 +4706,35 @@ class Client:
         """Get the labels associated with the dataset."""
         ...
 
-    def add_label(self, dataset_id: DatasetUID, name: str) -> None:
-        """Add a label to the dataset."""
+    def add_label(
+        self, dataset_id: DatasetUID, name: str, index: Optional[int] = None
+    ) -> None:
+        """
+        Add a label to the dataset.
+
+        When ``index`` is set, the label table index is assigned via ``label.update``
+        after creation (two-pass reassignment to avoid collisions within the batch).
+        """
+        ...
+
+    def add_labels(
+        self,
+        dataset_id: DatasetUID,
+        names: List[str],
+        indices: Optional[List[Optional[int]]] = None,
+    ) -> None:
+        """
+        Add multiple labels in one request, optionally with source-faithful indices.
+
+        Args:
+            dataset_id: Target dataset ID.
+            names: Label names to add.
+            indices: Optional per-label ``label_index`` values (``None`` entries use
+                server-assigned indices). Must match ``names`` length when provided.
+
+        Raises:
+            Error: If indices conflict within the batch or with unrelated existing labels.
+        """
         ...
 
     def remove_label(self, label_id: int) -> None:
