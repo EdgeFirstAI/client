@@ -259,7 +259,7 @@ impl MaskData {
     ///
     /// Returns an error if the PNG data is malformed or cannot be decoded.
     pub fn decode(&self) -> Result<Vec<u8>, crate::Error> {
-        let decoder = png::Decoder::new(self.png.as_slice());
+        let decoder = png::Decoder::new(std::io::Cursor::new(self.png.as_slice()));
         let mut reader = decoder
             .read_info()
             .map_err(|e| crate::Error::InvalidParameters(format!("PNG info read failed: {}", e)))?;
@@ -275,7 +275,10 @@ impl MaskData {
             )));
         }
 
-        let mut raw = vec![0u8; reader.output_buffer_size()];
+        let buffer_size = reader.output_buffer_size().ok_or_else(|| {
+            crate::Error::InvalidParameters("PNG output buffer size unavailable".to_string())
+        })?;
+        let mut raw = vec![0u8; buffer_size];
         let info = reader.next_frame(&mut raw).map_err(|e| {
             crate::Error::InvalidParameters(format!("PNG frame read failed: {}", e))
         })?;

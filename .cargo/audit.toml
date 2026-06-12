@@ -1,0 +1,7 @@
+# Temporary ignores for pyo3 0.28.x advisories until pyo3-polars and rust-numpy
+# publish releases compatible with pyo3 >=0.29. See pola-rs/polars#27949.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0176", # OOB read in PyList/PyTuple iterators; fixed in pyo3 >=0.29.0
+    "RUSTSEC-2026-0177", # Missing Sync on PyCFunction::new_closure; fixed in pyo3 >=0.29.0
+]

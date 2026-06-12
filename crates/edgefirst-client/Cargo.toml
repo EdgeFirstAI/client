@@ -35,8 +35,8 @@ imagesize = { workspace = true }
 infer = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
-pathfinding = "4.11"
-png = "0.17"
+pathfinding = "4.15"
+png = "0.18"
 polars = { workspace = true, optional = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
@@ -54,10 +54,10 @@ walkdir = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-dirs = "5.0"
+dirs = "6.0"
 image = { version = "0.25", features = ["jpeg", "png"] }
-pathfinding = "4.11"
-png = "0.17"
+pathfinding = "4.15"
+png = "0.18"
 rand = { workspace = true }
 # `serial_test` lets us mark process-wide-mutation tests (`std::env::
 # set_current_dir`) so they don't race other parallel tests.

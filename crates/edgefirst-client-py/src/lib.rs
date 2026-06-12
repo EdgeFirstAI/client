@@ -89,7 +89,7 @@ impl From<Error> for PyErr {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub enum Parameter {
     Integer(i64),
@@ -596,7 +596,7 @@ impl Display for Parameter {
 }
 
 // Individual ID wrapper types for Python
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ProjectID(edgefirst_client::ProjectID);
 
@@ -681,7 +681,7 @@ impl ProjectID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct DatasetID(edgefirst_client::DatasetID);
 
@@ -760,7 +760,7 @@ impl DatasetID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ExperimentID(edgefirst_client::ExperimentID);
 
@@ -839,7 +839,7 @@ impl ExperimentID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct OrganizationID(edgefirst_client::OrganizationID);
 
@@ -917,7 +917,7 @@ impl OrganizationID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SampleID(edgefirst_client::SampleID);
 
@@ -995,7 +995,7 @@ impl SampleID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct AnnotationSetID(edgefirst_client::AnnotationSetID);
 
@@ -1074,7 +1074,7 @@ impl AnnotationSetID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct TaskID(edgefirst_client::TaskID);
 
@@ -1153,7 +1153,7 @@ impl TaskID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct TrainingSessionID(edgefirst_client::TrainingSessionID);
 
@@ -1232,7 +1232,7 @@ impl TrainingSessionID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ValidationSessionID(edgefirst_client::ValidationSessionID);
 
@@ -1310,7 +1310,7 @@ impl ValidationSessionID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SnapshotID(edgefirst_client::SnapshotID);
 
@@ -1388,7 +1388,7 @@ impl SnapshotID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ImageId(edgefirst_client::ImageId);
 
@@ -1466,7 +1466,7 @@ impl ImageId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SequenceId(edgefirst_client::SequenceId);
 
@@ -1544,7 +1544,7 @@ impl SequenceId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct AppId(edgefirst_client::AppId);
 
@@ -1620,7 +1620,7 @@ impl AppId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Debug, Clone, Copy)]
 pub enum FileType {
     Image,
@@ -1633,7 +1633,7 @@ pub enum FileType {
     All,
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum AnnotationType {
     Box2d,
@@ -2589,7 +2589,7 @@ impl Dataset {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Label(edgefirst_client::Label);
 
@@ -2669,7 +2669,7 @@ impl Display for Label {
 ///     ...     print(f"{group.name}: {group.id}")
 ///     train: 1
 ///     val: 2
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Group(edgefirst_client::Group);
 
@@ -4669,7 +4669,7 @@ impl Artifact {
 /// Returned by `TaskInfo.data_list` and `TaskInfo.list_charts`. Validation
 /// sessions use a flat `list[str]` of relative paths (returned by
 /// `ValidationSession.data_list`), not this type.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct TaskDataList(pub(crate) edgefirst_client::TaskDataList);
 
@@ -4713,7 +4713,7 @@ impl TaskDataList {
 ///
 /// The `task_id` field links back to the underlying task that can be polled
 /// via `Client.task_info`.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct Job(pub(crate) edgefirst_client::Job);
 
@@ -4771,7 +4771,7 @@ impl Job {
 ///
 /// Stores the authentication token in a file on the local filesystem.
 /// By default, uses the platform-specific config directory.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct FileTokenStorage(Arc<edgefirst_client::FileTokenStorage>);
 
@@ -4836,7 +4836,7 @@ impl FileTokenStorage {
 ///
 /// Stores the authentication token in memory only. The token is lost when
 /// the application exits.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct MemoryTokenStorage(Arc<edgefirst_client::MemoryTokenStorage>);
 
