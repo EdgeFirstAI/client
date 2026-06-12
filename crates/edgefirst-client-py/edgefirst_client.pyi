@@ -890,7 +890,9 @@ class Project:
         ...
 
     def datasets(
-        self, client: Optional[Client] = None, name: Optional[str] = None
+        self,
+        client_or_name: Optional[Union[Client, str]] = None,
+        name: Optional[str] = None,
     ) -> List[Dataset]:
         """
         List the datasets in the project.
@@ -898,7 +900,7 @@ class Project:
         New API (v2.6.0+): Uses embedded client reference.
 
         Args:
-            client: Deprecated. The client to use for the request.
+            client_or_name: Deprecated client, or a dataset name filter string.
             name: The name of the dataset to filter by.
 
         Returns:
@@ -911,7 +913,9 @@ class Project:
         ...
 
     def experiments(
-        self, client: Optional[Client] = None, name: Optional[str] = None
+        self,
+        client_or_name: Optional[Union[Client, str]] = None,
+        name: Optional[str] = None,
     ) -> List[Experiment]:
         """
         List the experiments in the project.
@@ -919,7 +923,8 @@ class Project:
         New API (v2.6.0+): Uses embedded client reference.
 
         Args:
-            client: Deprecated. The client to use for the request.
+            client_or_name: Deprecated client, or an experiment name filter
+                            string.
             name: The name of the experiment to filter by.
 
         Returns:
@@ -1416,9 +1421,9 @@ class Dataset:
 
     def download(
         self,
+        output: str = ".",
         groups: List[str] = ...,
         types: List[FileType] = ...,
-        output: str = ".",
         flatten: bool = False,
         progress: Optional[Progress] = None,
     ) -> None:
@@ -1430,10 +1435,10 @@ class Dataset:
         faster than downloading samples individually.
 
         Args:
+            output: Output directory path. Defaults to current directory.
             groups: List of dataset groups (train, val, test, etc.).
             types: List of file types to download.
                 Defaults to [FileType.Image].
-            output: Output directory path. Defaults to current directory.
             flatten: If True, download all files to output root without
                      sequence subdirectories.
             progress: Optional progress callback. Supports two signatures:
@@ -1457,7 +1462,7 @@ class Dataset:
             TypeError: If dataset has no client reference.
 
         Example:
-            >>> dataset.download(["train"], [FileType.Image], "./data")
+            >>> dataset.download("./data", ["train"], [FileType.Image])
         """
         ...
 
@@ -1722,7 +1727,7 @@ class Box3d:
         cz: float,
         width: float,
         height: float,
-        depth: float,
+        length: float,
     ) -> None:
         """
         Initialize a 3D bounding box with the given position and dimensions.
@@ -1733,7 +1738,7 @@ class Box3d:
             cz (float): The z-coordinate of the box center (up).
             width (float): The width of the box along the y-axis.
             height (float): The height of the box along the z-axis.
-            depth (float): The depth of the box along the x-axis.
+            length (float): The length of the box along the x-axis.
         """
         ...
 
@@ -2404,8 +2409,8 @@ class Sample:
 
     def download(
         self,
-        client: Optional[Client] = None,
-        file_type: FileType = FileType.Image,
+        file_type_or_client: Optional[Union[FileType, Client]] = None,
+        file_type: Optional[FileType] = None,
     ) -> Optional[bytes]:
         """
         Download sample file data.
@@ -2422,7 +2427,8 @@ class Sample:
             >>> data = sample.download(client)  # Passing client explicitly
 
         Args:
-            client: Deprecated. The client to use for the request.
+            file_type_or_client: Deprecated client, or a file type when used as
+                                 the first positional argument.
             file_type: Type of file to download. Defaults to FileType.Image.
                        Other options: LidarPcd, LidarDepth, LidarReflect,
                        RadarPcd, RadarCube.
@@ -2811,20 +2817,20 @@ class TaskInfo:
     def update_stage(
         self,
         client: Client,
-        stage_name: str,
-        status: Optional[str] = None,
-        message: Optional[str] = None,
-        percentage: Optional[int] = None,
+        stage: str,
+        status: str,
+        message: str,
+        percentage: int,
     ) -> None:
         """
         Updates a specific stage of the task.
 
         Args:
             client (Client): The EdgeFirst client.
-            stage_name (str): The name of the stage to update.
-            status (Optional[str]): The new status for the stage.
-            message (Optional[str]): A message associated with the stage.
-            percentage (Optional[int]): The completion percentage of the stage.
+            stage (str): The name of the stage to update.
+            status (str): The new status for the stage.
+            message (str): A message associated with the stage.
+            percentage (int): The completion percentage of the stage.
         """
         ...
 
@@ -5459,14 +5465,14 @@ class Client:
         ...
 
     def training_session(
-        self, session_id: TrainingSessionUID
+        self, training_session_id: TrainingSessionUID
     ) -> TrainingSession:
         """
         Return the training session with the specified training session ID.  If
         the training session does not exist, an error is returned.
 
         Args:
-            session_id (TrainingSessionUID): The training session ID.
+            training_session_id (TrainingSessionUID): The training session ID.
 
         Returns:
             TrainingSession: The training session with the specified ID.
@@ -5847,13 +5853,15 @@ class Client:
         """
         ...
 
-    def artifacts(self, session_id: TrainingSessionUID) -> List[Artifact]:
+    def artifacts(
+        self, training_session_id: TrainingSessionUID
+    ) -> List[Artifact]:
         """
         List the artifacts for the specified training session.  The artifacts
         are returned as a vector of strings.
 
         Args:
-            session_id (TrainingSessionUID): The training session ID.
+            training_session_id (TrainingSessionUID): The training session ID.
 
         Returns:
             List[Artifact]: A list of artifact objects
