@@ -255,7 +255,7 @@ pub fn decode_rle(rle: &CocoRle) -> Result<(Vec<u8>, u32, u32), Error> {
 /// Based on pycocotools encoding.
 fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
     let bytes = s.as_bytes();
-    let mut counts = Vec::new();
+    let mut counts: Vec<i64> = Vec::new();
     let mut i = 0;
 
     while i < bytes.len() {
@@ -267,14 +267,13 @@ fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
             let byte = bytes[i] as i64;
             i += 1;
 
-            // Decode based on character ranges (pycocotools encoding)
-            let decoded = if (48..96).contains(&byte) {
-                byte - 48 // '0'-'_'
-            } else if byte >= 96 {
-                byte - 96 + 48 // 'a' and above
+            // Each ASCII character encodes 6 bits: 5 data bits + 1 continuation bit.
+            // Characters 48–111 ('0'–'o') are valid; subtract 48 to get 0–63.
+            let decoded = if byte >= 48 {
+                byte - 48
             } else {
                 return Err(Error::CocoError(format!(
-                    "Invalid LEB128 character: {}",
+                    "Invalid compressed RLE character: {}",
                     byte as u8 as char
                 )));
             };
@@ -284,20 +283,27 @@ fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
             shift += 5;
         }
 
-        // Sign extend if needed
-        if shift < 32 && (value & (1 << (shift - 1))) != 0 {
+        // Sign-extend if the high data bit of the last chunk is set.
+        // (Matches the `if(!more && (c&0x10))` check in maskApi.c rleToString.)
+        if (value & (1 << (shift - 1))) != 0 {
             value |= (-1i64) << shift;
         }
 
         counts.push(value);
     }
 
-    // Convert from diff encoding to absolute counts
+    // Undo the 2-back delta encoding used by rleToString:
+    //   encode: x[i] = counts[i] - counts[i-2]   (for i > 2)
+    //   decode: counts[i] = x[i] + counts[i-2]   (for i > 2)
+    // The first two values are stored as-is (no delta).
     let mut result = Vec::with_capacity(counts.len());
-    let mut prev: i64 = 0;
-    for diff in counts {
-        prev += diff;
-        result.push(prev.max(0) as u32);
+    for (idx, &x) in counts.iter().enumerate() {
+        let val = if idx > 2 {
+            x + result[idx - 2] as i64
+        } else {
+            x
+        };
+        result.push(val.max(0) as u32);
     }
 
     Ok(result)
