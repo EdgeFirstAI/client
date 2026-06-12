@@ -1217,11 +1217,11 @@ fn parse_box2d_from_dataframe(
 
     let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
 
         if let Ok(vals) = series.f64() {
-            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+            return Some(vals.iter().flatten().map(|v| v as f32).collect());
         }
 
         None
@@ -1280,11 +1280,11 @@ fn parse_box3d_from_dataframe(
 
     let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
 
         if let Ok(vals) = series.f64() {
-            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+            return Some(vals.iter().flatten().map(|v| v as f32).collect());
         }
 
         None
@@ -1344,9 +1344,9 @@ fn parse_polygon_from_dataframe(
         for ring_idx in 0..inner_list.len() {
             if let Some(ring_series) = inner_list.get_as_series(ring_idx) {
                 let coords: Vec<f32> = if let Ok(v) = ring_series.f32() {
-                    v.into_iter().flatten().collect()
+                    v.iter().flatten().collect()
                 } else if let Ok(v) = ring_series.f64() {
-                    v.into_iter().flatten().map(|val| val as f32).collect()
+                    v.iter().flatten().map(|val| val as f32).collect()
                 } else {
                     continue;
                 };
@@ -1368,9 +1368,9 @@ fn parse_polygon_from_dataframe(
         && let Some(mask_series) = list_chunked.get_as_series(idx)
     {
         let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
-            values.into_iter().flatten().collect()
+            values.iter().flatten().collect()
         } else if let Ok(values) = mask_series.f64() {
-            values.into_iter().flatten().map(|val| val as f32).collect()
+            values.iter().flatten().map(|val| val as f32).collect()
         } else {
             return Ok(None);
         };
@@ -1559,15 +1559,15 @@ fn parse_size_from_dataframe(
     // Try to extract as array of u32
     let extract_size = |series: Series| -> Option<Vec<u32>> {
         if let Ok(vals) = series.u32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
         // Try u64 and convert
         if let Ok(vals) = series.u64() {
-            return Some(vals.into_iter().flatten().map(|v| v as u32).collect());
+            return Some(vals.iter().flatten().map(|v| v as u32).collect());
         }
         // Try f32 and convert
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().map(|v| v as u32).collect());
+            return Some(vals.iter().flatten().map(|v| v as u32).collect());
         }
         None
     };
@@ -1602,10 +1602,10 @@ fn parse_location_from_dataframe(
     let extract_floats = |col: &Column, idx: usize| -> Option<Vec<f64>> {
         let extract_from_series = |series: Series| -> Option<Vec<f64>> {
             if let Ok(vals) = series.f32() {
-                return Some(vals.into_iter().flatten().map(|v| v as f64).collect());
+                return Some(vals.iter().flatten().map(|v| v as f64).collect());
             }
             if let Ok(vals) = series.f64() {
-                return Some(vals.into_iter().flatten().collect());
+                return Some(vals.iter().flatten().collect());
             }
             None
         };

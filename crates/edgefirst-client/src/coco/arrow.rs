@@ -455,7 +455,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let names: Vec<String> = df
         .column("name")?
         .str()?
-        .into_iter()
+        .iter()
         .map(|s| s.unwrap_or_default().to_string())
         .collect();
 
@@ -467,7 +467,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             c.str()
                 .ok()
                 .map(|s| {
-                    s.into_iter()
+                    s.iter()
                         .map(|v| v.unwrap_or_default().to_string())
                         .collect()
                 })
@@ -481,7 +481,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .map(|c| {
             c.u64()
                 .ok()
-                .map(|s| s.into_iter().collect())
+                .map(|s| s.iter().collect())
                 .unwrap_or_else(|| vec![None; total_rows])
         })
         .unwrap_or_else(|| vec![None; total_rows]);
@@ -495,7 +495,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             c.str()
                 .ok()
                 .map(|s| {
-                    s.into_iter()
+                    s.iter()
                         .map(|v| v.unwrap_or_default().to_string())
                         .collect()
                 })
@@ -551,13 +551,13 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             // Try Boolean first (2026.04 schema), then fall back to UInt32 (older schemas)
             if let Ok(bool_ca) = c.bool() {
                 bool_ca
-                    .into_iter()
+                    .iter()
                     .map(|v| if v.unwrap_or(false) { 1 } else { 0 })
                     .collect()
             } else {
                 c.u32()
                     .ok()
-                    .map(|s| s.into_iter().map(|v| v.unwrap_or(0) as u8).collect())
+                    .map(|s| s.iter().map(|v| v.unwrap_or(0) as u8).collect())
                     .unwrap_or_else(|| vec![0; total_rows])
             }
         })
@@ -571,7 +571,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .map(|c| {
             c.str()
                 .ok()
-                .map(|s| s.into_iter().map(|v| v.map(String::from)).collect())
+                .map(|s| s.iter().map(|v| v.map(String::from)).collect())
                 .unwrap_or_else(|| vec![None; total_rows])
         })
         .unwrap_or_else(|| vec![None; total_rows]);
@@ -614,7 +614,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             c.str()
                 .ok()
                 .map(|s| {
-                    s.into_iter()
+                    s.iter()
                         .map(|v| v.and_then(|s| s.parse::<u64>().ok()))
                         .collect()
                 })
@@ -941,7 +941,7 @@ fn extract_all_box2ds(col: &Column) -> Result<Vec<[f32; 4]>, Error> {
             let vals: Vec<f32> = series
                 .f32()
                 .map_err(|e| Error::CocoError(format!("box2d cast error: {}", e)))?
-                .into_iter()
+                .iter()
                 .map(|v| v.unwrap_or(0.0))
                 .collect();
 
@@ -969,7 +969,7 @@ fn extract_all_masks(col: &Column) -> Result<Vec<Vec<f32>>, Error> {
             Some(series) => series
                 .f32()
                 .map_err(|e| Error::CocoError(format!("mask cast error: {}", e)))?
-                .into_iter()
+                .iter()
                 .map(|v| v.unwrap_or(f32::NAN))
                 .collect(),
             None => vec![],
@@ -991,7 +991,7 @@ fn extract_all_sizes(col: &Column) -> Result<Vec<(u32, u32)>, Error> {
             let values: Vec<u32> = series
                 .u32()
                 .map_err(|e| Error::CocoError(format!("size cast error: {}", e)))?
-                .into_iter()
+                .iter()
                 .map(|v| v.unwrap_or(0))
                 .collect();
 
@@ -1020,7 +1020,7 @@ fn extract_list_u32_column(col: &Column, total_rows: usize) -> Vec<Option<Vec<u3
                         series
                             .u32()
                             .ok()
-                            .map(|ca| ca.into_iter().flatten().collect::<Vec<u32>>())
+                            .map(|ca| ca.iter().flatten().collect::<Vec<u32>>())
                     })
                 })
                 .collect()
@@ -1047,7 +1047,7 @@ fn extract_all_polygons(col: &Column, total_rows: usize) -> Vec<Option<PolygonRi
                 if let Some(coords_series) = inner_list.get_as_series(j)
                     && let Ok(f32_ca) = coords_series.f32()
                 {
-                    let coords: Vec<f32> = f32_ca.into_iter().map(|v| v.unwrap_or(0.0)).collect();
+                    let coords: Vec<f32> = f32_ca.iter().map(|v| v.unwrap_or(0.0)).collect();
                     // Convert flat [x, y, x, y, ...] to Vec<(f32, f32)>
                     let points: Vec<(f32, f32)> = coords
                         .chunks(2)
@@ -1083,7 +1083,7 @@ fn extract_f32_column(df: &DataFrame, name: &str, total_rows: usize) -> Vec<Opti
     df.column(name)
         .ok()
         .and_then(|c| c.f32().ok())
-        .map(|ca| ca.into_iter().collect())
+        .map(|ca| ca.iter().collect())
         .unwrap_or_else(|| vec![None; total_rows])
 }
 

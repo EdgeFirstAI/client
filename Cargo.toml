@@ -14,28 +14,28 @@ version = "2.10.3"
 edition = "2024"
 
 [workspace.dependencies]
-assert_cmd = "2.2.0"
+assert_cmd = "2.2.2"
 base64 = "0.22.1"
-chrono = { version = "0.4.38", default-features = false, features = [
+chrono = { version = "0.4.45", default-features = false, features = [
     "clock",
     "iana-time-zone",
     "now",
     "serde",
 ] }
-clap = { version = "4.6.0", features = ["derive", "env"] }
-config = "0.15.21"
-ctor = "0.6.2"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+config = "0.15.23"
+ctor = "0.6.3"
 directories = "6.0.0"
-edgefirst-client = { version = "2.10.2", path = "crates/edgefirst-client" }
-env_logger = "0.11.9"
+edgefirst-client = { version = "2.10.3", path = "crates/edgefirst-client" }
+env_logger = "0.11.10"
 futures = "0.3.32"
 imagesize = "0.14.0"
 indicatif = "0.18.4"
 infer = "0.19.0"
 inquire = "0.9.4"
 itertools = "0.14.0"
-log = "0.4.29"
-polars = { version = "0.53.0", default-features = false, features = [
+log = "0.4.32"
+polars = { version = "0.54.4", default-features = false, features = [
     "dtype-array",
     "dtype-categorical",
     "dtype-struct",
@@ -43,39 +43,39 @@ polars = { version = "0.53.0", default-features = false, features = [
     "partition_by",
 ] }
 predicates = "3.1.4"
-rand = "0.10.0"
-rayon = "1.10"
-pyo3 = { version = "0.27.0", features = [
+rand = "0.10.1"
+rayon = "1.12"
+pyo3 = { version = "0.28", features = [
     "extension-module",
     "abi3-py38",
     "chrono",
     "serde",
 ] }
-pyo3-polars = "0.26.0"
-reqwest = { version = "0.13.2", default-features = false, features = [
+pyo3-polars = "0.27.0"
+reqwest = { version = "0.13.4", default-features = false, features = [
     "json",
     "multipart",
     "rustls",
     "stream",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-serial_test = { version = "3.4.0", features = ["file_locks"] }
+serde_json = "1.0.150"
+serial_test = { version = "3.5.0", features = ["file_locks"] }
 sha1 = "0.10.6"
-sha2 = "0.10.8"
+sha2 = "0.10.9"
 tempfile = "3.27.0"
-tokio = { version = "1.50.0", features = ["full", "rt-multi-thread"] }
+tokio = { version = "1.52.3", features = ["full", "rt-multi-thread"] }
 tokio-util = { version = "0.7.18", features = ["codec", "io"] }
 tokio-wrap = "0.0.3"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-perfetto = "0.1.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-uniffi = "0.31.0"
+uniffi = "0.31.1"
 url = "2.5.8"
-uuid = { version = "1.22.0", features = ["v4", "serde"] }
+uuid = { version = "1.23.3", features = ["v4", "serde"] }
 walkdir = "2.5.0"
-zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

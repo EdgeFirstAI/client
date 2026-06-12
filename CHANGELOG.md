@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated Rust workspace dependencies (Polars 0.54, PyO3 0.28, pyo3-polars 0.27, and related crates)
+- Refreshed hash-locked Python test/build dependencies in `requirements.txt`
+
 ## [2.10.3] - 2026-06-04
 
 ### Added
