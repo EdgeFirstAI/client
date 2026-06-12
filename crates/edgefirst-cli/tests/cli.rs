@@ -3386,7 +3386,8 @@ fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Erro
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    let hash = hasher.finalize();
+    Ok(hash.iter().map(|byte| format!("{:02x}", byte)).collect())
 }
 
 #[test]
