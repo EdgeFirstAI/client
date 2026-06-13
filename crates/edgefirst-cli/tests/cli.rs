@@ -42,6 +42,12 @@ fn get_test_dataset() -> String {
     env::var("TEST_DATASET").unwrap_or_else(|_| "Deer".to_string())
 }
 
+/// Dataset used for label_index round-trip tests (DE-2709).
+/// Default "Coffee Cup" has non-contiguous label indices on SaaS (ds-145f).
+fn get_label_index_test_dataset() -> String {
+    env::var("TEST_LABEL_INDEX_DATASET").unwrap_or_else(|_| "Coffee Cup".to_string())
+}
+
 /// Get the annotation types to test from environment or default to
 /// "box2d,box3d,mask" Returns a vector of annotation type strings
 fn get_test_dataset_types() -> Vec<String> {
@@ -335,6 +341,99 @@ fn download_annotations_from_server_with_types(
     cmd.assert().success();
 
     Ok(arrow_path)
+}
+
+/// Extract unique `(label, label_index)` pairs from an annotations Arrow file.
+#[cfg(feature = "polars")]
+fn extract_label_index_pairs(
+    df: &polars::prelude::DataFrame,
+) -> Result<BTreeSet<(String, u64)>, Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+
+    let label_col = df.column("label")?;
+    let index_col = df.column("label_index")?;
+    let labels_cast = label_col.cast(&DataType::String)?;
+    let labels = labels_cast.str()?;
+    let index_cast = index_col.cast(&DataType::UInt64)?;
+    let indices = index_cast.u64()?;
+
+    let label_null = label_col.is_null();
+    let index_null = index_col.is_null();
+
+    let mut pairs = BTreeSet::new();
+    for idx in 0..df.height() {
+        if label_null.get(idx).unwrap_or(true) || index_null.get(idx).unwrap_or(true) {
+            continue;
+        }
+        if let (Some(label), Some(index)) = (labels.get(idx), indices.get(idx)) {
+            pairs.insert((label.to_string(), index));
+        }
+    }
+    Ok(pairs)
+}
+
+/// Compare unique `(label, label_index)` pairs between two Arrow files.
+#[cfg(feature = "polars")]
+fn compare_label_index_pairs(
+    original_path: &Path,
+    redownloaded_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+    use std::fs::File;
+
+    let mut original_file = File::open(original_path)?;
+    let original_df = IpcReader::new(&mut original_file).finish()?;
+
+    let mut redownloaded_file = File::open(redownloaded_path)?;
+    let redownloaded_df = IpcReader::new(&mut redownloaded_file).finish()?;
+
+    let original_has = original_df.column("label_index").is_ok()
+        && original_df.column("label").is_ok();
+    let redownloaded_has = redownloaded_df.column("label_index").is_ok()
+        && redownloaded_df.column("label").is_ok();
+
+    if !original_has && !redownloaded_has {
+        println!("Skipping label_index comparison (column absent in both files)");
+        return Ok(());
+    }
+    if !original_has || !redownloaded_has {
+        return Err(
+            "label_index comparison requires label and label_index in both Arrow files".into(),
+        );
+    }
+
+    let original_pairs = extract_label_index_pairs(&original_df)?;
+    let redownloaded_pairs = extract_label_index_pairs(&redownloaded_df)?;
+
+    println!(
+        "Original label_index pairs ({}): {:?}",
+        original_pairs.len(),
+        original_pairs
+    );
+    println!(
+        "Redownloaded label_index pairs ({}): {:?}",
+        redownloaded_pairs.len(),
+        redownloaded_pairs
+    );
+
+    if original_pairs != redownloaded_pairs {
+        let missing: Vec<_> = original_pairs.difference(&redownloaded_pairs).collect();
+        let extra: Vec<_> = redownloaded_pairs.difference(&original_pairs).collect();
+        return Err(format!(
+            "label_index pair mismatch: missing {:?}, extra {:?}",
+            missing, extra
+        )
+        .into());
+    }
+
+    if !original_pairs.is_empty() {
+        println!(
+            "✓ label_index pairs verified: {} unique (label, index) mappings preserved",
+            original_pairs.len()
+        );
+    }
+
+    Ok(())
 }
 
 /// Compare two Arrow files to verify groups and annotations are preserved
@@ -813,6 +912,46 @@ fn compare_arrow_files(
         }
     }
 
+    compare_label_index_pairs(original_path, redownloaded_path)?;
+
+    Ok(())
+}
+
+/// Wait for a server-side snapshot export task or poll snapshot status until available.
+fn wait_for_snapshot_ready(
+    snapshot_id: &str,
+    task_id: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(tid) = task_id {
+        let mut task_cmd = edgefirst_cmd();
+        task_cmd.arg("task").arg(tid).arg("--monitor");
+        task_cmd.timeout(std::time::Duration::from_secs(600));
+        task_cmd.ok()?;
+        return Ok(());
+    }
+
+    use edgefirst_client::{Client as EdgeFirstClient, SnapshotID};
+    let api_client = EdgeFirstClient::new()?.with_token_path(None)?;
+    let snap_id = SnapshotID::try_from(snapshot_id)?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    for attempt in 0..120 {
+        let snapshot = rt.block_on(api_client.snapshot(snap_id))?;
+        let status = snapshot.status();
+        if status == "available" || status == "completed" {
+            return Ok(());
+        }
+        if status == "failed" || status == "error" {
+            return Err(format!("Snapshot export failed (status: {status})").into());
+        }
+        if attempt >= 119 {
+            return Err(format!(
+                "Snapshot did not become available within 120 seconds (last status: {status})"
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
     Ok(())
 }
 
@@ -1487,6 +1626,153 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
             annotations_path, err
         );
     }
+
+    Ok(())
+}
+
+/// DE-2709: upload-dataset must preserve source-faithful label_index through snapshot export.
+///
+/// Flow: download annotations → upload-dataset → create-snapshot → download-snapshot →
+/// compare unique `(label, label_index)` pairs.
+#[test]
+#[file_serial]
+#[cfg(feature = "polars")]
+fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    let dataset = get_label_index_test_dataset();
+    println!("Testing label_index roundtrip for dataset: {}", dataset);
+
+    let (source_dataset_id, source_annotation_set_id) =
+        get_dataset_and_first_annotation_set(&dataset)?;
+
+    let images_dir = download_dataset_from_server(&source_dataset_id)?;
+    let annotations_path = download_annotations_from_server(&source_annotation_set_id)?;
+
+    #[cfg(feature = "polars")]
+    {
+        use polars::prelude::*;
+        use std::fs::File;
+
+        let mut original_file = File::open(&annotations_path)?;
+        let original_df = IpcReader::new(&mut original_file).finish()?;
+        let baseline_pairs = extract_label_index_pairs(&original_df)?;
+        assert!(
+            !baseline_pairs.is_empty(),
+            "Expected non-empty label_index pairs in source annotations for {}",
+            dataset
+        );
+        println!("Baseline label_index pairs: {:?}", baseline_pairs);
+    }
+
+    let project_id = get_project_id_by_name("Unit Testing")?
+        .ok_or_else(|| "Project 'Unit Testing' not found".to_string())?;
+
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let new_dataset_name = format!("QA {} LabelIndex {}", dataset, timestamp);
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-dataset")
+        .arg(&project_id)
+        .arg(&new_dataset_name);
+    let output = cmd.ok()?.stdout;
+    let new_dataset_id = String::from_utf8(output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("Created dataset with ID: "))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
+
+    let annotation_set_name = format!("{} Annotations", new_dataset_name);
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-annotation-set")
+        .arg(&new_dataset_id)
+        .arg(&annotation_set_name);
+    let output = cmd.ok()?.stdout;
+    let new_annotation_set_id = String::from_utf8(output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("Created annotation set with ID: "))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "Failed to parse annotation set ID".to_string())?;
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("upload-dataset")
+        .arg(&new_dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--annotation-set-id")
+        .arg(&new_annotation_set_id)
+        .arg("--images")
+        .arg(&images_dir);
+    cmd.timeout(std::time::Duration::from_secs(600));
+    cmd.assert().success();
+
+    let snapshot_name = format!("QA LabelIndex {}", timestamp);
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-snapshot")
+        .arg(&new_dataset_id)
+        .arg("--description")
+        .arg(&snapshot_name);
+    cmd.timeout(std::time::Duration::from_secs(120));
+    let export_output = cmd.ok()?.stdout;
+    let export_output_str = String::from_utf8(export_output)?;
+
+    let snapshot_id = export_output_str
+        .lines()
+        .find_map(|line| {
+            if let Some(start) = line.find("[ss-") {
+                let rest = &line[start + 1..];
+                if let Some(end) = rest.find(']') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+            None
+        })
+        .ok_or_else(|| "Could not extract snapshot ID from create-snapshot output".to_string())?;
+
+    let task_id = export_output_str.lines().find_map(|line| {
+        if let Some(start) = line.find("[task-") {
+            let rest = &line[start + 1..];
+            if let Some(end) = rest.find(']') {
+                return Some(rest[..end].to_string());
+            }
+        }
+        None
+    });
+
+    wait_for_snapshot_ready(&snapshot_id, task_id.as_deref())?;
+
+    let test_dir = get_test_data_dir().join("label_index_roundtrip");
+    fs::create_dir_all(&test_dir)?;
+    let snapshot_download_dir = test_dir.join(format!("snapshot_{}", timestamp));
+    fs::create_dir_all(&snapshot_download_dir)?;
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("download-snapshot")
+        .arg(&snapshot_id)
+        .arg("--output")
+        .arg(&snapshot_download_dir);
+    cmd.timeout(std::time::Duration::from_secs(300));
+    cmd.assert().success();
+
+    let snapshot_arrow = snapshot_download_dir.join("dataset.arrow");
+    assert!(
+        snapshot_arrow.exists(),
+        "Expected dataset.arrow in snapshot download at {}",
+        snapshot_download_dir.display()
+    );
+
+    compare_label_index_pairs(&annotations_path, &snapshot_arrow)?;
+
+    // Cleanup
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-dataset").arg(&new_dataset_id);
+    let _ = cmd.output();
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-snapshot").arg(&snapshot_id);
+    let _ = cmd.output();
+
+    let _ = fs::remove_dir_all(&images_dir);
+    let _ = fs::remove_file(&annotations_path);
+    let _ = fs::remove_dir_all(&snapshot_download_dir);
 
     Ok(())
 }

@@ -2892,26 +2892,16 @@ async fn handle_upload_dataset(
     // the full label set from the annotations, so create the missing ones once,
     // up front, in a single request; every concurrent call then finds them.
     {
-        let existing: std::collections::HashSet<String> = client
-            .labels(dataset_id_parsed)
-            .await?
-            .into_iter()
-            .map(|label| label.name().to_string())
-            .collect();
-        let mut seen = std::collections::HashSet::new();
-        let mut to_create = Vec::new();
-        for label in samples
-            .iter()
-            .flat_map(|sample| sample.annotations())
-            .filter_map(|annotation| annotation.label())
-        {
-            if !existing.contains(label.as_str()) && seen.insert(label.as_str()) {
-                to_create.push(label.clone());
-            }
-        }
-        if !to_create.is_empty() {
-            log::debug!("Pre-creating {} labels before upload", to_create.len());
-            client.add_labels(dataset_id_parsed, &to_create).await?;
+        let (label_names, label_indices) = Client::collect_labels_from_samples(&samples)?;
+        if !label_names.is_empty() {
+            log::debug!("Pre-creating {} labels before upload", label_names.len());
+            client
+                .add_labels_with_indices(
+                    dataset_id_parsed,
+                    &label_names,
+                    label_indices.as_slice(),
+                )
+                .await?;
 
             // Confirm every label is committed server-side BEFORE launching the
             // concurrent batches, so populate2 never has to create a label under
@@ -2924,12 +2914,17 @@ async fn handle_upload_dataset(
                 .into_iter()
                 .map(|label| label.name().to_string())
                 .collect();
-            if let Some(missing) = to_create.iter().find(|n| !now_present.contains(n.as_str())) {
+            let expected_names: std::collections::HashSet<&str> =
+                label_names.iter().map(|s| s.as_str()).collect();
+            if let Some(missing) = expected_names
+                .iter()
+                .find(|n| !now_present.contains(**n))
+            {
                 return Err(edgefirst_client::Error::InvalidParameters(format!(
                     "label pre-creation did not complete: '{missing}' not present after creation"
                 )));
             }
-            log::debug!("Verified {} labels present before upload", to_create.len());
+            log::debug!("Verified {} labels present before upload", label_names.len());
         }
     }
 
