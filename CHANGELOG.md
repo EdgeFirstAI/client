@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `decode_leb128`: compressed RLE used 1-back delta decoding instead of the
+  correct pycocotools 2-back delta. All `CompressedRle` annotations — COCO
+  Stuff (`iscrowd=0` RLE) and crowd annotations (`iscrowd=1`) — silently
+  produced empty masks in prior versions. **Re-convert any Arrow files produced
+  from COCO Stuff or crowd RLE annotations.**
+- `decode_leb128`: characters outside the valid 48–111 ('0'–'o') range are now
+  rejected with an error instead of being silently accepted and corrupting
+  the decoded counts.
+- `decode_leb128`: malformed strings with an unterminated value (continuation
+  bit never clears) now return an error instead of panicking on shift overflow.
+
+### Changed
+
+- `CocoToArrowOptions`: `prefer_polygon: bool` renamed to `to_masks: bool` with
+  inverted semantics. Polygon contours are now the default for all segmentation
+  (both polygon and RLE). Set `to_masks = true` to opt into PNG raster storage
+  for RLE annotations.
+- CLI `coco-to-arrow`: all annotations are stored as polygon contours by
+  default. Use `--to-masks` to store RLE annotations as PNG binary masks.
+
 ## [2.10.3] - 2026-06-04
 
 ### Added

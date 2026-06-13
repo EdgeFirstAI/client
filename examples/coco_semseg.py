@@ -93,7 +93,7 @@ def convert_if_needed(json_path: Path, arrow_path: Path, group: str) -> None:
         print(f"  Skipping (already exists): {arrow_path.name}")
         return
     print(f"  Converting {json_path.name} → {arrow_path.name} …")
-    result = subprocess.run(
+    subprocess.run(
         [
             CLI, "coco-to-arrow",
             str(json_path),
@@ -130,6 +130,10 @@ def main() -> None:
 
     # Import each split.  import-coco handles dataset creation on first call
     # and annotation updates on subsequent calls.
+    #
+    # Note: import-coco always stores segmentation as polygon contours.
+    # The --to-masks flag is only available through coco-to-arrow for local
+    # Arrow files; it does not affect the Studio upload path.
     for json_path, image_dir, group in [
         (TRAIN_JSON, TRAIN_IMAGES, "train"),
         (VAL_JSON,   VAL_IMAGES,   "val"),
@@ -146,7 +150,7 @@ def main() -> None:
             check=True,
         )
 
-    print(f"\n✓ Done. Dataset '{DATASET_NAME}' uploaded to project '{STUDIO_PROJECT}'.")
+    print(f"\n[OK] Done. Dataset '{DATASET_NAME}' uploaded to project '{STUDIO_PROJECT}'.")
     print("  The semantic segmentation arrow files are also available locally:")
     print(f"    {TRAIN_ARROW}")
     print(f"    {VAL_ARROW}")

@@ -341,15 +341,29 @@ fn convert_image_annotations(
                 if let Some(seg) = &ann.segmentation {
                     match seg {
                         CocoSegmentation::Polygon(_) => {
-                            let poly =
-                                coco_segmentation_to_polygon(seg, image.width, image.height).ok();
+                            let poly = coco_segmentation_to_polygon(seg, image.width, image.height)
+                                .map_err(|e| {
+                                    #[cfg(feature = "profiling")]
+                                    tracing::warn!(ann_id = ann.id, "polygon decode failed: {e}");
+                                    e
+                                })
+                                .ok();
                             (poly, None)
                         }
                         CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_) => {
                             if to_masks {
                                 // Caller explicitly requested raster masks
-                                let mask_data =
-                                    coco_segmentation_to_mask_data(seg).ok().flatten();
+                                let mask_data = coco_segmentation_to_mask_data(seg)
+                                    .map_err(|e| {
+                                        #[cfg(feature = "profiling")]
+                                        tracing::warn!(
+                                            ann_id = ann.id,
+                                            "RLE mask decode failed: {e}"
+                                        );
+                                        e
+                                    })
+                                    .ok()
+                                    .flatten();
                                 (None, mask_data)
                             } else {
                                 // Default: decode RLE to polygon contours
@@ -358,6 +372,14 @@ fn convert_image_annotations(
                                     image.width,
                                     image.height,
                                 )
+                                .map_err(|e| {
+                                    #[cfg(feature = "profiling")]
+                                    tracing::warn!(
+                                        ann_id = ann.id,
+                                        "RLE-to-polygon decode failed: {e}"
+                                    );
+                                    e
+                                })
                                 .ok();
                                 (poly, None)
                             }

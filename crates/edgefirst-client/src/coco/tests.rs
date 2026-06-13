@@ -1827,7 +1827,7 @@ mod integration_tests {
     /// storing model prediction outputs alongside ground-truth).
     #[cfg(feature = "polars")]
     #[tokio::test]
-    async fn test_prefer_polygon_routes_rle_to_polygon_column() {
+    async fn test_to_masks_rle_routing() {
         use polars::prelude::*;
 
         let temp_dir = TempDir::new().unwrap();
