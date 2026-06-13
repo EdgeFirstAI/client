@@ -1497,10 +1497,8 @@ impl Client {
         }
 
         let existing = self.labels(dataset_id).await?;
-        let existing_names: std::collections::HashSet<String> = existing
-            .iter()
-            .map(|l| l.name().to_string())
-            .collect();
+        let existing_names: std::collections::HashSet<String> =
+            existing.iter().map(|l| l.name().to_string()).collect();
 
         let to_create: Vec<&String> = names
             .iter()
@@ -1524,7 +1522,23 @@ impl Client {
         Ok(())
     }
 
-    /// Add a label and assign a source-faithful table index via `label.update`.
+    /// Add a label with a caller-specified source-faithful index.
+    ///
+    /// Thin wrapper around [`add_labels_with_indices`](Self::add_labels_with_indices)
+    /// for single-label use. The `index` is preserved by assigning it via
+    /// `label.update` after creation, enabling round-trips through COCO or other
+    /// formats where category IDs are not contiguous starting at zero.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to add the label to
+    /// * `name` - Label name (must be unique within the dataset)
+    /// * `index` - The `label_index` to assign (e.g. COCO `category_id`)
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an error if the index is already held by
+    /// a different label on the server.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn add_label_with_index(
         &self,
@@ -1538,14 +1552,29 @@ impl Client {
             .await
     }
 
-    /// Add multiple labels and optionally assign source-faithful table indices.
+    /// Add multiple labels, optionally assigning source-faithful table indices.
     ///
     /// Creates missing labels via `label.add2` (names only), then assigns indices
-    /// via `label.update` for entries where `indices[i]` is `Some`. Each `None`
-    /// leaves that label at the server-assigned index. Uses a two-pass update
-    /// (see `examples/coco.py`) to avoid index collisions among labels in this
-    /// batch. Returns an error if a desired index is already held by an unrelated
-    /// label on the server.
+    /// via a two-pass `label.update` for entries where `indices[i]` is `Some`.
+    /// Each `None` leaves that label at the server-assigned index. The two-pass
+    /// strategy avoids index collisions when labels within the same batch would
+    /// swap positions. Names already present on the server are not duplicated.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to add labels to
+    /// * `names` - Label names to create (existing names are skipped)
+    /// * `indices` - Parallel slice of optional indices; `None` means use server default
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success. A no-op if `names` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidParameters` if `names` and `indices` have different
+    /// lengths, if any desired index conflicts with an existing unrelated label,
+    /// or if the batch contains duplicate index values.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names, indices), fields(dataset_id = %dataset_id, count = names.len())))]
     pub async fn add_labels_with_indices(
         &self,
@@ -1568,10 +1597,8 @@ impl Client {
         Self::validate_label_batch(names, Some(indices))?;
 
         let existing = self.labels(dataset_id).await?;
-        let existing_names: std::collections::HashSet<String> = existing
-            .iter()
-            .map(|l| l.name().to_string())
-            .collect();
+        let existing_names: std::collections::HashSet<String> =
+            existing.iter().map(|l| l.name().to_string()).collect();
 
         let to_create: Vec<&String> = names
             .iter()
@@ -1732,8 +1759,7 @@ impl Client {
         let mut seen_names = HashMap::new();
         let mut index_to_name = HashMap::new();
         for (i, name) in names.iter().enumerate() {
-            if let Some(prev) = seen_names.insert(name.as_str(), ()) {
-                let _ = prev;
+            if seen_names.insert(name.as_str(), ()).is_some() {
                 return Err(Error::InvalidParameters(format!(
                     "duplicate label name '{name}'"
                 )));
@@ -1822,17 +1848,40 @@ impl Client {
             }
         }
 
+        // Compute and validate temporary staging indices before any server writes.
+        // checked_add guards against caller-supplied target_index values large enough
+        // to wrap u64 when the offset is added. The occupancy check ensures no label
+        // outside the batch already sits at the temp slot (it would be displaced by
+        // the first pass and potentially clobber the second pass).
+        let mut staged: Vec<(String, u64, u64)> = Vec::with_capacity(to_sync.len());
         for (name, target_index) in &to_sync {
-            let mut label = by_name.get(name).cloned().expect("validated above");
-            label
-                .set_index(
-                    self,
-                    Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET + target_index,
-                )
-                .await?;
+            let temp_index = Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET
+                .checked_add(*target_index)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "label_index {target_index} for '{name}' is too large: \
+                         adding the staging offset would overflow u64"
+                    ))
+                })?;
+            for label in &current {
+                if label.index() == temp_index && !batch_names.contains_key(label.name()) {
+                    return Err(Error::InvalidParameters(format!(
+                        "staging index {temp_index} (needed to move '{name}' to \
+                         index {target_index}) is already occupied by label '{}'; \
+                         use a clean dataset or resolve the conflict",
+                        label.name()
+                    )));
+                }
+            }
+            staged.push((name.clone(), *target_index, temp_index));
         }
 
-        for (name, target_index) in &to_sync {
+        for (name, _, temp_index) in &staged {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label.set_index(self, *temp_index).await?;
+        }
+
+        for (name, target_index, _) in &staged {
             let mut label = by_name.get(name).cloned().expect("validated above");
             label.set_index(self, *target_index).await?;
         }

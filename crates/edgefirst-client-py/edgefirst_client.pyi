@@ -1354,18 +1354,23 @@ class Dataset:
         ...
 
     @overload
-    def add_label(self, name: str) -> None:
+    def add_label(self, name: str, index: Optional[int] = None) -> None:
         """
         Add a label to the dataset (new API).
 
         Args:
             name: The name of the label to add.
+            index: Optional source-faithful ``label_index`` to assign (e.g.
+                COCO ``category_id``). When ``None`` the server assigns the
+                next available index.
 
         Raises:
             TypeError: If dataset has no client reference.
+            Error: If the requested index is already held by a different label.
 
         Example:
             >>> dataset.add_label("person")
+            >>> dataset.add_label("car", index=3)
         """
         ...
 
@@ -1381,7 +1386,10 @@ class Dataset:
         ...
 
     def add_label(
-        self, name_or_client: Union[str, Client], name: Optional[str] = None
+        self,
+        name_or_client: Union[str, Client],
+        name: Optional[str] = None,
+        index: Optional[int] = None,
     ) -> None:
         """Add a label to the dataset."""
         ...
@@ -4716,10 +4724,26 @@ class Client:
         self, dataset_id: DatasetUID, name: str, index: Optional[int] = None
     ) -> None:
         """
-        Add a label to the dataset.
+        Add a label to the dataset, optionally preserving its source index.
 
-        When ``index`` is ``None``, uses the name-only API. When set, delegates to
-        ``add_label_with_index`` (two-pass ``label.update`` after creation).
+        When ``index`` is ``None``, the server assigns the next available
+        ``label_index``. When set, the index is pinned via a two-pass
+        ``label.update`` — use this to preserve COCO ``category_id`` or other
+        non-contiguous source indices across upload/download round-trips.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier (string, int, or
+                DatasetID object).
+            name (str): Label name, must be unique within the dataset.
+            index (int, optional): Source-faithful ``label_index`` to assign.
+                Defaults to ``None`` (server-assigned).
+
+        Raises:
+            Error: If the requested index is already held by a different label.
+
+        Example:
+            >>> client.add_label(dataset_id, "person")
+            >>> client.add_label(dataset_id, "car", index=3)
         """
         ...
 
@@ -4730,13 +4754,33 @@ class Client:
         indices: Optional[List[Optional[int]]] = None,
     ) -> None:
         """
-        Add multiple labels in one request.
+        Add multiple labels in one request, optionally assigning
+        source-faithful indices.
 
-        When ``indices`` is ``None``, uses the name-only API. When provided, delegates
-        to ``add_labels_with_indices`` (must match ``names`` length).
+        When ``indices`` is ``None``, creates all labels with server-assigned
+        indices in a single ``label.add2`` request. When provided, each label
+        is created then its index pinned via a two-pass ``label.update``.
+        Existing labels are skipped without error. The two-pass strategy avoids
+        collisions when labels within the same batch would swap positions.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier (string, int, or
+                DatasetID object).
+            names (List[str]): Label names to create.
+            indices (List[Optional[int]], optional): Parallel list of
+                ``label_index`` values. Must have the same length as ``names``
+                when provided. Use ``None`` entries to let the server assign
+                specific labels. Defaults to ``None`` (all server-assigned).
 
         Raises:
-            Error: If indices conflict within the batch or with unrelated existing labels.
+            Error: If ``indices`` length differs from ``names``, or if any
+                requested index conflicts with an existing unrelated label.
+
+        Example:
+            >>> client.add_labels(dataset_id, ["person", "car", "truck"])
+            >>> client.add_labels(dataset_id, ["person", "car"],
+            ...                   indices=[1, 3])
+            >>> client.add_labels(dataset_id, ["a", "b"], indices=[None, 5])
         """
         ...
 
@@ -6035,8 +6079,8 @@ class Client:
 
         Args:
             task_id (Union[TaskID, int, str]): The ID of the task to update.
-            stages (List[Tuple[str, str]]): A list of (name, description) tuples
-                                            representing the new stages for the task.
+            stages (List[Tuple[str, str]]): A list of (name, description)
+                tuples representing the new stages for the task.
 
         Returns:
             None

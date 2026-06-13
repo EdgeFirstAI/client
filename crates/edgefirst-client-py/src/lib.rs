@@ -2066,11 +2066,29 @@ impl Dataset {
         Ok(labels.into_iter().map(Label).collect())
     }
 
-    /// Add a label to this dataset.
+    /// Add a label to this dataset, optionally preserving its source index.
     ///
-    /// New API (v2.6.0+): `dataset.add_label("name")` - uses embedded client
-    /// reference Deprecated API: `dataset.add_label(client, "name")` -
-    /// passing client explicitly
+    /// New API (v2.6.0+): ``dataset.add_label(name)`` or
+    /// ``dataset.add_label(name, index=N)`` — uses the embedded client.
+    /// Deprecated API: ``dataset.add_label(client, name)`` — passing the
+    /// client explicitly (will be removed in v3.0.0).
+    ///
+    /// When ``index`` is ``None``, the server assigns the next available
+    /// ``label_index``. When set, the index is pinned via a two-pass
+    /// ``label.update`` — use this to preserve COCO ``category_id`` or
+    /// other source indices across round-trips.
+    ///
+    /// Args:
+    ///     name: Label name (new API, first positional argument).
+    ///     index: Optional source-faithful ``label_index`` to assign.
+    ///
+    /// Raises:
+    ///     TypeError: If the dataset has no embedded client reference.
+    ///     Error: If the requested index is already held by a different label.
+    ///
+    /// Example:
+    ///     >>> dataset.add_label("person")
+    ///     >>> dataset.add_label("car", index=3)
     #[pyo3(signature = (name_or_client, name=None, index=None))]
     #[tokio_wrap::sync]
     pub fn add_label(
@@ -2087,14 +2105,13 @@ impl Dataset {
                 Error::TypeError("add_label(client, name) requires name parameter".to_string())
             })?;
             match index {
-                None => client
-                    .0
-                    .add_label(self.inner.id(), &label_name)
-                    .await?,
-                Some(i) => client
-                    .0
-                    .add_label_with_index(self.inner.id(), &label_name, i)
-                    .await?,
+                None => client.0.add_label(self.inner.id(), &label_name).await?,
+                Some(i) => {
+                    client
+                        .0
+                        .add_label_with_index(self.inner.id(), &label_name, i)
+                        .await?
+                }
             }
             return Ok(());
         }
@@ -5319,6 +5336,24 @@ impl Client {
         Ok(labels)
     }
 
+    /// Add a label to the dataset, optionally preserving its source index.
+    ///
+    /// When ``index`` is ``None``, the server assigns the next available
+    /// ``label_index``. When set, the index is pinned to the provided value via
+    /// a two-pass ``label.update`` — use this to preserve COCO ``category_id``
+    /// or other non-contiguous source indices across round-trips.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     name: Label name, unique within the dataset.
+    ///     index: Optional source-faithful ``label_index`` to assign.
+    ///
+    /// Raises:
+    ///     Error: If the requested index is already held by a different label.
+    ///
+    /// Example:
+    ///     >>> client.add_label(dataset_id, "person")          # server-assigned index
+    ///     >>> client.add_label(dataset_id, "person", index=1) # pin to index 1
     #[pyo3(signature = (dataset_id, name, index=None))]
     #[tokio_wrap::sync]
     pub fn add_label<'py>(
@@ -5330,18 +5365,28 @@ impl Client {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         match index {
             None => Ok(self.0.add_label(dataset_id.0, name).await?),
-            Some(i) => Ok(self
-                .0
-                .add_label_with_index(dataset_id.0, name, i)
-                .await?),
+            Some(i) => Ok(self.0.add_label_with_index(dataset_id.0, name, i).await?),
         }
     }
 
     /// Add multiple labels, optionally assigning source-faithful indices.
     ///
-    /// When ``indices`` is ``None``, delegates to the name-only
-    /// [`add_labels`](Self::add_labels). Otherwise calls
-    /// ``add_labels_with_indices`` on the Rust client.
+    /// When ``indices`` is ``None``, creates all labels with server-assigned
+    /// indices in one request. When provided, pins each label to the
+    /// corresponding index value (``None`` entries use server defaults).
+    /// Existing labels are skipped without error. Uses a two-pass update to
+    /// avoid collisions when labels within the batch swap positions.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     names: List of label names to create.
+    ///     indices: Optional list of ``label_index`` values parallel to
+    ///         ``names``. Must have the same length as ``names`` when provided.
+    ///         Use ``None`` entries to let the server assign specific labels.
+    ///
+    /// Raises:
+    ///     Error: If ``indices`` length differs from ``names``, or if any
+    ///         requested index conflicts with an existing unrelated label.
     #[pyo3(signature = (dataset_id, names, indices=None))]
     #[tokio_wrap::sync]
     pub fn add_labels<'py>(
