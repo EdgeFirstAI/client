@@ -1848,14 +1848,40 @@ impl Client {
             }
         }
 
+        // Compute and validate temporary staging indices before any server writes.
+        // checked_add guards against caller-supplied target_index values large enough
+        // to wrap u64 when the offset is added. The occupancy check ensures no label
+        // outside the batch already sits at the temp slot (it would be displaced by
+        // the first pass and potentially clobber the second pass).
+        let mut staged: Vec<(String, u64, u64)> = Vec::with_capacity(to_sync.len());
         for (name, target_index) in &to_sync {
-            let mut label = by_name.get(name).cloned().expect("validated above");
-            label
-                .set_index(self, Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET + target_index)
-                .await?;
+            let temp_index = Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET
+                .checked_add(*target_index)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "label_index {target_index} for '{name}' is too large: \
+                         adding the staging offset would overflow u64"
+                    ))
+                })?;
+            for label in &current {
+                if label.index() == temp_index && !batch_names.contains_key(label.name()) {
+                    return Err(Error::InvalidParameters(format!(
+                        "staging index {temp_index} (needed to move '{name}' to \
+                         index {target_index}) is already occupied by label '{}'; \
+                         use a clean dataset or resolve the conflict",
+                        label.name()
+                    )));
+                }
+            }
+            staged.push((name.clone(), *target_index, temp_index));
         }
 
-        for (name, target_index) in &to_sync {
+        for (name, _, temp_index) in &staged {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label.set_index(self, *temp_index).await?;
+        }
+
+        for (name, target_index, _) in &staged {
             let mut label = by_name.get(name).cloned().expect("validated above");
             label.set_index(self, *target_index).await?;
         }
