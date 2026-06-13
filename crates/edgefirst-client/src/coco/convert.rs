@@ -269,7 +269,7 @@ fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
 
             // Each ASCII character encodes 6 bits: 5 data bits + 1 continuation bit.
             // Characters 48–111 ('0'–'o') are valid; subtract 48 to get 0–63.
-            let decoded = if byte >= 48 {
+            let decoded = if (48..=111).contains(&byte) {
                 byte - 48
             } else {
                 return Err(Error::CocoError(format!(
@@ -281,6 +281,11 @@ fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
             value |= (decoded & 0x1F) << shift;
             more = decoded >= 32;
             shift += 5;
+            if shift > 60 {
+                return Err(Error::CocoError(
+                    "Compressed RLE value overflow (malformed input)".into(),
+                ));
+            }
         }
 
         // Sign-extend if the high data bit of the last chunk is set.
@@ -295,7 +300,7 @@ fn decode_leb128(s: &str) -> Result<Vec<u32>, Error> {
     // Undo the 2-back delta encoding used by rleToString:
     //   encode: x[i] = counts[i] - counts[i-2]   (for i > 2)
     //   decode: counts[i] = x[i] + counts[i-2]   (for i > 2)
-    // The first two values are stored as-is (no delta).
+    // The first three values (indices 0–2) are stored as-is (no delta).
     let mut result = Vec::with_capacity(counts.len());
     for (idx, &x) in counts.iter().enumerate() {
         let val = if idx > 2 {
@@ -955,5 +960,79 @@ mod tests {
             encode_rle(&mask, 10, 10).is_err(),
             "Should reject mask length != width * height"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // decode_leb128 unit tests
+    // -----------------------------------------------------------------------
+    // Encoding reference (pycocotools maskApi.c rleToString):
+    //   - Each value is split into 6-bit chunks: 5 data bits + 1 continuation bit.
+    //   - Characters are ASCII 48+chunk ('0'–'o', range 48–111).
+    //   - Continuation bit (bit 5 of the chunk) = 1 means more chunks follow.
+    //   - Delta encoding (encoder): x[i] -= x[i-2]  for i > 2.
+    //   - Delta decoding (decoder): x[i] += result[i-2]  for i > 2.
+
+    #[test]
+    fn test_decode_leb128_empty() {
+        assert_eq!(decode_leb128("").unwrap(), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn test_decode_leb128_single_value() {
+        // '4' (ASCII 52 = 48+4): decoded=4, no continuation, no sign-ext → [4]
+        assert_eq!(decode_leb128("4").unwrap(), vec![4]);
+    }
+
+    #[test]
+    fn test_decode_leb128_multi_chunk_continuation() {
+        // Value 32 requires 2 chunks (doesn't fit in 5 bits):
+        //   chunk 1: data=0b00000, continuation=1 → char 48+32='P' (80)
+        //   chunk 2: data=0b00001, continuation=0 → char 48+1='1' (49)
+        // "0P1" → counts [0, 32], no delta (only 2 elements).
+        assert_eq!(decode_leb128("0P1").unwrap(), vec![0, 32]);
+    }
+
+    #[test]
+    fn test_decode_leb128_sign_extension() {
+        // 'O' (ASCII 79 = 48+31): decoded=31=0b11111, bit4 set → sign-extended to -1.
+        // "547O" → raw counts [5, 4, 7, -1].
+        // 2-back delta undo at idx=3: -1 + result[1] = -1 + 4 = 3.
+        // Final: [5, 4, 7, 3].
+        assert_eq!(decode_leb128("547O").unwrap(), vec![5, 4, 7, 3]);
+    }
+
+    #[test]
+    fn test_decode_leb128_invalid_char_below_range() {
+        // '/' is ASCII 47, below the valid 48–111 range.
+        assert!(decode_leb128("/").is_err());
+    }
+
+    #[test]
+    fn test_decode_leb128_invalid_char_above_range() {
+        // 'p' is ASCII 112, above the valid 48–111 range.
+        assert!(decode_leb128("p").is_err());
+    }
+
+    #[test]
+    fn test_decode_leb128_2back_delta_boundary() {
+        // Verifies the exact i>2 boundary from maskApi.c rleToString.
+        // Absolute counts [2, 2, 2, 2] → delta-encoded [2, 2, 2, 0]
+        //   (encoder: counts[3] -= counts[1] → 2-2=0; indices 0-2 unchanged).
+        // String "2220" → raw [2, 2, 2, 0]:
+        //   idx=0: 2 (as-is, not > 2)
+        //   idx=1: 2 (as-is, not > 2)
+        //   idx=2: 2 (as-is — key: idx=2 is NOT > 2, so no delta undo here)
+        //   idx=3: 0 + result[1] = 0 + 2 = 2 (idx=3 IS > 2 → delta undone)
+        // Changing idx>2 to idx>=2 would produce [2, 2, 4, 4] instead.
+        assert_eq!(decode_leb128("2220").unwrap(), vec![2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn test_decode_leb128_overflow_guard() {
+        // Craft a string where the continuation bit never clears (all chars >= 80,
+        // i.e., decoded >= 32). After enough chunks shift exceeds the guard limit.
+        // Each 'P' (80) has continuation=1 and data=0. 13 'P' chars → shift=65.
+        let malformed = "P".repeat(13);
+        assert!(decode_leb128(&malformed).is_err());
     }
 }
