@@ -387,10 +387,10 @@ fn compare_label_index_pairs(
     let mut redownloaded_file = File::open(redownloaded_path)?;
     let redownloaded_df = IpcReader::new(&mut redownloaded_file).finish()?;
 
-    let original_has = original_df.column("label_index").is_ok()
-        && original_df.column("label").is_ok();
-    let redownloaded_has = redownloaded_df.column("label_index").is_ok()
-        && redownloaded_df.column("label").is_ok();
+    let original_has =
+        original_df.column("label_index").is_ok() && original_df.column("label").is_ok();
+    let redownloaded_has =
+        redownloaded_df.column("label_index").is_ok() && redownloaded_df.column("label").is_ok();
 
     if !original_has && !redownloaded_has {
         println!("Skipping label_index comparison (column absent in both files)");

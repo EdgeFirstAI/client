@@ -1141,7 +1141,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "edgefirst-cli"
-version = "2.10.3"
+version = "2.11.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client"
-version = "2.10.3"
+version = "2.11.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client-ffi"
-version = "2.10.3"
+version = "2.11.0"
 dependencies = [
  "async-compat",
  "chrono",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "edgefirst-client-py"
-version = "2.10.3"
+version = "2.11.0"
 dependencies = [
  "edgefirst-client",
  "env_logger",
@@ -5291,7 +5291,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "2.10.3"
+version = "2.11.0"
 dependencies = [
  "uniffi",
 ]

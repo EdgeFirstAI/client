@@ -2896,11 +2896,7 @@ async fn handle_upload_dataset(
         if !label_names.is_empty() {
             log::debug!("Pre-creating {} labels before upload", label_names.len());
             client
-                .add_labels_with_indices(
-                    dataset_id_parsed,
-                    &label_names,
-                    label_indices.as_slice(),
-                )
+                .add_labels_with_indices(dataset_id_parsed, &label_names, label_indices.as_slice())
                 .await?;
 
             // Confirm every label is committed server-side BEFORE launching the
@@ -2916,15 +2912,15 @@ async fn handle_upload_dataset(
                 .collect();
             let expected_names: std::collections::HashSet<&str> =
                 label_names.iter().map(|s| s.as_str()).collect();
-            if let Some(missing) = expected_names
-                .iter()
-                .find(|n| !now_present.contains(**n))
-            {
+            if let Some(missing) = expected_names.iter().find(|n| !now_present.contains(**n)) {
                 return Err(edgefirst_client::Error::InvalidParameters(format!(
                     "label pre-creation did not complete: '{missing}' not present after creation"
                 )));
             }
-            log::debug!("Verified {} labels present before upload", label_names.len());
+            log::debug!(
+                "Verified {} labels present before upload",
+                label_names.len()
+            );
         }
     }
 

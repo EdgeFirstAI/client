@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-06-12
+
+### Added
+
+- `Client::add_label_with_index` — create a single label with a caller-specified `label_index`; used by `upload-dataset` to preserve source indices
+- `Client::add_labels_with_indices` — batch-create labels with explicit index values in one request (`label.add2` + `label.update`)
+
+### Fixed
+
+- `upload-dataset`: `label_index` values from the source dataset (COCO `category_id`, LVIS, etc.) are now preserved on snapshot upload. Previously labels were assigned new auto-incremented indices, causing snapshots to diverge from the source and breaking downstream workflows that depend on stable category indices (DE-2709)
+- `edgefirst_client.pyi`: corrected `Box2d.__init__` parameter names from `left`/`top` back to `x`/`y` to match the Rust implementation; fixed `set_stages` parameter type from `Dict[str, str]` to `List[Tuple[str, str]]`; aligned additional method signatures with their runtime counterparts (DE-2693)
+
 ### Changed
 
 - Updated Rust workspace dependencies (Polars 0.54, PyO3 0.28, pyo3-polars 0.27, and related crates)
