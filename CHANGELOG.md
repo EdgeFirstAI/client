@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `CLI.md`: pip install note, Coffee Cup examples, Python integration section, cross-links to `examples/`
 - `edgefirst_client.pyi`: module overview, example cross-references, removed stale `with_token_path` doc examples
+- Refreshed `Cargo.lock` (quinn-proto, memmap2, rustls, uniffi, and related crates) and hash-locked `requirements.txt` for CI security audit and `--require-hashes` installs
 
 ## [2.11.0] - 2026-06-12
 

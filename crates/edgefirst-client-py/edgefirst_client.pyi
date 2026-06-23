@@ -3,7 +3,8 @@ from __future__ import annotations
 """
 EdgeFirst Studio Python client stubs.
 
-Install: ``pip install edgefirst-client`` (includes the ``edgefirst-client`` CLI).
+Install: ``pip install edgefirst-client`` (includes the ``edgefirst-client``
+CLI).
 
 Tutorials: ``examples/README.md`` in the GitHub repository.
 CLI reference: ``CLI.md``.
