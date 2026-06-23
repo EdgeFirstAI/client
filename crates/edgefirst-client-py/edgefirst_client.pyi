@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""
+EdgeFirst Studio Python client stubs.
+
+Install: ``pip install edgefirst-client`` (includes the ``edgefirst-client`` CLI).
+
+Tutorials: ``examples/README.md`` in the GitHub repository.
+CLI reference: ``CLI.md``.
+"""
+
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -4303,6 +4312,11 @@ class Client:
         >>> dataset = client.dataset("ds-abc123")
         >>> datasets = client.datasets()  # List all datasets
 
+    See also:
+        Repository examples: ``examples/01_authentication.py`` (auth),
+        ``examples/04_polars_dataframe.py`` (DataFrames),
+        ``examples/06_create_annotations.py`` (populate_samples).
+
     Note:
         The client also provides various utility methods for interacting with
         datasets and converting them to and from Polars DataFrames.
@@ -4338,6 +4352,10 @@ class Client:
             use_token_file (bool): Whether to use the local token file for
                                    authentication if no token, username, or
                                    password is provided.  Defaults to true.
+
+        See also:
+            After ``edgefirst-client login``, ``Client()`` loads the cached
+            token automatically. See ``examples/01_authentication.py``.
         """
         ...
 
@@ -5028,6 +5046,9 @@ class Client:
 
             Applications should detect the status change to
             reset their progress bar for the second phase.
+
+        See also:
+            ``examples/05_download_dataset.py`` and CLI ``download-dataset``.
         """
         ...
 
@@ -5137,6 +5158,10 @@ class Client:
             DataFrame: A Polars DataFrame with 13 columns (name, frame,
                       object_id, label, label_index, group, mask, box2d,
                       box3d, size, location, pose, degradation).
+
+        See also:
+            CLI ``download-annotations`` exports Arrow for ``polars.read_ipc``.
+            ``examples/04_polars_dataframe.py``.
         """
         ...
 
@@ -5417,6 +5442,9 @@ class Client:
             ...     [sample],
             ...     lambda curr, total: print(f"{curr}/{total}")
             ... )
+
+        See also:
+            ``examples/06_create_annotations.py``.
         """
         ...
 
@@ -5849,7 +5877,7 @@ class Client:
             Error: If snapshot or project doesn't exist, or restoration fails.
 
         Example:
-            >>> client = Client().with_token_path(None)
+            >>> client = Client()
             >>> result = client.restore_snapshot(
             ...     "p-1",
             ...     "ss-abc123",
@@ -5894,7 +5922,7 @@ class Client:
                 the request fails.
 
         Example:
-            >>> client = Client().with_token_path(None)
+            >>> client = Client()
             >>> result = client.create_snapshot_from_dataset(
             ...     "ds-12345", "My Backup"
             ... )

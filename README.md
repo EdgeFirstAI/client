@@ -420,7 +420,7 @@ from pathlib import Path
 from edgefirst_client import Client
 
 # Create snapshot from local folder (auto-generates manifest)
-client = Client().with_token_path(None)
+client = Client()
 snapshot = client.create_snapshot("./my_images/")
 print(f"Created snapshot: {snapshot.id()}")
 
@@ -502,6 +502,19 @@ metrics = {
 session.set_metrics(client, metrics)
 ```
 
+### Python Examples
+
+Install the published wheel (no Rust build required):
+
+```bash
+pip install edgefirst-client
+edgefirst-client login
+```
+
+Tutorials use the public [Coffee Cup](https://edgefirst.studio/public/datasets/ds-145f/gallery) dataset (`ds-145f`) on SaaS. See **[examples/README.md](examples/README.md)** for the full index of scripts, notebooks, and CLI↔Python hybrid workflows.
+
+Contributors validating against a local build should use `maturin develop` — see [examples/README.md](examples/README.md#contributor-setup-local-maturin-build) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Architecture
 
 EdgeFirst Client is a REST API client built with:
@@ -519,6 +532,7 @@ EdgeFirst Client is a REST API client built with:
 - **Python API Documentation**: Available on [PyPI](https://pypi.org/project/edgefirst-client/)
 - **Android SDK Documentation**: See [ANDROID.md](ANDROID.md)
 - **iOS/macOS SDK Documentation**: See [APPLE.md](APPLE.md)
+- **Python Examples**: [examples/README.md](examples/README.md)
 - **CLI Man Page**: See [CLI.md](CLI.md)
 - **Dataset Format Specification**: [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/)
 - **AGTG Workflow Tutorial**: [Automated Ground-Truth Generation](https://doc.edgefirst.ai/latest/datasets/tutorials/annotations/automatic/)

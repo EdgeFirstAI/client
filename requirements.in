@@ -23,5 +23,6 @@ pillow>=12.0,<13
 polars>=1.35,<2
 slipcover>=1.0,<2
 tqdm>=4.67,<5
+jupyter>=1.0,<2
 unittest-xml-reporting>=3.2,<4
 requests>=2.32.5,<3

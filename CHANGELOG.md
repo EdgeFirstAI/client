@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python tutorial suite under `examples/`: paired `.py` scripts and `.ipynb` notebooks covering authentication, Coffee Cup (`ds-145f`) read workflows, Polars/Pandas DataFrames, downloads, and sandbox write examples (DE-2762)
+- `examples/README.md` with PyPI quick start (`pip install edgefirst-client` installs CLI + Python API)
+
+### Changed
+
+- `CLI.md`: pip install note, Coffee Cup examples, Python integration section, cross-links to `examples/`
+- `edgefirst_client.pyi`: module overview, example cross-references, removed stale `with_token_path` doc examples
+
 ## [2.11.0] - 2026-06-12
 
 ### Added
