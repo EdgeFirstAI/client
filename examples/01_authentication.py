@@ -31,7 +31,7 @@ def main() -> None:
     client.verify_token()
 
     print("Server URL:", client.url)
-    print("Username:", client.username())
+    print("Username:", client.username)
     print("Token expires:", client.token_expiration)
     print("Token length:", len(client.token()))
     print()
