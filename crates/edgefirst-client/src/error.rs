@@ -214,7 +214,15 @@ impl std::fmt::Display for Error {
             Error::InvalidResponse => write!(f, "Invalid server response"),
             Error::NotImplemented => write!(f, "Not implemented"),
             Error::PartTooLarge => write!(f, "File part size exceeds maximum limit"),
-            Error::InvalidFileType(s) => write!(f, "Invalid file type: {}", s),
+            // Keep this list in sync with `FileType::try_from` in dataset.rs
+            // (the source of truth for accepted tokens).
+            Error::InvalidFileType(s) => write!(
+                f,
+                "Invalid file type: {}. Valid types: image, lidar.pcd, lidar.png, \
+                 lidar.jpg, radar.pcd, radar.png, all (aliases also accepted: \
+                 lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube)",
+                s
+            ),
             Error::InvalidAnnotationType(s) => write!(f, "Invalid annotation type: {}", s),
             Error::UnsupportedFormat(s) => write!(f, "Unsupported format: {}", s),
             Error::MissingImages(s) => write!(f, "Missing images: {}", s),
@@ -545,6 +553,33 @@ mod tests {
             file_type
         );
         assert!(wrapped_str.starts_with("Invalid file type: "));
+        // The valid-types list is written with `\` line continuations. Rust
+        // strips the newline *and* the leading whitespace of each continued
+        // line, so the rendered message must read as one clean line with no
+        // literal indentation padding (i.e. no doubled spaces).
+        assert!(
+            !wrapped_str.contains("  "),
+            "message must not contain doubled spaces from continuation indent: {wrapped_str:?}"
+        );
+        assert!(wrapped_str.contains(
+            "Valid types: image, lidar.pcd, lidar.png, lidar.jpg, radar.pcd, radar.png, all"
+        ));
+        // Every alias accepted by FileType::try_from must be advertised so users
+        // are not told a valid value is invalid.
+        for alias in [
+            "lidar.depth",
+            "depth.png",
+            "depthmap",
+            "lidar.jpeg",
+            "lidar.reflect",
+            "pcd",
+            "cube",
+        ] {
+            assert!(
+                wrapped_str.contains(alias),
+                "message should mention accepted alias '{alias}': {wrapped_str:?}"
+            );
+        }
     }
 
     #[test]

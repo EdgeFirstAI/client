@@ -205,6 +205,35 @@ impl Organization {
     }
 }
 
+/// Billing usage summary for the authenticated user's organization.
+///
+/// `org.get` only returns `latest_credit`; the spendable balance lives in the
+/// `accounting.get_usage_summary` RPC. `credits` are promotional/plan credits,
+/// `funds` are paid balance, and `total` is what is actually available to spend.
+#[derive(Deserialize, Clone, Debug)]
+pub struct UsageSummary {
+    #[serde(default)]
+    credits: f64,
+    #[serde(default)]
+    funds: f64,
+    #[serde(default, rename = "total_funds_and_credits")]
+    total: f64,
+}
+
+impl UsageSummary {
+    pub fn credits(&self) -> f64 {
+        self.credits
+    }
+
+    pub fn funds(&self) -> f64 {
+        self.funds
+    }
+
+    pub fn total(&self) -> f64 {
+        self.total
+    }
+}
+
 typeid!(
     /// Unique identifier for a project within EdgeFirst Studio.
     ///
@@ -701,7 +730,11 @@ pub struct SnapshotRestoreResult {
     pub annotation_set_id: AnnotationSetID,
     #[serde(default)]
     pub task_id: Option<TaskID>,
-    pub date: DateTime<Utc>,
+    // The snapshots.restore RPC response does not include a `date` field
+    // (see dve-database api/snapshots.go SnapshotAPIReturn), so accept its
+    // absence rather than failing deserialization.
+    #[serde(default)]
+    pub date: Option<DateTime<Utc>>,
 }
 
 /// Parameters for creating a snapshot from an existing dataset on the server.
@@ -2128,6 +2161,29 @@ mod tests {
         let id = OrganizationID::from(54321);
         let value: u64 = id.into();
         assert_eq!(value, 54321);
+    }
+
+    // ========== UsageSummary Tests ==========
+    #[test]
+    fn test_usage_summary_deserialize_and_accessors() {
+        let usage: UsageSummary = serde_json::from_str(
+            r#"{"credits": 12.5, "funds": 49092.92, "total_funds_and_credits": 49105.42}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credits(), 12.5);
+        assert_eq!(usage.funds(), 49092.92);
+        assert_eq!(usage.total(), 49105.42);
+    }
+
+    #[test]
+    fn test_usage_summary_defaults_for_missing_fields() {
+        // All fields are #[serde(default)] and `total` is renamed from
+        // `total_funds_and_credits`, so an empty object yields zeros and an
+        // unrenamed `total` key is ignored.
+        let usage: UsageSummary = serde_json::from_str("{}").unwrap();
+        assert_eq!(usage.credits(), 0.0);
+        assert_eq!(usage.funds(), 0.0);
+        assert_eq!(usage.total(), 0.0);
     }
 
     // ========== ProjectID Tests ==========

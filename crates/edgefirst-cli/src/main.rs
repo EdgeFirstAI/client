@@ -170,7 +170,8 @@ enum Command {
         groups: Vec<String>,
 
         /// Fetch the data types for the dataset. Valid types: image, lidar.pcd,
-        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all.
+        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all (aliases also accepted:
+        /// lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube).
         /// Use "all" to download all sensor types.
         #[clap(long, default_value = "image", value_delimiter = ',')]
         types: Vec<FileType>,
@@ -494,10 +495,9 @@ enum Command {
     ValidateSnapshot {
         /// Snapshot directory to validate
         path: PathBuf,
-
-        /// Show detailed validation issues
-        #[clap(long, short = 'v')]
-        verbose: bool,
+        // Detailed validation issues are shown via the global -v/--verbose flag;
+        // a local `verbose` here collides with the global one and makes clap
+        // panic on a type mismatch (global u8 count vs local bool).
     },
     /// Convert COCO annotations to EdgeFirst Arrow format.
     ///
@@ -777,12 +777,26 @@ async fn handle_token(client: &Client) -> Result<(), Error> {
 async fn handle_organization(client: &Client) -> Result<(), Error> {
     let org = client.organization().await?;
     println!(
-        "Username: {}\nOrganization: {}\nID: {}\nCredits: {}",
+        "Username: {}\nOrganization: {}\nID: {}",
         client.username().await?,
         org.name(),
         org.id(),
-        org.credits()
     );
+    // org.get only exposes `latest_credit`; the spendable balance (credits +
+    // funds) comes from the accounting usage summary. Fall back to the legacy
+    // credit field if that call fails so the basic command still works.
+    match client.usage_summary().await {
+        Ok(usage) => println!(
+            "Credits: {:.2}\nFunds: {:.2}\nTotal available: {:.2}",
+            usage.credits(),
+            usage.funds(),
+            usage.total(),
+        ),
+        Err(err) => {
+            println!("Credits: {}", org.credits());
+            eprintln!("Warning: could not fetch funds/total: {err}");
+        }
+    }
     Ok(())
 }
 
@@ -5117,8 +5131,8 @@ async fn main() -> Result<(), Error> {
         } => {
             return handle_generate_arrow(folder.clone(), output.clone(), *detect_sequences);
         }
-        Command::ValidateSnapshot { path, verbose } => {
-            return handle_validate_snapshot(path.clone(), *verbose);
+        Command::ValidateSnapshot { path } => {
+            return handle_validate_snapshot(path.clone(), args.verbose > 0);
         }
         #[cfg(feature = "polars")]
         Command::Migrate { input, output } => {

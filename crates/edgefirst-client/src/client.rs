@@ -6,7 +6,7 @@ use crate::{
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
         NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
-        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset,
+        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset, UsageSummary,
         SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
         StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
         TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
@@ -1407,6 +1407,15 @@ impl Client {
             .await
     }
 
+    /// Returns the billing usage summary (credits, funds, total spendable) for
+    /// the authenticated user's organization. `org.get` only exposes
+    /// `latest_credit`; the spendable balance comes from this RPC.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn usage_summary(&self) -> Result<UsageSummary, Error> {
+        self.rpc::<(), UsageSummary>("accounting.get_usage_summary".to_owned(), None)
+            .await
+    }
+
     /// Returns a list of projects available to the user.  The projects are
     /// returned as a vector of Project objects.  If a name filter is
     /// provided, only projects matching the filter are returned.
@@ -2427,7 +2436,9 @@ impl Client {
         annotation_set_id: AnnotationSetID,
     ) -> Result<(), Error> {
         let params = HashMap::from([("id", annotation_set_id)]);
-        let _: serde_json::Value = self.rpc("annset.delete".to_owned(), Some(params)).await?;
+        // Server registers the deletion endpoint as `annset.del` (see
+        // dve-database api/annotation_sets_handler.go), not `annset.delete`.
+        let _: serde_json::Value = self.rpc("annset.del".to_owned(), Some(params)).await?;
         Ok(())
     }
 
@@ -2493,7 +2504,13 @@ impl Client {
             dataset_id,
             annotation_set_id: Some(annotation_set_id),
             groups,
-            types: annotation_types.iter().map(|t| t.to_string()).collect(),
+            // Use server-recognized type names (box2d/box3d/mask), matching
+            // samples(); the Display impl emits "polygon" for segmentation,
+            // which the server's types filter does not accept.
+            types: annotation_types
+                .iter()
+                .map(|t| t.as_server_type().to_string())
+                .collect(),
             labels: &labels,
         };
 
@@ -2704,7 +2721,8 @@ impl Client {
         groups: &[String],
         types: &[FileType],
     ) -> Result<SamplesCountResult, Error> {
-        // Use server type names for API calls (e.g., "box" instead of "box2d")
+        // Use server-recognized annotation type names (box2d/box3d/mask) for
+        // the types filter; the server maps them to its internal DB types.
         let types = annotation_types
             .iter()
             .map(|t| t.as_server_type().to_string())
@@ -2753,7 +2771,8 @@ impl Client {
         types: &[FileType],
         progress: Option<Sender<Progress>>,
     ) -> Result<Vec<Sample>, Error> {
-        // Use server type names for API calls (e.g., "box" instead of "box2d")
+        // Use server-recognized annotation type names (box2d/box3d/mask) for
+        // the types filter; the server maps them to its internal DB types.
         let types_vec = annotation_types
             .iter()
             .map(|t| t.as_server_type().to_string())

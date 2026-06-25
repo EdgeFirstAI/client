@@ -103,6 +103,9 @@ impl TryFrom<&str> for FileType {
     type Error = crate::Error;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // Source of truth for accepted file-type tokens. When changing these
+        // arms, also update the user-facing lists in `Error::InvalidFileType`
+        // (error.rs) and the CLI `--types` help text (edgefirst-cli main.rs).
         match s {
             "image" => Ok(FileType::Image),
             "lidar.pcd" => Ok(FileType::LidarPcd),
@@ -276,19 +279,22 @@ impl From<&String> for AnnotationType {
 }
 
 impl AnnotationType {
-    /// Returns the server API type name for this annotation type.
+    /// Returns the annotation type name expected by the server's
+    /// samples/annotations RPC `types` filter.
     ///
-    /// The server uses different naming conventions than the client:
-    /// - `Box2d` → `"box"` (server) vs `"box2d"` (client display)
-    /// - `Box3d` → `"box3d"` (same)
-    /// - `Polygon` → `"seg"` (server) vs `"polygon"` (client display)
-    /// - `Mask` → `"seg"` (server) vs `"mask"` (client display)
+    /// The bridge endpoint accepts these I/O names and maps them to its
+    /// internal DB types (`box`/`3dbox`/`seg`) itself; sending the DB names
+    /// directly does not match the filter and silently drops it (see
+    /// dve-database `api/bridge_handler.go` `TYPE_MAP`).
+    /// - `Box2d` → `"box2d"`
+    /// - `Box3d` → `"box3d"`
+    /// - `Polygon` / `Mask` → `"mask"`
     pub fn as_server_type(&self) -> &'static str {
         match self {
-            AnnotationType::Box2d => "box",
+            AnnotationType::Box2d => "box2d",
             AnnotationType::Box3d => "box3d",
-            AnnotationType::Polygon => "seg",
-            AnnotationType::Mask => "seg",
+            AnnotationType::Polygon => "mask",
+            AnnotationType::Mask => "mask",
         }
     }
 }
@@ -2801,6 +2807,29 @@ mod tests {
         assert_eq!(
             AnnotationType::try_from(AnnotationType::Polygon.to_string().as_str()).unwrap(),
             AnnotationType::Polygon
+        );
+    }
+
+    #[test]
+    fn test_annotation_type_as_server_type() {
+        // `as_server_type` returns the IO names the samples/annotations RPC
+        // accepts for its `types` filter; the server maps these to DB types.
+        // Note Polygon -> "mask" here (an accepted filter alias), which differs
+        // from the Display/column name ("polygon").
+        assert_eq!(AnnotationType::Box2d.as_server_type(), "box2d");
+        assert_eq!(AnnotationType::Box3d.as_server_type(), "box3d");
+        assert_eq!(AnnotationType::Polygon.as_server_type(), "mask");
+        assert_eq!(AnnotationType::Mask.as_server_type(), "mask");
+
+        // The server type differs from the Display name only for Polygon — the
+        // distinction the issue-#8 download-annotations fix depended on.
+        assert_ne!(
+            AnnotationType::Polygon.as_server_type(),
+            AnnotationType::Polygon.to_string().as_str()
+        );
+        assert_eq!(
+            AnnotationType::Box2d.as_server_type(),
+            AnnotationType::Box2d.to_string().as_str()
         );
     }
 

@@ -4207,8 +4207,8 @@ impl SnapshotRestoreResult {
     }
 
     #[getter]
-    pub fn date(&self) -> String {
-        self.0.date.to_string()
+    pub fn date(&self) -> Option<String> {
+        self.0.date.as_ref().map(|d| d.to_string())
     }
 
     pub fn __repr__(&self) -> String {

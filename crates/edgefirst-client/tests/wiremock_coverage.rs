@@ -1508,3 +1508,57 @@ async fn test_backfill_sample_dimensions_null_id_with_progress() {
     }
     assert_eq!(progress_messages.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// usage_summary (accounting.get_usage_summary)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn usage_summary_parses_accounting_response() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("accounting.get_usage_summary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "credits": 12.5,
+            "funds": 49092.92,
+            // Renamed on the wire to `total` in UsageSummary.
+            "total_funds_and_credits": 49105.42
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let usage = client
+        .usage_summary()
+        .await
+        .expect("usage_summary via mock");
+    assert_eq!(usage.credits(), 12.5);
+    assert_eq!(usage.funds(), 49092.92);
+    assert_eq!(usage.total(), 49105.42);
+}
+
+#[tokio::test]
+async fn usage_summary_surfaces_jsonrpc_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("accounting.get_usage_summary"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_error(-32000, "no billing account")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .usage_summary()
+        .await
+        .expect_err("usage_summary should surface the JSON-RPC error");
+    assert!(
+        matches!(err, Error::RpcError(-32000, _)),
+        "expected RpcError(-32000, _), got {err:?}"
+    );
+}

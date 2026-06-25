@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the stale `test/test_examples.py`, which imported the deleted `examples/download.py` and broke Python test discovery in CI
 - `examples/05_download_dataset.ipynb`: parses arguments with defaults so the notebook no longer fails on Jupyter's injected `-f kernel.json`
 - Example scripts raise an actionable message pointing to `examples/requirements.txt` when an optional dependency (tqdm, Pillow) is missing
+- `download-annotations`: send the server-recognized annotation type names (`box2d`/`box3d`/`mask`) for the `--types` filter; previously `box`/`seg` were sent, silently dropping the filter so JSON/Arrow exports returned no annotations (DE-2762)
+- `delete-annotation-set`: call the server's `annset.del` RPC instead of the non-existent `annset.delete` (was failing with `Invalid Method`)
+- `restore-snapshot`: tolerate snapshot responses that omit the `date` field instead of failing with `missing field 'date'`
+- `validate-snapshot --verbose`: no longer panics; the flag now routes through the global verbosity option instead of a colliding local definition
+- `organization`: also reports Funds and Total available (via `accounting.get_usage_summary`), so users with funds but no plan credits no longer see only `Credits: 0`
+- Invalid `--types` values now list the accepted file types in the error message
 
 ## [2.11.0] - 2026-06-12
 
