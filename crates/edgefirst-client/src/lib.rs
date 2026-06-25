@@ -73,7 +73,7 @@ pub use crate::{
         SamplesPopulateParams, SamplesPopulateResult, SamplesUpdateDimensionsResult, SequenceId,
         Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult, Stage,
         StartValidationRequest, Task, TaskDataList, TaskID, TaskInfo, TrainingSession,
-        TrainingSessionID, ValidationSession, ValidationSessionID,
+        TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
     },
     client::{Client, Progress},
     dataset::{
