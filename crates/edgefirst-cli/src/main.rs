@@ -794,7 +794,7 @@ async fn handle_organization(client: &Client) -> Result<(), Error> {
         ),
         Err(err) => {
             println!("Credits: {}", org.credits());
-            println!("(could not fetch funds/total: {err})");
+            eprintln!("Warning: could not fetch funds/total: {err}");
         }
     }
     Ok(())
