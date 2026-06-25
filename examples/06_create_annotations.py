@@ -31,7 +31,14 @@ from examples import (  # noqa: E402
 )
 
 from edgefirst_client import Annotation, Box2d, Sample, SampleFile  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+
+try:
+    from PIL import Image, ImageDraw  # noqa: E402
+except ImportError as exc:  # noqa: E402
+    raise SystemExit(
+        "Missing optional dependency 'Pillow'. Install example deps:\n"
+        "    pip install -r examples/requirements.txt"
+    ) from exc
 
 
 def make_circle_image(path: Path) -> tuple[float, float, float, float, int, int]:

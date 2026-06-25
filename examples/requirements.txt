@@ -1,0 +1,18 @@
+# Optional dependencies for the EdgeFirst Client Python examples.
+#
+# The PyPI wheel (`pip install edgefirst-client`) already provides the Python
+# API, the `edgefirst-client` CLI, and Polars. The tutorials use a few extra
+# packages for progress bars, image generation, Pandas interop, and notebooks.
+#
+# Install everything the tutorial suite needs with:
+#
+#     pip install -r examples/requirements.txt
+#
+# Bounded ranges (not exact pins) so patch/minor updates flow through; this file
+# is for end users running the tutorials, not the hash-locked CI install path.
+
+tqdm>=4.67,<5         # progress bars (03, 05)
+pillow>=12.0,<13      # image generation for sandbox upload (06)
+pandas>=2.0,<3        # optional Pandas DataFrame path (04)
+pyarrow>=14.0,<22     # Arrow/feather backend for Pandas (04)
+jupyter>=1.0,<2       # run the paired .ipynb notebooks

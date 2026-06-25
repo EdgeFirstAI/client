@@ -14,9 +14,6 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install --upgrade pip
 pip install edgefirst-client       # Python API + edgefirst-client CLI + polars
 
-# Optional for the full tutorial suite
-pip install tqdm jupyter pandas pyarrow
-
 python -c "import edgefirst_client; print('OK:', edgefirst_client.__file__)"
 edgefirst-client version
 ```
@@ -27,6 +24,10 @@ comes from the wheel in your venv, not from the Rust source tree.
 ```bash
 git clone https://github.com/EdgeFirstAI/client.git
 cd client
+
+# Optional tutorial dependencies (tqdm, Pillow, Pandas, pyarrow, Jupyter)
+pip install -r examples/requirements.txt
+
 python examples/01_authentication.py
 jupyter lab examples/01_authentication.ipynb
 ```
@@ -92,6 +93,15 @@ Verify both install paths (PyPI wheel and maturin develop) before releasing.
 | [05_download_dataset](05_download_dataset.py) | `download-dataset` | `download_dataset`, YOLO export |
 | [06_create_annotations](06_create_annotations.py) | `upload-dataset` (reference) | `populate_samples` |
 | [07_manage_labels](07_manage_labels.py) | `dataset ds-145f --labels` | `add_label`, `label.set_index` |
+
+[05_download_dataset](05_download_dataset.py) writes a flat YOLO/Darknet layout —
+images and labels mirror each other per group:
+
+```
+<output>/
+  images/<group>/<sample>.jpg
+  labels/<group>/<sample>.txt   # class cx cy w h (normalized)
+```
 
 ## Running examples
 

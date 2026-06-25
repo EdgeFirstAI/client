@@ -7,9 +7,14 @@ Download Coffee Cup images and export YOLO-format labels.
 CLI equivalent:
   edgefirst-client download-dataset ds-145f --groups val --types image --output ./images/
 
-This script downloads via the Python API and writes Darknet/YOLO .txt files.
+This script downloads via the Python API and writes a flat YOLO/Darknet layout:
+
+  <output>/
+    images/<group>/<sample>.jpg
+    labels/<group>/<sample>.txt   # class cx cy w h (normalized)
 """
 
+import shutil
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
@@ -24,11 +29,18 @@ from examples import (  # noqa: E402
 )
 
 from edgefirst_client import AnnotationType, FileType  # noqa: E402
-from tqdm import tqdm  # noqa: E402
+
+try:
+    from tqdm import tqdm  # noqa: E402
+except ImportError as exc:  # noqa: E402
+    raise SystemExit(
+        "Missing optional dependency 'tqdm'. Install example deps:\n"
+        "    pip install -r examples/requirements.txt"
+    ) from exc
 
 
-def find_image_file(output: str, group: str, sample_name: str) -> Optional[Path]:
-    base = Path(output) / group
+def find_image_file(base: Path, sample_name: str) -> Optional[Path]:
+    """Locate a downloaded image for ``sample_name`` anywhere under ``base``."""
     for ext in (".jpg", ".png", ".jpeg"):
         matches = list(base.rglob(f"{sample_name}{ext}"))
         if matches:
@@ -48,14 +60,22 @@ def save_yolo_annotation(annotation_path: Path, annotations) -> None:
 
 
 def download_group(client, dataset_id, annotation_set_id, group: str, output: str):
-    Path(f"{output}/{group}").mkdir(parents=True, exist_ok=True)
+    """Download one group into a flat YOLO layout: images/<group>/ + labels/<group>/."""
+    out = Path(output)
+    raw_dir = out / ".raw" / group
+    images_dir = out / "images" / group
+    labels_dir = out / "labels" / group
+    for directory in (raw_dir, images_dir, labels_dir):
+        directory.mkdir(parents=True, exist_ok=True)
 
+    # download_dataset lays files out under nested sequence directories; stage
+    # them in .raw/, then flatten image + label pairs into the YOLO layout.
     with tqdm(total=0, desc=f"Downloading {group} images") as bar:
         client.download_dataset(
             dataset_id=dataset_id,
             groups=[group],
             types=[FileType.Image],
-            output=f"{output}/{group}",
+            output=str(raw_dir),
             progress=lambda c, t: progress_bar(c, t, bar),
         )
 
@@ -69,10 +89,13 @@ def download_group(client, dataset_id, annotation_set_id, group: str, output: st
             progress=lambda c, t: progress_bar(c, t, bar),
         )
 
-    for sample in tqdm(samples, desc=f"Saving {group} YOLO labels"):
-        image_path = find_image_file(output, group, sample.name)
+    for sample in tqdm(samples, desc=f"Organizing {group} (YOLO)"):
+        image_path = find_image_file(raw_dir, sample.name)
         if image_path:
-            save_yolo_annotation(image_path.with_suffix(".txt"), sample.annotations)
+            shutil.move(str(image_path), str(images_dir / f"{sample.name}{image_path.suffix}"))
+            save_yolo_annotation(labels_dir / f"{sample.name}.txt", sample.annotations)
+
+    shutil.rmtree(out / ".raw", ignore_errors=True)
 
 
 def main() -> None:

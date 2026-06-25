@@ -18,7 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from examples import COFFEE_CUP_DATASET_ID, get_client, progress_bar  # noqa: E402
 
 from edgefirst_client import AnnotationType, FileType  # noqa: E402
-from tqdm import tqdm  # noqa: E402
+
+try:
+    from tqdm import tqdm  # noqa: E402
+except ImportError as exc:  # noqa: E402
+    raise SystemExit(
+        "Missing optional dependency 'tqdm'. Install example deps:\n"
+        "    pip install -r examples/requirements.txt"
+    ) from exc
 
 
 def main() -> None:
