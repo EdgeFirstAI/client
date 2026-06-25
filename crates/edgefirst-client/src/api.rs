@@ -2163,6 +2163,29 @@ mod tests {
         assert_eq!(value, 54321);
     }
 
+    // ========== UsageSummary Tests ==========
+    #[test]
+    fn test_usage_summary_deserialize_and_accessors() {
+        let usage: UsageSummary = serde_json::from_str(
+            r#"{"credits": 12.5, "funds": 49092.92, "total_funds_and_credits": 49105.42}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.credits(), 12.5);
+        assert_eq!(usage.funds(), 49092.92);
+        assert_eq!(usage.total(), 49105.42);
+    }
+
+    #[test]
+    fn test_usage_summary_defaults_for_missing_fields() {
+        // All fields are #[serde(default)] and `total` is renamed from
+        // `total_funds_and_credits`, so an empty object yields zeros and an
+        // unrenamed `total` key is ignored.
+        let usage: UsageSummary = serde_json::from_str("{}").unwrap();
+        assert_eq!(usage.credits(), 0.0);
+        assert_eq!(usage.funds(), 0.0);
+        assert_eq!(usage.total(), 0.0);
+    }
+
     // ========== ProjectID Tests ==========
     #[test]
     fn test_project_id_from_u64() {

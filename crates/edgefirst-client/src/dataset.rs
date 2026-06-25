@@ -2810,6 +2810,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_annotation_type_as_server_type() {
+        // `as_server_type` returns the IO names the samples/annotations RPC
+        // accepts for its `types` filter; the server maps these to DB types.
+        // Note Polygon -> "mask" here (an accepted filter alias), which differs
+        // from the Display/column name ("polygon").
+        assert_eq!(AnnotationType::Box2d.as_server_type(), "box2d");
+        assert_eq!(AnnotationType::Box3d.as_server_type(), "box3d");
+        assert_eq!(AnnotationType::Polygon.as_server_type(), "mask");
+        assert_eq!(AnnotationType::Mask.as_server_type(), "mask");
+
+        // The server type differs from the Display name only for Polygon — the
+        // distinction the issue-#8 download-annotations fix depended on.
+        assert_ne!(
+            AnnotationType::Polygon.as_server_type(),
+            AnnotationType::Polygon.to_string().as_str()
+        );
+        assert_eq!(
+            AnnotationType::Box2d.as_server_type(),
+            AnnotationType::Box2d.to_string().as_str()
+        );
+    }
+
     // ==== Pure Function: extract_sample_name Tests ====
     #[test]
     fn test_extract_sample_name_with_extension_and_camera() {
