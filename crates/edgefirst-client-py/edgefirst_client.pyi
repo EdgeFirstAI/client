@@ -4078,12 +4078,15 @@ class SnapshotRestoreResult:
         ...
 
     @property
-    def date(self) -> str:
+    def date(self) -> str | None:
         """
         Returns the timestamp when the restore was initiated.
 
+        The ``snapshots.restore`` response does not always include a date, so
+        this may be None.
+
         Returns:
-            str: The restore timestamp.
+            str | None: The restore timestamp, or None if not provided.
         """
         ...
 
