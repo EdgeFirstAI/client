@@ -103,6 +103,14 @@ images and labels mirror each other per group:
   labels/<group>/<sample>.txt   # class cx cy w h (normalized)
 ```
 
+This YOLO export **flattens** the dataset: each sequence's frames are collapsed
+into a single `images/<group>/` directory, so the per-sequence folder hierarchy
+is lost. That is fine for YOLO/Darknet training. To preserve full dataset
+fidelity (sequence hierarchy + rich annotations), use the **EdgeFirst Dataset
+Format** instead — annotations stored as Arrow with images in their native
+sequence layout (see [DATASET_FORMAT.md](../DATASET_FORMAT.md) and
+[04_polars_dataframe](04_polars_dataframe.py)).
+
 ## Running examples
 
 Each numbered script includes a path bootstrap for the `examples` package:

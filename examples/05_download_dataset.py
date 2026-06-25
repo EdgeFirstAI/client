@@ -12,6 +12,14 @@ This script downloads via the Python API and writes a flat YOLO/Darknet layout:
   <output>/
     images/<group>/<sample>.jpg
     labels/<group>/<sample>.txt   # class cx cy w h (normalized)
+
+Note: this YOLO export *flattens* the dataset. Each sequence's frames are
+collapsed into a single images/<group>/ directory, so the per-sequence folder
+hierarchy (sequence directories containing their ordered frames) is lost. That
+is fine for YOLO/Darknet training. To preserve full dataset fidelity (sequence
+hierarchy + rich annotations), use the EdgeFirst Dataset Format instead:
+annotations stored as Arrow (`download-annotations`) with images kept in their
+native sequence layout. See ../DATASET_FORMAT.md and example 04.
 """
 
 import shutil
