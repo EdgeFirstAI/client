@@ -18,6 +18,14 @@ edgefirst-client - Command-line interface for EdgeFirst Studio MLOps platform
 
 **edgefirst-client** is a command-line tool for interacting with EdgeFirst Studio, an MLOps platform for 3D/4D spatial perception AI. It provides comprehensive dataset management, training workflow orchestration, and artifact handling capabilities.
 
+Install the CLI and Python API together with:
+
+```bash
+pip install edgefirst-client
+```
+
+This places both the **edgefirst-client** executable and the **edgefirst_client** Python module on your PATH (inside a virtual environment, use `python -m venv .venv` first). See [examples/README.md](examples/README.md) for tutorials.
+
 The client supports various authentication methods including environment variables, configuration files, and command-line options. Authentication tokens are cached in the OS-specific configuration directory for persistent sessions.
 
 # GLOBAL OPTIONS
@@ -67,15 +75,24 @@ Returns the EdgeFirst Studio server version.
 
 ### login
 
-Login to the EdgeFirst Studio server with the provided username and password. The authentication token is stored in the application configuration file for subsequent commands.
+Login to the EdgeFirst Studio server. The authentication token is stored in the application configuration file for subsequent commands.
 
-**edgefirst-client** [**\--server** *SERVER*] **\--username** *USERNAME* **\--password** *PASSWORD* **login**
+**edgefirst-client** [**\--server** *SERVER*] **login**
+
+When **\--username** and **\--password** are omitted, the CLI prompts for them
+interactively (recommended). Do not pass passwords on the command line.
+
+Optional flags **\--username** and **\--password** exist for non-interactive
+automation; prefer **STUDIO_TOKEN** or **STUDIO_USERNAME** / **STUDIO_PASSWORD**
+environment variables for scripts instead.
 
 Token storage locations:
 
 - Linux: `~/.config/EdgeFirst Studio/token`
 - macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst Studio/token`
 - Windows: `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
+
+After CLI login, Python examples can reuse the cached token with `Client()` (default `use_token_file=True`). See [examples/01_authentication.py](examples/01_authentication.py).
 
 ### logout
 
@@ -174,6 +191,14 @@ Retrieve detailed information for a specific dataset.
 
 **-g**, **\--groups**
 :   List available groups (dataset splits, e.g. `train`/`val`) for the dataset.
+
+**Example (public Coffee Cup dataset on SaaS):**
+
+```bash
+edgefirst-client dataset ds-145f --annotation-sets --labels --groups
+```
+
+See also [examples/02_explore_dataset.py](examples/02_explore_dataset.py).
 
 ### create-dataset
 
@@ -303,7 +328,13 @@ edgefirst-client download-dataset 12345 \
 # Files from sequences are prefixed with sequence_name_frame_
 edgefirst-client download-dataset 12345 \
     --types image --output ./flat-dataset --flatten
+
+# Public Coffee Cup dataset (SaaS)
+edgefirst-client download-dataset ds-145f --groups val --types image \
+    --output ./coffee_cup_images/
 ```
+
+See [examples/05_download_dataset.py](examples/05_download_dataset.py).
 
 **Directory Structure:**
 
@@ -364,9 +395,14 @@ edgefirst-client download-annotations 54321 annotations.json \
 # Download all annotation types in Arrow format
 edgefirst-client download-annotations 54321 annotations.arrow \
     --types box2d,box3d,mask --groups train
+
+# Coffee Cup public dataset (resolve annotation set ID from dataset command)
+edgefirst-client download-annotations <as-id> coffee_cup.arrow --groups val
 ```
 
 For Arrow format documentation, see: https://doc.edgefirst.ai/latest/datasets/format/
+
+Python: load with `polars.read_ipc()` or `client.samples_dataframe()` — see [examples/04_polars_dataframe.py](examples/04_polars_dataframe.py).
 
 ### upload-dataset
 
@@ -1210,11 +1246,8 @@ Retrieve validation session information for the provided session ID.
 ## Authentication Workflow
 
 ```bash
-# Login and cache token
-edgefirst-client --server test \
-    --username user@example.com \
-    --password secret \
-    login
+# Login and cache token (prompts for username and password)
+edgefirst-client --server test login
 
 # Subsequent commands use cached token
 edgefirst-client projects
@@ -1301,11 +1334,41 @@ edgefirst-client tasks --status running --stages
 watch -n 5 'edgefirst-client task 98765'
 ```
 
+## Python API Integration (pip install)
+
+```bash
+# One install provides CLI + Python module
+python3 -m venv .venv && source .venv/bin/activate
+pip install edgefirst-client tqdm
+
+edgefirst-client login
+python examples/01_authentication.py
+```
+
+Hybrid CLI + Python workflow with the public Coffee Cup dataset (`ds-145f`):
+
+```bash
+# Inspect dataset
+edgefirst-client dataset ds-145f --annotation-sets --labels
+
+# Export annotations as Arrow, analyze in Python
+edgefirst-client download-annotations <as-id> coffee_cup.arrow --groups val
+python examples/04_polars_dataframe.py
+
+# Download images
+edgefirst-client download-dataset ds-145f --groups val --types image \
+    --output ./coffee_cup_images/
+```
+
+Full tutorial index: [examples/README.md](examples/README.md).
+
 # SEE ALSO
 
 **EdgeFirst Studio Documentation**: https://doc.edgefirst.ai/
 
 **EdgeFirst Dataset Format**: https://doc.edgefirst.ai/latest/datasets/format/
+
+**Python Examples**: [examples/README.md](examples/README.md)
 
 **GitHub Repository**: https://github.com/EdgeFirstAI/client
 

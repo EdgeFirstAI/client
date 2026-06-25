@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python tutorial suite under `examples/`: paired `.py` scripts and `.ipynb` notebooks covering authentication, Coffee Cup (`ds-145f`) read workflows, Polars/Pandas DataFrames, downloads, and sandbox write examples (DE-2762)
+- `examples/README.md` with PyPI quick start (`pip install edgefirst-client` installs CLI + Python API)
+- `examples/requirements.txt` listing the tutorials' optional dependencies (tqdm, Pillow, Pandas, pyarrow, Jupyter)
+
+### Changed
+
+- `CLI.md`: pip install note, Coffee Cup examples, Python integration section, cross-links to `examples/`
+- `edgefirst_client.pyi`: module overview, example cross-references, removed stale `with_token_path` doc examples
+- `examples/05_download_dataset.py`: writes a flat YOLO/Darknet layout (`images/<group>/` + `labels/<group>/`) instead of nested sequence directories
+- Refreshed `Cargo.lock` (quinn-proto, memmap2, rustls, uniffi, and related crates) and hash-locked `requirements.txt` for CI security audit and `--require-hashes` installs
+
+### Fixed
+
+- Removed the stale `test/test_examples.py`, which imported the deleted `examples/download.py` and broke Python test discovery in CI
+- `examples/05_download_dataset.ipynb`: parses arguments with defaults so the notebook no longer fails on Jupyter's injected `-f kernel.json`
+- Example scripts raise an actionable message pointing to `examples/requirements.txt` when an optional dependency (tqdm, Pillow) is missing
+
 ## [2.11.0] - 2026-06-12
 
 ### Added
