@@ -103,6 +103,9 @@ impl TryFrom<&str> for FileType {
     type Error = crate::Error;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // Source of truth for accepted file-type tokens. When changing these
+        // arms, also update the user-facing lists in `Error::InvalidFileType`
+        // (error.rs) and the CLI `--types` help text (edgefirst-cli main.rs).
         match s {
             "image" => Ok(FileType::Image),
             "lidar.pcd" => Ok(FileType::LidarPcd),

@@ -214,10 +214,13 @@ impl std::fmt::Display for Error {
             Error::InvalidResponse => write!(f, "Invalid server response"),
             Error::NotImplemented => write!(f, "Not implemented"),
             Error::PartTooLarge => write!(f, "File part size exceeds maximum limit"),
+            // Keep this list in sync with `FileType::try_from` in dataset.rs
+            // (the source of truth for accepted tokens).
             Error::InvalidFileType(s) => write!(
                 f,
                 "Invalid file type: {}. Valid types: image, lidar.pcd, lidar.png, \
-                 lidar.jpg, radar.pcd, radar.png, all",
+                 lidar.jpg, radar.pcd, radar.png, all (aliases also accepted: \
+                 lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube)",
                 s
             ),
             Error::InvalidAnnotationType(s) => write!(f, "Invalid annotation type: {}", s),

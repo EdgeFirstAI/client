@@ -170,7 +170,8 @@ enum Command {
         groups: Vec<String>,
 
         /// Fetch the data types for the dataset. Valid types: image, lidar.pcd,
-        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all.
+        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all (aliases also accepted:
+        /// lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube).
         /// Use "all" to download all sensor types.
         #[clap(long, default_value = "image", value_delimiter = ',')]
         types: Vec<FileType>,
