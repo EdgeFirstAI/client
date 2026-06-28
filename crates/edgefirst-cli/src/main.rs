@@ -505,9 +505,14 @@ enum Command {
     /// the EdgeFirst Dataset Format (Arrow). Supports bbox and polygon
     /// segmentation annotations.
     ///
+    /// By default all segmentation (polygon and RLE alike) is stored as
+    /// polygon contours in the `polygon` column — the preferred
+    /// representation for ground-truth training data.
+    ///
     /// Examples:
-    ///   edgefirst coco-to-arrow instances.json -o dataset.arrow
-    ///   edgefirst coco-to-arrow coco.zip -o dataset.arrow --group train
+    ///   edgefirst-client coco-to-arrow instances.json -o dataset.arrow
+    ///   edgefirst-client coco-to-arrow stuff_train2017.json -o semseg.arrow --group train
+    ///   edgefirst-client coco-to-arrow instances.json -o masks.arrow --to-masks
     CocoToArrow {
         /// Path to COCO annotation file (JSON) or ZIP archive
         coco_path: PathBuf,
@@ -524,6 +529,14 @@ enum Command {
         /// Group name for all samples (e.g., "train", "val")
         #[clap(long)]
         group: Option<String>,
+
+        /// Store RLE segmentation as PNG-encoded binary masks instead of
+        /// polygon contours. Use when downstream consumers need pixel-perfect
+        /// raster masks (e.g. storing model prediction outputs). Polygon
+        /// annotations are always stored as polygon contours regardless of
+        /// this flag.
+        #[clap(long)]
+        to_masks: bool,
     },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
@@ -4283,6 +4296,7 @@ async fn handle_coco_to_arrow(
     output: PathBuf,
     masks: bool,
     group: Option<String>,
+    to_masks: bool,
 ) -> Result<(), Error> {
     use edgefirst_client::coco::{CocoToArrowOptions, coco_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
@@ -4305,6 +4319,7 @@ async fn handle_coco_to_arrow(
     let options = CocoToArrowOptions {
         include_masks: masks,
         group,
+        to_masks,
         ..Default::default()
     };
 
@@ -5104,9 +5119,16 @@ async fn main() -> Result<(), Error> {
             output,
             masks,
             group,
+            to_masks,
         } => {
-            return handle_coco_to_arrow(coco_path.clone(), output.clone(), *masks, group.clone())
-                .await;
+            return handle_coco_to_arrow(
+                coco_path.clone(),
+                output.clone(),
+                *masks,
+                group.clone(),
+                *to_masks,
+            )
+            .await;
         }
         Command::ArrowToCoco {
             arrow_path,
