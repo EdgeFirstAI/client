@@ -2411,7 +2411,11 @@ impl Client {
         if let Some(v) = version {
             params["tag"] = serde_json::json!(v);
         }
-        self.rpc("annset.list".to_owned(), Some(params)).await
+        let mut sets: Vec<AnnotationSet> = self.rpc("annset.list".to_owned(), Some(params)).await?;
+        for set in &mut sets {
+            set.backfill_dataset_id(dataset_id);
+        }
+        Ok(sets)
     }
 
     /// Create a new annotation set for the specified dataset.
@@ -2529,7 +2533,14 @@ impl Client {
         progress: Option<Sender<Progress>>,
         version: Option<&str>,
     ) -> Result<Vec<Annotation>, Error> {
-        let dataset_id = self.annotation_set(annotation_set_id).await?.dataset_id();
+        // `annset.get` is a HEAD-scoped lookup by ID, so the server always
+        // returns `dataset_id` here; `None` would indicate a malformed
+        // response rather than a legitimate tag-scoped omission.
+        let dataset_id = self
+            .annotation_set(annotation_set_id)
+            .await?
+            .dataset_id()
+            .ok_or(Error::InvalidResponse)?;
         let labels = self
             .labels(dataset_id, version)
             .await?

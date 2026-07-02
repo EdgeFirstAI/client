@@ -805,23 +805,27 @@ impl From<core::Dataset> for Dataset {
 }
 
 /// An annotation set in a dataset.
+///
+/// `dataset_id` and `created` are `None` when this annotation set was
+/// fetched via a tag-scoped query: the server's tag snapshot response
+/// omits both `dataset_id` and the creation date.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AnnotationSet {
     pub id: AnnotationSetId,
-    pub dataset_id: DatasetId,
+    pub dataset_id: Option<DatasetId>,
     pub name: String,
     pub description: String,
-    pub created: String,
+    pub created: Option<String>,
 }
 
 impl From<core::AnnotationSet> for AnnotationSet {
     fn from(a: core::AnnotationSet) -> Self {
         Self {
             id: a.id().into(),
-            dataset_id: a.dataset_id().into(),
+            dataset_id: a.dataset_id().map(Into::into),
             name: a.name().to_string(),
             description: a.description().to_string(),
-            created: a.created().to_rfc3339(),
+            created: a.created().map(|dt| dt.to_rfc3339()),
         }
     }
 }

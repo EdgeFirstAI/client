@@ -990,8 +990,14 @@ class AnnotationSet:
         ...
 
     @property
-    def dataset_id(self) -> DatasetID:
-        """The ID of the dataset that the annotation set belongs to."""
+    def dataset_id(self) -> Optional[DatasetID]:
+        """
+        The ID of the dataset that the annotation set belongs to.
+
+        ``None`` if this annotation set was fetched via a tag-scoped query
+        where the server omitted ``dataset_id`` and no backfill was
+        available.
+        """
         ...
 
     @property
@@ -1005,8 +1011,13 @@ class AnnotationSet:
         ...
 
     @property
-    def created(self) -> datetime:
-        """The creation date of the annotation set."""
+    def created(self) -> Optional[datetime]:
+        """
+        The creation date of the annotation set.
+
+        ``None`` if this annotation set was fetched via a tag-scoped query
+        (the server's tag snapshot does not retain a creation timestamp).
+        """
         ...
 
     def annotations(

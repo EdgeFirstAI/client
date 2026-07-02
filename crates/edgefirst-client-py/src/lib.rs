@@ -2794,9 +2794,12 @@ impl AnnotationSet {
         Ok(self.inner.id().to_string())
     }
 
+    /// Dataset ID this annotation set belongs to. `None` if this
+    /// annotation set was fetched via a tag-scoped query where the server
+    /// omitted `dataset_id` and no backfill was available.
     #[getter]
-    pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.inner.dataset_id())
+    pub fn dataset_id(&self) -> Option<DatasetID> {
+        self.inner.dataset_id().map(DatasetID)
     }
 
     #[getter]
@@ -2809,9 +2812,15 @@ impl AnnotationSet {
         self.inner.description()
     }
 
+    /// Creation timestamp, or `None` if this annotation set was fetched
+    /// via a tag-scoped query (the server's tag snapshot does not retain
+    /// a creation timestamp).
     #[getter]
-    pub fn created(&self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
-        Ok(self.inner.created().into_pyobject(py)?.into())
+    pub fn created(&self, py: Python<'_>) -> PyResult<Option<Py<PyDateTime>>> {
+        self.inner
+            .created()
+            .map(|dt| Ok(dt.into_pyobject(py)?.into()))
+            .transpose()
     }
 
     /// Get annotations for this annotation set.

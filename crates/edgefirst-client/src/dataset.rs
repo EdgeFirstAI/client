@@ -437,14 +437,20 @@ impl Dataset {
 /// The AnnotationSet class represents a collection of annotations in a dataset.
 /// A dataset can have multiple annotation sets, each containing annotations for
 /// different tasks or purposes.
+///
+/// When fetched with a `version` tag, the server returns a reduced snapshot
+/// shape that omits `dataset_id` and the creation date — [`AnnotationSet::dataset_id`] is
+/// backfilled by the client from the query context in that case, and
+/// [`AnnotationSet::created`] returns `None`.
 #[derive(Deserialize)]
 pub struct AnnotationSet {
     id: AnnotationSetID,
-    dataset_id: DatasetID,
+    #[serde(default)]
+    dataset_id: Option<DatasetID>,
     name: String,
     description: String,
-    #[serde(rename = "date")]
-    created: DateTime<Utc>,
+    #[serde(rename = "date", default)]
+    created: Option<DateTime<Utc>>,
 }
 
 impl Display for AnnotationSet {
@@ -458,8 +464,21 @@ impl AnnotationSet {
         self.id
     }
 
-    pub fn dataset_id(&self) -> DatasetID {
+    /// Returns the dataset ID this annotation set belongs to. When this
+    /// value was fetched via a tag-scoped query, the server does not
+    /// return `dataset_id` on the wire; the client backfills it from the
+    /// `dataset_id` argument the query was made with.
+    pub fn dataset_id(&self) -> Option<DatasetID> {
         self.dataset_id
+    }
+
+    /// Backfills `dataset_id` from the query context when the server's
+    /// response omitted it (tag-scoped `annset.list` reads). No-op if
+    /// `dataset_id` is already populated.
+    pub(crate) fn backfill_dataset_id(&mut self, dataset_id: DatasetID) {
+        if self.dataset_id.is_none() {
+            self.dataset_id = Some(dataset_id);
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -470,12 +489,21 @@ impl AnnotationSet {
         &self.description
     }
 
-    pub fn created(&self) -> DateTime<Utc> {
+    /// Returns the creation date, or `None` if this annotation set was
+    /// fetched via a tag-scoped query (the server's tag snapshot does not
+    /// retain a creation timestamp).
+    pub fn created(&self) -> Option<DateTime<Utc>> {
         self.created
     }
 
     pub async fn dataset(&self, client: &Client) -> Result<Dataset, Error> {
-        client.dataset(self.dataset_id).await
+        client
+            .dataset(self.dataset_id.ok_or_else(|| {
+                Error::InvalidParameters(
+                    "annotation set has no dataset_id (tag-scoped query result)".to_string(),
+                )
+            })?)
+            .await
     }
 }
 
@@ -4372,5 +4400,42 @@ mod tests {
         let scores = df.column("box2d_score").unwrap();
         let val = scores.f32().unwrap().get(0);
         assert_eq!(val, Some(1.0), "score of 1.0 should survive as non-null");
+    }
+}
+
+#[cfg(test)]
+mod versioning_deser_tests {
+    use super::*;
+
+    #[test]
+    fn test_annotation_set_deserializes_from_tag_scoped_response() {
+        // Tag-scoped `annset.list` response shape (database.TagAnnotationSet in
+        // dve-database): only id/name/description, no dataset_id, no created date.
+        let json = r#"{"id": 42, "name": "Default", "description": "Default set"}"#;
+        let result: Result<AnnotationSet, _> = serde_json::from_str(json);
+        assert!(
+            result.is_ok(),
+            "tag-scoped annotation set response must deserialize: {:?}",
+            result.err()
+        );
+        let annset = result.unwrap();
+        assert_eq!(annset.name(), "Default");
+        assert_eq!(annset.description(), "Default set");
+        assert_eq!(annset.created(), None);
+    }
+
+    #[test]
+    fn test_annotation_set_deserializes_from_head_response() {
+        // HEAD-path response shape: full row including dataset_id and date.
+        // dataset_id is a raw JSON number on the wire (DatasetID's derived
+        // Deserialize is a transparent u64 newtype) -- see the "ds-..."
+        // hex-prefixed form only appears via Display/FromStr, never on the
+        // wire, matching every other AnnotationSet/Dataset fixture in this
+        // crate (e.g. api.rs's `"dataset_id": 1715004`).
+        let json = r#"{"id": 42, "dataset_id": 1, "name": "Default", "description": "Default set", "date": "2026-01-01T00:00:00Z"}"#;
+        let result: Result<AnnotationSet, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "HEAD annotation set response must deserialize: {:?}", result.err());
+        let annset = result.unwrap();
+        assert!(annset.created().is_some());
     }
 }

@@ -1307,7 +1307,9 @@ async fn handle_download_annotations(
     // Get the dataset_id from the annotation set
     let annotation_set_id = annotation_set_id.try_into()?;
     let annotation_set = client.annotation_set(annotation_set_id).await?;
-    let dataset_id = annotation_set.dataset_id();
+    // `annotation_set()` is a HEAD-scoped lookup by ID, so dataset_id is
+    // always populated here; None would mean a malformed server response.
+    let dataset_id = annotation_set.dataset_id().ok_or(Error::InvalidResponse)?;
 
     let format = output
         .extension()
@@ -4163,7 +4165,10 @@ async fn handle_create_snapshot(
         SnapshotSource::AnnotationSet(as_id) => {
             // Look up parent dataset from annotation set
             let annotation_set = client.annotation_set(as_id).await?;
-            let dataset_id = annotation_set.dataset_id();
+            // `annotation_set()` is a HEAD-scoped lookup by ID, so
+            // dataset_id is always populated here; None would mean a
+            // malformed server response.
+            let dataset_id = annotation_set.dataset_id().ok_or(Error::InvalidResponse)?;
 
             // Pass annotation_set_id explicitly for this annotation set
             let result = client
