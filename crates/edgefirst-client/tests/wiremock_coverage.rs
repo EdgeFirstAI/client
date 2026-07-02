@@ -1270,6 +1270,159 @@ async fn validator_schemas_parses_catalog() {
 }
 
 // ---------------------------------------------------------------------------
+// `Client::start_training_session` / `Client::dataset_tags`
+// ---------------------------------------------------------------------------
+
+fn start_training_request() -> edgefirst_client::StartTrainingRequest {
+    edgefirst_client::StartTrainingRequest {
+        project_id: edgefirst_client::ProjectID::from(0x222u64),
+        name: "smoke-training".into(),
+        experiment_id: edgefirst_client::ExperimentID::from(0x777u64),
+        trainer_type: "modelpack".into(),
+        dataset_id: DatasetID::from(0x333u64),
+        annotation_set_id: edgefirst_client::AnnotationSetID::from(0x444u64),
+        tag_name: None,
+        train_group: None,
+        val_group: None,
+        session_name: None,
+        session_description: None,
+        weights_session: None,
+        params: std::collections::HashMap::new(),
+        is_local: true,
+        is_kubernetes: false,
+    }
+}
+
+#[tokio::test]
+async fn start_training_session_round_trips_group_split() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        // The trainer callback reads dataset selection from `params`
+        // and hyperparameters from `params.params` — one envelope, not
+        // the validation launch's two.
+        .and(body_partial_json(json!({
+            "method": "cloud.server.start",
+            "params": {
+                "type": "trainer",
+                "name": "smoke-training",
+                "project_id": 0x222,
+                "is_local": true,
+                "is_kubernetes": false,
+                "params": {
+                    "trainer_id": 0x777,
+                    "trainer_type": "modelpack",
+                    "split_mode": "group",
+                    "dataset_id": 0x333,
+                    "annotation_set_id": 0x444,
+                    "tag_name": "v2.0",
+                    "train_group_name": "daylight",
+                    "val_group_name": "night",
+                    "session_name": "run-1",
+                    "session_description": "smoke test",
+                    "weights_session": 0x888,
+                    "params": { "epochs": 5 }
+                }
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x1234,
+            "train_session_id": 0x9999,
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let mut req = start_training_request();
+    req.tag_name = Some("v2.0".into());
+    req.train_group = Some("daylight".into());
+    req.val_group = Some("night".into());
+    req.session_name = Some("run-1".into());
+    req.session_description = Some("smoke test".into());
+    req.weights_session = Some(TrainingSessionID::from(0x888u64));
+    req.params
+        .insert("epochs".into(), Parameter::Integer(5));
+
+    let session = client
+        .start_training_session(req)
+        .await
+        .expect("cloud.server.start via mock");
+    assert_eq!(session.task_id, TaskID::from(0x1234u64));
+    assert_eq!(session.session_id, Some(TrainingSessionID::from(0x9999u64)));
+}
+
+#[tokio::test]
+async fn start_training_session_resolves_latest_tag_and_default_groups() {
+    let server = MockServer::start().await;
+
+    // Tags deliberately unordered: latest = highest id, not last entry.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "tags.list_dataset",
+            "params": { "dataset_id": 0x333 }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            { "id": 1, "name": "v1", "dataset_id": 0x333 },
+            { "id": 3, "name": "v3", "dataset_id": 0x333 },
+            { "id": 2, "name": "v2", "dataset_id": 0x333 },
+        ]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "cloud.server.start",
+            "params": {
+                "params": {
+                    "tag_name": "v3",
+                    "train_group_name": "train",
+                    "val_group_name": "val",
+                }
+            }
+        })))
+        // A response without `train_session_id` must map to `None`
+        // rather than failing deserialization.
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x1234,
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .start_training_session(start_training_request())
+        .await
+        .expect("cloud.server.start with resolved defaults");
+    assert_eq!(session.task_id, TaskID::from(0x1234u64));
+    assert_eq!(session.session_id, None);
+}
+
+#[tokio::test]
+async fn start_training_session_errors_when_dataset_has_no_tags() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("tags.list_dataset"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .start_training_session(start_training_request())
+        .await
+        .expect_err("expected missing-tag failure");
+    assert!(
+        matches!(err, Error::InvalidParameters(ref msg) if msg.contains("tag")),
+        "expected InvalidParameters about tags, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // update_sample_dimensions
 // ---------------------------------------------------------------------------
 

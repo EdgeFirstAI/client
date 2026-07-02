@@ -5,12 +5,13 @@ use crate::{
     Annotation, Error, Sample, Task,
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
-        NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
-        SamplesListParams, SamplesListResult, SchemaField, Snapshot, SnapshotCreateFromDataset,
-        SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
-        StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
-        TasksListResult, TrainerSchemaInfo, TrainingSession, TrainingSessionID, UsageSummary,
-        ValidationSession, ValidationSessionID, ValidatorSchema,
+        NewTrainingSession, NewValidationSession, Organization, Project, ProjectID, SampleID,
+        SamplesCountResult, SamplesListParams, SamplesListResult, SchemaField, Snapshot,
+        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
+        SnapshotRestoreResult, Stage, StartTrainingRequest, StartValidationRequest, Tag, TaskID,
+        TaskInfo, TaskStages, TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo,
+        TrainingSession, TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
+        ValidatorSchema,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -4854,6 +4855,124 @@ impl Client {
     pub async fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
         self.rpc::<(), Vec<ValidatorSchema>>("validate.schema".to_owned(), None)
             .await
+    }
+
+    /// List the version tags of a dataset via `tags.list_dataset`.
+    ///
+    /// Tags are creation-ordered; the highest [`Tag::id`] is the most
+    /// recent version. Used by [`Client::start_training_session`] to
+    /// resolve the latest tag when the request does not name one.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn dataset_tags(&self, dataset_id: DatasetID) -> Result<Vec<Tag>, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("tags.list_dataset".to_owned(), Some(params))
+            .await
+    }
+
+    /// Launch a new training session via Studio's `cloud.server.start`.
+    ///
+    /// The session trains on a single dataset using group-based
+    /// train/validation splits. Defaults are resolved client-side before
+    /// the launch call:
+    ///
+    /// * `tag_name: None` → the dataset's latest tag (from
+    ///   [`Client::dataset_tags`]); it is an error to launch against a
+    ///   dataset that has no tags without naming one explicitly.
+    /// * `train_group` / `val_group: None` → the dataset's default split
+    ///   groups `"train"` / `"val"`.
+    ///
+    /// Query the trainer's parameter schema with
+    /// [`Client::trainer_schema`] to build the `params` map. Pass
+    /// `is_local: true` to create a **user-managed** session (no cloud
+    /// instance is provisioned) — the mode integration tests use, paired
+    /// with [`Client::delete_training_sessions`] in teardown.
+    ///
+    /// Returns a [`NewTrainingSession`] carrying the backing task id and
+    /// the freshly-minted training session id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] if the dataset has no tags
+    /// and no `tag_name` was provided. Surfaces any RPC error from
+    /// `cloud.server.start`; a `PermissionDenied` indicates the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_training_session(
+        &self,
+        req: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, Error> {
+        // The server requires a concrete tag name; resolve "latest"
+        // client-side from the creation-ordered tag list.
+        let tag_name = match req.tag_name {
+            Some(tag) => tag,
+            None => self
+                .dataset_tags(req.dataset_id)
+                .await?
+                .into_iter()
+                .max_by_key(|tag| tag.id)
+                .map(|tag| tag.name)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "dataset {} has no version tags; create one or specify tag_name",
+                        req.dataset_id
+                    ))
+                })?,
+        };
+
+        let mut body = serde_json::Map::new();
+        body.insert("type".into(), serde_json::Value::String("trainer".into()));
+        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // Unlike validation launches, the trainer callback reads its
+        // dataset selection from `params` directly and the raw
+        // hyperparameters from `params.params` (single envelope). The
+        // group-based split is the only mode the server supports here.
+        let mut inner = serde_json::Map::new();
+        inner.insert("trainer_id".into(), serde_json::to_value(req.experiment_id)?);
+        inner.insert(
+            "trainer_type".into(),
+            serde_json::Value::String(req.trainer_type),
+        );
+        inner.insert(
+            "split_mode".into(),
+            serde_json::Value::String("group".into()),
+        );
+        inner.insert("dataset_id".into(), serde_json::to_value(req.dataset_id)?);
+        inner.insert(
+            "annotation_set_id".into(),
+            serde_json::to_value(req.annotation_set_id)?,
+        );
+        inner.insert("tag_name".into(), serde_json::Value::String(tag_name));
+        inner.insert(
+            "train_group_name".into(),
+            serde_json::Value::String(req.train_group.unwrap_or_else(|| "train".into())),
+        );
+        inner.insert(
+            "val_group_name".into(),
+            serde_json::Value::String(req.val_group.unwrap_or_else(|| "val".into())),
+        );
+        inner.insert("params".into(), serde_json::to_value(req.params)?);
+        if let Some(name) = req.session_name {
+            inner.insert("session_name".into(), serde_json::Value::String(name));
+        }
+        if let Some(description) = req.session_description {
+            inner.insert(
+                "session_description".into(),
+                serde_json::Value::String(description),
+            );
+        }
+        if let Some(id) = req.weights_session {
+            inner.insert("weights_session".into(), serde_json::to_value(id)?);
+        }
+        body.insert("params".into(), serde_json::Value::Object(inner));
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
     }
 
     /// List the artifacts for the specified trainer session.  The artifacts

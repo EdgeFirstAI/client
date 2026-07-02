@@ -1420,6 +1420,104 @@ impl Display for NewValidationSession {
     }
 }
 
+/// Request payload for [`client::Client::start_training_session`].
+///
+/// Launches a new training session against a single dataset using
+/// group-based train/validation splits. When `train_group` / `val_group`
+/// are `None`, the dataset's default split groups (`"train"` / `"val"`)
+/// are used. When `tag_name` is `None`, the dataset's most recent tag is
+/// used.
+///
+/// The hyperparameters in `params` are trainer-specific; query the
+/// trainer's parameter schema with `Client::trainer_schema` (using a
+/// `schema_type` from `Client::trainer_schemas`) to discover the
+/// accepted parameter names, defaults, and ranges.
+///
+/// Set `is_local: true` for a **user-managed** session: the session row
+/// is created and fully usable for artifact/metric uploads, but no cloud
+/// instance is provisioned — the caller runs the training loop
+/// themselves. `is_kubernetes: true` schedules onto the organization's
+/// Kubernetes runner; with both flags false the server provisions a
+/// cloud (AWS EC2) instance.
+#[derive(Debug, Clone)]
+pub struct StartTrainingRequest {
+    /// Project owning the experiment and dataset.
+    pub project_id: ProjectID,
+    /// Name for the session's background task.
+    pub name: String,
+    /// Experiment (trainer) the session belongs to.
+    pub experiment_id: ExperimentID,
+    /// Trainer schema type (e.g. `"modelpack"`), from
+    /// `Client::trainer_schemas`.
+    pub trainer_type: String,
+    /// Dataset to train on.
+    pub dataset_id: DatasetID,
+    /// Annotation set providing the ground-truth labels.
+    pub annotation_set_id: AnnotationSetID,
+    /// Dataset tag to train against; `None` selects the latest tag.
+    pub tag_name: Option<String>,
+    /// Training split group name; `None` uses the default `"train"`.
+    pub train_group: Option<String>,
+    /// Validation split group name; `None` uses the default `"val"`.
+    pub val_group: Option<String>,
+    /// Optional display name for the training session itself.
+    pub session_name: Option<String>,
+    /// Optional description for the training session.
+    pub session_description: Option<String>,
+    /// Optional source session for transfer-learning weights.
+    pub weights_session: Option<TrainingSessionID>,
+    /// Trainer hyperparameters, keyed by schema parameter name.
+    pub params: HashMap<String, Parameter>,
+    /// Create a user-managed session (no cloud instance).
+    pub is_local: bool,
+    /// Schedule onto the organization's Kubernetes runner.
+    pub is_kubernetes: bool,
+}
+
+/// Result of [`client::Client::start_training_session`].
+///
+/// Studio's `cloud.server.start` returns the freshly-created
+/// `BackgroundTask` row. `task_id` can be polled via `Client::task_info`
+/// to monitor the launch; `session_id` is the handle to the new training
+/// session (for `Client::training_session`,
+/// `Client::update_training_session`, and
+/// `Client::delete_training_sessions`).
+///
+/// `session_id` is `Option` because the same endpoint also returns
+/// non-trainer tasks and those don't populate `train_session_id`; for a
+/// `type = "trainer"` launch it is always populated.
+#[derive(Deserialize, Debug, Clone)]
+pub struct NewTrainingSession {
+    #[serde(rename = "id")]
+    pub task_id: TaskID,
+    #[serde(rename = "train_session_id", default)]
+    pub session_id: Option<TrainingSessionID>,
+}
+
+impl Display for NewTrainingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.session_id {
+            Some(id) => write!(f, "task {} session {}", self.task_id, id),
+            None => write!(f, "task {} (no session)", self.task_id),
+        }
+    }
+}
+
+/// A dataset version tag, as returned by `Client::dataset_tags`.
+///
+/// Tags mark dataset versions for reproducible training. The most
+/// recently created tag (highest `id`) is treated as the latest.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Tag {
+    /// Tag identifier; creation-ordered, so the highest id is newest.
+    pub id: u64,
+    /// Tag name, referenced by training sessions as `tag_name`.
+    pub name: String,
+    /// The dataset this tag belongs to.
+    #[serde(default)]
+    pub dataset_id: u64,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct DatasetParams {
     dataset_id: DatasetID,
