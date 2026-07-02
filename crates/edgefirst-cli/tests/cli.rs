@@ -42,6 +42,12 @@ fn get_test_dataset() -> String {
     env::var("TEST_DATASET").unwrap_or_else(|_| "Deer".to_string())
 }
 
+/// Dataset used for label_index round-trip tests (DE-2709).
+/// Default "Coffee Cup" has non-contiguous label indices on SaaS (ds-145f).
+fn get_label_index_test_dataset() -> String {
+    env::var("TEST_LABEL_INDEX_DATASET").unwrap_or_else(|_| "Coffee Cup".to_string())
+}
+
 /// Get the annotation types to test from environment or default to
 /// "box2d,box3d,mask" Returns a vector of annotation type strings
 fn get_test_dataset_types() -> Vec<String> {
@@ -335,6 +341,99 @@ fn download_annotations_from_server_with_types(
     cmd.assert().success();
 
     Ok(arrow_path)
+}
+
+/// Extract unique `(label, label_index)` pairs from an annotations Arrow file.
+#[cfg(feature = "polars")]
+fn extract_label_index_pairs(
+    df: &polars::prelude::DataFrame,
+) -> Result<BTreeSet<(String, u64)>, Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+
+    let label_col = df.column("label")?;
+    let index_col = df.column("label_index")?;
+    let labels_cast = label_col.cast(&DataType::String)?;
+    let labels = labels_cast.str()?;
+    let index_cast = index_col.cast(&DataType::UInt64)?;
+    let indices = index_cast.u64()?;
+
+    let label_null = label_col.is_null();
+    let index_null = index_col.is_null();
+
+    let mut pairs = BTreeSet::new();
+    for idx in 0..df.height() {
+        if label_null.get(idx).unwrap_or(true) || index_null.get(idx).unwrap_or(true) {
+            continue;
+        }
+        if let (Some(label), Some(index)) = (labels.get(idx), indices.get(idx)) {
+            pairs.insert((label.to_string(), index));
+        }
+    }
+    Ok(pairs)
+}
+
+/// Compare unique `(label, label_index)` pairs between two Arrow files.
+#[cfg(feature = "polars")]
+fn compare_label_index_pairs(
+    original_path: &Path,
+    redownloaded_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+    use std::fs::File;
+
+    let mut original_file = File::open(original_path)?;
+    let original_df = IpcReader::new(&mut original_file).finish()?;
+
+    let mut redownloaded_file = File::open(redownloaded_path)?;
+    let redownloaded_df = IpcReader::new(&mut redownloaded_file).finish()?;
+
+    let original_has =
+        original_df.column("label_index").is_ok() && original_df.column("label").is_ok();
+    let redownloaded_has =
+        redownloaded_df.column("label_index").is_ok() && redownloaded_df.column("label").is_ok();
+
+    if !original_has && !redownloaded_has {
+        println!("Skipping label_index comparison (column absent in both files)");
+        return Ok(());
+    }
+    if !original_has || !redownloaded_has {
+        return Err(
+            "label_index comparison requires label and label_index in both Arrow files".into(),
+        );
+    }
+
+    let original_pairs = extract_label_index_pairs(&original_df)?;
+    let redownloaded_pairs = extract_label_index_pairs(&redownloaded_df)?;
+
+    println!(
+        "Original label_index pairs ({}): {:?}",
+        original_pairs.len(),
+        original_pairs
+    );
+    println!(
+        "Redownloaded label_index pairs ({}): {:?}",
+        redownloaded_pairs.len(),
+        redownloaded_pairs
+    );
+
+    if original_pairs != redownloaded_pairs {
+        let missing: Vec<_> = original_pairs.difference(&redownloaded_pairs).collect();
+        let extra: Vec<_> = redownloaded_pairs.difference(&original_pairs).collect();
+        return Err(format!(
+            "label_index pair mismatch: missing {:?}, extra {:?}",
+            missing, extra
+        )
+        .into());
+    }
+
+    if !original_pairs.is_empty() {
+        println!(
+            "✓ label_index pairs verified: {} unique (label, index) mappings preserved",
+            original_pairs.len()
+        );
+    }
+
+    Ok(())
 }
 
 /// Compare two Arrow files to verify groups and annotations are preserved
@@ -813,6 +912,46 @@ fn compare_arrow_files(
         }
     }
 
+    compare_label_index_pairs(original_path, redownloaded_path)?;
+
+    Ok(())
+}
+
+/// Wait for a server-side snapshot export task or poll snapshot status until available.
+fn wait_for_snapshot_ready(
+    snapshot_id: &str,
+    task_id: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(tid) = task_id {
+        let mut task_cmd = edgefirst_cmd();
+        task_cmd.arg("task").arg(tid).arg("--monitor");
+        task_cmd.timeout(std::time::Duration::from_secs(600));
+        task_cmd.ok()?;
+        return Ok(());
+    }
+
+    use edgefirst_client::{Client as EdgeFirstClient, SnapshotID};
+    let api_client = EdgeFirstClient::new()?.with_token_path(None)?;
+    let snap_id = SnapshotID::try_from(snapshot_id)?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    for attempt in 0..120 {
+        let snapshot = rt.block_on(api_client.snapshot(snap_id))?;
+        let status = snapshot.status();
+        if status == "available" || status == "completed" {
+            return Ok(());
+        }
+        if status == "failed" || status == "error" {
+            return Err(format!("Snapshot export failed (status: {status})").into());
+        }
+        if attempt >= 119 {
+            return Err(format!(
+                "Snapshot did not become available within 120 seconds (last status: {status})"
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
     Ok(())
 }
 
@@ -1487,6 +1626,153 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
             annotations_path, err
         );
     }
+
+    Ok(())
+}
+
+/// DE-2709: upload-dataset must preserve source-faithful label_index through snapshot export.
+///
+/// Flow: download annotations → upload-dataset → create-snapshot → download-snapshot →
+/// compare unique `(label, label_index)` pairs.
+#[test]
+#[file_serial]
+#[cfg(feature = "polars")]
+fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    let dataset = get_label_index_test_dataset();
+    println!("Testing label_index roundtrip for dataset: {}", dataset);
+
+    let (source_dataset_id, source_annotation_set_id) =
+        get_dataset_and_first_annotation_set(&dataset)?;
+
+    let images_dir = download_dataset_from_server(&source_dataset_id)?;
+    let annotations_path = download_annotations_from_server(&source_annotation_set_id)?;
+
+    #[cfg(feature = "polars")]
+    {
+        use polars::prelude::*;
+        use std::fs::File;
+
+        let mut original_file = File::open(&annotations_path)?;
+        let original_df = IpcReader::new(&mut original_file).finish()?;
+        let baseline_pairs = extract_label_index_pairs(&original_df)?;
+        assert!(
+            !baseline_pairs.is_empty(),
+            "Expected non-empty label_index pairs in source annotations for {}",
+            dataset
+        );
+        println!("Baseline label_index pairs: {:?}", baseline_pairs);
+    }
+
+    let project_id = get_project_id_by_name("Unit Testing")?
+        .ok_or_else(|| "Project 'Unit Testing' not found".to_string())?;
+
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let new_dataset_name = format!("QA {} LabelIndex {}", dataset, timestamp);
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-dataset")
+        .arg(&project_id)
+        .arg(&new_dataset_name);
+    let output = cmd.ok()?.stdout;
+    let new_dataset_id = String::from_utf8(output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("Created dataset with ID: "))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
+
+    let annotation_set_name = format!("{} Annotations", new_dataset_name);
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-annotation-set")
+        .arg(&new_dataset_id)
+        .arg(&annotation_set_name);
+    let output = cmd.ok()?.stdout;
+    let new_annotation_set_id = String::from_utf8(output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("Created annotation set with ID: "))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "Failed to parse annotation set ID".to_string())?;
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("upload-dataset")
+        .arg(&new_dataset_id)
+        .arg("--annotations")
+        .arg(&annotations_path)
+        .arg("--annotation-set-id")
+        .arg(&new_annotation_set_id)
+        .arg("--images")
+        .arg(&images_dir);
+    cmd.timeout(std::time::Duration::from_secs(600));
+    cmd.assert().success();
+
+    let snapshot_name = format!("QA LabelIndex {}", timestamp);
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("create-snapshot")
+        .arg(&new_dataset_id)
+        .arg("--description")
+        .arg(&snapshot_name);
+    cmd.timeout(std::time::Duration::from_secs(120));
+    let export_output = cmd.ok()?.stdout;
+    let export_output_str = String::from_utf8(export_output)?;
+
+    let snapshot_id = export_output_str
+        .lines()
+        .find_map(|line| {
+            if let Some(start) = line.find("[ss-") {
+                let rest = &line[start + 1..];
+                if let Some(end) = rest.find(']') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+            None
+        })
+        .ok_or_else(|| "Could not extract snapshot ID from create-snapshot output".to_string())?;
+
+    let task_id = export_output_str.lines().find_map(|line| {
+        if let Some(start) = line.find("[task-") {
+            let rest = &line[start + 1..];
+            if let Some(end) = rest.find(']') {
+                return Some(rest[..end].to_string());
+            }
+        }
+        None
+    });
+
+    wait_for_snapshot_ready(&snapshot_id, task_id.as_deref())?;
+
+    let test_dir = get_test_data_dir().join("label_index_roundtrip");
+    fs::create_dir_all(&test_dir)?;
+    let snapshot_download_dir = test_dir.join(format!("snapshot_{}", timestamp));
+    fs::create_dir_all(&snapshot_download_dir)?;
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("download-snapshot")
+        .arg(&snapshot_id)
+        .arg("--output")
+        .arg(&snapshot_download_dir);
+    cmd.timeout(std::time::Duration::from_secs(300));
+    cmd.assert().success();
+
+    let snapshot_arrow = snapshot_download_dir.join("dataset.arrow");
+    assert!(
+        snapshot_arrow.exists(),
+        "Expected dataset.arrow in snapshot download at {}",
+        snapshot_download_dir.display()
+    );
+
+    compare_label_index_pairs(&annotations_path, &snapshot_arrow)?;
+
+    // Cleanup
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-dataset").arg(&new_dataset_id);
+    let _ = cmd.output();
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-snapshot").arg(&snapshot_id);
+    let _ = cmd.output();
+
+    let _ = fs::remove_dir_all(&images_dir);
+    let _ = fs::remove_file(&annotations_path);
+    let _ = fs::remove_dir_all(&snapshot_download_dir);
 
     Ok(())
 }
@@ -3386,7 +3672,8 @@ fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Erro
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    let hash = hasher.finalize();
+    Ok(hash.iter().map(|byte| format!("{:02x}", byte)).collect())
 }
 
 #[test]
@@ -5334,4 +5621,157 @@ fn test_migrate_coco_to_arrow_roundtrip() {
         .assert()
         .success()
         .stdout(predicates::str::contains("no migration needed"));
+}
+
+// ---------------------------------------------------------------------------
+// Session management: schemas, launch, update, delete
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_trainer_schemas_and_schema() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("trainer-schemas");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    // Output format: "schema_type: label (name)" — fetch the first
+    // catalog entry's full schema.
+    if let Some(schema_type) = output_str
+        .lines()
+        .find_map(|line| line.split(':').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("trainer-schema").arg(schema_type);
+        cmd.assert().success();
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_validator_schemas() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("validator-schemas");
+    cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn test_update_training_session_requires_field() -> Result<(), Box<dyn std::error::Error>> {
+    // Offline validation: with neither --name nor --description the
+    // command must fail before any RPC is attempted.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("update-training-session").arg("t-1");
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("--name or --description"));
+    Ok(())
+}
+
+/// Full lifecycle against the live test server: launch a user-managed
+/// training session, rename it, verify, and delete it. Skips gracefully
+/// when the test dataset has no version tags (launch requires one).
+#[test]
+fn test_training_session_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+    let project_id = match get_project_id_by_name("Unit Testing")? {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("experiments")
+        .arg(&project_id)
+        .arg("--name")
+        .arg("Unit Testing");
+    let output = String::from_utf8(cmd.ok()?.stdout)?;
+    let experiment_id = match output.lines().find_map(|line| {
+        line.split('[')
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .map(|s| s.trim().to_string())
+    }) {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+
+    let (dataset_id, annotation_set_id) =
+        get_dataset_and_first_annotation_set(&get_test_dataset())?;
+
+    let start_cmd = |tag: Option<&str>| {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("start-training-session")
+            .arg(&project_id)
+            .arg("--name")
+            .arg("cli-lifecycle-test")
+            .arg("--experiment-id")
+            .arg(&experiment_id)
+            .arg("--trainer-type")
+            .arg("modelpack")
+            .arg("--dataset-id")
+            .arg(&dataset_id)
+            .arg("--annotation-set-id")
+            .arg(&annotation_set_id)
+            .arg("--param")
+            .arg("epochs=1")
+            .arg("--local");
+        if let Some(tag) = tag {
+            cmd.arg("--tag").arg(tag);
+        }
+        cmd
+    };
+
+    let mut output = start_cmd(None).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.contains("no version tags") {
+            return Err(format!("start-training-session failed: {stderr}").into());
+        }
+        // The test dataset has no version tags; retry with an explicit
+        // empty tag (an untagged run), which the server accepts.
+        output = start_cmd(Some("")).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("start-training-session --tag '' failed: {stderr}").into());
+        }
+    }
+
+    // Output format: "Started training session task task-x session t-y"
+    let stdout = String::from_utf8(output.stdout)?;
+    let session_id = stdout
+        .split_whitespace()
+        .find(|token| token.starts_with("t-"))
+        .ok_or("no session id in start-training-session output")?
+        .to_string();
+
+    let result = {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("update-training-session")
+            .arg(&session_id)
+            .arg("--name")
+            .arg("cli-lifecycle-renamed")
+            .arg("--description")
+            .arg("cli lifecycle test");
+        cmd.assert()
+            .success()
+            .stdout(predicates::str::contains("cli-lifecycle-renamed"));
+
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("training-session").arg(&session_id);
+        cmd.assert()
+            .success()
+            .stdout(predicates::str::contains("cli-lifecycle-renamed"));
+        Ok(())
+    };
+
+    // Always delete the session, even if the update assertions failed.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-training-sessions").arg(&session_id);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("Deleted training session"));
+
+    result
 }

@@ -1,8 +1,18 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
+# Platform detection: library extension and sed -i variant differ between macOS and Linux
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    LIB_EXT := dylib
+    SED_INPLACE := sed -i ''
+else
+    LIB_EXT := so
+    SED_INPLACE := sed -i
+endif
+
 .PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check \
-        swift swift-format swift-test kotlin xcframework
+        security-audit swift swift-format swift-test kotlin xcframework
 
 # Default target
 help:
@@ -14,9 +24,10 @@ help:
 	@echo "  make test        - Run all tests (Rust + Python)"
 	@echo "  make build       - Build all crates"
 	@echo "  make clean       - Clean build artifacts"
-	@echo "  make pre-commit  - Run pre-commit checks (format + lint + build + test)"
+	@echo "  make pre-commit  - Run pre-commit checks (format + lint + build + security-audit)"
 	@echo "  make pre-release - Full pre-release validation"
 	@echo "  make version-check - Check version consistency across all files"
+	@echo "  make security-audit - Scan Cargo.lock for known vulnerabilities"
 	@echo "  make sbom        - Generate Software Bill of Materials"
 	@echo "  make check-license - Check dependency license compliance"
 	@echo ""
@@ -157,8 +168,24 @@ py-dev:
 	fi
 	@echo "✅ Python bindings installed"
 
+# Scan Cargo.lock for known advisories.
+#
+# Mirrors the .github/workflows Security Audit job so the same failure
+# shows up locally before it blocks a PR. cargo-audit is auto-installed
+# via cargo if missing so this step is safe to run in a fresh clone.
+security-audit:
+	@echo "Running cargo audit..."
+	@if ! command -v cargo-audit >/dev/null 2>&1; then \
+		echo "cargo-audit not found — installing via 'cargo install cargo-audit'..."; \
+		cargo install cargo-audit --locked || { \
+			echo "❌ Failed to install cargo-audit. Install it manually and retry."; \
+			exit 1; \
+		}; \
+	fi
+	@cargo audit
+
 # Pre-commit checks (run before committing)
-pre-commit: format lint build
+pre-commit: format lint build security-audit
 	@echo ""
 	@echo "============================================"
 	@echo "✅ Pre-commit checks passed!"
@@ -173,7 +200,7 @@ pre-commit: format lint build
 	@echo ""
 
 # Pre-release validation (comprehensive checks before release)
-pre-release: clean format lint build test sbom check-license version-check
+pre-release: clean format lint build test sbom check-license version-check security-audit
 	@echo ""
 	@echo "Running pre-release validation..."
 	@echo ""
@@ -280,12 +307,12 @@ swift:
 	@echo "Generating Swift code..."
 	@mkdir -p swift
 	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.dylib \
+		--library target/release/libedgefirst_client.$(LIB_EXT) \
 		--language swift \
 		--config crates/edgefirst-client-ffi/uniffi.toml \
 		--out-dir swift
 	@# Add 'framework' qualifier since this is packaged in a .framework bundle
-	@sed -i '' 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' swift/EdgeFirstClientFFI.modulemap
+	@$(SED_INPLACE) 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' swift/EdgeFirstClientFFI.modulemap
 	@echo "✅ Swift bindings generated in swift/"
 	@echo "   - EdgeFirstClient.swift (user-facing Swift API)"
 	@echo "   - EdgeFirstClientFFI.h (internal FFI header)"
@@ -301,7 +328,7 @@ kotlin:
 	@echo "Generating Kotlin code..."
 	@mkdir -p artifacts/kotlin
 	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.dylib \
+		--library target/release/libedgefirst_client.$(LIB_EXT) \
 		--language kotlin \
 		--out-dir artifacts/kotlin
 	@echo "✅ Kotlin bindings generated: artifacts/kotlin/"

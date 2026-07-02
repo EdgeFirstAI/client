@@ -153,7 +153,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for organization ID.
   func testParseOrganizationIdRoundTrip() throws {
-    let original = OrganizationId(value: 0xdeadbeef)
+    let original = OrganizationId(value: 0xdead_beef)
     let formatted = formatOrganizationId(id: original)
     let parsed = try parseOrganizationId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -185,7 +185,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for project ID.
   func testParseProjectIdRoundTrip() throws {
-    let original = ProjectId(value: 0xdeadbeef)
+    let original = ProjectId(value: 0xdead_beef)
     let formatted = formatProjectId(id: original)
     let parsed = try parseProjectId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -217,7 +217,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for experiment ID.
   func testParseExperimentIdRoundTrip() throws {
-    let original = ExperimentId(value: 0xdeadbeef)
+    let original = ExperimentId(value: 0xdead_beef)
     let formatted = formatExperimentId(id: original)
     let parsed = try parseExperimentId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -249,7 +249,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for training session ID.
   func testParseTrainingSessionIdRoundTrip() throws {
-    let original = TrainingSessionId(value: 0xdeadbeef)
+    let original = TrainingSessionId(value: 0xdead_beef)
     let formatted = formatTrainingSessionId(id: original)
     let parsed = try parseTrainingSessionId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -281,7 +281,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for validation session ID.
   func testParseValidationSessionIdRoundTrip() throws {
-    let original = ValidationSessionId(value: 0xdeadbeef)
+    let original = ValidationSessionId(value: 0xdead_beef)
     let formatted = formatValidationSessionId(id: original)
     let parsed = try parseValidationSessionId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -313,7 +313,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for snapshot ID.
   func testParseSnapshotIdRoundTrip() throws {
-    let original = SnapshotId(value: 0xdeadbeef)
+    let original = SnapshotId(value: 0xdead_beef)
     let formatted = formatSnapshotId(id: original)
     let parsed = try parseSnapshotId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -345,7 +345,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for task ID.
   func testParseTaskIdRoundTrip() throws {
-    let original = TaskId(value: 0xdeadbeef)
+    let original = TaskId(value: 0xdead_beef)
     let formatted = formatTaskId(id: original)
     let parsed = try parseTaskId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -377,7 +377,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for dataset ID.
   func testParseDatasetIdRoundTrip() throws {
-    let original = DatasetId(value: 0xdeadbeef)
+    let original = DatasetId(value: 0xdead_beef)
     let formatted = formatDatasetId(id: original)
     let parsed = try parseDatasetId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -409,7 +409,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for annotation set ID.
   func testParseAnnotationSetIdRoundTrip() throws {
-    let original = AnnotationSetId(value: 0xdeadbeef)
+    let original = AnnotationSetId(value: 0xdead_beef)
     let formatted = formatAnnotationSetId(id: original)
     let parsed = try parseAnnotationSetId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -441,7 +441,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for sample ID.
   func testParseSampleIdRoundTrip() throws {
-    let original = SampleId(value: 0xdeadbeef)
+    let original = SampleId(value: 0xdead_beef)
     let formatted = formatSampleId(id: original)
     let parsed = try parseSampleId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -473,7 +473,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for app ID.
   func testParseAppIdRoundTrip() throws {
-    let original = AppId(value: 0xdeadbeef)
+    let original = AppId(value: 0xdead_beef)
     let formatted = formatAppId(id: original)
     let parsed = try parseAppId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -505,7 +505,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for image ID.
   func testParseImageIdRoundTrip() throws {
-    let original = ImageId(value: 0xdeadbeef)
+    let original = ImageId(value: 0xdead_beef)
     let formatted = formatImageId(id: original)
     let parsed = try parseImageId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)
@@ -537,7 +537,7 @@ final class IDFormatTests: XCTestCase {
 
   /// Test round-trip parse/format for sequence ID.
   func testParseSequenceIdRoundTrip() throws {
-    let original = SequenceId(value: 0xdeadbeef)
+    let original = SequenceId(value: 0xdead_beef)
     let formatted = formatSequenceId(id: original)
     let parsed = try parseSequenceId(s: formatted)
     XCTAssertEqual(parsed.value, original.value)

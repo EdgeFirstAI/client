@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+"""
+EdgeFirst Studio Python client stubs.
+
+Install: ``pip install edgefirst-client`` (includes the ``edgefirst-client``
+CLI).
+
+Tutorials: ``examples/README.md`` in the GitHub repository.
+CLI reference: ``CLI.md``.
+"""
+
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -890,7 +900,9 @@ class Project:
         ...
 
     def datasets(
-        self, client: Optional[Client] = None, name: Optional[str] = None
+        self,
+        client_or_name: Optional[Union[Client, str]] = None,
+        name: Optional[str] = None,
     ) -> List[Dataset]:
         """
         List the datasets in the project.
@@ -898,7 +910,7 @@ class Project:
         New API (v2.6.0+): Uses embedded client reference.
 
         Args:
-            client: Deprecated. The client to use for the request.
+            client_or_name: Deprecated client, or a dataset name filter string.
             name: The name of the dataset to filter by.
 
         Returns:
@@ -911,7 +923,9 @@ class Project:
         ...
 
     def experiments(
-        self, client: Optional[Client] = None, name: Optional[str] = None
+        self,
+        client_or_name: Optional[Union[Client, str]] = None,
+        name: Optional[str] = None,
     ) -> List[Experiment]:
         """
         List the experiments in the project.
@@ -919,7 +933,8 @@ class Project:
         New API (v2.6.0+): Uses embedded client reference.
 
         Args:
-            client: Deprecated. The client to use for the request.
+            client_or_name: Deprecated client, or an experiment name filter
+                            string.
             name: The name of the experiment to filter by.
 
         Returns:
@@ -1363,18 +1378,23 @@ class Dataset:
         ...
 
     @overload
-    def add_label(self, name: str) -> None:
+    def add_label(self, name: str, index: Optional[int] = None) -> None:
         """
         Add a label to the dataset (new API).
 
         Args:
             name: The name of the label to add.
+            index: Optional source-faithful ``label_index`` to assign (e.g.
+                COCO ``category_id``). When ``None`` the server assigns the
+                next available index.
 
         Raises:
             TypeError: If dataset has no client reference.
+            Error: If the requested index is already held by a different label.
 
         Example:
             >>> dataset.add_label("person")
+            >>> dataset.add_label("car", index=3)
         """
         ...
 
@@ -1390,7 +1410,10 @@ class Dataset:
         ...
 
     def add_label(
-        self, name_or_client: Union[str, Client], name: Optional[str] = None
+        self,
+        name_or_client: Union[str, Client],
+        name: Optional[str] = None,
+        index: Optional[int] = None,
     ) -> None:
         """Add a label to the dataset."""
         ...
@@ -1430,9 +1453,9 @@ class Dataset:
 
     def download(
         self,
+        output: str = ".",
         groups: List[str] = ...,
         types: List[FileType] = ...,
-        output: str = ".",
         flatten: bool = False,
         progress: Optional[Progress] = None,
         version: Optional[str] = None,
@@ -1445,10 +1468,10 @@ class Dataset:
         faster than downloading samples individually.
 
         Args:
+            output: Output directory path. Defaults to current directory.
             groups: List of dataset groups (train, val, test, etc.).
             types: List of file types to download.
                 Defaults to [FileType.Image].
-            output: Output directory path. Defaults to current directory.
             flatten: If True, download all files to output root without
                      sequence subdirectories.
             progress: Optional progress callback. Supports two signatures:
@@ -1472,7 +1495,7 @@ class Dataset:
             TypeError: If dataset has no client reference.
 
         Example:
-            >>> dataset.download(["train"], [FileType.Image], "./data")
+            >>> dataset.download("./data", ["train"], [FileType.Image])
         """
         ...
 
@@ -1652,7 +1675,7 @@ class Box2d:
     """
 
     def __init__(
-        self, left: float, top: float, width: float, height: float
+        self, x: float, y: float, width: float, height: float
     ) -> None:
         """
         Create a new bounding box representation given the coordinates
@@ -1752,7 +1775,7 @@ class Box3d:
         cz: float,
         width: float,
         height: float,
-        depth: float,
+        length: float,
     ) -> None:
         """
         Initialize a 3D bounding box with the given position and dimensions.
@@ -1763,7 +1786,7 @@ class Box3d:
             cz (float): The z-coordinate of the box center (up).
             width (float): The width of the box along the y-axis.
             height (float): The height of the box along the z-axis.
-            depth (float): The depth of the box along the x-axis.
+            length (float): The length of the box along the x-axis.
         """
         ...
 
@@ -2434,8 +2457,8 @@ class Sample:
 
     def download(
         self,
-        client: Optional[Client] = None,
-        file_type: FileType = FileType.Image,
+        file_type_or_client: Optional[Union[FileType, Client]] = None,
+        file_type: Optional[FileType] = None,
     ) -> Optional[bytes]:
         """
         Download sample file data.
@@ -2452,7 +2475,8 @@ class Sample:
             >>> data = sample.download(client)  # Passing client explicitly
 
         Args:
-            client: Deprecated. The client to use for the request.
+            file_type_or_client: Deprecated client, or a file type when used as
+                                 the first positional argument.
             file_type: Type of file to download. Defaults to FileType.Image.
                        Other options: LidarPcd, LidarDepth, LidarReflect,
                        RadarPcd, RadarCube.
@@ -2841,20 +2865,153 @@ class TaskInfo:
     def update_stage(
         self,
         client: Client,
-        stage_name: str,
-        status: Optional[str] = None,
-        message: Optional[str] = None,
-        percentage: Optional[int] = None,
+        stage: str,
+        status: str,
+        message: str,
+        percentage: int,
     ) -> None:
         """
         Updates a specific stage of the task.
 
         Args:
             client (Client): The EdgeFirst client.
-            stage_name (str): The name of the stage to update.
-            status (Optional[str]): The new status for the stage.
-            message (Optional[str]): A message associated with the stage.
-            percentage (Optional[int]): The completion percentage of the stage.
+            stage (str): The name of the stage to update.
+            status (str): The new status for the stage.
+            message (str): A message associated with the stage.
+            percentage (int): The completion percentage of the stage.
+        """
+        ...
+
+    def data_list(self, client: Client) -> TaskDataList:
+        """
+        List data artefacts (non-chart files) attached to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            TaskDataList: Data artefacts keyed by folder name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def upload_data(
+        self,
+        client: Client,
+        path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Upload a data file to this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            path (Union[str, Path]): Local file path to upload.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the file size in bytes; ``current`` tracks
+                bytes sent. ``status`` is always ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        file: str,
+        output_path: Union[str, Path],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a data file from this task to a local path.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            file (str): Filename to download.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
+            folder (Optional[str]): Optional logical subdirectory under the
+                task data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def add_chart(
+        self,
+        client: Client,
+        group: str,
+        name: str,
+        data: Parameter,
+        params: Optional[Parameter] = None,
+    ) -> None:
+        """
+        Add (or overwrite) a chart under ``(group, name)`` for this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+            data (Parameter): Chart body as a ``Parameter`` (arbitrary JSON).
+            params (Optional[Parameter]): Optional chart-rendering parameters.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
+        """
+        ...
+
+    def list_charts(
+        self,
+        client: Client,
+        group: Optional[str] = None,
+    ) -> TaskDataList:
+        """
+        List charts attached to this task, optionally filtered to a group.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (Optional[str]): Optional group name to filter charts.
+
+        Returns:
+            TaskDataList: Charts keyed by group name.
+
+        Raises:
+            RuntimeError: If the request fails.
+        """
+        ...
+
+    def get_chart(self, client: Client, group: str, name: str) -> Parameter:
+        """
+        Fetch the raw chart body for ``(group, name)`` on this task.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            group (str): Chart group name (non-empty).
+            name (str): Chart name within the group (non-empty).
+
+        Returns:
+            Parameter: The deserialized chart JSON.
+
+        Raises:
+            RuntimeError: If the request fails or group/name are empty.
         """
         ...
 
@@ -2925,6 +3082,131 @@ class Artifact:
 
         Returns:
             str: The model type.
+        """
+        ...
+
+class TaskDataList:
+    """
+    List of data and chart artefacts attached to a task.
+
+    The ``data`` map encodes the folder layout: keys are folder names, values
+    are filenames within that folder.
+
+    Note: validation sessions use a flat ``list[str]`` of relative paths
+    (returned by :meth:`ValidationSession.data_list`), not this type.
+    """
+
+    @property
+    def server(self) -> str:
+        """
+        The server hostname for the underlying storage.
+
+        Returns:
+            str: The storage server hostname.
+        """
+        ...
+
+    @property
+    def organization_uid(self) -> str:
+        """
+        Owning organization identifier (e.g. ``'org-abc123'``).
+
+        Returns:
+            str: The organization UID.
+        """
+        ...
+
+    @property
+    def traces(self) -> List[str]:
+        """
+        Trace files surfaced from the ``trace`` folder.
+
+        Returns:
+            List[str]: List of trace filenames.
+        """
+        ...
+
+    @property
+    def data(self) -> Dict[str, List[str]]:
+        """
+        Folder -> filename map of artefacts.
+
+        Returns:
+            Dict[str, List[str]]: Map of folder names to lists of filenames.
+        """
+        ...
+
+class Job:
+    """
+    A job (app run) entry returned by ``Client.job_run`` and ``Client.jobs``.
+
+    The ``task_id`` field links back to the underlying task that can be polled
+    via ``Client.task_info``.
+
+    Note:
+        The ``launch`` timestamp present on the underlying Rust ``Job`` struct
+        is not exposed in the Python bindings. Use ``state`` to distinguish
+        completed runs.
+    """
+
+    @property
+    def code(self) -> str:
+        """
+        App code (e.g. ``"edgefirst-validator:2.9.5"``).
+
+        Returns:
+            str: The app code.
+        """
+        ...
+
+    @property
+    def title(self) -> str:
+        """
+        Display title from the app definition.
+
+        Returns:
+            str: The job title.
+        """
+        ...
+
+    @property
+    def job_name(self) -> str:
+        """
+        User-supplied job label provided at ``job_run`` time.
+
+        Returns:
+            str: The job name.
+        """
+        ...
+
+    @property
+    def job_id(self) -> str:
+        """
+        Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+
+        Returns:
+            str: The batch job identifier.
+        """
+        ...
+
+    @property
+    def state(self) -> str:
+        """
+        Cloud-batch state (e.g. ``"RUNNING"``, ``"SUCCEEDED"``, ``"FAILED"``).
+
+        Returns:
+            str: The current job state.
+        """
+        ...
+
+    def task_id(self) -> TaskID:
+        """
+        Returns the ``TaskID`` corresponding to this job.
+
+        Use with ``Client.task_info`` to fetch the underlying task details.
+
+        Returns:
+            TaskID: The task ID linked to this job.
         """
         ...
 
@@ -3091,7 +3373,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads an artifact file to the training session.
@@ -3140,7 +3422,7 @@ class TrainingSession:
         self,
         filename_or_client: Union[str, Client],
         filename_or_path: Optional[Union[str, Path]] = None,
-        path: Optional[Path] = None,
+        path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Uploads a checkpoint file to the training session.
@@ -3187,8 +3469,8 @@ class TrainingSession:
 
     def upload(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        files_or_client: Union[List[Tuple[str, Union[str, Path]]], Client],
+        files: Optional[List[Tuple[str, Union[str, Path]]]] = None,
     ) -> None:
         """
         Uploads files to the training session.  This can be used to upload
@@ -3242,6 +3524,237 @@ class TrainingSession:
             Use ``session.download(filename)`` instead.
         """
         ...
+
+class NewValidationSession:
+    """Result of :py:meth:`Client.start_validation_session`.
+
+    The handle returned when a session is freshly created via
+    ``cloud.server.start``. The session_id is what downstream data
+    uploads / metrics use and what :py:meth:`Client.
+    delete_validation_sessions` consumes in test teardown.
+    """
+
+    @property
+    def task_id(self) -> TaskID:
+        """Backing BackgroundTask row id (acceptable to
+        ``task_info`` / ``task_status`` / ``job_stop``)."""
+        ...
+
+    @property
+    def session_id(self) -> Optional[ValidationSessionID]:
+        """Freshly-minted validation session id.
+
+        Optional because the underlying ``cloud.server.start`` endpoint
+        also returns non-validation tasks (e.g. trainer). For a
+        validation start request this is always populated.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+class NewTrainingSession:
+    """Result of :py:meth:`Client.start_training_session`.
+
+    The handle returned when a training session is freshly created via
+    ``cloud.server.start``. The task_id can be polled with
+    :py:meth:`Client.task_info`; the session_id is the handle for
+    :py:meth:`Client.training_session`,
+    :py:meth:`Client.update_training_session` and
+    :py:meth:`Client.delete_training_sessions`.
+    """
+
+    @property
+    def task_id(self) -> TaskID:
+        """Backing BackgroundTask row id (acceptable to
+        ``task_info`` / ``task_status`` / ``job_stop``)."""
+        ...
+
+    @property
+    def session_id(self) -> Optional[TrainingSessionID]:
+        """Freshly-minted training session id.
+
+        Optional because the underlying ``cloud.server.start`` endpoint
+        also returns non-trainer tasks. For a trainer start request
+        this is always populated.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+class TrainerSchemaInfo:
+    """Catalog entry describing an available trainer type.
+
+    Returned by :py:meth:`Client.trainer_schemas`. The ``schema_type``
+    value is what gets passed to :py:meth:`Client.trainer_schema` and to
+    :py:meth:`Client.start_training_session`.
+    """
+
+    @property
+    def name(self) -> str:
+        """Internal trainer name (e.g. ``"modelpack"``)."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """Human-readable label shown in the Studio UI."""
+        ...
+
+    @property
+    def schema_type(self) -> str:
+        """Schema type identifier used for schema lookup and launch."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class SchemaOption:
+    """One selectable option of a ``select`` schema field."""
+
+    @property
+    def name(self) -> Optional[Parameter]:
+        """Option value; may be any JSON scalar (string, number, ...)."""
+        ...
+
+    @property
+    def label(self) -> Optional[str]:
+        """Human-readable label."""
+        ...
+
+    @property
+    def children(self) -> List[SchemaField]:
+        """Nested fields revealed when this option is selected."""
+        ...
+
+class SchemaField:
+    """A single field descriptor from a trainer or validator schema.
+
+    Describes one hyperparameter: its name, type, default and
+    constraints. Nested parameter groups are exposed via ``children``.
+    Use the descriptors to build the ``params`` dict for
+    :py:meth:`Client.start_training_session`.
+    """
+
+    @property
+    def name(self) -> Optional[str]:
+        """Parameter name — the key to use in the launch params dict."""
+        ...
+
+    @property
+    def label(self) -> Optional[str]:
+        """Human-readable label."""
+        ...
+
+    @property
+    def description(self) -> Optional[str]:
+        """Longer description of the parameter."""
+        ...
+
+    @property
+    def required(self) -> bool:
+        """Whether a value is required to launch."""
+        ...
+
+    @property
+    def default(self) -> Optional[Parameter]:
+        """Default value applied when the parameter is omitted."""
+        ...
+
+    @property
+    def field_type(self) -> Optional[str]:
+        """Field type as a lowercase string (``"int"``, ``"group"``,
+        ``"select"``, ...); ``"unknown"`` for types this client version
+        does not recognize, ``None`` when the server omits the type."""
+        ...
+
+    @property
+    def min(self) -> Optional[float]:
+        """Minimum value (numeric fields)."""
+        ...
+
+    @property
+    def max(self) -> Optional[float]:
+        """Maximum value (numeric fields)."""
+        ...
+
+    @property
+    def step(self) -> Optional[float]:
+        """Step size (numeric fields)."""
+        ...
+
+    @property
+    def options(self) -> List[SchemaOption]:
+        """Selectable options (``select`` fields)."""
+        ...
+
+    @property
+    def children(self) -> List[SchemaField]:
+        """Nested fields (``group`` fields, or ``bool`` fields that
+        reveal sub-parameters when enabled)."""
+        ...
+
+    @property
+    def is_dropdown(self) -> bool:
+        """Render the select as a dropdown."""
+        ...
+
+    @property
+    def multi_select(self) -> bool:
+        """Allow selecting multiple options."""
+        ...
+
+    @property
+    def is_multi_line(self) -> bool:
+        """Render the text input as multi-line."""
+        ...
+
+    @property
+    def hidden(self) -> bool:
+        """Mask the text input (passwords)."""
+        ...
+
+    @property
+    def numeric_only(self) -> bool:
+        """Restrict text input to numeric characters."""
+        ...
+
+    @property
+    def enable_tags_selection(self) -> bool:
+        """Dataset fields: enable dataset tag selection."""
+        ...
+
+    @property
+    def enable_annotation_set_selection(self) -> bool:
+        """Dataset fields: enable annotation set selection."""
+        ...
+
+    @property
+    def values(self) -> Optional[List[Parameter]]:
+        """Slider fields: number of slider handles (1 = value,
+        2 = range)."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class ValidatorSchema:
+    """A validator parameter schema, as returned by
+    :py:meth:`Client.validator_schemas`."""
+
+    @property
+    def schema_type(self) -> str:
+        """Schema type identifier (matched against a model's trainer
+        type)."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Internal validator name."""
+        ...
+
+    @property
+    def schema(self) -> List[SchemaField]:
+        """The parameter field descriptors."""
+        ...
+
+    def __repr__(self) -> str: ...
 
 class ValidationSession:
     """
@@ -3419,25 +3932,78 @@ class ValidationSession:
         """
         ...
 
-    def upload(
+    def upload_data(
         self,
-        files_or_client: Union[List[Tuple[str, Path]], Client],
-        files: Optional[List[Tuple[str, Path]]] = None,
+        client: Client,
+        files: List[Tuple[str, Union[str, Path]]],
+        folder: Optional[str] = None,
+        progress: Optional[Callable[..., None]] = None,
     ) -> None:
         """
-        Uploads the specified files to the validation session.
-
-        New API (v2.6.0+): ``session.upload(files)``
-        Deprecated API: ``session.upload(client, files)``
+        Upload files to this validation session's data folder.
 
         Args:
-            files_or_client: Either files list (new API) or Client
-                (deprecated).
-            files: The files list when using deprecated API.
+            client (Client): The authenticated EdgeFirst client.
+            files (List[Tuple[str, Union[str, Path]]]): List of ``(filename,
+                path)`` tuples to upload. The path may be either a ``str``
+                or a ``pathlib.Path``; PyO3 accepts any ``os.PathLike``.
+            folder (Optional[str]): Optional logical subdirectory under the
+                session data root.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
 
-        .. deprecated::
-            Passing ``client`` is deprecated and will be removed in v3.0.0.
-            Use ``session.upload(files)`` instead.
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+                ``total`` equals the sum of all file sizes in bytes;
+                ``current`` tracks aggregate bytes sent across all files
+                using a shared atomic counter. ``status`` is always
+                ``None`` for uploads.
+
+        Raises:
+            RuntimeError: If the upload fails.
+        """
+        ...
+
+    def download_data(
+        self,
+        client: Client,
+        filename: str,
+        output_path: Union[str, Path],
+        progress: Optional[Callable[..., None]] = None,
+    ) -> None:
+        """
+        Download a file from this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+            filename (str): Name of the file to download.
+            output_path (Union[str, Path]): Local path to write the
+                downloaded file.
+            progress (Optional[Callable]): Optional progress callback. Supports
+                two signatures:
+
+                - ``callback(current, total)`` — basic progress
+                - ``callback(current, total, status)`` — with status message
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
+        ...
+
+    def data_list(self, client: Client) -> List[str]:
+        """
+        List files attached to this validation session's data folder.
+
+        Args:
+            client (Client): The authenticated EdgeFirst client.
+
+        Returns:
+            List[str]: Flat list of relative file paths
+            (e.g. ``"folder/file.txt"``), sorted lexicographically.
+
+        Raises:
+            RuntimeError: If the request fails.
         """
         ...
 
@@ -3746,12 +4312,15 @@ class SnapshotRestoreResult:
         ...
 
     @property
-    def date(self) -> str:
+    def date(self) -> str | None:
         """
         Returns the timestamp when the restore was initiated.
 
+        The ``snapshots.restore`` response does not always include a date, so
+        this may be None.
+
         Returns:
-            str: The restore timestamp.
+            str | None: The restore timestamp, or None if not provided.
         """
         ...
 
@@ -4284,6 +4853,11 @@ class Client:
         >>> dataset = client.dataset("ds-abc123")
         >>> datasets = client.datasets()  # List all datasets
 
+    See also:
+        Repository examples: ``examples/01_authentication.py`` (auth),
+        ``examples/04_polars_dataframe.py`` (DataFrames),
+        ``examples/06_create_annotations.py`` (populate_samples).
+
     Note:
         The client also provides various utility methods for interacting with
         datasets and converting them to and from Polars DataFrames.
@@ -4319,6 +4893,10 @@ class Client:
             use_token_file (bool): Whether to use the local token file for
                                    authentication if no token, username, or
                                    password is provided.  Defaults to true.
+
+        See also:
+            After ``edgefirst-client login``, ``Client()`` loads the cached
+            token automatically. See ``examples/01_authentication.py``.
         """
         ...
 
@@ -4713,8 +5291,68 @@ class Client:
         """
         ...
 
-    def add_label(self, dataset_id: DatasetUID, name: str) -> None:
-        """Add a label to the dataset."""
+    def add_label(
+        self, dataset_id: DatasetUID, name: str, index: Optional[int] = None
+    ) -> None:
+        """
+        Add a label to the dataset, optionally preserving its source index.
+
+        When ``index`` is ``None``, the server assigns the next available
+        ``label_index``. When set, the index is pinned via a two-pass
+        ``label.update`` — use this to preserve COCO ``category_id`` or other
+        non-contiguous source indices across upload/download round-trips.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier (string, int, or
+                DatasetID object).
+            name (str): Label name, must be unique within the dataset.
+            index (int, optional): Source-faithful ``label_index`` to assign.
+                Defaults to ``None`` (server-assigned).
+
+        Raises:
+            Error: If the requested index is already held by a different label.
+
+        Example:
+            >>> client.add_label(dataset_id, "person")
+            >>> client.add_label(dataset_id, "car", index=3)
+        """
+        ...
+
+    def add_labels(
+        self,
+        dataset_id: DatasetUID,
+        names: List[str],
+        indices: Optional[List[Optional[int]]] = None,
+    ) -> None:
+        """
+        Add multiple labels in one request, optionally assigning
+        source-faithful indices.
+
+        When ``indices`` is ``None``, creates all labels with server-assigned
+        indices in a single ``label.add2`` request. When provided, each label
+        is created then its index pinned via a two-pass ``label.update``.
+        Existing labels are skipped without error. The two-pass strategy avoids
+        collisions when labels within the same batch would swap positions.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier (string, int, or
+                DatasetID object).
+            names (List[str]): Label names to create.
+            indices (List[Optional[int]], optional): Parallel list of
+                ``label_index`` values. Must have the same length as ``names``
+                when provided. Use ``None`` entries to let the server assign
+                specific labels. Defaults to ``None`` (all server-assigned).
+
+        Raises:
+            Error: If ``indices`` length differs from ``names``, or if any
+                requested index conflicts with an existing unrelated label.
+
+        Example:
+            >>> client.add_labels(dataset_id, ["person", "car", "truck"])
+            >>> client.add_labels(dataset_id, ["person", "car"],
+            ...                   indices=[1, 3])
+            >>> client.add_labels(dataset_id, ["a", "b"], indices=[None, 5])
+        """
         ...
 
     def remove_label(self, label_id: int) -> None:
@@ -4964,6 +5602,9 @@ class Client:
 
             Applications should detect the status change to
             reset their progress bar for the second phase.
+
+        See also:
+            ``examples/05_download_dataset.py`` and CLI ``download-dataset``.
         """
         ...
 
@@ -5296,6 +5937,95 @@ class Client:
             DataFrame: A Polars DataFrame with 13 columns (name, frame,
                       object_id, label, label_index, group, mask, box2d,
                       box3d, size, location, pose, degradation).
+
+        See also:
+            CLI ``download-annotations`` exports Arrow for ``polars.read_ipc``.
+            ``examples/04_polars_dataframe.py``.
+        """
+        ...
+
+    def update_sample_dimensions(
+        self,
+        dataset_id: DatasetUID,
+        updates: List[tuple[SampleUID, int, int]],
+    ) -> int:
+        """
+        Update image dimensions for existing samples in a dataset.
+
+        Use this when you already know the width and height for each sample
+        (for example, from a sidecar manifest or from a local scan of the
+        image files). To compute dimensions from the server-hosted images,
+        use ``backfill_sample_dimensions`` instead.
+
+        Updates are sent to the server in batches of 500 via the
+        ``samples.update_dimensions`` JSON-RPC method.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            updates (List[tuple[SampleUID, int, int]]): List of
+                (sample_id, width, height) tuples where sample_id is a
+                SampleUID/int/str and width/height are pixel dimensions.
+
+        Returns:
+            int: Number of samples successfully updated.
+
+        Example:
+            >>> from edgefirst_client import Client
+            >>> client = Client()
+            >>> updates = [
+            ...     ("smpl-abc123", 1920, 1080),
+            ...     ("smpl-def456", 1280, 720),
+            ... ]
+            >>> updated = client.update_sample_dimensions(
+            ...     "ds-12345", updates
+            ... )
+            >>> print(f"Updated {updated} samples")
+        """
+        ...
+
+    def backfill_sample_dimensions(
+        self,
+        dataset_id: DatasetUID,
+        progress: Optional[Progress] = None,
+    ) -> int:
+        """
+        Backfill missing image dimensions for a dataset.
+
+        Downloads images for samples missing width/height, extracts
+        dimensions, and updates the server with the computed values.
+
+        This is a one-time repair operation for legacy datasets uploaded
+        before the client extracted dimensions at upload time. Samples
+        that already have width/height are skipped; samples whose image
+        URL is unavailable, returns a non-success HTTP status, or cannot
+        be parsed as a recognized image format are skipped silently.
+
+        Args:
+            dataset_id (Union[DatasetID, int, str]): ID of the dataset.
+            progress (Optional[Progress]): Optional progress callback.
+                Supports:
+                - ``callback(current, total)`` - basic progress
+                - ``callback(current, total, status)`` - with status message
+
+                The ``total`` reported is the number of samples missing
+                dimensions (not the full dataset size). ``status`` is the
+                literal string ``"Computing dimensions"``.
+
+        Returns:
+            int: Number of samples whose dimensions were updated. May be
+                less than the progress ``total`` when some samples were
+                skipped (missing URL, download failure, unparseable image).
+
+        Example:
+            >>> from edgefirst_client import Client
+            >>> client = Client()
+            >>> updated = client.backfill_sample_dimensions(
+            ...     "ds-12345",
+            ...     lambda curr, total, status: print(
+            ...         f"[{curr}/{total}] {status}"
+            ...     ),
+            ... )
+            >>> print(f"Backfilled {updated} samples")
         """
         ...
 
@@ -5500,6 +6230,9 @@ class Client:
             ...     [sample],
             ...     lambda curr, total: print(f"{curr}/{total}")
             ... )
+
+        See also:
+            ``examples/06_create_annotations.py``.
         """
         ...
 
@@ -5616,14 +6349,14 @@ class Client:
         ...
 
     def training_session(
-        self, session_id: TrainingSessionUID
+        self, training_session_id: TrainingSessionUID
     ) -> TrainingSession:
         """
         Return the training session with the specified training session ID.  If
         the training session does not exist, an error is returned.
 
         Args:
-            session_id (TrainingSessionUID): The training session ID.
+            training_session_id (TrainingSessionUID): The training session ID.
 
         Returns:
             TrainingSession: The training session with the specified ID.
@@ -5666,6 +6399,278 @@ class Client:
         Raises:
             Error: If the validation session does not exist or the request
                    fails.
+        """
+        ...
+
+    def start_validation_session(
+        self,
+        project_id: ProjectUID,
+        name: str,
+        training_session_id: TrainingSessionUID,
+        model_file: str,
+        val_type: str,
+        params: Dict[str, Any] = {},
+        is_local: bool = False,
+        is_kubernetes: bool = False,
+        description: Optional[str] = None,
+        dataset_id: Optional[DatasetUID] = None,
+        annotation_set_id: Optional[AnnotationSetUID] = None,
+        snapshot_id: Optional[SnapshotUID] = None,
+    ) -> "NewValidationSession":
+        """Create a new validation session (Studio ``cloud.server.start``).
+
+        Pass ``is_local=True`` to create a **user-managed** session: the
+        DB row is created and the session is fully usable for data
+        uploads / downloads / metric updates, but no EC2 instance is
+        provisioned and no automated validator pipeline runs. That is
+        the mode the integration tests use — the caller is responsible
+        for cleanup via :py:meth:`delete_validation_sessions`.
+
+        Args:
+            project_id: Project that owns the new session.
+            name: Session display name.
+            training_session_id: Source training session (the session
+                being validated).
+            model_file: Path/name of the model artifact relative to the
+                training session's artifacts.
+            val_type: Validator schema name, e.g. ``"modelpack"``.
+            params: Inner ``params.params`` dict the validator schema
+                consumes; pass an empty dict for the default config.
+            is_local: ``True`` for a user-managed session with no cloud
+                EC2/Kubernetes provisioning.
+            is_kubernetes: ``True`` to route the session to a Kubernetes
+                worker pool instead of EC2.
+            description: Optional session description.
+            dataset_id: Validation dataset id (one of dataset_id+
+                annotation_set_id *or* snapshot_id is required).
+            annotation_set_id: Annotation set on the dataset to validate
+                against.
+            snapshot_id: Snapshot id (alternative to dataset_id/
+                annotation_set_id when the validator runs against a
+                frozen snapshot).
+
+        Returns:
+            NewValidationSession: Backing task id and the freshly-minted
+            ``ValidationSessionID``.
+
+        Raises:
+            Error: ``RpcError(101, ...)`` if a referenced entity is
+                missing; ``PermissionDenied`` if the caller can't write
+                to the target project.
+        """
+        ...
+
+    def delete_validation_sessions(
+        self, session_ids: List[ValidationSessionUID]
+    ) -> None:
+        """Delete one or more validation sessions
+        (Studio ``validate.session.delete``).
+
+        Idempotent against already-deleted ids on the server side.
+        Only the validation sessions are removed; the parent training
+        session is never affected.
+
+        Args:
+            session_ids: Sessions to remove; each accepts the
+                :py:data:`ValidationSessionUID` typing.
+
+        Raises:
+            Error: ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on at least one session.
+        """
+        ...
+
+    def delete_training_sessions(
+        self, session_ids: List[TrainingSessionUID]
+    ) -> None:
+        """Delete one or more training sessions
+        (Studio ``trainer.session.delete``).
+
+        **The server cascades this delete**: validation sessions
+        attached to the deleted training sessions are removed as well,
+        along with artifacts and checkpoints.
+
+        Args:
+            session_ids: Sessions to remove; each accepts the
+                :py:data:`TrainingSessionUID` typing.
+
+        Raises:
+            Error: If a session id cannot be resolved or the request
+                fails.
+        """
+        ...
+
+    def update_training_session(
+        self,
+        session_id: TrainingSessionUID,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> TrainingSession:
+        """Update the name and/or description of a training session.
+
+        Fields left as ``None`` are not modified; at least one must be
+        provided.
+
+        Args:
+            session_id: The training session to update.
+            name: New session name.
+            description: New session description.
+
+        Returns:
+            TrainingSession: The refreshed session after the update.
+
+        Raises:
+            Error: ``InvalidParameters`` when both ``name`` and
+                ``description`` are ``None`` (no request is made);
+                ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on the session.
+        """
+        ...
+
+    def update_validation_session(
+        self,
+        session_id: ValidationSessionUID,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> ValidationSession:
+        """Update the name and/or description of a validation session.
+
+        Fields left as ``None`` are not modified; at least one must be
+        provided. Renaming a validation session also renames its
+        associated background task on the server.
+
+        Args:
+            session_id: The validation session to update.
+            name: New session name.
+            description: New session description.
+
+        Returns:
+            ValidationSession: The refreshed session after the update.
+
+        Raises:
+            Error: ``InvalidParameters`` when both ``name`` and
+                ``description`` are ``None`` (no request is made);
+                ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on the session.
+        """
+        ...
+
+    def trainer_schemas(self) -> List[TrainerSchemaInfo]:
+        """List the trainer types available on the server.
+
+        Pass a returned ``schema_type`` to :py:meth:`trainer_schema`
+        for the full parameter schema, or to
+        :py:meth:`start_training_session` when launching.
+
+        Returns:
+            List[TrainerSchemaInfo]: The trainer type catalog.
+
+        Raises:
+            Error: If the request fails.
+        """
+        ...
+
+    def trainer_schema(self, schema_type: str) -> List[SchemaField]:
+        """Fetch the parameter schema for a specific trainer type.
+
+        The returned fields describe the hyperparameters the trainer
+        accepts — names, defaults, ranges and nested groups — which map
+        onto the ``params`` dict of
+        :py:meth:`start_training_session`.
+
+        Args:
+            schema_type: Trainer schema type from
+                :py:meth:`trainer_schemas`.
+
+        Returns:
+            List[SchemaField]: The parameter field descriptors.
+
+        Raises:
+            Error: If the schema type is unknown or the request fails.
+        """
+        ...
+
+    def validator_schemas(self) -> List[ValidatorSchema]:
+        """List the validator schemas available on the server.
+
+        Each schema carries its parameter field descriptors inline;
+        select the schema whose ``schema_type`` matches the model's
+        trainer type.
+
+        Returns:
+            List[ValidatorSchema]: The validator schema catalog.
+
+        Raises:
+            Error: If the request fails.
+        """
+        ...
+
+    def start_training_session(
+        self,
+        project_id: ProjectUID,
+        name: str,
+        experiment_id: ExperimentUID,
+        trainer_type: str,
+        dataset_id: DatasetUID,
+        annotation_set_id: AnnotationSetUID,
+        params: Dict[str, Any] = {},
+        tag_name: Optional[str] = None,
+        train_group: Optional[str] = None,
+        val_group: Optional[str] = None,
+        session_name: Optional[str] = None,
+        session_description: Optional[str] = None,
+        weights_session: Optional[TrainingSessionUID] = None,
+        is_local: bool = False,
+        is_kubernetes: bool = False,
+    ) -> "NewTrainingSession":
+        """Launch a new training session (Studio ``cloud.server.start``).
+
+        The session trains on a single dataset using group-based
+        train/validation splits. ``tag_name`` defaults to the dataset's
+        latest tag (it is an error if the dataset has no tags and no
+        tag is named); ``train_group`` / ``val_group`` default to the
+        dataset's standard ``train`` / ``val`` groups.
+
+        Pass ``is_local=True`` to create a **user-managed** session:
+        the DB row is created but no cloud instance is provisioned —
+        the caller runs the training loop and uploads
+        artifacts/metrics. Cleanup is via
+        :py:meth:`delete_training_sessions`.
+
+        Args:
+            project_id: Project owning the experiment and dataset.
+            name: Name for the training task.
+            experiment_id: Experiment the session belongs to.
+            trainer_type: Trainer schema type from
+                :py:meth:`trainer_schemas` (e.g. ``"modelpack"``).
+            dataset_id: Dataset to train on.
+            annotation_set_id: Annotation set providing the
+                ground-truth labels.
+            params: Trainer hyperparameters keyed by schema parameter
+                name; see :py:meth:`trainer_schema`.
+            tag_name: Dataset tag to train against; defaults to the
+                latest tag.
+            train_group: Training split group name; defaults to
+                ``"train"``.
+            val_group: Validation split group name; defaults to
+                ``"val"``.
+            session_name: Optional display name for the session.
+            session_description: Optional session description.
+            weights_session: Optional source training session for
+                transfer-learning weights.
+            is_local: ``True`` for a user-managed session with no
+                cloud provisioning.
+            is_kubernetes: ``True`` to schedule onto the
+                organization's Kubernetes runner.
+
+        Returns:
+            NewTrainingSession: Backing task id and the freshly-minted
+            ``TrainingSessionID``.
+
+        Raises:
+            Error: ``InvalidParameters`` if the dataset has no tags
+                and no ``tag_name`` was provided; ``PermissionDenied``
+                if the caller can't write to the target project.
         """
         ...
 
@@ -5856,7 +6861,7 @@ class Client:
             Error: If snapshot or project doesn't exist, or restoration fails.
 
         Example:
-            >>> client = Client().with_token_path(None)
+            >>> client = Client()
             >>> result = client.restore_snapshot(
             ...     "p-1",
             ...     "ss-abc123",
@@ -5901,7 +6906,7 @@ class Client:
                 the request fails.
 
         Example:
-            >>> client = Client().with_token_path(None)
+            >>> client = Client()
             >>> result = client.create_snapshot_from_dataset(
             ...     "ds-12345", "My Backup"
             ... )
@@ -5928,13 +6933,15 @@ class Client:
         """
         ...
 
-    def artifacts(self, session_id: TrainingSessionUID) -> List[Artifact]:
+    def artifacts(
+        self, training_session_id: TrainingSessionUID
+    ) -> List[Artifact]:
         """
         List the artifacts for the specified training session.  The artifacts
         are returned as a vector of strings.
 
         Args:
-            session_id (TrainingSessionUID): The training session ID.
+            training_session_id (TrainingSessionUID): The training session ID.
 
         Returns:
             List[Artifact]: A list of artifact objects
@@ -5949,7 +6956,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         modelname: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5961,9 +6968,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the model belongs to.
             modelname (str): Name of the model file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       artifact.  If not specified, the
-                                       modelname is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded artifact.  Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the modelname is used as
+                                       the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
@@ -5981,7 +6990,7 @@ class Client:
         self,
         training_session_id: TrainingSessionUID,
         checkpoint: str,
-        filename: Optional[Path] = None,
+        filename: Optional[Union[str, Path]] = None,
         progress: Optional[Progress] = None,
     ) -> None:
         """
@@ -5993,9 +7002,11 @@ class Client:
             training_session_id (TrainingSessionUID): ID of the trainer
                 session the checkpoint belongs to.
             checkpoint (str): Name of the checkpoint file to download.
-            filename (Optional[Path]): Local file path to save the downloaded
-                                       checkpoint.  If not specified, the
-                                       checkpoint name is used as the filename.
+            filename (Optional[Union[str, Path]]): Local file path to save
+                                       the downloaded checkpoint. Accepts a
+                                       ``str`` or ``pathlib.Path``. If not
+                                       specified, the checkpoint name is
+                                       used as the filename.
             progress (Optional[Progress]): Optional progress callback.
 
         Progress:
@@ -6080,8 +7091,8 @@ class Client:
 
         Args:
             task_id (Union[TaskID, int, str]): The ID of the task to update.
-            stages (Dict[str, str]): A dictionary representing the new stages
-                                      for the task.
+            stages (List[Tuple[str, str]]): A list of (name, description)
+                tuples representing the new stages for the task.
 
         Returns:
             None
@@ -6114,6 +7125,65 @@ class Client:
 
         Raises:
             Error: If the task or stage does not exist or the request fails.
+        """
+        ...
+
+    def job_run(
+        self,
+        app_name: str,
+        job_name: str,
+        env: Optional[Dict[str, str]] = None,
+        data: Optional[Dict[str, Parameter]] = None,
+    ) -> Job:
+        """
+        Launch a job (app run) on EdgeFirst Studio.
+
+        Args:
+            app_name (str): The app code to run
+                (e.g. ``"edgefirst-validator"``).
+            job_name (str): A user-supplied label for this job run.
+            env (Optional[Dict[str, str]]): Optional environment variables to
+                pass to the job.
+            data (Optional[Dict[str, Parameter]]): Optional data parameters for
+                the job (arbitrary JSON via ``Parameter``).
+
+        Returns:
+            Job: The full job record returned by the server (BK_BATCH wrapper),
+            including AWS Batch job ID, state, and the linked task ID. Call
+            ``.task_id()`` on the result to obtain a ``TaskID`` for use with
+            ``client.task_info(task_id)``.
+
+        Raises:
+            RuntimeError: If the server rejects the request.
+        """
+        ...
+
+    def jobs(self, name: Optional[str] = None) -> List[Job]:
+        """
+        List job (app-run) entries visible to the authenticated user.
+
+        Args:
+            name (Optional[str]): Optional substring filter applied
+                client-side against each job's ``job_name``.
+
+        Returns:
+            List[Job]: Jobs visible to the current user.
+
+        Raises:
+            RuntimeError: If the server returns an error.
+        """
+        ...
+
+    def job_stop(self, task_id: TaskUID) -> None:
+        """
+        Request that a running job task be stopped.
+
+        Args:
+            task_id (Union[TaskID, int, str]): The task ID of the job to stop
+                (from ``job_run`` or ``jobs``).
+
+        Raises:
+            RuntimeError: If the server rejects the request.
         """
         ...
 

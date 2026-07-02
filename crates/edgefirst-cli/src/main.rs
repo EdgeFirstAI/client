@@ -3,8 +3,8 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Progress,
-    SnapshotID, TaskID, TrainingSession,
+    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Parameter,
+    Progress, SchemaField, SnapshotID, StartTrainingRequest, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -171,7 +171,8 @@ enum Command {
         groups: Vec<String>,
 
         /// Fetch the data types for the dataset. Valid types: image, lidar.pcd,
-        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all.
+        /// lidar.png, lidar.jpg, radar.pcd, radar.png, all (aliases also accepted:
+        /// lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube).
         /// Use "all" to download all sensor types.
         #[clap(long, default_value = "image", value_delimiter = ',')]
         types: Vec<FileType>,
@@ -329,6 +330,108 @@ enum Command {
         #[clap(long)]
         name: Option<String>,
     },
+    /// Launch a new training session for an experiment.  The session trains
+    /// on a single dataset using group-based train/validation splits.  The
+    /// dataset tag defaults to the latest tag and the split groups default
+    /// to the dataset's standard "train" and "val" groups.
+    StartTrainingSession {
+        /// Project ID owning the experiment and dataset
+        project_id: String,
+
+        /// Name for the training task
+        #[clap(long)]
+        name: String,
+
+        /// Experiment ID the session belongs to
+        #[clap(long)]
+        experiment_id: String,
+
+        /// Trainer schema type (see trainer-schemas command)
+        #[clap(long)]
+        trainer_type: String,
+
+        /// Dataset ID to train on
+        #[clap(long)]
+        dataset_id: String,
+
+        /// Annotation set ID providing the ground-truth labels
+        #[clap(long)]
+        annotation_set_id: String,
+
+        /// Dataset tag to train against, defaults to the latest tag
+        #[clap(long)]
+        tag: Option<String>,
+
+        /// Training split group name, defaults to "train"
+        #[clap(long)]
+        train_group: Option<String>,
+
+        /// Validation split group name, defaults to "val"
+        #[clap(long)]
+        val_group: Option<String>,
+
+        /// Trainer hyperparameter as KEY=VALUE, repeatable.  Values are
+        /// parsed as JSON (numbers, booleans) and fall back to strings.
+        /// See the trainer-schema command for accepted parameters.
+        #[clap(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+
+        /// Optional display name for the training session
+        #[clap(long)]
+        session_name: Option<String>,
+
+        /// Optional description for the training session
+        #[clap(long)]
+        session_description: Option<String>,
+
+        /// Optional source training session ID for transfer-learning weights
+        #[clap(long)]
+        weights_session: Option<String>,
+
+        /// Create a user-managed session (no cloud instance is provisioned)
+        #[clap(long)]
+        local: bool,
+
+        /// Schedule onto the organization's Kubernetes runner
+        #[clap(long)]
+        kubernetes: bool,
+
+        /// Monitor the launched task's progress until completion
+        #[clap(long)]
+        monitor: bool,
+    },
+    /// Update the name and/or description of a training session.  At least
+    /// one of --name or --description must be provided.
+    UpdateTrainingSession {
+        /// Training Session ID
+        session_id: String,
+
+        /// New session name
+        #[clap(long)]
+        name: Option<String>,
+
+        /// New session description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete one or more training sessions.  WARNING: validation sessions
+    /// attached to the deleted training sessions are removed as well, along
+    /// with all artifacts and checkpoints.
+    DeleteTrainingSessions {
+        /// Training Session IDs to delete
+        #[clap(required = true)]
+        session_ids: Vec<String>,
+    },
+    /// List the trainer types available on the server.  The reported schema
+    /// type is used with the trainer-schema and start-training-session
+    /// commands.
+    TrainerSchemas,
+    /// Show the parameter schema for a trainer type.  The schema describes
+    /// the hyperparameters accepted by start-training-session --param.
+    TrainerSchema {
+        /// Trainer schema type (see trainer-schemas command)
+        schema_type: String,
+    },
     /// List all tasks for the current user.
     Tasks {
         /// Retrieve the task stages.
@@ -369,6 +472,34 @@ enum Command {
     ValidationSession {
         /// Validation Session ID
         session_id: String,
+    },
+    /// Update the name and/or description of a validation session.  At
+    /// least one of --name or --description must be provided.
+    UpdateValidationSession {
+        /// Validation Session ID
+        session_id: String,
+
+        /// New session name
+        #[clap(long)]
+        name: Option<String>,
+
+        /// New session description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete one or more validation sessions.  Only the validation
+    /// sessions are removed; the parent training session is never affected.
+    DeleteValidationSessions {
+        /// Validation Session IDs to delete
+        #[clap(required = true)]
+        session_ids: Vec<String>,
+    },
+    /// List the validator schemas available on the server.  Each schema
+    /// describes the parameters accepted by the matching validator type.
+    ValidatorSchemas {
+        /// Only show the schema with this type
+        #[clap(long = "type")]
+        schema_type: Option<String>,
     },
     /// List all snapshots available to the user.
     Snapshots,
@@ -503,10 +634,9 @@ enum Command {
     ValidateSnapshot {
         /// Snapshot directory to validate
         path: PathBuf,
-
-        /// Show detailed validation issues
-        #[clap(long, short = 'v')]
-        verbose: bool,
+        // Detailed validation issues are shown via the global -v/--verbose flag;
+        // a local `verbose` here collides with the global one and makes clap
+        // panic on a type mismatch (global u8 count vs local bool).
     },
     /// Convert COCO annotations to EdgeFirst Arrow format.
     ///
@@ -699,6 +829,19 @@ enum Command {
     /// Dataset version management
     #[clap(subcommand)]
     Version(VersionCommands),
+
+    /// Update missing image dimensions for a dataset.
+    ///
+    /// Downloads images for samples that are missing width/height metadata,
+    /// extracts the dimensions, and updates the server in-place. This is
+    /// useful for datasets uploaded before dimension extraction was added.
+    ///
+    /// Examples:
+    ///   edgefirst update-dimensions dataset-123
+    UpdateDimensions {
+        /// Dataset ID to update
+        dataset_id: String,
+    },
 }
 
 #[derive(Subcommand, PartialEq, Clone, Debug)]
@@ -868,12 +1011,26 @@ async fn handle_token(client: &Client) -> Result<(), Error> {
 async fn handle_organization(client: &Client) -> Result<(), Error> {
     let org = client.organization().await?;
     println!(
-        "Username: {}\nOrganization: {}\nID: {}\nCredits: {}",
+        "Username: {}\nOrganization: {}\nID: {}",
         client.username().await?,
         org.name(),
         org.id(),
-        org.credits()
     );
+    // org.get only exposes `latest_credit`; the spendable balance (credits +
+    // funds) comes from the accounting usage summary. Fall back to the legacy
+    // credit field if that call fails so the basic command still works.
+    match client.usage_summary().await {
+        Ok(usage) => println!(
+            "Credits: {:.2}\nFunds: {:.2}\nTotal available: {:.2}",
+            usage.credits(),
+            usage.funds(),
+            usage.total(),
+        ),
+        Err(err) => {
+            println!("Credits: {}", org.credits());
+            eprintln!("Warning: could not fetch funds/total: {err}");
+        }
+    }
     Ok(())
 }
 
@@ -1312,11 +1469,11 @@ fn parse_box2d_from_dataframe(
 
     let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
 
         if let Ok(vals) = series.f64() {
-            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+            return Some(vals.iter().flatten().map(|v| v as f32).collect());
         }
 
         None
@@ -1375,11 +1532,11 @@ fn parse_box3d_from_dataframe(
 
     let extract_coords = |series: polars::prelude::Series| -> Option<Vec<f32>> {
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
 
         if let Ok(vals) = series.f64() {
-            return Some(vals.into_iter().flatten().map(|v| v as f32).collect());
+            return Some(vals.iter().flatten().map(|v| v as f32).collect());
         }
 
         None
@@ -1439,9 +1596,9 @@ fn parse_polygon_from_dataframe(
         for ring_idx in 0..inner_list.len() {
             if let Some(ring_series) = inner_list.get_as_series(ring_idx) {
                 let coords: Vec<f32> = if let Ok(v) = ring_series.f32() {
-                    v.into_iter().flatten().collect()
+                    v.iter().flatten().collect()
                 } else if let Ok(v) = ring_series.f64() {
-                    v.into_iter().flatten().map(|val| val as f32).collect()
+                    v.iter().flatten().map(|val| val as f32).collect()
                 } else {
                     continue;
                 };
@@ -1463,9 +1620,9 @@ fn parse_polygon_from_dataframe(
         && let Some(mask_series) = list_chunked.get_as_series(idx)
     {
         let coords: Vec<f32> = if let Ok(values) = mask_series.f32() {
-            values.into_iter().flatten().collect()
+            values.iter().flatten().collect()
         } else if let Ok(values) = mask_series.f64() {
-            values.into_iter().flatten().map(|val| val as f32).collect()
+            values.iter().flatten().map(|val| val as f32).collect()
         } else {
             return Ok(None);
         };
@@ -1654,15 +1811,15 @@ fn parse_size_from_dataframe(
     // Try to extract as array of u32
     let extract_size = |series: Series| -> Option<Vec<u32>> {
         if let Ok(vals) = series.u32() {
-            return Some(vals.into_iter().flatten().collect());
+            return Some(vals.iter().flatten().collect());
         }
         // Try u64 and convert
         if let Ok(vals) = series.u64() {
-            return Some(vals.into_iter().flatten().map(|v| v as u32).collect());
+            return Some(vals.iter().flatten().map(|v| v as u32).collect());
         }
         // Try f32 and convert
         if let Ok(vals) = series.f32() {
-            return Some(vals.into_iter().flatten().map(|v| v as u32).collect());
+            return Some(vals.iter().flatten().map(|v| v as u32).collect());
         }
         None
     };
@@ -1697,10 +1854,10 @@ fn parse_location_from_dataframe(
     let extract_floats = |col: &Column, idx: usize| -> Option<Vec<f64>> {
         let extract_from_series = |series: Series| -> Option<Vec<f64>> {
             if let Ok(vals) = series.f32() {
-                return Some(vals.into_iter().flatten().map(|v| v as f64).collect());
+                return Some(vals.iter().flatten().map(|v| v as f64).collect());
             }
             if let Ok(vals) = series.f64() {
-                return Some(vals.into_iter().flatten().collect());
+                return Some(vals.iter().flatten().collect());
             }
             None
         };
@@ -1925,6 +2082,23 @@ fn parse_annotations_from_arrow(
         );
         progress.set_position(0);
 
+        let parse_start = std::time::Instant::now();
+
+        // Cast the Categorical `group` and `label` columns to String ONCE, before
+        // the row loop. Polars `Series::cast` is eager and materializes a new
+        // full-length column, so casting per-row re-cast the entire column on
+        // every iteration — O(rows²). Hoisting makes the loop O(rows).
+        let group_col = df
+            .column("group")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let group_str = group_col.as_ref().and_then(|c| c.str().ok());
+        let label_col = df
+            .column("label")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let label_str = label_col.as_ref().and_then(|c| c.str().ok());
+
         // Process each row in the DataFrame
         for idx in 0..total_rows {
             progress.set_position(idx as u64);
@@ -1989,13 +2163,9 @@ fn parse_annotations_from_arrow(
                 _ => base_name.to_string(),
             };
 
-            // Extract optional group designation (train/val/test)
-            // Handle both Categorical and String column types by casting to String
-            let sample_group = df
-                .column("group")
-                .ok()
-                .and_then(|c| c.cast(&DataType::String).ok())
-                .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()));
+            // Extract optional group designation (train/val/test) from the
+            // pre-cast String column (see hoisted cast above).
+            let sample_group = group_str.and_then(|s| s.get(idx).map(|v| v.to_string()));
 
             // Extract optional size [width, height] from Arrow file (2025.10 format)
             let (sample_width, sample_height) = parse_size_from_dataframe(&df, idx);
@@ -2051,13 +2221,10 @@ fn parse_annotations_from_arrow(
                     annotation.set_frame_number(Some(frame_num));
                 }
 
-                // Extract label if present and non-empty
-                // Handle both Categorical and String column types by casting to String
-                let label = df
-                    .column("label")
-                    .ok()
-                    .and_then(|c| c.cast(&DataType::String).ok())
-                    .and_then(|col| col.str().ok()?.get(idx).map(|s| s.to_string()))
+                // Extract label if present and non-empty, from the pre-cast
+                // String column (see hoisted cast above).
+                let label = label_str
+                    .and_then(|s| s.get(idx).map(|v| v.to_string()))
                     .filter(|s: &String| !s.is_empty());
 
                 if let Some(lbl) = label {
@@ -2127,6 +2294,12 @@ fn parse_annotations_from_arrow(
                 }
             }
         }
+        log::debug!(
+            "Parsed {} annotation rows into {} samples in {} ms",
+            total_rows,
+            samples_map.len(),
+            parse_start.elapsed().as_millis()
+        );
     }
 
     if samples_map.is_empty() {
@@ -2911,18 +3084,15 @@ async fn handle_upload_dataset(
         .progress_chars("█▇▆▅▄▃▂▁  "),
     );
 
-    // Track cumulative offset of completed samples from previous batches
-    let offset = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let offset_for_task = offset.clone();
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(1);
+    // Progress: each populate_samples call emits one Progress message per sample
+    // whose files have finished uploading. With pipelined (concurrent) batches
+    // these messages interleave across batches, so we advance the bar by one per
+    // message (globally correct) rather than tracking a per-batch offset, which
+    // only worked while batches ran one at a time.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<edgefirst_client::Progress>(64);
     tokio::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            if progress.total > 0 {
-                // Add offset from previous batches to get cumulative progress
-                let batch_offset = offset_for_task.load(std::sync::atomic::Ordering::SeqCst);
-                bar.set_position((batch_offset + progress.current) as u64);
-            }
+        while rx.recv().await.is_some() {
+            bar.inc(1);
         }
         bar.finish_with_message("Upload complete");
     });
@@ -2931,7 +3101,20 @@ async fn handle_upload_dataset(
     // samples need to be retried instead of 500. This adds ~10x more API calls
     // but improves reliability for large uploads over unreliable connections.
     const BATCH_SIZE: usize = 50;
-    let mut all_results = Vec::new();
+
+    // Number of batches uploaded concurrently. Each worker runs a batch's
+    // `populate2` RPC then its presigned-URL file uploads; running several
+    // concurrently overlaps one batch's RPC with another's uploads. A val depth
+    // sweep (1/2/4/8) showed throughput scaling cleanly with depth but strong
+    // diminishing returns past 4 — depth 4 reached ~93% of depth-8 throughput at
+    // half the concurrent S3/populate2 load — so 4 is the default sweet spot.
+    // Override with the EDGEFIRST_UPLOAD_BATCHES env var for tuning.
+    const DEFAULT_BATCH_CONCURRENCY: usize = 4;
+    let batch_concurrency = std::env::var("EDGEFIRST_UPLOAD_BATCHES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_BATCH_CONCURRENCY);
 
     let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
     let annotation_set_id_parsed = if should_upload_annotations {
@@ -2940,53 +3123,210 @@ async fn handle_upload_dataset(
         None
     };
 
+    // Pre-create the dataset's groups serially before the pipelined upload below.
+    // `populate2` creates a group only when it is missing; with batches uploading
+    // concurrently, the first wave would otherwise each find the group absent and
+    // race to create it, and all but one fail with "Group already exists". Creating
+    // the groups up front makes every concurrent call take the existing-group path.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for group in samples.iter().filter_map(|s| s.group()) {
+            if seen.insert(group.as_str()) {
+                client.get_or_create_group(dataset_id_parsed, group).await?;
+            }
+        }
+    }
+
+    // Pre-create the dataset's labels serially before the pipelined upload, for
+    // the same reason as groups but it matters far more under concurrency: server
+    // tracing showed concurrent `populate2` calls racing on per-annotation
+    // AddLabel (find-or-create the label) is the dominant cost. We already know
+    // the full label set from the annotations, so create the missing ones once,
+    // up front, in a single request; every concurrent call then finds them.
+    {
+        let (label_names, label_indices) = Client::collect_labels_from_samples(&samples)?;
+        if !label_names.is_empty() {
+            log::debug!("Pre-creating {} labels before upload", label_names.len());
+            client
+                .add_labels_with_indices(dataset_id_parsed, &label_names, label_indices.as_slice())
+                .await?;
+
+            // Confirm every label is committed server-side BEFORE launching the
+            // concurrent batches, so populate2 never has to create a label under
+            // contention. `add_labels` is awaited above, but we verify rather than
+            // assume — a missing label here means the concurrent AddLabel race
+            // would reappear, so fail fast instead of starting the upload.
+            let now_present: std::collections::HashSet<String> = client
+                .labels(dataset_id_parsed, None)
+                .await?
+                .into_iter()
+                .map(|label| label.name().to_string())
+                .collect();
+            let expected_names: std::collections::HashSet<&str> =
+                label_names.iter().map(|s| s.as_str()).collect();
+            if let Some(missing) = expected_names.iter().find(|n| !now_present.contains(**n)) {
+                return Err(edgefirst_client::Error::InvalidParameters(format!(
+                    "label pre-creation did not complete: '{missing}' not present after creation"
+                )));
+            }
+            log::debug!(
+                "Verified {} labels present before upload",
+                label_names.len()
+            );
+        }
+    }
+
     // Group samples by sequence to work around server bug where all samples in a
     // batch are assigned to the sequence of the first sample only.
     // Non-sequence samples (sequence_uuid == None) are grouped together.
     let batches = create_sequence_aware_batches(samples, BATCH_SIZE);
+    let total_batches = batches.len();
 
     log::debug!(
-        "Created {} batches (grouped by sequence+group to avoid server bugs)",
-        batches.len()
+        "Created {} batches (grouped by sequence+group to avoid server bugs), \
+         uploading up to {} concurrently",
+        total_batches,
+        batch_concurrency
     );
 
     #[cfg(feature = "profiling")]
-    let _upload_span = tracing::info_span!(
+    let upload_span = tracing::info_span!(
         "upload",
-        total_batches = batches.len(),
-        total_samples = total_samples
-    )
-    .entered();
+        total_batches = total_batches,
+        total_samples = total_samples,
+        batch_concurrency = batch_concurrency
+    );
+    // Enter a clone on this task so the `upload` span gets a wall-clock duration;
+    // the original handle is cloned into each worker below as the explicit parent
+    // of its `batch` span (an entered-guard parent does not cross `spawn`).
+    #[cfg(feature = "profiling")]
+    let _upload_entered = upload_span.clone().entered();
 
-    for (_batch_num, batch) in batches.iter().enumerate() {
+    #[cfg(feature = "profiling")]
+    use tracing::Instrument as _;
+
+    // Reset reliable timing accumulators and start the upload-phase wall clock.
+    // This covers only the concurrent batch upload below, not group/label
+    // pre-creation. Unlike async tracing spans (which fragment across worker
+    // threads), these are `Instant`/atomic measurements safe to read as latency.
+    #[cfg(feature = "profiling")]
+    edgefirst_client::upload_stats::reset();
+    #[cfg(feature = "profiling")]
+    let upload_wall_start = std::time::Instant::now();
+
+    // Upload batches through a fixed pool of independently-scheduled worker tasks.
+    // A `buffer_unordered` combinator is driven by a single task and in practice
+    // collapsed to ~1 batch in flight after the initial burst; with a worker pool
+    // each worker is its own tokio task, so N batches genuinely run concurrently
+    // and one batch's `populate2` RPC overlaps another's S3 file uploads.
+    let n_workers = batch_concurrency.min(total_batches.max(1));
+
+    // Shared work queue. The mutex guards only the iterator's `.next()` (instant,
+    // never held across an await), so workers contend only momentarily to claim
+    // the next batch, never while uploading.
+    let queue = std::sync::Arc::new(tokio::sync::Mutex::new(batches.into_iter().enumerate()));
+
+    let mut workers: tokio::task::JoinSet<
+        Result<Vec<edgefirst_client::SamplesPopulateResult>, Error>,
+    > = tokio::task::JoinSet::new();
+
+    for _ in 0..n_workers {
+        let client = (*client).clone();
+        let queue = queue.clone();
+        let tx = tx.clone();
         #[cfg(feature = "profiling")]
-        let batch_num = _batch_num; // Shadow with non-underscore name for Tracy
+        let upload_span = upload_span.clone();
+        workers.spawn(async move {
+            let mut results = Vec::new();
+            loop {
+                // Hold the lock only for `.next()`, then release before uploading.
+                let next = { queue.lock().await.next() };
+                let Some((batch_index, batch)) = next else {
+                    break;
+                };
+                #[cfg(feature = "profiling")]
+                let batch_size = batch.len();
+                #[cfg(not(feature = "profiling"))]
+                let _ = batch_index;
+                let fut = client.populate_samples(
+                    dataset_id_parsed,
+                    annotation_set_id_parsed,
+                    batch,
+                    Some(tx.clone()),
+                );
+                #[cfg(feature = "profiling")]
+                let fut = fut.instrument(tracing::info_span!(
+                    parent: &upload_span,
+                    "batch",
+                    batch_num = batch_index + 1,
+                    size = batch_size
+                ));
+                results.extend(fut.await?);
+            }
+            Ok(results)
+        });
+    }
 
-        let batch_size = batch.len();
+    // Drop our own progress sender so the consumer task finishes once every
+    // worker's clone is gone.
+    drop(tx);
 
-        #[cfg(feature = "profiling")]
-        let _batch_span =
-            tracing::info_span!("batch", batch_num = batch_num + 1, size = batch_size).entered();
-
-        let results = client
-            .populate_samples(
-                dataset_id_parsed,
-                annotation_set_id_parsed,
-                batch.clone(),
-                Some(tx.clone()),
-            )
-            .await?;
-
-        all_results.extend(results);
-
-        // Update offset for next batch so progress continues from where we left off
-        offset.fetch_add(batch_size, std::sync::atomic::Ordering::SeqCst);
+    // Collect results, aborting the whole upload on the first batch error to
+    // preserve the previous serial `?` semantics.
+    let mut all_results: Vec<edgefirst_client::SamplesPopulateResult> = Vec::new();
+    let mut first_error: Option<Error> = None;
+    while let Some(joined) = workers.join_next().await {
+        match joined {
+            Ok(Ok(batch_results)) => all_results.extend(batch_results),
+            Ok(Err(e)) => {
+                first_error.get_or_insert(e);
+                workers.abort_all();
+            }
+            Err(join_err) if join_err.is_cancelled() => {}
+            Err(join_err) => {
+                first_error.get_or_insert(Error::from(std::io::Error::other(format!(
+                    "upload worker panicked: {join_err}"
+                ))));
+                workers.abort_all();
+            }
+        }
     }
 
     #[cfg(feature = "profiling")]
-    drop(_upload_span);
+    drop(_upload_entered);
 
-    drop(tx);
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+
+    // Reliable upload-phase summary (profiling builds): wall-clock, effective
+    // bandwidth, and aggregate RPC vs file-upload time summed across batches.
+    // `(rpc + upload) / wall` is the effective parallelism actually achieved.
+    #[cfg(feature = "profiling")]
+    {
+        let wall = upload_wall_start
+            .elapsed()
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let (rpc_ns, upload_ns, bytes) = edgefirst_client::upload_stats::snapshot();
+        let rpc_s = rpc_ns as f64 / 1e9;
+        let upload_s = upload_ns as f64 / 1e9;
+        let mb = bytes as f64 / 1_048_576.0;
+        println!(
+            "Upload timing: {} samples in {:.1}s ({:.1} samp/s); {:.1} MB at {:.2} MB/s; \
+             RPC {:.1}s + file-upload {:.1}s across batches (effective parallelism {:.2}x, \
+             concurrency {})",
+            all_results.len(),
+            wall,
+            all_results.len() as f64 / wall,
+            mb,
+            mb / wall,
+            rpc_s,
+            upload_s,
+            (rpc_s + upload_s) / wall,
+            batch_concurrency,
+        );
+    }
 
     println!("Successfully uploaded {} samples", all_results.len());
     for result in all_results.iter().take(10) {
@@ -3171,6 +3511,195 @@ async fn handle_upload_artifact(
     });
     let session = client.training_session(session_id.try_into()?).await?;
     session.upload_artifact(client, &name, path).await?;
+    Ok(())
+}
+
+/// Parse a repeatable `--param KEY=VALUE` argument.  Values are parsed as
+/// JSON so numbers and booleans keep their types; anything that isn't
+/// valid JSON is treated as a plain string.
+fn parse_param(arg: &str) -> Result<(String, Parameter), Error> {
+    let (key, value) = arg.split_once('=').ok_or_else(|| {
+        Error::InvalidParameters(format!("expected KEY=VALUE for --param, got '{arg}'"))
+    })?;
+    if key.is_empty() {
+        return Err(Error::InvalidParameters(format!(
+            "expected KEY=VALUE for --param, got '{arg}'"
+        )));
+    }
+    let param = serde_json::from_str::<Parameter>(value)
+        .unwrap_or_else(|_| Parameter::String(value.to_owned()));
+    Ok((key.to_owned(), param))
+}
+
+struct StartTrainingSessionArgs {
+    project_id: String,
+    name: String,
+    experiment_id: String,
+    trainer_type: String,
+    dataset_id: String,
+    annotation_set_id: String,
+    tag: Option<String>,
+    train_group: Option<String>,
+    val_group: Option<String>,
+    params: Vec<String>,
+    session_name: Option<String>,
+    session_description: Option<String>,
+    weights_session: Option<String>,
+    local: bool,
+    kubernetes: bool,
+    monitor: bool,
+}
+
+async fn handle_start_training_session(
+    client: &Client,
+    args: StartTrainingSessionArgs,
+) -> Result<(), Error> {
+    let mut params = std::collections::HashMap::new();
+    for arg in &args.params {
+        let (key, value) = parse_param(arg)?;
+        params.insert(key, value);
+    }
+
+    let request = StartTrainingRequest {
+        project_id: args.project_id.try_into()?,
+        name: args.name,
+        experiment_id: args.experiment_id.try_into()?,
+        trainer_type: args.trainer_type,
+        dataset_id: args.dataset_id.try_into()?,
+        annotation_set_id: args.annotation_set_id.try_into()?,
+        tag_name: args.tag,
+        train_group: args.train_group,
+        val_group: args.val_group,
+        session_name: args.session_name,
+        session_description: args.session_description,
+        weights_session: args.weights_session.map(TryInto::try_into).transpose()?,
+        params,
+        is_local: args.local,
+        is_kubernetes: args.kubernetes,
+    };
+
+    let session = client.start_training_session(request).await?;
+    println!("Started training session {}", session);
+
+    if args.monitor {
+        monitor_task(client, session.task_id).await?;
+    }
+    Ok(())
+}
+
+async fn handle_update_training_session(
+    client: &Client,
+    session_id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), Error> {
+    if name.is_none() && description.is_none() {
+        return Err(Error::InvalidParameters(
+            "at least one of --name or --description is required".to_owned(),
+        ));
+    }
+    let session = client
+        .update_training_session(
+            session_id.try_into()?,
+            name.as_deref(),
+            description.as_deref(),
+        )
+        .await?;
+    println!(
+        "{} {}: {}",
+        session.id(),
+        session.name(),
+        session.description()
+    );
+    Ok(())
+}
+
+async fn handle_delete_training_sessions(
+    client: &Client,
+    session_ids: Vec<String>,
+) -> Result<(), Error> {
+    let ids = session_ids
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    client.delete_training_sessions(&ids).await?;
+    for id in ids {
+        println!("Deleted training session {}", id);
+    }
+    println!("Note: validation sessions attached to deleted training sessions are also removed.");
+    Ok(())
+}
+
+async fn handle_trainer_schemas(client: &Client) -> Result<(), Error> {
+    for schema in client.trainer_schemas().await? {
+        // Older servers may omit schema_type/label; fall back to the
+        // trainer name so the printed type is always usable with the
+        // trainer-schema and start-training-session commands.
+        let schema_type = if schema.schema_type.is_empty() {
+            &schema.name
+        } else {
+            &schema.schema_type
+        };
+        let label = if schema.label.is_empty() {
+            &schema.name
+        } else {
+            &schema.label
+        };
+        println!("{}: {} ({})", schema_type, label, schema.name);
+    }
+    Ok(())
+}
+
+/// Print schema fields recursively, indenting nested children.
+fn print_schema_fields(fields: &[SchemaField], indent: usize) {
+    for field in fields {
+        let name = field.name.as_deref().unwrap_or("<unnamed>");
+        let field_type = field
+            .field_type
+            .map(|t| format!("{:?}", t).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let mut details = Vec::new();
+        if field.required {
+            details.push("required".to_owned());
+        }
+        if let Some(default) = &field.default {
+            details.push(format!("default: {:?}", default));
+        }
+        if let (Some(min), Some(max)) = (field.min, field.max) {
+            details.push(format!("range: {}..{}", min, max));
+        }
+        if !field.options.is_empty() {
+            let options = field
+                .options
+                .iter()
+                .filter_map(|o| o.name.as_ref())
+                .map(|n| format!("{:?}", n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            details.push(format!("options: [{}]", options));
+        }
+        let details = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", details.join(", "))
+        };
+        println!(
+            "{}{} [{}]{}",
+            "    ".repeat(indent),
+            name,
+            field_type,
+            details
+        );
+        print_schema_fields(&field.children, indent + 1);
+        for option in &field.options {
+            print_schema_fields(&option.children, indent + 1);
+        }
+    }
+}
+
+async fn handle_trainer_schema(client: &Client, schema_type: String) -> Result<(), Error> {
+    let fields = client.trainer_schema(&schema_type).await?;
+    print_schema_fields(&fields, 0);
     Ok(())
 }
 
@@ -3380,6 +3909,64 @@ async fn handle_validation_session(client: &Client, session_id: String) -> Resul
         session.name(),
         session.description()
     );
+    Ok(())
+}
+
+async fn handle_update_validation_session(
+    client: &Client,
+    session_id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), Error> {
+    if name.is_none() && description.is_none() {
+        return Err(Error::InvalidParameters(
+            "at least one of --name or --description is required".to_owned(),
+        ));
+    }
+    let session = client
+        .update_validation_session(
+            session_id.try_into()?,
+            name.as_deref(),
+            description.as_deref(),
+        )
+        .await?;
+    println!(
+        "[{}] {}: {}",
+        session.id(),
+        session.name(),
+        session.description()
+    );
+    Ok(())
+}
+
+async fn handle_delete_validation_sessions(
+    client: &Client,
+    session_ids: Vec<String>,
+) -> Result<(), Error> {
+    let ids = session_ids
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    client.delete_validation_sessions(&ids).await?;
+    for id in ids {
+        println!("Deleted validation session {}", id);
+    }
+    Ok(())
+}
+
+async fn handle_validator_schemas(
+    client: &Client,
+    schema_type: Option<String>,
+) -> Result<(), Error> {
+    for schema in client.validator_schemas().await? {
+        if let Some(filter) = &schema_type
+            && &schema.schema_type != filter
+        {
+            continue;
+        }
+        println!("{}: {}", schema.schema_type, schema.name);
+        print_schema_fields(&schema.schema, 1);
+    }
     Ok(())
 }
 
@@ -5275,8 +5862,8 @@ async fn main() -> Result<(), Error> {
         } => {
             return handle_generate_arrow(folder.clone(), output.clone(), *detect_sequences);
         }
-        Command::ValidateSnapshot { path, verbose } => {
-            return handle_validate_snapshot(path.clone(), *verbose);
+        Command::ValidateSnapshot { path } => {
+            return handle_validate_snapshot(path.clone(), args.verbose > 0);
         }
         #[cfg(feature = "polars")]
         Command::Migrate { input, output } => {
@@ -5501,6 +6088,57 @@ async fn main() -> Result<(), Error> {
             path,
             name,
         } => handle_upload_artifact(&client, session_id, path, name).await,
+        Command::StartTrainingSession {
+            project_id,
+            name,
+            experiment_id,
+            trainer_type,
+            dataset_id,
+            annotation_set_id,
+            tag,
+            train_group,
+            val_group,
+            params,
+            session_name,
+            session_description,
+            weights_session,
+            local,
+            kubernetes,
+            monitor,
+        } => {
+            handle_start_training_session(
+                &client,
+                StartTrainingSessionArgs {
+                    project_id,
+                    name,
+                    experiment_id,
+                    trainer_type,
+                    dataset_id,
+                    annotation_set_id,
+                    tag,
+                    train_group,
+                    val_group,
+                    params,
+                    session_name,
+                    session_description,
+                    weights_session,
+                    local,
+                    kubernetes,
+                    monitor,
+                },
+            )
+            .await
+        }
+        Command::UpdateTrainingSession {
+            session_id,
+            name,
+            description,
+        } => handle_update_training_session(&client, session_id, name, description).await,
+        Command::DeleteTrainingSessions { session_ids } => {
+            handle_delete_training_sessions(&client, session_ids).await
+        }
+        Command::TrainerSchemas => handle_trainer_schemas(&client).await,
+        Command::TrainerSchema { schema_type } => handle_trainer_schema(&client, schema_type).await,
         Command::Tasks {
             stages,
             name,
@@ -5514,6 +6152,17 @@ async fn main() -> Result<(), Error> {
         }
         Command::ValidationSession { session_id } => {
             handle_validation_session(&client, session_id).await
+        }
+        Command::UpdateValidationSession {
+            session_id,
+            name,
+            description,
+        } => handle_update_validation_session(&client, session_id, name, description).await,
+        Command::DeleteValidationSessions { session_ids } => {
+            handle_delete_validation_sessions(&client, session_ids).await
+        }
+        Command::ValidatorSchemas { schema_type } => {
+            handle_validator_schemas(&client, schema_type).await
         }
         Command::Snapshots => handle_snapshots(&client).await,
         Command::Snapshot { snapshot_id } => handle_snapshot(&client, snapshot_id).await,
@@ -5641,6 +6290,27 @@ async fn main() -> Result<(), Error> {
             };
             handle_import_coco(&client, args).await
         }
+        Command::UpdateDimensions { dataset_id } => {
+            let dataset_id: DatasetID = dataset_id.try_into()?;
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let client_clone = client.clone();
+            let task = tokio::spawn(async move {
+                client_clone
+                    .backfill_sample_dimensions(dataset_id, Some(tx))
+                    .await
+            });
+            while let Some(progress) = rx.recv().await {
+                println!(
+                    "[{}/{}] {}",
+                    progress.current,
+                    progress.total,
+                    progress.status.as_deref().unwrap_or("")
+                );
+            }
+            let updated = task.await.map_err(Error::JoinError)??;
+            println!("Updated dimensions for {} samples", updated);
+            Ok(())
+        }
         Command::ExportCoco {
             dataset_id,
             annotation_set_id,
@@ -5675,6 +6345,39 @@ mod tests {
     type Polygon = Vec<PolygonPoint>;
     type OptionalBox2dData = Option<Vec<Option<BoundingBox>>>;
     type OptionalMaskData = Option<Vec<Option<Polygon>>>;
+
+    #[test]
+    fn test_parse_param_types() {
+        // JSON values keep their types.
+        assert_eq!(
+            parse_param("epochs=50").unwrap(),
+            ("epochs".to_owned(), Parameter::Integer(50))
+        );
+        assert_eq!(
+            parse_param("learning_rate=0.001").unwrap(),
+            ("learning_rate".to_owned(), Parameter::Real(0.001))
+        );
+        assert_eq!(
+            parse_param("augment=true").unwrap(),
+            ("augment".to_owned(), Parameter::Boolean(true))
+        );
+        // Non-JSON values fall back to plain strings.
+        assert_eq!(
+            parse_param("optimizer=adam").unwrap(),
+            ("optimizer".to_owned(), Parameter::String("adam".to_owned()))
+        );
+        // Values may contain '=' — only the first is the separator.
+        assert_eq!(
+            parse_param("expr=a=b").unwrap(),
+            ("expr".to_owned(), Parameter::String("a=b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_parse_param_invalid() {
+        assert!(parse_param("no-separator").is_err());
+        assert!(parse_param("=value").is_err());
+    }
 
     #[test]
     fn test_is_valid_image_extension() {

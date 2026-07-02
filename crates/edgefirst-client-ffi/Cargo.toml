@@ -18,7 +18,7 @@ edgefirst-client = { workspace = true }
 uniffi = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
-thiserror = "1.0"
+thiserror = "2.0"
 async-compat = "0.2"
 serde_json = { workspace = true }
 

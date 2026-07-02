@@ -562,7 +562,11 @@ private struct FfiConverterString: FfiConverter {
       return String()
     }
     let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-    return String(bytes: bytes, encoding: String.Encoding.utf8)!
+    // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+    // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+    // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+    // given Rust's `String` invariant).
+    return String(decoding: bytes, as: UTF8.self)
   }
 
   public static func lower(_ value: String) -> RustBuffer {
@@ -578,7 +582,8 @@ private struct FfiConverterString: FfiConverter {
 
   public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
     let len: Int32 = try readInt(&buf)
-    return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+    // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+    return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
   }
 
   public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -630,6 +635,24 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func artifactsAsync(trainingSessionId: TrainingSessionId) async throws -> [Artifact]
 
   /**
+   * Backfill missing image dimensions for a dataset.
+   *
+   * Downloads images for samples that are missing width/height,
+   * extracts dimensions, and updates the server.
+   * Returns the number of samples whose dimensions were updated.
+   *
+   * Note: This method does not support progress callbacks. For
+   * long-running operations on large datasets, use the Python or
+   * Rust API which provides progress reporting.
+   */
+  func backfillSampleDimensions(datasetId: DatasetId) throws -> UInt64
+
+  /**
+   * Backfill missing image dimensions for a dataset (async).
+   */
+  func backfillSampleDimensionsAsync(datasetId: DatasetId) async throws -> UInt64
+
+  /**
    * Get a dataset by ID.
    */
   func dataset(id: DatasetId) throws -> Dataset
@@ -668,6 +691,47 @@ public protocol ClientProtocol: AnyObject, Sendable {
    * List experiments in a project (async).
    */
   func experimentsAsync(projectId: ProjectId, name: String?) async throws -> [Experiment]
+
+  /**
+   * Launch an application job.
+   *
+   * Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+   * ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+   * task ID for calling `task_info`.
+   */
+  func jobRun(appName: String, jobName: String, env: [String: String], data: [String: Parameter])
+    throws -> Job
+
+  /**
+   * Launch an application job (async).
+   *
+   * Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+   * ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+   * task ID for calling `task_info_async`.
+   */
+  func jobRunAsync(
+    appName: String, jobName: String, env: [String: String], data: [String: Parameter]
+  ) async throws -> Job
+
+  /**
+   * Request a running job to stop.
+   */
+  func jobStop(taskId: TaskId) throws
+
+  /**
+   * Request a running job to stop (async).
+   */
+  func jobStopAsync(taskId: TaskId) async throws
+
+  /**
+   * List jobs, optionally filtered by name (substring match).
+   */
+  func jobs(name: String?) throws -> [Job]
+
+  /**
+   * List jobs, optionally filtered by name (async).
+   */
+  func jobsAsync(name: String?) async throws -> [Job]
 
   /**
    * Get labels for a dataset.
@@ -740,12 +804,16 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func snapshotsAsync(name: String?) async throws -> [Snapshot]
 
   /**
-   * Get task information by ID.
+   * Get task information and methods by ID.
+   *
+   * Returns a `TaskInfo` handle with field getters and data/chart methods.
    */
   func taskInfo(id: TaskId) throws -> TaskInfo
 
   /**
-   * Get task information by ID (async).
+   * Get task information and methods by ID (async).
+   *
+   * Returns a `TaskInfo` handle with field getters and data/chart methods.
    */
   func taskInfoAsync(id: TaskId) async throws -> TaskInfo
 
@@ -771,9 +839,34 @@ public protocol ClientProtocol: AnyObject, Sendable {
     -> [TrainingSession]
 
   /**
+   * Update image dimensions for existing samples in a dataset.
+   *
+   * Accepts a list of sample dimension updates and sends them to the server.
+   * Returns the number of samples successfully updated.
+   */
+  func updateSampleDimensions(datasetId: DatasetId, updates: [SampleDimensionUpdate]) throws
+    -> UInt64
+
+  /**
+   * Update image dimensions for existing samples (async).
+   */
+  func updateSampleDimensionsAsync(datasetId: DatasetId, updates: [SampleDimensionUpdate])
+    async throws -> UInt64
+
+  /**
    * Get the current server URL.
    */
   func url() -> String
+
+  /**
+   * Get a validation session by ID (enables upload/download/data_list).
+   */
+  func validationSession(id: ValidationSessionId) throws -> ValidationSession
+
+  /**
+   * Get a validation session by ID (async).
+   */
+  func validationSessionAsync(id: ValidationSessionId) async throws -> ValidationSession
 
   /**
    * List validation sessions for a project.
@@ -963,6 +1056,47 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
+   * Backfill missing image dimensions for a dataset.
+   *
+   * Downloads images for samples that are missing width/height,
+   * extracts dimensions, and updates the server.
+   * Returns the number of samples whose dimensions were updated.
+   *
+   * Note: This method does not support progress callbacks. For
+   * long-running operations on large datasets, use the Python or
+   * Rust API which provides progress reporting.
+   */
+  open func backfillSampleDimensions(datasetId: DatasetId) throws -> UInt64 {
+    return try FfiConverterUInt64.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_backfill_sample_dimensions(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * Backfill missing image dimensions for a dataset (async).
+   */
+  open func backfillSampleDimensionsAsync(datasetId: DatasetId) async throws -> UInt64 {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_backfill_sample_dimensions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterUInt64.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
    * Get a dataset by ID.
    */
   open func dataset(id: DatasetId) throws -> Dataset {
@@ -1092,6 +1226,121 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
         freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
         liftFunc: FfiConverterSequenceTypeExperiment.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Launch an application job.
+   *
+   * Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+   * ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+   * task ID for calling `task_info`.
+   */
+  open func jobRun(
+    appName: String, jobName: String, env: [String: String], data: [String: Parameter]
+  ) throws -> Job {
+    return try FfiConverterTypeJob_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_job_run(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(appName),
+          FfiConverterString.lower(jobName),
+          FfiConverterDictionaryStringString.lower(env),
+          FfiConverterDictionaryStringTypeParameter.lower(data), $0
+        )
+      })
+  }
+
+  /**
+   * Launch an application job (async).
+   *
+   * Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+   * ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+   * task ID for calling `task_info_async`.
+   */
+  open func jobRunAsync(
+    appName: String, jobName: String, env: [String: String], data: [String: Parameter]
+  ) async throws -> Job {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_job_run_async(
+            self.uniffiCloneHandle(),
+            FfiConverterString.lower(appName), FfiConverterString.lower(jobName),
+            FfiConverterDictionaryStringString.lower(env),
+            FfiConverterDictionaryStringTypeParameter.lower(data)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeJob_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Request a running job to stop.
+   */
+  open func jobStop(taskId: TaskId) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_client_job_stop(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeTaskId_lower(taskId), $0
+      )
+    }
+  }
+
+  /**
+   * Request a running job to stop (async).
+   */
+  open func jobStopAsync(taskId: TaskId) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_job_stop_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeTaskId_lower(taskId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * List jobs, optionally filtered by name (substring match).
+   */
+  open func jobs(name: String?) throws -> [Job] {
+    return try FfiConverterSequenceTypeJob.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_jobs(
+          self.uniffiCloneHandle(),
+          FfiConverterOptionString.lower(name), $0
+        )
+      })
+  }
+
+  /**
+   * List jobs, optionally filtered by name (async).
+   */
+  open func jobsAsync(name: String?) async throws -> [Job] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_jobs_async(
+            self.uniffiCloneHandle(),
+            FfiConverterOptionString.lower(name)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceTypeJob.lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -1325,7 +1574,9 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
-   * Get task information by ID.
+   * Get task information and methods by ID.
+   *
+   * Returns a `TaskInfo` handle with field getters and data/chart methods.
    */
   open func taskInfo(id: TaskId) throws -> TaskInfo {
     return try FfiConverterTypeTaskInfo_lift(
@@ -1338,7 +1589,9 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
-   * Get task information by ID (async).
+   * Get task information and methods by ID (async).
+   *
+   * Returns a `TaskInfo` handle with field getters and data/chart methods.
    */
   open func taskInfoAsync(id: TaskId) async throws -> TaskInfo {
     return
@@ -1349,9 +1602,9 @@ open class Client: ClientProtocol, @unchecked Sendable {
             FfiConverterTypeTaskId_lower(id)
           )
         },
-        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
-        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
-        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
         liftFunc: FfiConverterTypeTaskInfo_lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
@@ -1428,6 +1681,48 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
+   * Update image dimensions for existing samples in a dataset.
+   *
+   * Accepts a list of sample dimension updates and sends them to the server.
+   * Returns the number of samples successfully updated.
+   */
+  open func updateSampleDimensions(datasetId: DatasetId, updates: [SampleDimensionUpdate]) throws
+    -> UInt64
+  {
+    return try FfiConverterUInt64.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_update_sample_dimensions(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterSequenceTypeSampleDimensionUpdate.lower(updates), $0
+        )
+      })
+  }
+
+  /**
+   * Update image dimensions for existing samples (async).
+   */
+  open func updateSampleDimensionsAsync(datasetId: DatasetId, updates: [SampleDimensionUpdate])
+    async throws -> UInt64
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_update_sample_dimensions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId),
+            FfiConverterSequenceTypeSampleDimensionUpdate.lower(updates)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterUInt64.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
    * Get the current server URL.
    */
   open func url() -> String {
@@ -1437,6 +1732,39 @@ open class Client: ClientProtocol, @unchecked Sendable {
           self.uniffiCloneHandle(), $0
         )
       })
+  }
+
+  /**
+   * Get a validation session by ID (enables upload/download/data_list).
+   */
+  open func validationSession(id: ValidationSessionId) throws -> ValidationSession {
+    return try FfiConverterTypeValidationSession_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_validation_session(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeValidationSessionId_lower(id), $0
+        )
+      })
+  }
+
+  /**
+   * Get a validation session by ID (async).
+   */
+  open func validationSessionAsync(id: ValidationSessionId) async throws -> ValidationSession {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_validation_session_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeValidationSessionId_lower(id)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterTypeValidationSession_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
   }
 
   /**
@@ -1608,6 +1936,955 @@ public func FfiConverterTypeClient_lift(_ handle: UInt64) throws -> Client {
 #endif
 public func FfiConverterTypeClient_lower(_ value: Client) -> UInt64 {
   return FfiConverterTypeClient.lower(value)
+}
+
+/// Detailed task information.
+///
+/// This is a UniFFI object (handle) that wraps a `core::TaskInfo` and exposes
+/// both field getters and methods for data/chart operations on the task.
+public protocol TaskInfoProtocol: AnyObject, Sendable {
+
+  /**
+   * Adds (or overwrites) a chart under `(group, name)` for this task.
+   */
+  func addChart(client: Client, group: String, name: String, data: Parameter, params: Parameter?)
+    throws
+
+  /**
+   * Adds (or overwrites) a chart under `(group, name)` for this task (async).
+   */
+  func addChartAsync(
+    client: Client, group: String, name: String, data: Parameter, params: Parameter?) async throws
+
+  /**
+   * Task completion timestamp as RFC 3339 string.
+   */
+  func completed() -> String
+
+  /**
+   * Task creation timestamp as RFC 3339 string.
+   */
+  func created() -> String
+
+  /**
+   * Lists the data artefacts (non-chart files) attached to this task.
+   */
+  func dataList(client: Client) throws -> TaskDataList
+
+  /**
+   * Lists the data artefacts attached to this task (async).
+   */
+  func dataListAsync(client: Client) async throws -> TaskDataList
+
+  /**
+   * Human-readable description of the task.
+   */
+  func description() -> String
+
+  /**
+   * Streams a data file from this task to `output_path`.
+   *
+   * `folder` is the logical subdirectory under the task data root; pass
+   * `None` to download from the root.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  func downloadData(
+    client: Client, file: String, outputPath: String, folder: String?, progress: ProgressCallback?)
+    throws
+
+  /**
+   * Streams a data file from this task to `output_path` (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  func downloadDataAsync(
+    client: Client, file: String, outputPath: String, folder: String?, progress: ProgressCallback?)
+    async throws
+
+  /**
+   * Fetches the raw chart body for `(group, name)` on this task.
+   */
+  func getChart(client: Client, group: String, name: String) throws -> Parameter
+
+  /**
+   * Fetches the raw chart body for `(group, name)` on this task (async).
+   */
+  func getChartAsync(client: Client, group: String, name: String) async throws -> Parameter
+
+  /**
+   * The task ID.
+   */
+  func id() -> TaskId
+
+  /**
+   * Lists charts attached to this task, optionally filtered to a single group.
+   */
+  func listCharts(client: Client, group: String?) throws -> TaskDataList
+
+  /**
+   * Lists charts attached to this task (async).
+   */
+  func listChartsAsync(client: Client, group: String?) async throws -> TaskDataList
+
+  /**
+   * The project this task belongs to, if any.
+   */
+  func projectId() -> ProjectId?
+
+  /**
+   * Current task status string, if available.
+   */
+  func status() -> String?
+
+  /**
+   * Uploads a single file to this task's data folder.
+   *
+   * `path` is the local filesystem path to the file. `folder` is an
+   * optional logical subdirectory under the task data root.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  func uploadData(client: Client, path: String, folder: String?, progress: ProgressCallback?) throws
+
+  /**
+   * Uploads a single file to this task's data folder (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  func uploadDataAsync(client: Client, path: String, folder: String?, progress: ProgressCallback?)
+    async throws
+
+  /**
+   * Workflow identifier for this task.
+   */
+  func workflow() -> String
+
+}
+/// Detailed task information.
+///
+/// This is a UniFFI object (handle) that wraps a `core::TaskInfo` and exposes
+/// both field getters and methods for data/chart operations on the task.
+open class TaskInfo: TaskInfoProtocol, @unchecked Sendable {
+  fileprivate let handle: UInt64
+
+  /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public struct NoHandle {
+    public init() {}
+  }
+
+  // TODO: We'd like this to be `private` but for Swifty reasons,
+  // we can't implement `FfiConverter` without making this `required` and we can't
+  // make it `required` without making it `public`.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  required public init(unsafeFromHandle handle: UInt64) {
+    self.handle = handle
+  }
+
+  // This constructor can be used to instantiate a fake object.
+  // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+  //
+  // - Warning:
+  //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public init(noHandle: NoHandle) {
+    self.handle = 0
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public func uniffiCloneHandle() -> UInt64 {
+    return try! rustCall { uniffi_edgefirst_client_fn_clone_taskinfo(self.handle, $0) }
+  }
+  // No primary constructor declared for this class.
+
+  deinit {
+    if handle == 0 {
+      // Mock objects have handle=0 don't try to free them
+      return
+    }
+
+    try! rustCall { uniffi_edgefirst_client_fn_free_taskinfo(handle, $0) }
+  }
+
+  /**
+   * Adds (or overwrites) a chart under `(group, name)` for this task.
+   */
+  open func addChart(
+    client: Client, group: String, name: String, data: Parameter, params: Parameter?
+  ) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_taskinfo_add_chart(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeClient_lower(client),
+        FfiConverterString.lower(group),
+        FfiConverterString.lower(name),
+        FfiConverterTypeParameter_lower(data),
+        FfiConverterOptionTypeParameter.lower(params), $0
+      )
+    }
+  }
+
+  /**
+   * Adds (or overwrites) a chart under `(group, name)` for this task (async).
+   */
+  open func addChartAsync(
+    client: Client, group: String, name: String, data: Parameter, params: Parameter?
+  ) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_add_chart_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterString.lower(group),
+            FfiConverterString.lower(name), FfiConverterTypeParameter_lower(data),
+            FfiConverterOptionTypeParameter.lower(params)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Task completion timestamp as RFC 3339 string.
+   */
+  open func completed() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_completed(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Task creation timestamp as RFC 3339 string.
+   */
+  open func created() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_created(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Lists the data artefacts (non-chart files) attached to this task.
+   */
+  open func dataList(client: Client) throws -> TaskDataList {
+    return try FfiConverterTypeTaskDataList_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_taskinfo_data_list(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeClient_lower(client), $0
+        )
+      })
+  }
+
+  /**
+   * Lists the data artefacts attached to this task (async).
+   */
+  open func dataListAsync(client: Client) async throws -> TaskDataList {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_data_list_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeTaskDataList_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Human-readable description of the task.
+   */
+  open func description() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_description(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Streams a data file from this task to `output_path`.
+   *
+   * `folder` is the logical subdirectory under the task data root; pass
+   * `None` to download from the root.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  open func downloadData(
+    client: Client, file: String, outputPath: String, folder: String?, progress: ProgressCallback?
+  ) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_taskinfo_download_data(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeClient_lower(client),
+        FfiConverterString.lower(file),
+        FfiConverterString.lower(outputPath),
+        FfiConverterOptionString.lower(folder),
+        FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress), $0
+      )
+    }
+  }
+
+  /**
+   * Streams a data file from this task to `output_path` (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  open func downloadDataAsync(
+    client: Client, file: String, outputPath: String, folder: String?, progress: ProgressCallback?
+  ) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_download_data_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterString.lower(file),
+            FfiConverterString.lower(outputPath), FfiConverterOptionString.lower(folder),
+            FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Fetches the raw chart body for `(group, name)` on this task.
+   */
+  open func getChart(client: Client, group: String, name: String) throws -> Parameter {
+    return try FfiConverterTypeParameter_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_taskinfo_get_chart(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeClient_lower(client),
+          FfiConverterString.lower(group),
+          FfiConverterString.lower(name), $0
+        )
+      })
+  }
+
+  /**
+   * Fetches the raw chart body for `(group, name)` on this task (async).
+   */
+  open func getChartAsync(client: Client, group: String, name: String) async throws -> Parameter {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_get_chart_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterString.lower(group),
+            FfiConverterString.lower(name)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeParameter_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * The task ID.
+   */
+  open func id() -> TaskId {
+    return try! FfiConverterTypeTaskId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Lists charts attached to this task, optionally filtered to a single group.
+   */
+  open func listCharts(client: Client, group: String?) throws -> TaskDataList {
+    return try FfiConverterTypeTaskDataList_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_taskinfo_list_charts(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeClient_lower(client),
+          FfiConverterOptionString.lower(group), $0
+        )
+      })
+  }
+
+  /**
+   * Lists charts attached to this task (async).
+   */
+  open func listChartsAsync(client: Client, group: String?) async throws -> TaskDataList {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_list_charts_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterOptionString.lower(group)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeTaskDataList_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * The project this task belongs to, if any.
+   */
+  open func projectId() -> ProjectId? {
+    return try! FfiConverterOptionTypeProjectId.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_project_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Current task status string, if available.
+   */
+  open func status() -> String? {
+    return try! FfiConverterOptionString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_status(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Uploads a single file to this task's data folder.
+   *
+   * `path` is the local filesystem path to the file. `folder` is an
+   * optional logical subdirectory under the task data root.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  open func uploadData(client: Client, path: String, folder: String?, progress: ProgressCallback?)
+    throws
+  {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_taskinfo_upload_data(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeClient_lower(client),
+        FfiConverterString.lower(path),
+        FfiConverterOptionString.lower(folder),
+        FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress), $0
+      )
+    }
+  }
+
+  /**
+   * Uploads a single file to this task's data folder (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  open func uploadDataAsync(
+    client: Client, path: String, folder: String?, progress: ProgressCallback?
+  ) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_taskinfo_upload_data_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterString.lower(path),
+            FfiConverterOptionString.lower(folder),
+            FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Workflow identifier for this task.
+   */
+  open func workflow() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_taskinfo_workflow(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTaskInfo: FfiConverter {
+  typealias FfiType = UInt64
+  typealias SwiftType = TaskInfo
+
+  public static func lift(_ handle: UInt64) throws -> TaskInfo {
+    return TaskInfo(unsafeFromHandle: handle)
+  }
+
+  public static func lower(_ value: TaskInfo) -> UInt64 {
+    return value.uniffiCloneHandle()
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TaskInfo {
+    let handle: UInt64 = try readInt(&buf)
+    return try lift(handle)
+  }
+
+  public static func write(_ value: TaskInfo, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(value))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTaskInfo_lift(_ handle: UInt64) throws -> TaskInfo {
+  return try FfiConverterTypeTaskInfo.lift(handle)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTaskInfo_lower(_ value: TaskInfo) -> UInt64 {
+  return FfiConverterTypeTaskInfo.lower(value)
+}
+
+/// A validation session in an experiment.
+///
+/// This is a UniFFI object (handle) that wraps a `core::ValidationSession`
+/// and exposes both field getters and methods for uploading/downloading data.
+public protocol ValidationSessionProtocol: AnyObject, Sendable {
+
+  /**
+   * The annotation set used for validation.
+   */
+  func annotationSetId() -> AnnotationSetId
+
+  /**
+   * Lists files attached to this validation session's data folder.
+   *
+   * Returns a flat list of relative file paths (slash-separated,
+   * e.g. `"folder/file.txt"`), sorted lexicographically.
+   */
+  func dataList(client: Client) throws -> [String]
+
+  /**
+   * Lists files attached to this validation session's data folder (async).
+   *
+   * Returns a flat list of relative file paths (slash-separated,
+   * e.g. `"folder/file.txt"`), sorted lexicographically.
+   */
+  func dataListAsync(client: Client) async throws -> [String]
+
+  /**
+   * The dataset used for validation.
+   */
+  func datasetId() -> DatasetId
+
+  /**
+   * Human-readable description of the session.
+   */
+  func description() -> String
+
+  /**
+   * Streams a file from this validation session's data folder to `output_path`.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  func downloadData(
+    client: Client, filename: String, outputPath: String, progress: ProgressCallback?) throws
+
+  /**
+   * Streams a file from this validation session to `output_path` (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  func downloadDataAsync(
+    client: Client, filename: String, outputPath: String, progress: ProgressCallback?) async throws
+
+  /**
+   * The experiment this session belongs to.
+   */
+  func experimentId() -> ExperimentId
+
+  /**
+   * The validation session ID.
+   */
+  func id() -> ValidationSessionId
+
+  /**
+   * The training session this validation is based on.
+   */
+  func trainingSessionId() -> TrainingSessionId
+
+  /**
+   * Uploads files to this validation session's data folder.
+   *
+   * `files` is a list of `FileEntry` records (name + local path).
+   * `folder` is an optional logical subdirectory.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  func uploadData(client: Client, files: [FileEntry], folder: String?, progress: ProgressCallback?)
+    throws
+
+  /**
+   * Uploads files to this validation session's data folder (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  func uploadDataAsync(
+    client: Client, files: [FileEntry], folder: String?, progress: ProgressCallback?) async throws
+
+}
+/// A validation session in an experiment.
+///
+/// This is a UniFFI object (handle) that wraps a `core::ValidationSession`
+/// and exposes both field getters and methods for uploading/downloading data.
+open class ValidationSession: ValidationSessionProtocol, @unchecked Sendable {
+  fileprivate let handle: UInt64
+
+  /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public struct NoHandle {
+    public init() {}
+  }
+
+  // TODO: We'd like this to be `private` but for Swifty reasons,
+  // we can't implement `FfiConverter` without making this `required` and we can't
+  // make it `required` without making it `public`.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  required public init(unsafeFromHandle handle: UInt64) {
+    self.handle = handle
+  }
+
+  // This constructor can be used to instantiate a fake object.
+  // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+  //
+  // - Warning:
+  //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public init(noHandle: NoHandle) {
+    self.handle = 0
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public func uniffiCloneHandle() -> UInt64 {
+    return try! rustCall { uniffi_edgefirst_client_fn_clone_validationsession(self.handle, $0) }
+  }
+  // No primary constructor declared for this class.
+
+  deinit {
+    if handle == 0 {
+      // Mock objects have handle=0 don't try to free them
+      return
+    }
+
+    try! rustCall { uniffi_edgefirst_client_fn_free_validationsession(handle, $0) }
+  }
+
+  /**
+   * The annotation set used for validation.
+   */
+  open func annotationSetId() -> AnnotationSetId {
+    return try! FfiConverterTypeAnnotationSetId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_annotation_set_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Lists files attached to this validation session's data folder.
+   *
+   * Returns a flat list of relative file paths (slash-separated,
+   * e.g. `"folder/file.txt"`), sorted lexicographically.
+   */
+  open func dataList(client: Client) throws -> [String] {
+    return try FfiConverterSequenceString.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_validationsession_data_list(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeClient_lower(client), $0
+        )
+      })
+  }
+
+  /**
+   * Lists files attached to this validation session's data folder (async).
+   *
+   * Returns a flat list of relative file paths (slash-separated,
+   * e.g. `"folder/file.txt"`), sorted lexicographically.
+   */
+  open func dataListAsync(client: Client) async throws -> [String] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_validationsession_data_list_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceString.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * The dataset used for validation.
+   */
+  open func datasetId() -> DatasetId {
+    return try! FfiConverterTypeDatasetId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_dataset_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Human-readable description of the session.
+   */
+  open func description() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_description(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Streams a file from this validation session's data folder to `output_path`.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  open func downloadData(
+    client: Client, filename: String, outputPath: String, progress: ProgressCallback?
+  ) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_validationsession_download_data(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeClient_lower(client),
+        FfiConverterString.lower(filename),
+        FfiConverterString.lower(outputPath),
+        FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress), $0
+      )
+    }
+  }
+
+  /**
+   * Streams a file from this validation session to `output_path` (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the download.  Pass `None` to suppress progress reporting.
+   */
+  open func downloadDataAsync(
+    client: Client, filename: String, outputPath: String, progress: ProgressCallback?
+  ) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_validationsession_download_data_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterString.lower(filename),
+            FfiConverterString.lower(outputPath),
+            FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * The experiment this session belongs to.
+   */
+  open func experimentId() -> ExperimentId {
+    return try! FfiConverterTypeExperimentId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_experiment_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * The validation session ID.
+   */
+  open func id() -> ValidationSessionId {
+    return try! FfiConverterTypeValidationSessionId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * The training session this validation is based on.
+   */
+  open func trainingSessionId() -> TrainingSessionId {
+    return try! FfiConverterTypeTrainingSessionId_lift(
+      try! rustCall {
+        uniffi_edgefirst_client_fn_method_validationsession_training_session_id(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * Uploads files to this validation session's data folder.
+   *
+   * `files` is a list of `FileEntry` records (name + local path).
+   * `folder` is an optional logical subdirectory.
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  open func uploadData(
+    client: Client, files: [FileEntry], folder: String?, progress: ProgressCallback?
+  ) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_validationsession_upload_data(
+        self.uniffiCloneHandle(),
+        FfiConverterTypeClient_lower(client),
+        FfiConverterSequenceTypeFileEntry.lower(files),
+        FfiConverterOptionString.lower(folder),
+        FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress), $0
+      )
+    }
+  }
+
+  /**
+   * Uploads files to this validation session's data folder (async).
+   *
+   * Pass a `ProgressCallback` implementation to receive byte-level progress
+   * events during the upload.  Pass `None` to suppress progress reporting.
+   */
+  open func uploadDataAsync(
+    client: Client, files: [FileEntry], folder: String?, progress: ProgressCallback?
+  ) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_validationsession_upload_data_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeClient_lower(client), FfiConverterSequenceTypeFileEntry.lower(files),
+            FfiConverterOptionString.lower(folder),
+            FfiConverterOptionCallbackInterfaceProgressCallback.lower(progress)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeValidationSession: FfiConverter {
+  typealias FfiType = UInt64
+  typealias SwiftType = ValidationSession
+
+  public static func lift(_ handle: UInt64) throws -> ValidationSession {
+    return ValidationSession(unsafeFromHandle: handle)
+  }
+
+  public static func lower(_ value: ValidationSession) -> UInt64 {
+    return value.uniffiCloneHandle()
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> ValidationSession
+  {
+    let handle: UInt64 = try readInt(&buf)
+    return try lift(handle)
+  }
+
+  public static func write(_ value: ValidationSession, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(value))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidationSession_lift(_ handle: UInt64) throws -> ValidationSession {
+  return try FfiConverterTypeValidationSession.lift(handle)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidationSession_lower(_ value: ValidationSession) -> UInt64 {
+  return FfiConverterTypeValidationSession.lower(value)
 }
 
 /// An annotation on a sample (bounding box, mask, etc.).
@@ -2387,6 +3664,74 @@ public func FfiConverterTypeExperimentId_lower(_ value: ExperimentId) -> RustBuf
   return FfiConverterTypeExperimentId.lower(value)
 }
 
+/// A named file entry used when uploading multiple files.
+///
+/// UniFFI does not support tuple types across language boundaries, so this
+/// record is used instead of `(name, path)` pairs in `ValidationSession::upload_data`.
+public struct FileEntry: Equatable, Hashable {
+  /**
+   * Logical filename as it will appear on the server.
+   */
+  public let name: String
+  /**
+   * Local filesystem path to the file to upload.
+   */
+  public let path: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Logical filename as it will appear on the server.
+     */
+    name: String,
+    /**
+     * Local filesystem path to the file to upload.
+     */
+    path: String
+  ) {
+    self.name = name
+    self.path = path
+  }
+
+}
+
+#if compiler(>=6)
+  extension FileEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFileEntry: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FileEntry {
+    return
+      try FileEntry(
+        name: FfiConverterString.read(from: &buf),
+        path: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: FileEntry, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterString.write(value.path, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileEntry_lift(_ buf: RustBuffer) throws -> FileEntry {
+  return try FfiConverterTypeFileEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileEntry_lower(_ value: FileEntry) -> RustBuffer {
+  return FfiConverterTypeFileEntry.lower(value)
+}
+
 /// GPS location data.
 public struct GpsData: Equatable, Hashable {
   public let lat: Double
@@ -2535,6 +3880,139 @@ public func FfiConverterTypeImuData_lift(_ buf: RustBuffer) throws -> ImuData {
 #endif
 public func FfiConverterTypeImuData_lower(_ value: ImuData) -> RustBuffer {
   return FfiConverterTypeImuData.lower(value)
+}
+
+/// A job (app run) entry returned by `Client::jobs`.
+///
+/// The `task_id` field links back to the underlying task that can be polled
+/// via `Client::task_info`.
+public struct Job: Equatable, Hashable {
+  /**
+   * App code (e.g. `"edgefirst-validator:2.9.5"`).
+   */
+  public let code: String
+  /**
+   * Display title from the app definition.
+   */
+  public let title: String
+  /**
+   * User-supplied job label provided at `job_run` time.
+   */
+  public let jobName: String
+  /**
+   * Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+   */
+  public let jobId: String
+  /**
+   * Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+   */
+  public let state: String
+  /**
+   * Job launch timestamp as RFC 3339 string, if known.
+   */
+  public let launch: String?
+  /**
+   * The Studio task id linked to this job, ready to pass directly to
+   * `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
+   *
+   * The server emits Go `int64`; negative values are clamped to 0 via the
+   * core `task_id()` accessor before being exposed to FFI callers, so this
+   * field is always a well-formed `TaskId`.
+   */
+  public let taskId: TaskId
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * App code (e.g. `"edgefirst-validator:2.9.5"`).
+     */
+    code: String,
+    /**
+     * Display title from the app definition.
+     */
+    title: String,
+    /**
+     * User-supplied job label provided at `job_run` time.
+     */
+    jobName: String,
+    /**
+     * Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+     */
+    jobId: String,
+    /**
+     * Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+     */
+    state: String,
+    /**
+     * Job launch timestamp as RFC 3339 string, if known.
+     */
+    launch: String?,
+    /**
+     * The Studio task id linked to this job, ready to pass directly to
+     * `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
+     *
+     * The server emits Go `int64`; negative values are clamped to 0 via the
+     * core `task_id()` accessor before being exposed to FFI callers, so this
+     * field is always a well-formed `TaskId`.
+     */
+    taskId: TaskId
+  ) {
+    self.code = code
+    self.title = title
+    self.jobName = jobName
+    self.jobId = jobId
+    self.state = state
+    self.launch = launch
+    self.taskId = taskId
+  }
+
+}
+
+#if compiler(>=6)
+  extension Job: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeJob: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Job {
+    return
+      try Job(
+        code: FfiConverterString.read(from: &buf),
+        title: FfiConverterString.read(from: &buf),
+        jobName: FfiConverterString.read(from: &buf),
+        jobId: FfiConverterString.read(from: &buf),
+        state: FfiConverterString.read(from: &buf),
+        launch: FfiConverterOptionString.read(from: &buf),
+        taskId: FfiConverterTypeTaskId.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: Job, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.code, into: &buf)
+    FfiConverterString.write(value.title, into: &buf)
+    FfiConverterString.write(value.jobName, into: &buf)
+    FfiConverterString.write(value.jobId, into: &buf)
+    FfiConverterString.write(value.state, into: &buf)
+    FfiConverterOptionString.write(value.launch, into: &buf)
+    FfiConverterTypeTaskId.write(value.taskId, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeJob_lift(_ buf: RustBuffer) throws -> Job {
+  return try FfiConverterTypeJob.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeJob_lower(_ value: Job) -> RustBuffer {
+  return FfiConverterTypeJob.lower(value)
 }
 
 /// A label for annotations.
@@ -3239,6 +4717,88 @@ public func FfiConverterTypeSample_lower(_ value: Sample) -> RustBuffer {
   return FfiConverterTypeSample.lower(value)
 }
 
+/// A dimension update for a single sample image.
+public struct SampleDimensionUpdate: Equatable, Hashable {
+  /**
+   * Sample ID to update.
+   */
+  public let sampleId: SampleId
+  /**
+   * Image width in pixels.
+   */
+  public let width: UInt32
+  /**
+   * Image height in pixels.
+   */
+  public let height: UInt32
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Sample ID to update.
+     */
+    sampleId: SampleId,
+    /**
+     * Image width in pixels.
+     */
+    width: UInt32,
+    /**
+     * Image height in pixels.
+     */
+    height: UInt32
+  ) {
+    self.sampleId = sampleId
+    self.width = width
+    self.height = height
+  }
+
+}
+
+#if compiler(>=6)
+  extension SampleDimensionUpdate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSampleDimensionUpdate: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> SampleDimensionUpdate
+  {
+    return
+      try SampleDimensionUpdate(
+        sampleId: FfiConverterTypeSampleId.read(from: &buf),
+        width: FfiConverterUInt32.read(from: &buf),
+        height: FfiConverterUInt32.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: SampleDimensionUpdate, into buf: inout [UInt8]) {
+    FfiConverterTypeSampleId.write(value.sampleId, into: &buf)
+    FfiConverterUInt32.write(value.width, into: &buf)
+    FfiConverterUInt32.write(value.height, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSampleDimensionUpdate_lift(_ buf: RustBuffer) throws
+  -> SampleDimensionUpdate
+{
+  return try FfiConverterTypeSampleDimensionUpdate.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSampleDimensionUpdate_lower(_ value: SampleDimensionUpdate)
+  -> RustBuffer
+{
+  return FfiConverterTypeSampleDimensionUpdate.lower(value)
+}
+
 /// A file associated with a sample (e.g., LiDAR point cloud, radar data).
 public struct SampleFile: Equatable, Hashable {
   /**
@@ -3646,6 +5206,67 @@ public func FfiConverterTypeTask_lower(_ value: Task) -> RustBuffer {
   return FfiConverterTypeTask.lower(value)
 }
 
+/// List of data artefacts attached to a task or validation session.
+///
+/// The `data` map is keyed by folder name; values are the filenames within
+/// that folder. Trace files are also listed separately in `traces`.
+public struct TaskDataList: Equatable, Hashable {
+  public let server: String
+  public let organizationUid: String
+  public let traces: [String]
+  public let data: [String: [String]]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(server: String, organizationUid: String, traces: [String], data: [String: [String]]) {
+    self.server = server
+    self.organizationUid = organizationUid
+    self.traces = traces
+    self.data = data
+  }
+
+}
+
+#if compiler(>=6)
+  extension TaskDataList: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTaskDataList: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TaskDataList {
+    return
+      try TaskDataList(
+        server: FfiConverterString.read(from: &buf),
+        organizationUid: FfiConverterString.read(from: &buf),
+        traces: FfiConverterSequenceString.read(from: &buf),
+        data: FfiConverterDictionaryStringSequenceString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: TaskDataList, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.server, into: &buf)
+    FfiConverterString.write(value.organizationUid, into: &buf)
+    FfiConverterSequenceString.write(value.traces, into: &buf)
+    FfiConverterDictionaryStringSequenceString.write(value.data, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTaskDataList_lift(_ buf: RustBuffer) throws -> TaskDataList {
+  return try FfiConverterTypeTaskDataList.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTaskDataList_lower(_ value: TaskDataList) -> RustBuffer {
+  return FfiConverterTypeTaskDataList.lower(value)
+}
+
 /// Unique identifier for a task.
 public struct TaskId: Equatable, Hashable {
   public let value: UInt64
@@ -3690,79 +5311,6 @@ public func FfiConverterTypeTaskId_lift(_ buf: RustBuffer) throws -> TaskId {
 #endif
 public func FfiConverterTypeTaskId_lower(_ value: TaskId) -> RustBuffer {
   return FfiConverterTypeTaskId.lower(value)
-}
-
-/// Detailed task information.
-public struct TaskInfo: Equatable, Hashable {
-  public let id: TaskId
-  public let projectId: ProjectId?
-  public let description: String
-  public let workflow: String
-  public let status: String?
-  public let created: String
-  public let completed: String
-
-  // Default memberwise initializers are never public by default, so we
-  // declare one manually.
-  public init(
-    id: TaskId, projectId: ProjectId?, description: String, workflow: String, status: String?,
-    created: String, completed: String
-  ) {
-    self.id = id
-    self.projectId = projectId
-    self.description = description
-    self.workflow = workflow
-    self.status = status
-    self.created = created
-    self.completed = completed
-  }
-
-}
-
-#if compiler(>=6)
-  extension TaskInfo: Sendable {}
-#endif
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeTaskInfo: FfiConverterRustBuffer {
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TaskInfo {
-    return
-      try TaskInfo(
-        id: FfiConverterTypeTaskId.read(from: &buf),
-        projectId: FfiConverterOptionTypeProjectId.read(from: &buf),
-        description: FfiConverterString.read(from: &buf),
-        workflow: FfiConverterString.read(from: &buf),
-        status: FfiConverterOptionString.read(from: &buf),
-        created: FfiConverterString.read(from: &buf),
-        completed: FfiConverterString.read(from: &buf)
-      )
-  }
-
-  public static func write(_ value: TaskInfo, into buf: inout [UInt8]) {
-    FfiConverterTypeTaskId.write(value.id, into: &buf)
-    FfiConverterOptionTypeProjectId.write(value.projectId, into: &buf)
-    FfiConverterString.write(value.description, into: &buf)
-    FfiConverterString.write(value.workflow, into: &buf)
-    FfiConverterOptionString.write(value.status, into: &buf)
-    FfiConverterString.write(value.created, into: &buf)
-    FfiConverterString.write(value.completed, into: &buf)
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeTaskInfo_lift(_ buf: RustBuffer) throws -> TaskInfo {
-  return try FfiConverterTypeTaskInfo.lift(buf)
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeTaskInfo_lower(_ value: TaskInfo) -> RustBuffer {
-  return FfiConverterTypeTaskInfo.lower(value)
 }
 
 /// Pipeline timing measurements for a sample, in nanoseconds.
@@ -3969,77 +5517,6 @@ public func FfiConverterTypeTrainingSessionId_lower(_ value: TrainingSessionId) 
   return FfiConverterTypeTrainingSessionId.lower(value)
 }
 
-/// A validation session in an experiment.
-public struct ValidationSession: Equatable, Hashable {
-  public let id: ValidationSessionId
-  public let experimentId: ExperimentId
-  public let trainingSessionId: TrainingSessionId
-  public let datasetId: DatasetId
-  public let annotationSetId: AnnotationSetId
-  public let description: String
-
-  // Default memberwise initializers are never public by default, so we
-  // declare one manually.
-  public init(
-    id: ValidationSessionId, experimentId: ExperimentId, trainingSessionId: TrainingSessionId,
-    datasetId: DatasetId, annotationSetId: AnnotationSetId, description: String
-  ) {
-    self.id = id
-    self.experimentId = experimentId
-    self.trainingSessionId = trainingSessionId
-    self.datasetId = datasetId
-    self.annotationSetId = annotationSetId
-    self.description = description
-  }
-
-}
-
-#if compiler(>=6)
-  extension ValidationSession: Sendable {}
-#endif
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeValidationSession: FfiConverterRustBuffer {
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
-    -> ValidationSession
-  {
-    return
-      try ValidationSession(
-        id: FfiConverterTypeValidationSessionId.read(from: &buf),
-        experimentId: FfiConverterTypeExperimentId.read(from: &buf),
-        trainingSessionId: FfiConverterTypeTrainingSessionId.read(from: &buf),
-        datasetId: FfiConverterTypeDatasetId.read(from: &buf),
-        annotationSetId: FfiConverterTypeAnnotationSetId.read(from: &buf),
-        description: FfiConverterString.read(from: &buf)
-      )
-  }
-
-  public static func write(_ value: ValidationSession, into buf: inout [UInt8]) {
-    FfiConverterTypeValidationSessionId.write(value.id, into: &buf)
-    FfiConverterTypeExperimentId.write(value.experimentId, into: &buf)
-    FfiConverterTypeTrainingSessionId.write(value.trainingSessionId, into: &buf)
-    FfiConverterTypeDatasetId.write(value.datasetId, into: &buf)
-    FfiConverterTypeAnnotationSetId.write(value.annotationSetId, into: &buf)
-    FfiConverterString.write(value.description, into: &buf)
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeValidationSession_lift(_ buf: RustBuffer) throws -> ValidationSession {
-  return try FfiConverterTypeValidationSession.lift(buf)
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeValidationSession_lower(_ value: ValidationSession) -> RustBuffer {
-  return FfiConverterTypeValidationSession.lower(value)
-}
-
 /// Unique identifier for a validation session.
 public struct ValidationSessionId: Equatable, Hashable {
   public let value: UInt64
@@ -4216,6 +5693,24 @@ public enum ClientError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
   case InternalError(
     message: String
   )
+  /**
+   * The addressed task does not exist on the server.
+   */
+  case TaskNotFound(
+    taskId: String
+  )
+  /**
+   * The operation was rejected for authorization reasons.
+   */
+  case PermissionDenied(
+    message: String
+  )
+  /**
+   * The server rejected the payload as too large.
+   */
+  case PayloadTooLarge(
+    message: String
+  )
 
   public var errorDescription: String? {
     String(reflecting: self)
@@ -4261,6 +5756,18 @@ public struct FfiConverterTypeClientError: FfiConverterRustBuffer {
       return .InternalError(
         message: try FfiConverterString.read(from: &buf)
       )
+    case 7:
+      return .TaskNotFound(
+        taskId: try FfiConverterString.read(from: &buf)
+      )
+    case 8:
+      return .PermissionDenied(
+        message: try FfiConverterString.read(from: &buf)
+      )
+    case 9:
+      return .PayloadTooLarge(
+        message: try FfiConverterString.read(from: &buf)
+      )
 
     default: throw UniffiInternalError.unexpectedEnumCase
     }
@@ -4291,6 +5798,18 @@ public struct FfiConverterTypeClientError: FfiConverterRustBuffer {
 
     case .InternalError(let message):
       writeInt(&buf, Int32(6))
+      FfiConverterString.write(message, into: &buf)
+
+    case .TaskNotFound(let taskId):
+      writeInt(&buf, Int32(7))
+      FfiConverterString.write(taskId, into: &buf)
+
+    case .PermissionDenied(let message):
+      writeInt(&buf, Int32(8))
+      FfiConverterString.write(message, into: &buf)
+
+    case .PayloadTooLarge(let message):
+      writeInt(&buf, Int32(9))
       FfiConverterString.write(message, into: &buf)
 
     }
@@ -4670,6 +6189,170 @@ public func FfiConverterTypeStorageError_lower(_ value: StorageError) -> RustBuf
   return FfiConverterTypeStorageError.lower(value)
 }
 
+/// Callback interface for byte-level transfer progress.
+///
+/// Implement this protocol (Swift) or interface (Kotlin) and pass it to
+/// `upload_data` / `download_data` to receive incremental progress events
+/// during file transfers.
+///
+/// # Parameters
+///
+/// - `current` – bytes transferred so far.
+/// - `total` – total bytes to transfer (may be 0 if the size is unknown).
+/// - `status` – optional phase label; when this value changes the operation
+/// has entered a new phase and the display should be reset.
+///
+/// # Thread safety
+///
+/// Callbacks are invoked from a background Tokio task.  The implementation
+/// must be `Send + Sync`.
+public protocol ProgressCallback: AnyObject, Sendable {
+
+  /**
+   * Called each time the number of transferred bytes changes.
+   */
+  func onProgress(current: UInt64, total: UInt64, status: String?)
+
+}
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+private struct UniffiCallbackInterfaceProgressCallback {
+
+  // Create the VTable using a series of closures.
+  // Swift automatically converts these into C callback functions.
+  //
+  // Store the vtable directly.
+  static let vtable: UniffiVTableCallbackInterfaceProgressCallback =
+    UniffiVTableCallbackInterfaceProgressCallback(
+      uniffiFree: { (uniffiHandle: UInt64) -> Void in
+        do {
+          try FfiConverterCallbackInterfaceProgressCallback.handleMap.remove(handle: uniffiHandle)
+        } catch {
+          print("Uniffi callback interface ProgressCallback: handle missing in uniffiFree")
+        }
+      },
+      uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+        do {
+          return try FfiConverterCallbackInterfaceProgressCallback.handleMap.clone(
+            handle: uniffiHandle)
+        } catch {
+          fatalError("Uniffi callback interface ProgressCallback: handle missing in uniffiClone")
+        }
+      },
+      onProgress: {
+        (
+          uniffiHandle: UInt64,
+          current: UInt64,
+          total: UInt64,
+          status: RustBuffer,
+          uniffiOutReturn: UnsafeMutableRawPointer,
+          uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+        let makeCall = {
+          () throws -> Void in
+          guard
+            let uniffiObj = try? FfiConverterCallbackInterfaceProgressCallback.handleMap.get(
+              handle: uniffiHandle)
+          else {
+            throw UniffiInternalError.unexpectedStaleHandle
+          }
+          return uniffiObj.onProgress(
+            current: try FfiConverterUInt64.lift(current),
+            total: try FfiConverterUInt64.lift(total),
+            status: try FfiConverterOptionString.lift(status)
+          )
+        }
+
+        let writeReturn = { () }
+        uniffiTraitInterfaceCall(
+          callStatus: uniffiCallStatus,
+          makeCall: makeCall,
+          writeReturn: writeReturn
+        )
+      }
+    )
+
+  // Rust stores this pointer for future callback invocations, so it must live
+  // for the process lifetime (not just for the init function call).
+  //
+  // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+  // This is safe because the pointee is initialized once during static init
+  // and never mutated by either side of the FFI.  Its fields are C function pointers.
+  nonisolated(unsafe) static let vtablePtr:
+    UnsafePointer<UniffiVTableCallbackInterfaceProgressCallback> = {
+      let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceProgressCallback>.allocate(
+        capacity: 1)
+      ptr.initialize(to: vtable)
+      return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitProgressCallback() {
+  uniffi_edgefirst_client_fn_init_callback_vtable_progresscallback(
+    UniffiCallbackInterfaceProgressCallback.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterCallbackInterfaceProgressCallback {
+  fileprivate static let handleMap = UniffiHandleMap<ProgressCallback>()
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceProgressCallback: FfiConverter {
+  typealias SwiftType = ProgressCallback
+  typealias FfiType = UInt64
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public static func lift(_ handle: UInt64) throws -> SwiftType {
+    try handleMap.get(handle: handle)
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    let handle: UInt64 = try readInt(&buf)
+    return try lift(handle)
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public static func lower(_ v: SwiftType) -> UInt64 {
+    return handleMap.insert(obj: v)
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(v))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceProgressCallback_lift(_ handle: UInt64) throws
+  -> ProgressCallback
+{
+  return try FfiConverterCallbackInterfaceProgressCallback.lift(handle)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceProgressCallback_lower(_ v: ProgressCallback) -> UInt64 {
+  return FfiConverterCallbackInterfaceProgressCallback.lower(v)
+}
+
 /// Trait for persistent token storage.
 ///
 /// Implement this interface in Kotlin/Swift to provide platform-specific
@@ -4700,9 +6383,8 @@ private struct UniffiCallbackInterfaceTokenStorage {
   // Create the VTable using a series of closures.
   // Swift automatically converts these into C callback functions.
   //
-  // This creates 1-element array, since this seems to be the only way to construct a const
-  // pointer that we can pass to the Rust code.
-  static let vtable: [UniffiVTableCallbackInterfaceTokenStorage] = [
+  // Store the vtable directly.
+  static let vtable: UniffiVTableCallbackInterfaceTokenStorage =
     UniffiVTableCallbackInterfaceTokenStorage(
       uniffiFree: { (uniffiHandle: UInt64) -> Void in
         do {
@@ -4797,12 +6479,25 @@ private struct UniffiCallbackInterfaceTokenStorage {
         )
       }
     )
-  ]
+
+  // Rust stores this pointer for future callback invocations, so it must live
+  // for the process lifetime (not just for the init function call).
+  //
+  // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+  // This is safe because the pointee is initialized once during static init
+  // and never mutated by either side of the FFI.  Its fields are C function pointers.
+  nonisolated(unsafe) static let vtablePtr:
+    UnsafePointer<UniffiVTableCallbackInterfaceTokenStorage> = {
+      let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceTokenStorage>.allocate(
+        capacity: 1)
+      ptr.initialize(to: vtable)
+      return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitTokenStorage() {
   uniffi_edgefirst_client_fn_init_callback_vtable_tokenstorage(
-    UniffiCallbackInterfaceTokenStorage.vtable)
+    UniffiCallbackInterfaceTokenStorage.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -5252,6 +6947,106 @@ private struct FfiConverterOptionTypeTiming: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeParameter: FfiConverterRustBuffer {
+  typealias SwiftType = Parameter?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeParameter.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeParameter.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionCallbackInterfaceProgressCallback: FfiConverterRustBuffer {
+  typealias SwiftType = ProgressCallback?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterCallbackInterfaceProgressCallback.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterCallbackInterfaceProgressCallback.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceString: FfiConverterRustBuffer {
+  typealias SwiftType = [String]
+
+  public static func write(_ value: [String], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterString.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+    let len: Int32 = try readInt(&buf)
+    var seq = [String]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterString.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeValidationSession: FfiConverterRustBuffer {
+  typealias SwiftType = [ValidationSession]
+
+  public static func write(_ value: [ValidationSession], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeValidationSession.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [ValidationSession]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [ValidationSession]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeValidationSession.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeAnnotation: FfiConverterRustBuffer {
   typealias SwiftType = [Annotation]
 
@@ -5379,6 +7174,56 @@ private struct FfiConverterSequenceTypeExperiment: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeFileEntry: FfiConverterRustBuffer {
+  typealias SwiftType = [FileEntry]
+
+  public static func write(_ value: [FileEntry], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeFileEntry.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FileEntry] {
+    let len: Int32 = try readInt(&buf)
+    var seq = [FileEntry]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeFileEntry.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeJob: FfiConverterRustBuffer {
+  typealias SwiftType = [Job]
+
+  public static func write(_ value: [Job], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeJob.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Job] {
+    let len: Int32 = try readInt(&buf)
+    var seq = [Job]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeJob.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeLabel: FfiConverterRustBuffer {
   typealias SwiftType = [Label]
 
@@ -5480,6 +7325,33 @@ private struct FfiConverterSequenceTypeProject: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeSampleDimensionUpdate: FfiConverterRustBuffer {
+  typealias SwiftType = [SampleDimensionUpdate]
+
+  public static func write(_ value: [SampleDimensionUpdate], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeSampleDimensionUpdate.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [SampleDimensionUpdate]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [SampleDimensionUpdate]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeSampleDimensionUpdate.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeSampleFile: FfiConverterRustBuffer {
   typealias SwiftType = [SampleFile]
 
@@ -5557,33 +7429,6 @@ private struct FfiConverterSequenceTypeTrainingSession: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
-private struct FfiConverterSequenceTypeValidationSession: FfiConverterRustBuffer {
-  typealias SwiftType = [ValidationSession]
-
-  public static func write(_ value: [ValidationSession], into buf: inout [UInt8]) {
-    let len = Int32(value.count)
-    writeInt(&buf, len)
-    for item in value {
-      FfiConverterTypeValidationSession.write(item, into: &buf)
-    }
-  }
-
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
-    -> [ValidationSession]
-  {
-    let len: Int32 = try readInt(&buf)
-    var seq = [ValidationSession]()
-    seq.reserveCapacity(Int(len))
-    for _ in 0..<len {
-      seq.append(try FfiConverterTypeValidationSession.read(from: &buf))
-    }
-    return seq
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
 private struct FfiConverterSequenceTypeParameter: FfiConverterRustBuffer {
   typealias SwiftType = [Parameter]
 
@@ -5609,6 +7454,34 @@ private struct FfiConverterSequenceTypeParameter: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterDictionaryStringString: FfiConverterRustBuffer {
+  public static func write(_ value: [String: String], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for (key, value) in value {
+      FfiConverterString.write(key, into: &buf)
+      FfiConverterString.write(value, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String:
+    String]
+  {
+    let len: Int32 = try readInt(&buf)
+    var dict = [String: String]()
+    dict.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      let key = try FfiConverterString.read(from: &buf)
+      let value = try FfiConverterString.read(from: &buf)
+      dict[key] = value
+    }
+    return dict
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterDictionaryStringTypeParameter: FfiConverterRustBuffer {
   public static func write(_ value: [String: Parameter], into buf: inout [UInt8]) {
     let len = Int32(value.count)
@@ -5628,6 +7501,34 @@ private struct FfiConverterDictionaryStringTypeParameter: FfiConverterRustBuffer
     for _ in 0..<len {
       let key = try FfiConverterString.read(from: &buf)
       let value = try FfiConverterTypeParameter.read(from: &buf)
+      dict[key] = value
+    }
+    return dict
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterDictionaryStringSequenceString: FfiConverterRustBuffer {
+  public static func write(_ value: [String: [String]], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for (key, value) in value {
+      FfiConverterString.write(key, into: &buf)
+      FfiConverterSequenceString.write(value, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String:
+    [String]]
+  {
+    let len: Int32 = try readInt(&buf)
+    var dict = [String: [String]]()
+    dict.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      let key = try FfiConverterString.read(from: &buf)
+      let value = try FfiConverterSequenceString.read(from: &buf)
       dict[key] = value
     }
     return dict
@@ -6036,6 +7937,12 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_artifacts_async() != 51396 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_backfill_sample_dimensions() != 26474 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_backfill_sample_dimensions_async() != 56385 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_dataset() != 15504 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -6058,6 +7965,24 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_experiments_async() != 40764 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_job_run() != 44593 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_job_run_async() != 28856 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_job_stop() != 15514 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_job_stop_async() != 54636 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_jobs() != 15552 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_jobs_async() != 33017 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_labels() != 53854 {
@@ -6102,10 +8027,10 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_snapshots_async() != 36918 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_task_info() != 36680 {
+  if uniffi_edgefirst_client_checksum_method_client_task_info() != 1177 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_task_info_async() != 13534 {
+  if uniffi_edgefirst_client_checksum_method_client_task_info_async() != 28895 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_training_session() != 61626 {
@@ -6120,13 +8045,25 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_training_sessions_async() != 60165 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_update_sample_dimensions() != 21339 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_sample_dimensions_async() != 56639 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_url() != 10365 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_validation_sessions() != 38295 {
+  if uniffi_edgefirst_client_checksum_method_client_validation_session() != 22776 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_validation_sessions_async() != 27882 {
+  if uniffi_edgefirst_client_checksum_method_client_validation_session_async() != 49705 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_validation_sessions() != 27879 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_validation_sessions_async() != 56608 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_verify_token() != 32558 {
@@ -6147,10 +8084,106 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_with_token() != 51792 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_add_chart() != 35576 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_add_chart_async() != 44723 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_completed() != 38392 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_created() != 26848 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_data_list() != 54702 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_data_list_async() != 45856 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_description() != 59660 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_download_data() != 6593 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_download_data_async() != 2234 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_get_chart() != 8575 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_get_chart_async() != 7581 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_id() != 30462 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_list_charts() != 14979 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_list_charts_async() != 21923 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_project_id() != 37262 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_status() != 41157 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_upload_data() != 29760 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_upload_data_async() != 50622 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_taskinfo_workflow() != 37114 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_annotation_set_id() != 22010 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_data_list() != 59968 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_data_list_async() != 49364 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_dataset_id() != 55699 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_description() != 4062 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_download_data() != 23128 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_download_data_async() != 9698 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_experiment_id() != 11180 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_id() != 49709 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_training_session_id() != 22009 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_upload_data() != 51953 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_validationsession_upload_data_async() != 19967 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_constructor_client_new() != 15084 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_constructor_client_with_memory_storage() != 34648 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_progresscallback_on_progress() != 21545 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_tokenstorage_store() != 32185 {
@@ -6163,6 +8196,7 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
 
+  uniffiCallbackInitProgressCallback()
   uniffiCallbackInitTokenStorage()
   return InitializationResult.ok
 }()

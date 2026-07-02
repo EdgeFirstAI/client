@@ -82,6 +82,24 @@ pub enum Error {
     CocoError(String),
     /// ZIP archive read/write error.
     ZipError(String),
+    /// Server reported the addressed task does not exist.
+    TaskNotFound(crate::api::TaskID),
+    /// Server rejected the call for authorization reasons.
+    /// String identifies the operation that was denied (e.g., `"task.chart.add"`).
+    PermissionDenied(String),
+    /// Server rejected the payload as too large.
+    /// `method` identifies the RPC method; `size_hint` is the body size
+    /// if the client could compute it pre-send.
+    PayloadTooLarge {
+        method: String,
+        size_hint: Option<u64>,
+    },
+    /// Refusing to point the client at a non-loopback `http://` URL.
+    /// Studio bearer tokens ride in the `Authorization` header, and plain
+    /// HTTP would leak them in the clear. Loopback URLs (`127.0.0.1`,
+    /// `::1`, `localhost`) are permitted because traffic never leaves
+    /// the machine — that's how wiremock and local dev servers connect.
+    InsecureUrl(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -196,7 +214,15 @@ impl std::fmt::Display for Error {
             Error::InvalidResponse => write!(f, "Invalid server response"),
             Error::NotImplemented => write!(f, "Not implemented"),
             Error::PartTooLarge => write!(f, "File part size exceeds maximum limit"),
-            Error::InvalidFileType(s) => write!(f, "Invalid file type: {}", s),
+            // Keep this list in sync with `FileType::try_from` in dataset.rs
+            // (the source of truth for accepted tokens).
+            Error::InvalidFileType(s) => write!(
+                f,
+                "Invalid file type: {}. Valid types: image, lidar.pcd, lidar.png, \
+                 lidar.jpg, radar.pcd, radar.png, all (aliases also accepted: \
+                 lidar.depth, depth.png, depthmap, lidar.jpeg, lidar.reflect, pcd, cube)",
+                s
+            ),
             Error::InvalidAnnotationType(s) => write!(f, "Invalid annotation type: {}", s),
             Error::UnsupportedFormat(s) => write!(f, "Unsupported format: {}", s),
             Error::MissingImages(s) => write!(f, "Missing images: {}", s),
@@ -214,6 +240,15 @@ impl std::fmt::Display for Error {
             Error::PolarsError(e) => write!(f, "Polars error: {}", e),
             Error::CocoError(s) => write!(f, "COCO format error: {}", s),
             Error::ZipError(s) => write!(f, "ZIP error: {}", s),
+            Error::TaskNotFound(id) => write!(f, "task not found: {}", id),
+            Error::PermissionDenied(op) => write!(f, "permission denied: {}", op),
+            Error::PayloadTooLarge { method, .. } => write!(f, "payload too large for {}", method),
+            Error::InsecureUrl(url) => write!(
+                f,
+                "refusing insecure URL '{}': Studio bearer tokens require HTTPS \
+                 (loopback http is allowed for tests/dev)",
+                url
+            ),
         }
     }
 }
@@ -518,6 +553,33 @@ mod tests {
             file_type
         );
         assert!(wrapped_str.starts_with("Invalid file type: "));
+        // The valid-types list is written with `\` line continuations. Rust
+        // strips the newline *and* the leading whitespace of each continued
+        // line, so the rendered message must read as one clean line with no
+        // literal indentation padding (i.e. no doubled spaces).
+        assert!(
+            !wrapped_str.contains("  "),
+            "message must not contain doubled spaces from continuation indent: {wrapped_str:?}"
+        );
+        assert!(wrapped_str.contains(
+            "Valid types: image, lidar.pcd, lidar.png, lidar.jpg, radar.pcd, radar.png, all"
+        ));
+        // Every alias accepted by FileType::try_from must be advertised so users
+        // are not told a valid value is invalid.
+        for alias in [
+            "lidar.depth",
+            "depth.png",
+            "depthmap",
+            "lidar.jpeg",
+            "lidar.reflect",
+            "pcd",
+            "cube",
+        ] {
+            assert!(
+                wrapped_str.contains(alias),
+                "message should mention accepted alias '{alias}': {wrapped_str:?}"
+            );
+        }
     }
 
     #[test]
@@ -722,5 +784,106 @@ mod tests {
         let err = Error::Unauthorized;
         let err_str = err.to_string();
         assert_eq!(err_str, "Unauthorized access");
+    }
+
+    // ----------------------------------------------------------------------
+    // DE-2565 typed variants.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_task_not_found_display_contains_id() {
+        // TaskID Displays as `task-{hex}`; 0x1092 == 4242.
+        let task_id = crate::api::TaskID::from(0x1092u64);
+        let err = Error::TaskNotFound(task_id);
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("task-1092"),
+            "Display should include the task ID prefix+hex, got: {err_str}"
+        );
+        assert!(err_str.starts_with("task not found"));
+    }
+
+    #[test]
+    fn test_permission_denied_display_contains_method() {
+        let err = Error::PermissionDenied("task.chart.add".to_string());
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("task.chart.add"),
+            "Display should include the method name, got: {err_str}"
+        );
+        assert!(err_str.starts_with("permission denied"));
+    }
+
+    #[test]
+    fn test_payload_too_large_display_contains_method() {
+        let err = Error::PayloadTooLarge {
+            method: "val.data.upload".to_string(),
+            size_hint: Some(123456),
+        };
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("val.data.upload"),
+            "Display should include the method name, got: {err_str}"
+        );
+        assert!(err_str.starts_with("payload too large"));
+    }
+
+    #[test]
+    fn test_payload_too_large_with_no_size_hint() {
+        // Size hint is optional; Display should still work when None.
+        let err = Error::PayloadTooLarge {
+            method: "task.data.upload".to_string(),
+            size_hint: None,
+        };
+        let err_str = err.to_string();
+        assert!(err_str.contains("task.data.upload"));
+    }
+
+    #[test]
+    fn test_typed_variants_have_no_source() {
+        // None of the DE-2565 typed variants wrap an inner std::error::Error,
+        // so source() should return None for them. This guards against
+        // accidentally wrapping them in something that does.
+        use std::error::Error as _;
+
+        let task_not_found = Error::TaskNotFound(crate::api::TaskID::from(1u64));
+        assert!(task_not_found.source().is_none());
+
+        let perm_denied = Error::PermissionDenied("op".into());
+        assert!(perm_denied.source().is_none());
+
+        let too_large = Error::PayloadTooLarge {
+            method: "m".into(),
+            size_hint: Some(1),
+        };
+        assert!(too_large.source().is_none());
+    }
+
+    // ----------------------------------------------------------------------
+    // Variants tracked under pre-existing tests but not covered for source().
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn test_coco_error_display() {
+        let err = Error::CocoError("missing categories array".into());
+        let err_str = err.to_string();
+        assert!(err_str.contains("missing categories array"));
+        assert!(err_str.starts_with("COCO format error:"));
+    }
+
+    #[test]
+    fn test_zip_error_display() {
+        let err = Error::ZipError("invalid central directory".into());
+        let err_str = err.to_string();
+        assert!(err_str.contains("invalid central directory"));
+        assert!(err_str.starts_with("ZIP error:"));
+    }
+
+    #[test]
+    fn test_storage_error_display() {
+        let err = Error::StorageError("keychain locked".into());
+        let err_str = err.to_string();
+        assert!(err_str.contains("keychain locked"));
+        assert!(err_str.starts_with("Token storage error:"));
     }
 }

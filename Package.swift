@@ -6,9 +6,15 @@ import PackageDescription
 
 // =============================================================================
 // Configuration - Updated automatically by release workflow
+//
+// During release preparation only the `version` is bumped manually; the
+// `checksum` lags by one release because it pins the actual XCFramework
+// artifact, which is not produced until the release workflow runs. The
+// post-release automation PR (`automation: update Swift package for vX.Y.Z
+// [skip ci]`) refreshes the checksum once the artifact is published.
 // =============================================================================
-let version = "2.9.3"
-let checksum = "95d15c9fbe372bd15983a75abc3ae56c31a42135c527b2990fabce47c32ad5e6"
+let version = "2.11.1"
+let checksum = "abdb5d5208193bf4c41a3455aab10ba2964f0c5328a3ad5e3dcd7758b46cf926"
 
 // Toggle for local development vs release distribution
 // Set USE_LOCAL_FRAMEWORK=true environment variable for local XCFramework

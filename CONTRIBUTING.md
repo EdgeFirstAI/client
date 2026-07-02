@@ -289,13 +289,24 @@ client/
 │   └── workflows/              # GitHub Actions CI/CD
 ├── testdata/                   # Test data files
 ├── test/                       # Python test code
-├── examples/                   # Python examples
+├── examples/                   # Python tutorials (.py + .ipynb) and README.md
 ├── Cargo.toml                  # Workspace manifest
 ├── README.md                   # Project overview
 ├── CONTRIBUTING.md             # This file
 ├── AGENTS.md                   # AI assistant guidelines
 └── CLI.md                      # CLI man page documentation
 ```
+
+### Python examples (`examples/`)
+
+End-user tutorials install **`pip install edgefirst-client`** only (CLI + Python API from one wheel).
+See [examples/README.md](examples/README.md).
+
+Before merging example changes:
+
+1. Run `ruff format` / `ruff check` on `examples/*.py`
+2. Verify against a **PyPI** venv (`pip install edgefirst-client`) and a **maturin develop** build
+3. Keep `edgefirst_client.pyi` in sync when example APIs change
 
 ## Testing
 

@@ -5,12 +5,14 @@ use crate::{
     Annotation, Error, Sample, Task,
     api::{
         AnnotationSetID, Artifact, ChangelogCountResult, ChangelogResponse, DatasetID,
-        DatasetSummary, Experiment, ExperimentID, LoginResult, Organization, Project, ProjectID,
-        RestoreResult, SampleID, SamplesCountResult, SamplesListParams, SamplesListResult,
-        Snapshot, SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID,
-        SnapshotRestore, SnapshotRestoreResult, Stage, TaskID, TaskInfo, TaskStages, TaskStatus,
-        TasksListParams, TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
-        ValidationSessionID, VersionChangelogParams, VersionCurrentResponse, VersionTag,
+        DatasetSummary, Experiment, ExperimentID, LoginResult, NewTrainingSession,
+        NewValidationSession, Organization, Project, ProjectID, RestoreResult, SampleID,
+        SamplesCountResult, SamplesListParams, SamplesListResult, SchemaField, Snapshot,
+        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
+        SnapshotRestoreResult, Stage, StartTrainingRequest, StartValidationRequest, Tag, TaskID,
+        TaskInfo, TaskStages, TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo,
+        TrainingSession, TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
+        ValidatorSchema, VersionChangelogParams, VersionCurrentResponse, VersionTag,
         VersionTagCreateParams, VersionTagNameParams,
     },
     dataset::{
@@ -49,6 +51,88 @@ use walkdir::WalkDir;
 
 #[cfg(feature = "polars")]
 use polars::prelude::*;
+
+/// Maps a JSON-RPC error code to a typed `Error` variant when the code is
+/// well-known; otherwise returns `Error::RpcError(code, message)` unchanged.
+///
+/// Scoped to the new DE-2565 methods. Existing methods continue to return
+/// `Error::RpcError` directly.
+///
+/// Server error codes (from `api.go` via `jrpc.Fail`):
+/// - `1`   – generic server error
+/// - `3`   – validation / bad request
+/// - `10`  – internal server error
+/// - `101` – resource not found (e.g. "Cannot find task...", "not found in DB")
+/// - `401` – unauthenticated
+/// - `403` – forbidden
+/// - `413` – payload too large
+pub(crate) fn map_rpc_error(
+    method: &str,
+    code: i32,
+    message: String,
+    task_id: Option<crate::api::TaskID>,
+) -> Error {
+    // Server emits "Cannot find task...", "not found in DB", and other phrasings
+    // for code 101. Code 101 with a task_id is task-not-found by contract
+    // (see api.go), so we return the typed variant unconditionally when the
+    // caller supplied a task_id — message phrasing is treated as informational
+    // and is preserved by the RPC layer for diagnostic logging upstream.
+    if code == 101
+        && let Some(id) = task_id
+    {
+        return Error::TaskNotFound(id);
+    }
+    match code {
+        401 | 403 => Error::PermissionDenied(method.to_string()),
+        413 => Error::PayloadTooLarge {
+            method: method.to_string(),
+            size_hint: None,
+        },
+        _ => Error::RpcError(code, message),
+    }
+}
+
+/// Returns true if `val` is structurally a JSON-RPC 2.0 *error* envelope.
+///
+/// A real envelope must:
+/// 1. Be a JSON object,
+/// 2. Carry a `"jsonrpc"` member (the protocol-version sentinel — JSON-RPC
+///    2.0 §5 mandates this on every response object),
+/// 3. Carry an `"error"` object that includes a numeric `"code"` field.
+///
+/// This is intentionally stricter than a "looks for a top-level `error`
+/// key" check so that legitimate JSON file payloads (validation traces,
+/// metrics dumps, diagnostics) which happen to include a free-form `error`
+/// field are *not* misclassified as RPC failures.
+///
+/// Extracted so it can be unit-tested without a live server.
+pub(crate) fn is_jsonrpc_error_envelope(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    // Protocol-version sentinel — only JSON-RPC envelopes carry this.
+    if !obj.contains_key("jsonrpc") {
+        return false;
+    }
+    let Some(err) = obj.get("error").and_then(|e| e.as_object()) else {
+        return false;
+    };
+    err.get("code")
+        .map(|c| c.is_i64() || c.is_u64())
+        .unwrap_or(false)
+}
+
+/// Validates that `group` and `name` are both non-empty strings for chart
+/// operations (`add_chart`, `get_chart`). Extracted so it can be unit-tested
+/// without a live server.
+pub(crate) fn validate_chart_args(group: &str, name: &str) -> Result<(), Error> {
+    if group.is_empty() || name.is_empty() {
+        return Err(Error::InvalidParameters(
+            "chart: group and name must be non-empty".into(),
+        ));
+    }
+    Ok(())
+}
 
 static PART_SIZE: usize = 100 * 1024 * 1024;
 
@@ -133,6 +217,26 @@ where
     });
 
     filtered
+}
+
+/// Whether `host` refers to a loopback (machine-local) endpoint.
+///
+/// Used by [`Client::with_url`] to decide whether a plain-`http://` URL is
+/// safe to accept. Loopback traffic never leaves the machine, so the
+/// usual concern about leaking the Studio bearer token in plaintext does
+/// not apply — that's how wiremock and local dev servers connect.
+fn is_loopback_host(host: Option<&url::Host<&str>>) -> bool {
+    match host {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // RFC 6761 reserves "localhost" (and `*.localhost`) as a loopback
+        // name. Compare case-insensitively because URL hosts are matched
+        // that way and developers do type capitalized variants.
+        Some(url::Host::Domain(d)) => {
+            d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost")
+        }
+        None => false,
+    }
 }
 
 fn sanitize_path_component(name: &str) -> String {
@@ -467,6 +571,126 @@ struct FetchContext<'a> {
     tag: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct JobsListRequest {}
+
+#[derive(Debug, Serialize)]
+struct JobRunRequest {
+    name: String,
+    job_name: String,
+    env: std::collections::HashMap<String, String>,
+    data: std::collections::HashMap<String, crate::api::Parameter>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobStopRequest {
+    task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataListRequest {
+    pub(crate) task_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskDataDownloadRequest {
+    pub(crate) task_id: u64,
+    pub(crate) folder: String,
+    pub(crate) file: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartAddRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+    pub(crate) params: Option<crate::api::Parameter>,
+    pub(crate) data: crate::api::Parameter,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartListRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TaskChartGetRequest {
+    pub(crate) task_id: u64,
+    pub(crate) group_name: String,
+    pub(crate) chart_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataDownloadRequest {
+    pub(crate) session_id: u64,
+    pub(crate) filename: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ValDataListRequest {
+    pub(crate) session_id: u64,
+}
+
+/// Streams the body of a successful `reqwest` response to a file on disk,
+/// emitting optional progress events.
+///
+/// Both `download_artifact` and `rpc_download` share this logic. The caller is
+/// responsible for creating any required parent directories before calling this
+/// function.
+///
+/// # Arguments
+/// * `resp`     - A successful (HTTP 2xx) `reqwest::Response` whose body will
+///   be streamed to `path`.
+/// * `path`     - Destination file path (created or truncated).
+/// * `progress` - Optional channel; events carry bytes received and
+///   `Content-Length` total (0 if the server omits it).
+///
+/// # Errors
+/// Returns `Error::IoError` on file I/O failures or propagates stream errors.
+async fn stream_response_to_file(
+    resp: reqwest::Response,
+    path: &std::path::Path,
+    progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+) -> Result<(), Error> {
+    use tokio::io::AsyncWriteExt as _;
+    let total = resp.content_length().unwrap_or(0) as usize;
+    let mut stream = resp.bytes_stream();
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut current = 0usize;
+
+    if let Some(ref tx) = progress {
+        let _ = tx
+            .send(Progress {
+                current: 0,
+                total,
+                status: None,
+            })
+            .await;
+    }
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        current += chunk.len();
+        if let Some(ref tx) = progress {
+            let _ = tx
+                .send(Progress {
+                    current,
+                    total,
+                    status: None,
+                })
+                .await;
+        }
+    }
+
+    // Flush tokio's internal write buffer to the OS before returning.
+    // tokio::fs::File buffers writes internally; without this, the buffer
+    // may not reach the filesystem before the caller reads the file.
+    file.flush().await?;
+    Ok(())
+}
+
 impl Client {
     /// Create a new unauthenticated client with the default saas server.
     ///
@@ -540,7 +764,11 @@ impl Client {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(read_timeout_secs))
             .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(10)
+            // Bulk file transfers fan out to many concurrent presigned-URL
+            // uploads — up to `EDGEFIRST_UPLOAD_BATCHES` pipelined batches ×
+            // `max_tasks()` uploads each. Keep enough idle connections warm to
+            // reuse across that fan-out instead of churning new TLS handshakes.
+            .pool_max_idle_per_host(64)
             .retry(create_retry_policy())
             .build()?;
 
@@ -638,13 +866,26 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
-        let url = match server {
-            "" | "saas" => "https://edgefirst.studio".to_string(),
-            name => format!("https://{}.edgefirst.studio", name),
+        // Resolve the target URL. Full URLs (self-hosted Studio,
+        // wiremock) are validated through `with_url` so the HTTPS rules
+        // there apply uniformly. Short names map to the SaaS pattern.
+        // We extract only the URL string and rebuild the Client below,
+        // because `with_url` preserves the in-memory token (the contract
+        // for self-hosted deployments) whereas `with_server` deliberately
+        // clears it (a different server means a stale token).
+        let url = if server.starts_with("http://") || server.starts_with("https://") {
+            self.with_url(server)?.url().to_string()
+        } else {
+            match server {
+                "" | "saas" => "https://edgefirst.studio".to_string(),
+                name => format!("https://{}.edgefirst.studio", name),
+            }
         };
 
         // Clear token from storage when changing servers to prevent
-        // authentication issues with stale tokens from different instances
+        // authentication issues with stale tokens from different
+        // instances. This runs whether the caller passed a short name
+        // or a full URL — both reach a new server.
         if let Some(ref storage) = self.storage
             && let Err(e) = storage.clear()
         {
@@ -657,6 +898,41 @@ impl Client {
         Ok(Client {
             url,
             token: Arc::new(tokio::sync::RwLock::new(String::new())),
+            ..self.clone()
+        })
+    }
+
+    /// Returns a new client pointed at an explicit URL.
+    ///
+    /// Used for self-hosted Studio deployments (e.g.
+    /// `https://studio.example.com`) and for offline integration tests
+    /// against a mock HTTP server (e.g. `http://127.0.0.1:8080`). The
+    /// token is preserved so callers can chain
+    /// `Client::new()?.with_url(...)?.with_token(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UrlParseError`] for syntactically invalid URLs and
+    /// [`Error::InsecureUrl`] for plain `http://` URLs that resolve to a
+    /// non-loopback host: the Studio bearer token rides in the
+    /// `Authorization` header, and plain HTTP would leak it in the clear.
+    /// Loopback URLs (`127.0.0.1`, `::1`, `localhost`, `*.localhost`) are
+    /// permitted because traffic never leaves the machine — wiremock and
+    /// local dev servers go through that path.
+    pub fn with_url(&self, url: &str) -> Result<Self, Error> {
+        // Reject malformed inputs early so test failures point at the test
+        // rather than a downstream reqwest send.
+        let parsed = url::Url::parse(url)?;
+        let scheme = parsed.scheme();
+        if scheme == "http" {
+            if !is_loopback_host(parsed.host().as_ref()) {
+                return Err(Error::InsecureUrl(url.to_string()));
+            }
+        } else if scheme != "https" {
+            return Err(Error::InsecureUrl(url.to_string()));
+        }
+        Ok(Client {
+            url: url.trim_end_matches('/').to_string(),
             ..self.clone()
         })
     }
@@ -1135,6 +1411,15 @@ impl Client {
             .await
     }
 
+    /// Returns the billing usage summary (credits, funds, total spendable) for
+    /// the authenticated user's organization. `org.get` only exposes
+    /// `latest_credit`; the spendable balance comes from this RPC.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn usage_summary(&self) -> Result<UsageSummary, Error> {
+        self.rpc::<(), UsageSummary>("accounting.get_usage_summary".to_owned(), None)
+            .await
+    }
+
     /// Returns a list of projects available to the user.  The projects are
     /// returned as a vector of Project objects.  If a name filter is
     /// provided, only projects matching the filter are returned.
@@ -1219,14 +1504,146 @@ impl Client {
     /// Add a new label to the dataset with the specified name.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn add_label(&self, dataset_id: DatasetID, name: &str) -> Result<(), Error> {
+        self.add_labels(dataset_id, std::slice::from_ref(&name.to_owned()))
+            .await
+    }
+
+    /// Add multiple labels to the dataset in a single request.
+    ///
+    /// Equivalent to calling [`add_label`](Self::add_label) for each name but in
+    /// one round-trip. Useful before a bulk/concurrent upload: pre-creating the
+    /// full label set serially avoids many concurrent `populate2` calls racing to
+    /// create the same label server-side. Names already present are not
+    /// duplicated by the server. A no-op when `names` is empty.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names), fields(dataset_id = %dataset_id, count = names.len())))]
+    pub async fn add_labels(&self, dataset_id: DatasetID, names: &[String]) -> Result<(), Error> {
+        if names.is_empty() {
+            return Ok(());
+        }
+
+        let existing = self.labels(dataset_id, None).await?;
+        let existing_names: std::collections::HashSet<String> =
+            existing.iter().map(|l| l.name().to_string()).collect();
+
+        let to_create: Vec<&String> = names
+            .iter()
+            .filter(|name| !existing_names.contains(name.as_str()))
+            .collect();
+
+        if to_create.is_empty() {
+            return Ok(());
+        }
+
         let new_label = NewLabel {
             dataset_id,
-            labels: vec![NewLabelObject {
-                name: name.to_owned(),
-            }],
+            labels: to_create
+                .iter()
+                .map(|name| NewLabelObject {
+                    name: (*name).clone(),
+                })
+                .collect(),
         };
         let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
         Ok(())
+    }
+
+    /// Add a label with a caller-specified source-faithful index.
+    ///
+    /// Thin wrapper around [`add_labels_with_indices`](Self::add_labels_with_indices)
+    /// for single-label use. The `index` is preserved by assigning it via
+    /// `label.update` after creation, enabling round-trips through COCO or other
+    /// formats where category IDs are not contiguous starting at zero.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to add the label to
+    /// * `name` - Label name (must be unique within the dataset)
+    /// * `index` - The `label_index` to assign (e.g. COCO `category_id`)
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an error if the index is already held by
+    /// a different label on the server.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn add_label_with_index(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+        index: u64,
+    ) -> Result<(), Error> {
+        let names = [name.to_owned()];
+        let indices = [Some(index)];
+        self.add_labels_with_indices(dataset_id, &names, &indices)
+            .await
+    }
+
+    /// Add multiple labels, optionally assigning source-faithful table indices.
+    ///
+    /// Creates missing labels via `label.add2` (names only), then assigns indices
+    /// via a two-pass `label.update` for entries where `indices[i]` is `Some`.
+    /// Each `None` leaves that label at the server-assigned index. The two-pass
+    /// strategy avoids index collisions when labels within the same batch would
+    /// swap positions. Names already present on the server are not duplicated.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to add labels to
+    /// * `names` - Label names to create (existing names are skipped)
+    /// * `indices` - Parallel slice of optional indices; `None` means use server default
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success. A no-op if `names` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidParameters` if `names` and `indices` have different
+    /// lengths, if any desired index conflicts with an existing unrelated label,
+    /// or if the batch contains duplicate index values.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, names, indices), fields(dataset_id = %dataset_id, count = names.len())))]
+    pub async fn add_labels_with_indices(
+        &self,
+        dataset_id: DatasetID,
+        names: &[String],
+        indices: &[Option<u64>],
+    ) -> Result<(), Error> {
+        if names.is_empty() {
+            return Ok(());
+        }
+
+        if indices.len() != names.len() {
+            return Err(Error::InvalidParameters(format!(
+                "add_labels_with_indices: names and indices length mismatch ({} vs {})",
+                names.len(),
+                indices.len()
+            )));
+        }
+
+        Self::validate_label_batch(names, Some(indices))?;
+
+        let existing = self.labels(dataset_id, None).await?;
+        let existing_names: std::collections::HashSet<String> =
+            existing.iter().map(|l| l.name().to_string()).collect();
+
+        let to_create: Vec<&String> = names
+            .iter()
+            .filter(|name| !existing_names.contains(name.as_str()))
+            .collect();
+
+        if !to_create.is_empty() {
+            let new_label = NewLabel {
+                dataset_id,
+                labels: to_create
+                    .iter()
+                    .map(|name| NewLabelObject {
+                        name: (*name).clone(),
+                    })
+                    .collect(),
+            };
+            let _: String = self.rpc("label.add2".to_owned(), Some(new_label)).await?;
+        }
+
+        self.apply_label_indices(dataset_id, names, indices).await
     }
 
     /// Removes the label with the specified ID from the dataset.  Label IDs are
@@ -1313,6 +1730,187 @@ impl Client {
                 }),
             )
             .await?;
+        Ok(())
+    }
+
+    /// Temporary offset for the two-pass label index assignment (avoids collisions
+    /// during reassignment). Chosen to clear real COCO/LVIS category IDs (up to ~1723).
+    const LABEL_INDEX_ASSIGN_TEMP_OFFSET: u64 = 100_000;
+
+    /// Collect parallel label name/index arrays from upload samples for
+    /// [`add_labels_with_indices`](Self::add_labels_with_indices).
+    ///
+    /// Annotations without `label_index` contribute `None` at the matching position.
+    /// Returns an error if the same label name maps to different indices.
+    pub fn collect_labels_from_samples(
+        samples: &[Sample],
+    ) -> Result<(Vec<String>, Vec<Option<u64>>), Error> {
+        let mut specs: HashMap<String, Option<u64>> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for annotation in samples.iter().flat_map(|s| s.annotations()) {
+            let Some(name) = annotation.label() else {
+                continue;
+            };
+            match (specs.get(name), annotation.label_index()) {
+                (Some(&Some(existing)), Some(index)) if existing != index => {
+                    return Err(Error::InvalidParameters(format!(
+                        "inconsistent label_index for '{name}': {existing} vs {index}"
+                    )));
+                }
+                (Some(&Some(_)), _) => {}
+                (Some(&None), Some(index)) => {
+                    specs.insert(name.clone(), Some(index));
+                }
+                (None, Some(index)) => {
+                    order.push(name.clone());
+                    specs.insert(name.clone(), Some(index));
+                }
+                (None, None) => {
+                    order.push(name.clone());
+                    specs.insert(name.clone(), None);
+                }
+                (Some(&None), None) => {}
+            }
+        }
+        let indices: Vec<Option<u64>> = order.iter().map(|name| specs[name]).collect();
+        Ok((order, indices))
+    }
+
+    /// Validate label batch: unique names and unique indices among entries with `Some(index)`.
+    fn validate_label_batch(
+        names: &[String],
+        indices: Option<&[Option<u64>]>,
+    ) -> Result<(), Error> {
+        let mut seen_names = HashMap::new();
+        let mut index_to_name = HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            if seen_names.insert(name.as_str(), ()).is_some() {
+                return Err(Error::InvalidParameters(format!(
+                    "duplicate label name '{name}'"
+                )));
+            }
+            if let Some(indices) = indices
+                && let Some(index) = indices[i]
+                && let Some(other) = index_to_name.insert(index, name.as_str())
+            {
+                return Err(Error::InvalidParameters(format!(
+                    "duplicate label_index {index} for labels '{other}' and '{name}'"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Assign label table indices (two-pass update).
+    async fn apply_label_indices(
+        &self,
+        dataset_id: DatasetID,
+        names: &[String],
+        indices: &[Option<u64>],
+    ) -> Result<(), Error> {
+        let batch_names: HashMap<&str, ()> = names.iter().map(|n| (n.as_str(), ())).collect();
+
+        let with_index: HashMap<&str, u64> = names
+            .iter()
+            .zip(indices.iter())
+            .filter_map(|(name, index)| index.map(|i| (name.as_str(), i)))
+            .collect();
+
+        if with_index.is_empty() {
+            return Ok(());
+        }
+
+        let current = self.labels(dataset_id, None).await?;
+        let by_name: HashMap<String, Label> = current
+            .iter()
+            .map(|l| (l.name().to_string(), l.clone()))
+            .collect();
+
+        let mut to_sync = Vec::new();
+        for (name, &target_index) in &with_index {
+            let label = by_name.get(*name).ok_or_else(|| {
+                Error::InvalidParameters(format!(
+                    "label '{name}' not found in dataset after label.add2"
+                ))
+            })?;
+            if label.index() != target_index {
+                to_sync.push((name.to_string(), target_index));
+            }
+        }
+
+        if to_sync.is_empty() {
+            return Ok(());
+        }
+
+        // Unrelated labels (not in this batch) occupying a target index block reassignment.
+        for (name, target_index) in &to_sync {
+            for label in &current {
+                if label.index() == *target_index
+                    && label.name() != name.as_str()
+                    && !batch_names.contains_key(label.name())
+                {
+                    return Err(Error::InvalidParameters(format!(
+                        "label_index {target_index} already used by '{}' \
+                         (needed for '{name}'); use a clean dataset or resolve the conflict",
+                        label.name()
+                    )));
+                }
+            }
+            // Batch labels without an explicit index that occupy the target block reassignment.
+            for (batch_name, batch_index) in names.iter().zip(indices.iter()) {
+                if batch_index.is_some() || batch_name == name {
+                    continue;
+                }
+                if let Some(label) = by_name.get(batch_name.as_str())
+                    && label.index() == *target_index
+                {
+                    return Err(Error::InvalidParameters(format!(
+                        "label '{batch_name}' occupies label_index {target_index} \
+                         (needed for '{name}') but no index was specified; \
+                         assign explicit indices for all labels in the batch or use a clean dataset"
+                    )));
+                }
+            }
+        }
+
+        // Compute and validate temporary staging indices before any server writes.
+        // checked_add guards against caller-supplied target_index values large enough
+        // to wrap u64 when the offset is added. The occupancy check ensures no label
+        // outside the batch already sits at the temp slot (it would be displaced by
+        // the first pass and potentially clobber the second pass).
+        let mut staged: Vec<(String, u64, u64)> = Vec::with_capacity(to_sync.len());
+        for (name, target_index) in &to_sync {
+            let temp_index = Self::LABEL_INDEX_ASSIGN_TEMP_OFFSET
+                .checked_add(*target_index)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "label_index {target_index} for '{name}' is too large: \
+                         adding the staging offset would overflow u64"
+                    ))
+                })?;
+            for label in &current {
+                if label.index() == temp_index && !batch_names.contains_key(label.name()) {
+                    return Err(Error::InvalidParameters(format!(
+                        "staging index {temp_index} (needed to move '{name}' to \
+                         index {target_index}) is already occupied by label '{}'; \
+                         use a clean dataset or resolve the conflict",
+                        label.name()
+                    )));
+                }
+            }
+            staged.push((name.clone(), *target_index, temp_index));
+        }
+
+        for (name, _, temp_index) in &staged {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label.set_index(self, *temp_index).await?;
+        }
+
+        for (name, target_index, _) in &staged {
+            let mut label = by_name.get(name).cloned().expect("validated above");
+            label.set_index(self, *target_index).await?;
+        }
+
         Ok(())
     }
 
@@ -1879,7 +2477,9 @@ impl Client {
         annotation_set_id: AnnotationSetID,
     ) -> Result<(), Error> {
         let params = HashMap::from([("id", annotation_set_id)]);
-        let _: serde_json::Value = self.rpc("annset.delete".to_owned(), Some(params)).await?;
+        // Server registers the deletion endpoint as `annset.del` (see
+        // dve-database api/annotation_sets_handler.go), not `annset.delete`.
+        let _: serde_json::Value = self.rpc("annset.del".to_owned(), Some(params)).await?;
         Ok(())
     }
 
@@ -1956,7 +2556,13 @@ impl Client {
             dataset_id,
             annotation_set_id: Some(annotation_set_id),
             groups,
-            types: annotation_types.iter().map(|t| t.to_string()).collect(),
+            // Use server-recognized type names (box2d/box3d/mask), matching
+            // samples(); the Display impl emits "polygon" for segmentation,
+            // which the server's types filter does not accept.
+            types: annotation_types
+                .iter()
+                .map(|t| t.as_server_type().to_string())
+                .collect(),
             labels: &labels,
             tag: version.map(|v| v.to_string()),
         };
@@ -2185,7 +2791,8 @@ impl Client {
         types: &[FileType],
         version: Option<&str>,
     ) -> Result<SamplesCountResult, Error> {
-        // Use server type names for API calls (e.g., "box" instead of "box2d")
+        // Use server-recognized annotation type names (box2d/box3d/mask) for
+        // the types filter; the server maps them to its internal DB types.
         let types = annotation_types
             .iter()
             .map(|t| t.as_server_type().to_string())
@@ -2237,7 +2844,8 @@ impl Client {
         progress: Option<Sender<Progress>>,
         version: Option<&str>,
     ) -> Result<Vec<Sample>, Error> {
-        // Use server type names for API calls (e.g., "box" instead of "box2d")
+        // Use server-recognized annotation type names (box2d/box3d/mask) for
+        // the types filter; the server maps them to its internal DB types.
         let types_vec = annotation_types
             .iter()
             .map(|t| t.as_server_type().to_string())
@@ -2469,12 +3077,12 @@ impl Client {
     ///   local path. The method will replace the full path with just the
     ///   basename before sending to the server.
     /// - **Image dimensions are extracted automatically** for image files using
-    ///   the `imagesize` crate. The width/height are sent to the server, but
-    ///   note that the server currently doesn't return these fields when
-    ///   fetching samples back.
+    ///   the `imagesize` crate. The width/height are sent to the server and
+    ///   stored in the `image_files` table. These dimensions are returned by
+    ///   `samples.list` and used in [`samples_dataframe`](crate::samples_dataframe)
+    ///   to populate the `size` column.
     /// - **UUIDs are generated automatically** if not provided. If you need
-    ///   deterministic UUIDs, set `sample.uuid` explicitly before calling. Note
-    ///   that the server doesn't currently return UUIDs in sample queries.
+    ///   deterministic UUIDs, set `sample.uuid` explicitly before calling.
     ///
     /// # Arguments
     ///
@@ -2577,12 +3185,20 @@ impl Client {
         concurrency: Option<usize>,
     ) -> Result<Vec<crate::SamplesPopulateResult>, Error> {
         use crate::api::SamplesPopulateParams;
+        #[cfg(feature = "profiling")]
+        use tracing::Instrument as _;
 
         // Track which files need to be uploaded
         let mut files_to_upload: Vec<(String, String, FileSource, String)> = Vec::new();
 
-        // Process samples to detect local files and generate UUIDs
-        let samples = self.prepare_samples_for_upload(samples, &mut files_to_upload)?;
+        // Process samples to detect local files and generate UUIDs. This is
+        // synchronous CPU/metadata work; the span uses `.entered()` since it
+        // runs on the current task with no await inside.
+        let samples = {
+            #[cfg(feature = "profiling")]
+            let _prepare_span = tracing::info_span!("prepare_samples", n = samples.len()).entered();
+            self.prepare_samples_for_upload(samples, &mut files_to_upload)?
+        };
 
         let has_files_to_upload = !files_to_upload.is_empty();
 
@@ -2594,14 +3210,30 @@ impl Client {
             samples,
         };
 
+        #[cfg(feature = "profiling")]
+        let rpc_start = std::time::Instant::now();
         let results: Vec<crate::SamplesPopulateResult> = self
             .rpc("samples.populate2".to_owned(), Some(params))
             .await?;
+        #[cfg(feature = "profiling")]
+        upload_stats::add_rpc_nanos(rpc_start.elapsed().as_nanos() as u64);
 
-        // Upload files if we have any
+        // Upload files if we have any. The S3 fan-out is async, so the span is
+        // attached to the future with `.instrument()` (not `.entered()`) to stay
+        // correct when this batch overlaps others.
         if has_files_to_upload {
-            self.upload_sample_files(&results, files_to_upload, progress, concurrency)
-                .await?;
+            #[cfg(feature = "profiling")]
+            let n_files = files_to_upload.len();
+            #[cfg(feature = "profiling")]
+            let upload_start = std::time::Instant::now();
+            let upload_fut =
+                self.upload_sample_files(&results, files_to_upload, progress, concurrency);
+            #[cfg(feature = "profiling")]
+            let upload_fut =
+                upload_fut.instrument(tracing::info_span!("upload_files", files = n_files));
+            upload_fut.await?;
+            #[cfg(feature = "profiling")]
+            upload_stats::add_upload_nanos(upload_start.elapsed().as_nanos() as u64);
         }
 
         Ok(results)
@@ -2864,6 +3496,165 @@ impl Client {
             )
             .await?;
         samples_dataframe(&samples)
+    }
+
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// This is useful for backfilling width/height data on samples that were
+    /// uploaded before dimension extraction was added, or where dimensions
+    /// could not be determined at upload time.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset containing the samples
+    /// * `updates` - List of dimension updates (sample ID, width, height)
+    ///
+    /// # Returns
+    ///
+    /// The number of samples that were successfully updated.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, updates), fields(dataset_id = %dataset_id, count = updates.len())))]
+    pub async fn update_sample_dimensions(
+        &self,
+        dataset_id: DatasetID,
+        updates: Vec<crate::SampleDimensionUpdate>,
+    ) -> Result<u64, Error> {
+        use crate::api::SamplesUpdateDimensionsParams;
+
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        // Batch in groups of 500 to stay within server limits
+        let mut total_updated = 0u64;
+        for chunk in updates.chunks(500) {
+            let params = SamplesUpdateDimensionsParams {
+                dataset_id,
+                samples: chunk.to_vec(),
+            };
+            let result: crate::SamplesUpdateDimensionsResult = self
+                .rpc("samples.update_dimensions".to_owned(), Some(params))
+                .await?;
+            total_updated += result.updated;
+        }
+        Ok(total_updated)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads image data for samples that are missing width/height,
+    /// extracts the dimensions using the `imagesize` crate, and updates
+    /// the server with the computed values.
+    ///
+    /// This is a one-time repair operation for datasets that were uploaded
+    /// before the client added automatic dimension extraction.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to backfill
+    /// * `progress` - Optional progress channel
+    ///
+    /// # Returns
+    ///
+    /// The number of samples whose dimensions were updated.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, progress), fields(dataset_id = %dataset_id)))]
+    pub async fn backfill_sample_dimensions(
+        &self,
+        dataset_id: DatasetID,
+        progress: Option<Sender<Progress>>,
+    ) -> Result<u64, Error> {
+        // Fetch all samples; listing progress is not forwarded to the caller
+        // since it would interleave with the dimension-computing phase.
+        let samples = self
+            .samples(dataset_id, None, &[], &[], &[], None, None)
+            .await?;
+
+        // Filter to samples missing dimensions
+        let missing: Vec<&Sample> = samples
+            .iter()
+            .filter(|s| s.width.is_none() || s.height.is_none())
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(0);
+        }
+
+        let total = missing.len();
+        let mut updates: Vec<crate::SampleDimensionUpdate> = Vec::with_capacity(total);
+
+        for (i, sample) in missing.into_iter().enumerate() {
+            let current = i + 1;
+
+            let Some(id) = sample.id() else {
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            let Some(url) = sample.image_url() else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: no image URL");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            // Download image data to determine dimensions
+            let resp = self.bulk_http.get(url).send().await;
+            let Ok(resp) = resp else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: download failed");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            // Skip non-success responses (e.g. 404, 500) rather than parsing error pages
+            if !resp.status().is_success() {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, status = %resp.status(), "skipping sample: non-success HTTP status");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            }
+
+            let Ok(bytes) = resp.bytes().await else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: failed to read response body");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            // Extract dimensions from the downloaded image
+            let Ok(size) = imagesize::blob_size(&bytes) else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, "skipping sample: could not determine dimensions");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            let (Ok(width), Ok(height)) = (u32::try_from(size.width), u32::try_from(size.height))
+            else {
+                #[cfg(feature = "profiling")]
+                tracing::warn!(sample_id = %id, width = size.width, height = size.height, "skipping sample: dimensions overflow u32");
+                Self::send_progress(&progress, current, total).await;
+                continue;
+            };
+
+            updates.push(crate::SampleDimensionUpdate { id, width, height });
+            Self::send_progress(&progress, current, total).await;
+        }
+
+        // Send updates to server
+        self.update_sample_dimensions(dataset_id, updates).await
+    }
+
+    /// Emit a progress event if a progress channel is provided.
+    async fn send_progress(progress: &Option<Sender<Progress>>, current: usize, total: usize) {
+        if let Some(tx) = progress {
+            let _ = tx
+                .send(Progress {
+                    current,
+                    total,
+                    status: Some("Computing dimensions".to_string()),
+                })
+                .await;
+        }
     }
 
     /// List available snapshots.  If a name is provided, only snapshots
@@ -3902,6 +4693,408 @@ impl Client {
             .await
     }
 
+    /// Create a new validation session via Studio's `cloud.server.start`.
+    ///
+    /// Pass `is_local: true` in the [`StartValidationRequest`] to create
+    /// a **user-managed** session: the database row is created and the
+    /// session is fully usable for data uploads / downloads / metrics,
+    /// but no EC2 instance is provisioned and no automated validator
+    /// pipeline is started. That is the mode our integration tests use
+    /// — they create a session, exercise the wrapper APIs against it,
+    /// then call [`Client::delete_validation_sessions`] in teardown so
+    /// no stray sessions accumulate on the test account.
+    ///
+    /// Returns a [`NewValidationSession`] carrying the backing task id
+    /// and the freshly-minted validation session id.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `cloud.server.start`. Common cases:
+    /// `RpcError(101, …)` if a required entity is missing (project,
+    /// training session, dataset, …); `PermissionDenied` if the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_validation_session(
+        &self,
+        req: StartValidationRequest,
+    ) -> Result<NewValidationSession, Error> {
+        // Build the params shape the server expects. `cloud.server.start`
+        // is intentionally generic — different server types pull
+        // different fields out of `params` — so we serialize manually to
+        // match the JS frontend's call site verbatim (see
+        // `dve-frontend/src/components/ValidationPage/StartValidatorModal.vue`).
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "type".into(),
+            serde_json::Value::String("validation".into()),
+        );
+        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
+        body.insert(
+            "training_session_id".into(),
+            serde_json::to_value(req.training_session_id)?,
+        );
+        body.insert(
+            "model_file".into(),
+            serde_json::Value::String(req.model_file),
+        );
+        body.insert("val_type".into(), serde_json::Value::String(req.val_type));
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // `validate.session` reads its config from `params.params` (one
+        // extra envelope level). The outer `params` wrapper is required
+        // even when the inner map is empty.
+        let inner = serde_json::to_value(req.params)?;
+        let mut outer = serde_json::Map::new();
+        outer.insert("params".into(), inner);
+        body.insert("params".into(), serde_json::Value::Object(outer));
+
+        if let Some(d) = req.description {
+            body.insert("description".into(), serde_json::Value::String(d));
+        }
+        if let Some(id) = req.dataset_id {
+            body.insert("dataset_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.annotation_set_id {
+            body.insert("annotation_set_id".into(), serde_json::to_value(id)?);
+        }
+        if let Some(id) = req.snapshot_id {
+            body.insert("snapshot_id".into(), serde_json::to_value(id)?);
+        }
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
+    }
+
+    /// Delete one or more validation sessions via
+    /// `validate.session.delete`.
+    ///
+    /// Used by integration tests to tear down sessions they created
+    /// with [`Client::start_validation_session`]; idempotent against
+    /// already-deleted ids on the server side (the RPC accepts the
+    /// list, deletes what it can, and surfaces an error only if none
+    /// of the ids were resolvable).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `validate.session.delete`. A
+    /// `PermissionDenied` indicates the caller lacks
+    /// `TrainerWrite` on at least one of the listed sessions.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_validation_sessions(
+        &self,
+        session_ids: &[ValidationSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
+        let _: serde_json::Value = self
+            .rpc("validate.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
+    }
+
+    /// Delete one or more training sessions via `trainer.session.delete`.
+    ///
+    /// **The server cascades this delete**: validation sessions attached
+    /// to the deleted training sessions are removed as well, along with
+    /// the session's artifacts and checkpoints. The reverse is not true —
+    /// deleting a validation session with
+    /// [`Client::delete_validation_sessions`] never affects its parent
+    /// training session.
+    ///
+    /// The delete is a soft delete on the server: deleted sessions no
+    /// longer appear in [`Client::training_sessions`] listings, but a
+    /// direct [`Client::training_session`] lookup may still resolve
+    /// until the session is purged.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.session.delete`, such as an
+    /// `RpcError` if one of the session ids cannot be resolved.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_training_sessions(
+        &self,
+        session_ids: &[TrainingSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
+        let _: serde_json::Value = self
+            .rpc("trainer.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
+    }
+
+    /// Update the name and/or description of a training session via
+    /// `trainer.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` must be provided.
+    ///
+    /// The update RPC returns the bare database row without the session's
+    /// task information, so the session is re-fetched with
+    /// `trainer.session.get` after the update to return a fully populated
+    /// [`TrainingSession`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `trainer.session.update` or the follow-up
+    /// `trainer.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_training_session(
+        &self,
+        session_id: TrainingSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<TrainingSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
+        let mut body = serde_json::Map::new();
+        body.insert("id".into(), serde_json::to_value(session_id)?);
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("trainer.session.update".to_owned(), Some(body))
+            .await?;
+        self.training_session(session_id).await
+    }
+
+    /// Update the name and/or description of a validation session via
+    /// `validate.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` must be provided. Renaming a validation session also
+    /// renames its associated background task on the server.
+    ///
+    /// The session is re-fetched with `validate.session.get` after the
+    /// update to return a fully populated [`ValidationSession`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `validate.session.update` or the follow-up
+    /// `validate.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_validation_session(
+        &self,
+        session_id: ValidationSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<ValidationSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "validate_session_id".into(),
+            serde_json::to_value(session_id)?,
+        );
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("validate.session.update".to_owned(), Some(body))
+            .await?;
+        self.validation_session(session_id).await
+    }
+
+    /// List the trainer types available on the server.
+    ///
+    /// Returns the catalog of trainer schemas via `trainer.server.schema`
+    /// (no parameters). Pass a returned
+    /// [`TrainerSchemaInfo::schema_type`] to [`Client::trainer_schema`]
+    /// for the full parameter schema, or to
+    /// [`StartTrainingRequest::trainer_type`](crate::StartTrainingRequest)
+    /// when launching a training session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, Error> {
+        #[derive(Deserialize)]
+        struct SchemaList {
+            schema_list: Vec<TrainerSchemaInfo>,
+        }
+        let result: SchemaList = self
+            .rpc::<(), SchemaList>("trainer.server.schema".to_owned(), None)
+            .await?;
+        Ok(result.schema_list)
+    }
+
+    /// Fetch the parameter schema for a specific trainer type.
+    ///
+    /// The returned [`SchemaField`] descriptors define the
+    /// hyperparameters the trainer accepts — names, defaults, ranges and
+    /// nested groups — which map onto the `params` map of a
+    /// [`StartTrainingRequest`](crate::StartTrainingRequest).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.server.schema`, such as an
+    /// unknown `schema_type`.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schema(&self, schema_type: &str) -> Result<Vec<SchemaField>, Error> {
+        let params = HashMap::from([("type", schema_type)]);
+        self.rpc("trainer.server.schema".to_owned(), Some(params))
+            .await
+    }
+
+    /// List the validator schemas available on the server.
+    ///
+    /// Each [`ValidatorSchema`] carries its parameter field descriptors
+    /// inline; select the schema whose `schema_type` matches the model's
+    /// trainer type.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
+        self.rpc::<(), Vec<ValidatorSchema>>("validate.schema".to_owned(), None)
+            .await
+    }
+
+    /// List the version tags of a dataset via `tags.list_dataset`.
+    ///
+    /// Tags are creation-ordered; the highest [`Tag::id`] is the most
+    /// recent version. Used by [`Client::start_training_session`] to
+    /// resolve the latest tag when the request does not name one.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn dataset_tags(&self, dataset_id: DatasetID) -> Result<Vec<Tag>, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("tags.list_dataset".to_owned(), Some(params)).await
+    }
+
+    /// Launch a new training session via Studio's `cloud.server.start`.
+    ///
+    /// The session trains on a single dataset using group-based
+    /// train/validation splits. Defaults are resolved client-side before
+    /// the launch call:
+    ///
+    /// * `tag_name: None` → the dataset's latest tag (from
+    ///   [`Client::dataset_tags`]); it is an error to launch against a
+    ///   dataset that has no tags without naming one explicitly.
+    /// * `train_group` / `val_group: None` → the dataset's default split
+    ///   groups `"train"` / `"val"`.
+    ///
+    /// Query the trainer's parameter schema with
+    /// [`Client::trainer_schema`] to build the `params` map. Pass
+    /// `is_local: true` to create a **user-managed** session (no cloud
+    /// instance is provisioned) — the mode integration tests use, paired
+    /// with [`Client::delete_training_sessions`] in teardown.
+    ///
+    /// Returns a [`NewTrainingSession`] carrying the backing task id and
+    /// the freshly-minted training session id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] if the dataset has no tags
+    /// and no `tag_name` was provided. Surfaces any RPC error from
+    /// `cloud.server.start`; a `PermissionDenied` indicates the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_training_session(
+        &self,
+        req: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, Error> {
+        // The server requires a concrete tag name; resolve "latest"
+        // client-side from the creation-ordered tag list.
+        let tag_name = match req.tag_name {
+            Some(tag) => tag,
+            None => self
+                .dataset_tags(req.dataset_id)
+                .await?
+                .into_iter()
+                .max_by_key(|tag| tag.id)
+                .map(|tag| tag.name)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "dataset {} has no version tags; create one or specify tag_name",
+                        req.dataset_id
+                    ))
+                })?,
+        };
+
+        let mut body = serde_json::Map::new();
+        body.insert("type".into(), serde_json::Value::String("trainer".into()));
+        body.insert("name".into(), serde_json::Value::String(req.name.clone()));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // Unlike validation launches, the trainer callback reads its
+        // dataset selection from `params` directly and the raw
+        // hyperparameters from `params.params` (single envelope). The
+        // group-based split is the only mode the server supports here.
+        let mut inner = serde_json::Map::new();
+        inner.insert(
+            "trainer_id".into(),
+            serde_json::to_value(req.experiment_id)?,
+        );
+        inner.insert(
+            "trainer_type".into(),
+            serde_json::Value::String(req.trainer_type),
+        );
+        inner.insert(
+            "split_mode".into(),
+            serde_json::Value::String("group".into()),
+        );
+        inner.insert("dataset_id".into(), serde_json::to_value(req.dataset_id)?);
+        inner.insert(
+            "annotation_set_id".into(),
+            serde_json::to_value(req.annotation_set_id)?,
+        );
+        inner.insert("tag_name".into(), serde_json::Value::String(tag_name));
+        inner.insert(
+            "train_group_name".into(),
+            serde_json::Value::String(req.train_group.unwrap_or_else(|| "train".into())),
+        );
+        inner.insert(
+            "val_group_name".into(),
+            serde_json::Value::String(req.val_group.unwrap_or_else(|| "val".into())),
+        );
+        inner.insert("params".into(), serde_json::to_value(req.params)?);
+        // The server requires `session_name`; default to the task name,
+        // matching how the Studio UI derives it.
+        inner.insert(
+            "session_name".into(),
+            serde_json::Value::String(req.session_name.unwrap_or(req.name)),
+        );
+        if let Some(description) = req.session_description {
+            inner.insert(
+                "session_description".into(),
+                serde_json::Value::String(description),
+            );
+        }
+        if let Some(id) = req.weights_session {
+            inner.insert("weights_session".into(), serde_json::to_value(id)?);
+        }
+        body.insert("params".into(), serde_json::Value::Object(inner));
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
+    }
+
     /// List the artifacts for the specified trainer session.  The artifacts
     /// are returned as a vector of strings.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
@@ -3952,43 +5145,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Download the model checkpoint associated with the specified trainer
@@ -4033,43 +5190,7 @@ impl Client {
             fs::create_dir_all(parent).await?;
         }
 
-        let total = resp.content_length().unwrap_or(0) as usize;
-
-        if let Some(ref progress) = progress {
-            let _ = progress
-                .send(Progress {
-                    current: 0,
-                    total,
-                    status: None,
-                })
-                .await;
-        }
-
-        let mut file = File::create(filename).await?;
-        let mut current = 0;
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = item?;
-            file.write_all(&chunk).await?;
-            current += chunk.len();
-            if let Some(ref progress) = progress {
-                let _ = progress
-                    .send(Progress {
-                        current,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
-        }
-
-        // Flush tokio's internal write buffer to the OS before returning.
-        // tokio::fs::File buffers writes internally; without this, the buffer
-        // may not reach the filesystem before the caller reads the file.
-        file.flush().await?;
-
-        Ok(())
+        stream_response_to_file(resp, &filename, progress).await
     }
 
     /// Return a list of tasks for the current user.
@@ -4124,6 +5245,91 @@ impl Client {
         }
 
         Ok(tasks)
+    }
+
+    /// Submits a job (app run) to the server and returns the resulting `Job`
+    /// record (which carries the linked task id alongside the cloud-batch
+    /// metadata).
+    ///
+    /// # Arguments
+    /// * `app_name` - The name of the registered app to run (e.g., `"edgefirst-validator"`).
+    /// * `job_name` - A user-defined label for this run.
+    /// * `env` - Environment variables passed to the job (string-string map).
+    /// * `data` - Job input payload (e.g., session ids, parameters).
+    ///
+    /// # Returns
+    /// The full `Job` record returned by the server (wraps the BK_BATCH object),
+    /// including AWS Batch job ID, state, and the linked `task_id`. Callers that
+    /// only need the task ID can call `.task_id()` on the returned `Job`.
+    pub async fn job_run(
+        &self,
+        app_name: &str,
+        job_name: &str,
+        env: std::collections::HashMap<String, String>,
+        data: std::collections::HashMap<String, crate::api::Parameter>,
+    ) -> Result<crate::api::Job, Error> {
+        let req = JobRunRequest {
+            name: app_name.to_owned(),
+            job_name: job_name.to_owned(),
+            env,
+            data,
+        };
+        let resp: crate::api::Job = match self.rpc("job.run".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.run", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(resp)
+    }
+
+    /// Requests a running job task be stopped.
+    ///
+    /// Returns `Ok(())` if the stop request was accepted by the server. The
+    /// task may still take time to fully terminate; poll `task_info` if you
+    /// need to wait for shutdown.
+    pub async fn job_stop(&self, task_id: crate::api::TaskID) -> Result<(), Error> {
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        // We don't care about the response body; deserialize as serde_json::Value.
+        let _resp: serde_json::Value = match self.rpc("job.stop".to_owned(), Some(&req)).await {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.stop", code, msg, Some(task_id)));
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(())
+    }
+
+    /// Lists job (app-run) entries visible to the authenticated user.
+    ///
+    /// The server returns AWS Batch-wrapper entries (not bare `Task` objects),
+    /// surfacing cloud-batch state (`RUNNING`/`SUCCEEDED`/...) and the linked
+    /// `task_id`. Use `Job::task_id()` + `Client::task_info` to fetch the
+    /// underlying task details.
+    ///
+    /// The server does not support server-side filters, so the optional
+    /// `name` argument is applied client-side as a substring match against
+    /// each job's `job_name`.
+    pub async fn jobs(&self, name: Option<&str>) -> Result<Vec<crate::api::Job>, Error> {
+        let req = JobsListRequest {};
+        let mut jobs: Vec<crate::api::Job> = match self.rpc("job.list".to_owned(), Some(&req)).await
+        {
+            Ok(r) => r,
+            Err(Error::RpcError(code, msg)) => {
+                return Err(map_rpc_error("job.list", code, msg, None));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(name) = name {
+            let needle = name.to_lowercase();
+            jobs.retain(|j| j.job_name.to_lowercase().contains(&needle));
+            jobs.sort_by(|a, b| a.job_name.cmp(&b.job_name));
+        }
+        Ok(jobs)
     }
 
     /// Retrieve the task information and status.
@@ -4219,8 +5425,18 @@ impl Client {
     /// Sends a multipart post request to the server.  This is used by the
     /// upload and download APIs which do not use JSON-RPC but instead transfer
     /// files using multipart/form-data.
+    ///
+    /// The result field is deserialized as `serde_json::Value` rather than
+    /// `String` because different server endpoints return different shapes —
+    /// `val.data.upload` returns a plain string while `task.data.upload`
+    /// returns an object `{"message":…,"path":…,"size":…}`.  All current
+    /// callers discard the return value so this is backwards-compatible.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, form)))]
-    pub async fn post_multipart(&self, method: &str, form: Form) -> Result<String, Error> {
+    pub async fn post_multipart(
+        &self,
+        method: &str,
+        form: Form,
+    ) -> Result<serde_json::Value, Error> {
         let upload_timeout_secs = std::env::var("EDGEFIRST_UPLOAD_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -4246,7 +5462,7 @@ impl Client {
                 );
             }
 
-            let response: RpcResponse<String> = match serde_json::from_slice(&body) {
+            let response: RpcResponse<serde_json::Value> = match serde_json::from_slice(&body) {
                 Ok(response) => response,
                 Err(err) => {
                     error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
@@ -4262,9 +5478,139 @@ impl Client {
                 Err(Error::InvalidResponse)
             }
         } else {
+            // HTTP-level failure on the multipart upload. Map 413 to the
+            // typed `PayloadTooLarge` variant so callers see the same error
+            // type from both single-file rpc_download paths and multipart
+            // upload paths; everything else falls through to HttpError.
+            let status = resp.status();
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
             let err = resp.error_for_status_ref().unwrap_err();
             Err(Error::HttpError(err))
         }
+    }
+
+    /// Internal helper: POST a JSON-RPC request and stream the binary response
+    /// to `output_path`. The response is assumed to be raw binary (not a JSON
+    /// envelope). Use for endpoints that return file contents directly.
+    ///
+    /// On HTTP non-success, the response body is read as text and surfaced
+    /// via `Error::RpcError(status_code, body)`.
+    pub(crate) async fn rpc_download<P: Serialize>(
+        &self,
+        method: &str,
+        params: &P,
+        output_path: &std::path::Path,
+        progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+    ) -> Result<(), Error> {
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": method,
+            "params": params,
+        });
+
+        let url = format!("{}/api", self.url);
+        let resp = self
+            .bulk_http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.token().await))
+            .json(&envelope)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            if status.as_u16() == 413 {
+                return Err(Error::PayloadTooLarge {
+                    method: method.to_string(),
+                    size_hint: None,
+                });
+            }
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::RpcError(status.as_u16() as i32, body));
+        }
+
+        // HTTP 200 with Content-Type: application/json can mean two things:
+        //   (a) a JSON-RPC error envelope when the server failed mid-way
+        //       (e.g. {"jsonrpc":"2.0","error":{"code":N,"message":"..."}}),
+        //   (b) a legitimate JSON file payload — validation traces, chart
+        //       bodies, metrics, etc., are typically served with this MIME.
+        //
+        // Disambiguate structurally: a JSON-RPC 2.0 envelope is required to
+        // carry a `jsonrpc` member, and an *error* envelope further requires
+        // an `error.code` integer (per RFC 8259 + JSON-RPC 2.0 §5). Only
+        // decode the body as an error if both markers are present. This is
+        // strict enough to leave legitimate JSON artifacts that happen to
+        // contain a free-form `error` field (metrics, diagnostics, log
+        // dumps) untouched, while still catching every real server
+        // failure.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        if content_type.contains("application/json") {
+            let body = resp.bytes().await?;
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body)
+                && is_jsonrpc_error_envelope(&val)
+                && let Some(err_obj) = val.get("error")
+            {
+                let code = err_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
+                let message = err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string();
+                return Err(Error::RpcError(code, message));
+            }
+            // Not an error envelope — body is a JSON file. Write it to disk
+            // and emit a single completion progress event so callers (e.g.,
+            // Python download_data progress callbacks) see the download
+            // finish.
+            //
+            // `Path::parent` returns `Some("")` for a bare filename like
+            // "metrics.json"; `create_dir_all("")` errors out with
+            // `NotFound`, so only create the parent when it actually names
+            // a directory.
+            if let Some(parent) = output_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let mut file = tokio::fs::File::create(output_path).await?;
+            file.write_all(&body).await?;
+            file.flush().await?;
+            if let Some(tx) = progress {
+                let total = body.len();
+                // Use the awaited send for the final event so completion
+                // handlers are never silently dropped.
+                let _ = tx
+                    .send(Progress {
+                        current: total,
+                        total,
+                        status: None,
+                    })
+                    .await;
+            }
+            return Ok(());
+        }
+
+        // Same empty-parent guard for the streaming download path: passing
+        // a bare filename like "metrics.json" must write to the current
+        // directory rather than failing on `create_dir_all("")`.
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        stream_response_to_file(resp, output_path, progress).await
     }
 
     /// Send a JSON-RPC request to the server.  The method is the name of the
@@ -5108,6 +6454,63 @@ async fn upload_part_streaming(
 ///
 /// Includes explicit retry logic with exponential backoff for transient
 /// failures.
+/// Classify a reqwest transport error (one where no HTTP response was received)
+/// as a transient failure worth retrying.
+///
+/// Presigned-URL uploads buffer the body in memory and a PUT to the same object
+/// key is idempotent, so replaying any transport-level failure is safe. Besides
+/// timeouts and connect failures this covers request/body send errors such as
+/// hyper's `IncompleteMessage` (a peer closing a keep-alive connection mid-send)
+/// — transients that pipelined, high-concurrency uploads provoke far more often
+/// than serial ones, and which the previous `is_timeout() || is_connect()` gate
+/// missed (aborting the whole upload on a single blip).
+fn is_retryable_upload_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
+}
+
+/// Reliable, `Instant`-based upload timing accumulators (profiling builds only).
+///
+/// Async `tracing` spans cannot measure per-await latency or task concurrency
+/// under a multi-threaded runtime — a future's span fragments across worker
+/// threads — so these atomics accumulate real measured durations and byte counts
+/// for a trustworthy phase breakdown. Durations are summed across concurrent
+/// batches, so totals can exceed wall-clock; `(rpc + upload) / wall` gives the
+/// effective parallelism, and `bytes / wall` the effective upload bandwidth.
+#[cfg(feature = "profiling")]
+pub mod upload_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static RPC_NANOS: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_NANOS: AtomicU64 = AtomicU64::new(0);
+    static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn add_rpc_nanos(n: u64) {
+        RPC_NANOS.fetch_add(n, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_nanos(n: u64) {
+        UPLOAD_NANOS.fetch_add(n, Ordering::Relaxed);
+    }
+    pub(crate) fn add_upload_bytes(n: u64) {
+        UPLOAD_BYTES.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Zero all accumulators. Call once before starting an upload.
+    pub fn reset() {
+        RPC_NANOS.store(0, Ordering::Relaxed);
+        UPLOAD_NANOS.store(0, Ordering::Relaxed);
+        UPLOAD_BYTES.store(0, Ordering::Relaxed);
+    }
+
+    /// Snapshot of `(rpc_nanos, upload_nanos, upload_bytes)` accumulated so far.
+    pub fn snapshot() -> (u64, u64, u64) {
+        (
+            RPC_NANOS.load(Ordering::Relaxed),
+            UPLOAD_NANOS.load(Ordering::Relaxed),
+            UPLOAD_BYTES.load(Ordering::Relaxed),
+        )
+    }
+}
+
 async fn upload_file_to_presigned_url(
     http: reqwest::Client,
     url: &str,
@@ -5164,6 +6567,8 @@ async fn upload_file_to_presigned_url(
                             filename, file_size
                         );
                     }
+                    #[cfg(feature = "profiling")]
+                    upload_stats::add_upload_bytes(file_size as u64);
                     return Ok(());
                 }
 
@@ -5201,20 +6606,12 @@ async fn upload_file_to_presigned_url(
                 )));
             }
             Err(e) => {
-                // Transport error (timeout, connection failure, etc.)
-                let is_timeout = e.is_timeout();
-                let is_connect = e.is_connect();
-
-                if (is_timeout || is_connect) && attempt < max_retries {
-                    warn!(
-                        "Upload '{}' transport error (retrying): {}",
-                        filename,
-                        if is_timeout {
-                            "timeout"
-                        } else {
-                            "connection failed"
-                        }
-                    );
+                // Transport error: no HTTP response was received. The body is
+                // buffered in memory and the PUT is idempotent, so any transient
+                // transport failure is safe to replay (see
+                // `is_retryable_upload_error`).
+                if is_retryable_upload_error(&e) && attempt < max_retries {
+                    warn!("Upload '{}' transport error (retrying): {}", filename, e);
                     last_error = Some(Error::HttpError(e));
                     continue;
                 }
@@ -5297,6 +6694,8 @@ async fn upload_bytes_to_presigned_url(
                             filename, file_size
                         );
                     }
+                    #[cfg(feature = "profiling")]
+                    upload_stats::add_upload_bytes(file_size as u64);
                     return Ok(());
                 }
 
@@ -5334,20 +6733,12 @@ async fn upload_bytes_to_presigned_url(
                 )));
             }
             Err(e) => {
-                // Transport error (timeout, connection failure, etc.)
-                let is_timeout = e.is_timeout();
-                let is_connect = e.is_connect();
-
-                if (is_timeout || is_connect) && attempt < max_retries {
-                    warn!(
-                        "Upload '{}' transport error (retrying): {}",
-                        filename,
-                        if is_timeout {
-                            "timeout"
-                        } else {
-                            "connection failed"
-                        }
-                    );
+                // Transport error: no HTTP response was received. The body is
+                // buffered in memory and the PUT is idempotent, so any transient
+                // transport failure is safe to replay (see
+                // `is_retryable_upload_error`).
+                if is_retryable_upload_error(&e) && attempt < max_retries {
+                    warn!("Upload '{}' transport error (retrying): {}", filename, e);
                     last_error = Some(Error::HttpError(e));
                     continue;
                 }
@@ -5432,6 +6823,44 @@ mod tests {
         ];
         let result = filter_and_sort_by_name(items, "Test", |s| s.as_str());
         assert_eq!(result, vec!["TestA", "TestB", "TestC"]);
+    }
+
+    #[test]
+    fn test_collect_labels_from_samples() {
+        let mut sample = Sample::new();
+        let mut ann = Annotation::new();
+        ann.set_label(Some("ace".to_string()));
+        ann.set_label_index(Some(12));
+        sample.annotations.push(ann);
+        let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
+        assert_eq!(names, vec!["ace".to_string()]);
+        assert_eq!(indices, vec![Some(12)]);
+    }
+
+    #[test]
+    fn test_collect_labels_from_samples_inconsistent_name() {
+        let mut s1 = Sample::new();
+        let mut a1 = Annotation::new();
+        a1.set_label(Some("ace".to_string()));
+        a1.set_label_index(Some(12));
+        s1.annotations.push(a1);
+
+        let mut s2 = Sample::new();
+        let mut a2 = Annotation::new();
+        a2.set_label(Some("ace".to_string()));
+        a2.set_label_index(Some(2));
+        s2.annotations.push(a2);
+
+        let err = Client::collect_labels_from_samples(&[s1, s2]).unwrap_err();
+        assert!(err.to_string().contains("inconsistent label_index"));
+    }
+
+    #[test]
+    fn test_validate_label_batch_duplicate_index() {
+        let names = vec!["ace".to_string(), "king".to_string()];
+        let indices = [Some(12_u64), Some(12)];
+        let err = Client::validate_label_batch(&names, Some(&indices)).unwrap_err();
+        assert!(err.to_string().contains("duplicate label_index"));
     }
 
     #[test]
@@ -5683,5 +7112,806 @@ mod tests {
 
         // Verify storage was cleared
         assert_eq!(storage.load().unwrap(), None);
+    }
+
+    #[test]
+    fn test_with_server_clears_storage_even_for_full_url() {
+        // Regression: `with_server` used to short-circuit to `with_url`
+        // when given a full URL, which preserved the bearer token. The
+        // contract for `with_server` is that switching servers means
+        // the token from the old server is no longer trusted.
+        use crate::storage::MemoryTokenStorage;
+
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store("token-from-old-server").unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+        assert_eq!(
+            storage.load().unwrap(),
+            Some("token-from-old-server".to_string())
+        );
+
+        // Switch to a self-hosted Studio (full URL). Storage must be
+        // cleared, and the new client must have a blank in-memory token.
+        let new_client = client
+            .with_server("https://studio.example.com")
+            .expect("https full URL through with_server");
+        assert_eq!(storage.load().unwrap(), None);
+        assert_eq!(new_client.url(), "https://studio.example.com");
+
+        // The new client should not carry the old token in memory either.
+        let in_mem = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { new_client.token.read().await.clone() });
+        assert!(in_mem.is_empty(), "expected blank token, got {in_mem:?}");
+    }
+
+    #[test]
+    fn test_with_server_rejects_insecure_full_url() {
+        // `with_server` validates full URLs through `with_url`, so the
+        // HTTPS rule applies uniformly. Plain http to a public host
+        // must be rejected — the bearer token would otherwise leak in
+        // plaintext when the caller next authenticates.
+        let client = Client::new().unwrap();
+        let err = client.with_server("http://studio.example.com").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+
+    // ===== with_url HTTPS enforcement =====
+    //
+    // The bearer token rides in the Authorization header, so plain
+    // http:// to a public host would leak it in the clear. The function
+    // must reject those URLs, but still let wiremock / local-dev URLs
+    // through (loopback addresses, "localhost", "*.localhost").
+
+    #[test]
+    fn with_url_accepts_https_public_host() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("https://studio.example.com")
+            .expect("https public host must be accepted");
+        assert_eq!(out.url(), "https://studio.example.com");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv4() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://127.0.0.1:8080")
+            .expect("http://127.0.0.1 must be accepted (loopback)");
+        assert_eq!(out.url(), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn with_url_accepts_http_loopback_ipv6() {
+        let client = Client::new().unwrap();
+        let out = client
+            .with_url("http://[::1]:8080")
+            .expect("http://[::1] must be accepted (loopback)");
+        assert!(out.url().starts_with("http://[::1]"));
+    }
+
+    #[test]
+    fn with_url_accepts_http_localhost() {
+        let client = Client::new().unwrap();
+        client
+            .with_url("http://localhost:8080")
+            .expect("http://localhost must be accepted");
+        client
+            .with_url("http://LOCALHOST")
+            .expect("http://LOCALHOST must be accepted (case-insensitive)");
+        client
+            .with_url("http://wiremock.localhost")
+            .expect("http://*.localhost must be accepted");
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_host() {
+        let client = Client::new().unwrap();
+        let err = client.with_url("http://studio.example.com").unwrap_err();
+        match err {
+            Error::InsecureUrl(u) => assert_eq!(u, "http://studio.example.com"),
+            other => panic!("expected InsecureUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_url_rejects_http_public_ip() {
+        let client = Client::new().unwrap();
+        // 8.8.8.8 is not loopback; must be rejected.
+        let err = client.with_url("http://8.8.8.8").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+
+    #[test]
+    fn with_url_rejects_non_http_scheme() {
+        let client = Client::new().unwrap();
+        // file:// would otherwise parse, but it's not a transport we
+        // can use for RPC and we don't want to silently accept it.
+        let err = client.with_url("file:///etc/passwd").unwrap_err();
+        assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests_map_rpc_error {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn maps_not_found_with_task_id_to_typed_variant() {
+        // Server code 101 + "not found" message + task_id present → TaskNotFound
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "task not found".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_cannot_find_phrasing_to_typed_variant() {
+        // The DVE server emits "Cannot find task..." — the original "not found"
+        // substring match missed this and the caller saw a generic RpcError.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "Cannot find task with id 6789".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "'Cannot find task' should map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn maps_does_not_exist_phrasing_to_typed_variant() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.chart.get",
+            101,
+            "task does not exist".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn maps_code_101_with_unknown_phrasing_when_task_id_supplied() {
+        // Server contract for code 101 is "resource not found"; even if the
+        // phrasing is novel, the typed variant should be returned so callers
+        // can write a stable `match`.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "completely novel server message".to_string(),
+            Some(task_id),
+        );
+        assert!(
+            matches!(err, Error::TaskNotFound(_)),
+            "code 101 + task_id should always map to TaskNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn maps_permission_codes_to_typed_variant() {
+        for code in [401, 403] {
+            let err = map_rpc_error("task.chart.add", code, "denied".to_string(), None);
+            assert!(
+                matches!(err, Error::PermissionDenied(_)),
+                "code {} did not map",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn permission_denied_records_method_for_diagnostics() {
+        let err = map_rpc_error("task.data.upload", 403, "forbidden".to_string(), None);
+        match err {
+            Error::PermissionDenied(method) => assert_eq!(method, "task.data.upload"),
+            other => panic!("expected PermissionDenied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn maps_payload_too_large_to_typed_variant() {
+        let err = map_rpc_error("val.data.upload", 413, "request too large".into(), None);
+        match err {
+            Error::PayloadTooLarge { method, size_hint } => {
+                assert_eq!(method, "val.data.upload");
+                assert!(size_hint.is_none());
+            }
+            other => panic!("expected PayloadTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn falls_through_to_generic_rpc_error_for_unknown_codes() {
+        let err = map_rpc_error("task.data.list", -99999, "weird".to_string(), None);
+        match err {
+            Error::RpcError(code, msg) => {
+                assert_eq!(code, -99999);
+                assert_eq!(msg, "weird");
+            }
+            other => panic!("expected RpcError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_found_without_task_id_falls_through() {
+        // Code 101 without task_id → generic RpcError (no task to name)
+        let err = map_rpc_error("task.data.list", 101, "not found".to_string(), None);
+        assert!(matches!(err, Error::RpcError(101, _)));
+    }
+
+    #[test]
+    fn code_101_with_task_id_always_maps_even_with_unrelated_message() {
+        // Previously the test asserted fall-through for non-"not found"
+        // messages, but the contract for code 101 is "resource not found"
+        // (see api.go), so when a task_id is present the typed variant is
+        // returned unconditionally to give callers a stable error type.
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let err = map_rpc_error(
+            "task.data.list",
+            101,
+            "permission denied".to_string(),
+            Some(task_id),
+        );
+        assert!(matches!(err, Error::TaskNotFound(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests_jobs {
+    use super::*;
+
+    #[test]
+    fn jobs_list_request_serializes_to_empty_object() {
+        let req = JobsListRequest {};
+        assert_eq!(serde_json::to_value(&req).unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn job_deserializes_from_bk_batch_shape() {
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "smoke-test",
+            "job_id": "aws-batch-abc",
+            "state": "RUNNING",
+            "launch": "2026-05-14T15:00:00Z",
+            "task_id": 6789,
+            "docker_task": {},
+            "extra_field": "ignored"
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.code, "edgefirst-validator:2.9.5");
+        assert_eq!(job.state, "RUNNING");
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.task_id().value(), 6789);
+    }
+}
+
+#[cfg(test)]
+mod tests_job_run {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn job_run_request_serializes_with_expected_fields() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "post-profile-run".into(),
+            env: HashMap::from([("LOG_LEVEL".into(), "info".into())]),
+            data: HashMap::from([("validation_session_id".into(), Parameter::Integer(2707))]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["job_name"], "post-profile-run");
+        assert_eq!(json["env"]["LOG_LEVEL"], "info");
+        assert_eq!(json["data"]["validation_session_id"], 2707);
+    }
+
+    #[test]
+    fn job_run_response_deserializes_as_job() {
+        // job.run now returns the full BK_BATCH record; deserialize as Job.
+        let json = r#"{
+            "code": "edgefirst-validator:2.9.5",
+            "title": "EdgeFirst Validator",
+            "job_name": "post-profile-run",
+            "job_id": "aws-batch-job-xxx",
+            "state": "SUBMITTED",
+            "task_id": 6789
+        }"#;
+        let job: crate::api::Job = serde_json::from_str(json).unwrap();
+        assert_eq!(job.task_id, 6789);
+        assert_eq!(job.job_id, "aws-batch-job-xxx");
+        assert_eq!(job.state, "SUBMITTED");
+    }
+}
+
+#[cfg(test)]
+mod tests_job_stop {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn job_stop_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = JobStopRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_list_request {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_list_request_serializes_with_task_id() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_download {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_data_download_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "predictions".into(),
+            file: "predictions.parquet".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["folder"], "predictions");
+        assert_eq!(json["file"], "predictions.parquet");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_add {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn task_chart_add_request_serializes_with_correct_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: None,
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+        assert_eq!(json["data"]["type"], "line");
+        assert!(json["params"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_list {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_list_request_omits_empty_group_name() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartListRequest {
+            task_id: task_id.value(),
+            group_name: String::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_chart_get {
+    use super::*;
+    use crate::api::TaskID;
+
+    #[test]
+    fn task_chart_get_request_serializes_with_all_fields() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskChartGetRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["task_id"], task_id.value());
+        assert_eq!(json["group_name"], "metrics");
+        assert_eq!(json["chart_name"], "loss");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_download {
+    use super::*;
+
+    #[test]
+    fn val_data_download_request_serializes() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "trace/imx95.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["session_id"], 2707);
+        assert_eq!(json["filename"], "trace/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_list {
+    use super::*;
+
+    #[test]
+    fn val_data_list_request_serializes() {
+        let req = ValDataListRequest { session_id: 2707 };
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::json!({"session_id": 2707})
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_jsonrpc_envelope_detection {
+    use super::*;
+
+    #[test]
+    fn detects_real_envelope() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "error": { "code": 101, "message": "Cannot find task" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_plain_json_artifact_with_error_field() {
+        // A diagnostics file with a free-form `error` object — must not be
+        // misread as an RPC envelope just because the key collides.
+        let v = serde_json::json!({
+            "metric": "loss",
+            "value": 0.42,
+            "error": { "code": "ENV_NOT_FOUND", "message": "missing var" },
+        });
+        assert!(
+            !is_jsonrpc_error_envelope(&v),
+            "missing jsonrpc sentinel should mean 'not an envelope'"
+        );
+    }
+
+    #[test]
+    fn rejects_envelope_missing_jsonrpc_sentinel() {
+        // Bare `error` block without the protocol-version marker.
+        let v = serde_json::json!({
+            "id": 0,
+            "error": { "code": 101, "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_object_error_field() {
+        // A diagnostics file shaped like JSON-RPC accidentally but using
+        // a string for `error`.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": "something went wrong",
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_without_error_code() {
+        // Real envelopes always carry an integer error.code; missing one
+        // is suspicious enough to refuse the envelope classification.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "message": "no code" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_envelope_with_non_numeric_error_code() {
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": "ENOENT", "message": "x" },
+        });
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn rejects_non_object_root() {
+        // A JSON file whose root is an array — common for metrics dumps —
+        // must not be misread.
+        let v = serde_json::json!([1, 2, 3]);
+        assert!(!is_jsonrpc_error_envelope(&v));
+    }
+
+    #[test]
+    fn accepts_unsigned_error_code() {
+        // The server's code is technically i32 but JSON has no signed/
+        // unsigned distinction — accept both shapes.
+        let v = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": 101u32, "message": "x" },
+        });
+        assert!(is_jsonrpc_error_envelope(&v));
+    }
+}
+
+#[cfg(test)]
+mod tests_validate_chart_args {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_group() {
+        let err = validate_chart_args("", "name").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let err = validate_chart_args("group", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn rejects_both_empty() {
+        let err = validate_chart_args("", "").unwrap_err();
+        assert!(matches!(err, Error::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn accepts_valid_args() {
+        assert!(validate_chart_args("group", "name").is_ok());
+    }
+
+    #[test]
+    fn accepts_unicode_args() {
+        // Unicode names are allowed; only emptiness is rejected.
+        assert!(validate_chart_args("metrics-集合", "损失").is_ok());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional offline tests for request shapes + helpers added in DE-2565.
+//
+// These focus on the wire-shape and helper logic that does not require a
+// live Studio server — they significantly boost coverage of client.rs.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_job_run_request_shape {
+    use super::*;
+    use crate::api::Parameter;
+    use std::collections::HashMap;
+
+    #[test]
+    fn empty_env_and_data_serialize_as_empty_objects() {
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "smoke".into(),
+            env: HashMap::new(),
+            data: HashMap::new(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["name"], "edgefirst-validator");
+        assert_eq!(json["env"], serde_json::json!({}));
+        assert_eq!(json["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn data_passes_through_parameter_object_payloads() {
+        // Confirms the Parameter wrapper survives JSON serialization round-trip
+        // for the kind of structured chart payload that exercises Parameter
+        // variants (Real, Integer, String, Array, Object, Boolean).
+        let req = JobRunRequest {
+            name: "edgefirst-validator".into(),
+            job_name: "feat".into(),
+            env: HashMap::new(),
+            data: HashMap::from([
+                ("flag".into(), Parameter::Boolean(true)),
+                ("epochs".into(), Parameter::Integer(50)),
+                ("lr".into(), Parameter::Real(1e-3)),
+                ("name".into(), Parameter::String("hello".into())),
+            ]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["data"]["flag"], true);
+        assert_eq!(json["data"]["epochs"], 50);
+        assert!(json["data"]["lr"].as_f64().unwrap() > 0.0);
+        assert_eq!(json["data"]["name"], "hello");
+    }
+}
+
+#[cfg(test)]
+mod tests_task_data_chart_request_shape {
+    use super::*;
+    use crate::api::{Parameter, TaskID};
+
+    #[test]
+    fn chart_add_request_with_params_serializes_object() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let params = Parameter::Object(std::collections::HashMap::from([(
+            "y_axis".into(),
+            Parameter::String("log".into()),
+        )]));
+        let data = Parameter::Object(std::collections::HashMap::from([(
+            "type".into(),
+            Parameter::String("line".into()),
+        )]));
+        let req = TaskChartAddRequest {
+            task_id: task_id.value(),
+            group_name: "metrics".into(),
+            chart_name: "loss".into(),
+            params: Some(params),
+            data,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["params"]["y_axis"], "log");
+    }
+
+    #[test]
+    fn task_data_list_request_round_trips() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataListRequest {
+            task_id: task_id.value(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        // Field order is stable for a single-field struct, so an exact match
+        // is meaningful here.
+        assert_eq!(json, format!("{{\"task_id\":{}}}", task_id.value()));
+    }
+
+    #[test]
+    fn task_data_download_request_treats_folder_and_file_independently() {
+        let task_id = TaskID::try_from("task-1a2b").unwrap();
+        let req = TaskDataDownloadRequest {
+            task_id: task_id.value(),
+            folder: "validation/run-01".into(),
+            file: "metrics.json".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        // Server takes folder + file separately (not a single combined path)
+        // so callers don't have to escape slashes themselves.
+        assert_eq!(json["folder"], "validation/run-01");
+        assert_eq!(json["file"], "metrics.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_val_data_request_shape {
+    use super::*;
+
+    #[test]
+    fn val_data_list_round_trips() {
+        let req = ValDataListRequest { session_id: 2707 };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+    }
+
+    #[test]
+    fn val_data_download_round_trips_with_nested_path() {
+        let req = ValDataDownloadRequest {
+            session_id: 2707,
+            filename: "subfolder/imx95.json".into(),
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back["session_id"], 2707);
+        assert_eq!(back["filename"], "subfolder/imx95.json");
+    }
+}
+
+#[cfg(test)]
+mod tests_progress_struct {
+    use super::*;
+
+    #[test]
+    fn progress_can_be_constructed_with_zero_total() {
+        // Servers sometimes omit Content-Length; progress events should still
+        // be representable. This guards the public field-level API.
+        let p = Progress {
+            current: 0,
+            total: 0,
+            status: None,
+        };
+        assert_eq!(p.current, 0);
+        assert_eq!(p.total, 0);
+        assert!(p.status.is_none());
+    }
+
+    #[test]
+    fn progress_tracks_current_independently_of_total() {
+        let p = Progress {
+            current: 123,
+            total: 456,
+            status: Some("Downloading".into()),
+        };
+        assert_eq!(p.current, 123);
+        assert_eq!(p.total, 456);
+        assert_eq!(p.status.as_deref(), Some("Downloading"));
+    }
+
+    #[test]
+    fn progress_can_be_cloned() {
+        // Progress is consumed by progress sinks which may need to retain a
+        // copy independently of the channel — derive(Clone) must hold.
+        let p = Progress {
+            current: 10,
+            total: 20,
+            status: Some("phase".into()),
+        };
+        let q = p.clone();
+        assert_eq!(q.current, p.current);
+        assert_eq!(q.total, p.total);
+        assert_eq!(q.status, p.status);
+    }
+}
+
+#[cfg(test)]
+mod tests_bare_filename_parent {
+    // Documents the empty-parent guard added for `rpc_download` so that
+    // callers passing a bare filename like "metrics.json" download to the
+    // current directory instead of erroring on `create_dir_all("")`.
+    use std::path::Path;
+
+    #[test]
+    fn bare_filename_parent_is_empty_path() {
+        // This is the invariant our guard depends on. If a future Rust
+        // release ever changed `Path::parent` for bare filenames, the guard
+        // would need revisiting.
+        let p = Path::new("metrics.json");
+        let parent = p.parent().expect("bare filename always has Some parent");
+        assert!(
+            parent.as_os_str().is_empty(),
+            "Path::parent for bare filename should be empty, got: {parent:?}"
+        );
+    }
+
+    #[test]
+    fn path_with_directory_has_non_empty_parent() {
+        // The companion case: when the path includes a directory, the
+        // parent is non-empty and `create_dir_all` should be invoked.
+        let p = Path::new("dir/metrics.json");
+        let parent = p.parent().expect("path-with-dir always has Some parent");
+        assert!(!parent.as_os_str().is_empty());
+        assert_eq!(parent, Path::new("dir"));
     }
 }

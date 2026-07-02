@@ -97,6 +97,15 @@ pub enum ClientError {
     /// Internal error or unexpected condition.
     #[error("Internal error: {message}")]
     InternalError { message: String },
+    /// The addressed task does not exist on the server.
+    #[error("Task not found: {task_id}")]
+    TaskNotFound { task_id: String },
+    /// The operation was rejected for authorization reasons.
+    #[error("Permission denied: {message}")]
+    PermissionDenied { message: String },
+    /// The server rejected the payload as too large.
+    #[error("Payload too large: {message}")]
+    PayloadTooLarge { message: String },
 }
 
 impl From<core::Error> for ClientError {
@@ -135,6 +144,16 @@ impl From<core::Error> for ClientError {
                     }
                 }
             }
+            core::Error::TaskNotFound(id) => ClientError::TaskNotFound {
+                task_id: id.to_string(),
+            },
+            core::Error::PermissionDenied(op) => ClientError::PermissionDenied { message: op },
+            core::Error::PayloadTooLarge { method, size_hint } => ClientError::PayloadTooLarge {
+                message: match size_hint {
+                    Some(s) => format!("{} ({} bytes)", method, s),
+                    None => method,
+                },
+            },
             _ => ClientError::InternalError {
                 message: err.to_string(),
             },
@@ -196,6 +215,54 @@ impl core::TokenStorage for FfiTokenStorageBridge {
             StorageError::ClearError { message } => core::StorageError::ClearError(message),
         })
     }
+}
+
+// =============================================================================
+// Progress Callback Interface
+// =============================================================================
+
+/// Callback interface for byte-level transfer progress.
+///
+/// Implement this protocol (Swift) or interface (Kotlin) and pass it to
+/// `upload_data` / `download_data` to receive incremental progress events
+/// during file transfers.
+///
+/// # Parameters
+///
+/// - `current` – bytes transferred so far.
+/// - `total` – total bytes to transfer (may be 0 if the size is unknown).
+/// - `status` – optional phase label; when this value changes the operation
+///   has entered a new phase and the display should be reset.
+///
+/// # Thread safety
+///
+/// Callbacks are invoked from a background Tokio task.  The implementation
+/// must be `Send + Sync`.
+#[uniffi::export(callback_interface)]
+pub trait ProgressCallback: Send + Sync {
+    /// Called each time the number of transferred bytes changes.
+    fn on_progress(&self, current: u64, total: u64, status: Option<String>);
+}
+
+/// Spawn a Tokio task that forwards `core::Progress` events from an mpsc
+/// channel to a foreign `ProgressCallback`.
+///
+/// Returns the `Sender` end of the channel; pass it to the Rust core's
+/// `progress` parameter.  The forwarding task terminates automatically when
+/// the `Sender` is dropped (i.e. when the core operation completes).
+fn spawn_progress_bridge(
+    rt: &tokio::runtime::Runtime,
+    callback: Box<dyn ProgressCallback>,
+) -> tokio::sync::mpsc::Sender<core::Progress> {
+    // Convert to Arc so the callback can be moved into the async task.
+    let callback: Arc<dyn ProgressCallback> = Arc::from(callback);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<core::Progress>(8);
+    rt.spawn(async move {
+        while let Some(p) = rx.recv().await {
+            callback.on_progress(p.current as u64, p.total as u64, p.status);
+        }
+    });
+    tx
 }
 
 // =============================================================================
@@ -434,6 +501,17 @@ impl From<SequenceId> for core::SequenceId {
     fn from(id: SequenceId) -> Self {
         core::SequenceId::from(id.value)
     }
+}
+
+/// A dimension update for a single sample image.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SampleDimensionUpdate {
+    /// Sample ID to update.
+    pub sample_id: SampleId,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
 }
 
 // =============================================================================
@@ -896,27 +974,451 @@ impl From<core::TrainingSession> for TrainingSession {
     }
 }
 
-/// A validation session in an experiment.
+/// Catalog entry describing an available trainer type.
+///
+/// Returned by `Client::trainer_schemas`. The `schema_type` value is
+/// what gets passed to `Client::trainer_schema` and to
+/// `StartTrainingRequest::trainer_type`.
 #[derive(uniffi::Record, Clone, Debug)]
-pub struct ValidationSession {
-    pub id: ValidationSessionId,
-    pub experiment_id: ExperimentId,
-    pub training_session_id: TrainingSessionId,
-    pub dataset_id: DatasetId,
-    pub annotation_set_id: AnnotationSetId,
-    pub description: String,
+pub struct TrainerSchemaInfo {
+    pub name: String,
+    pub label: String,
+    pub schema_type: String,
 }
 
-impl From<core::ValidationSession> for ValidationSession {
-    fn from(v: core::ValidationSession) -> Self {
+impl From<core::TrainerSchemaInfo> for TrainerSchemaInfo {
+    fn from(info: core::TrainerSchemaInfo) -> Self {
         Self {
-            id: v.id().into(),
-            experiment_id: v.experiment_id().into(),
-            training_session_id: v.training_session_id().into(),
-            dataset_id: v.dataset_id().into(),
-            annotation_set_id: v.annotation_set_id().into(),
-            description: v.description().to_string(),
+            name: info.name,
+            label: info.label,
+            schema_type: info.schema_type,
         }
+    }
+}
+
+/// The kind of input a `SchemaField` describes.
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum SchemaFieldType {
+    Group,
+    Slider,
+    Select,
+    Bool,
+    Int,
+    Float,
+    Text,
+    Date,
+    Project,
+    Dataset,
+    Trainer,
+    Upload,
+    /// Server-side metadata entry (machine image, entrypoint); not a
+    /// user-facing parameter.
+    Info,
+    /// Any type this client version does not recognize.
+    Unknown,
+}
+
+impl From<core::SchemaFieldType> for SchemaFieldType {
+    fn from(t: core::SchemaFieldType) -> Self {
+        match t {
+            core::SchemaFieldType::Group => SchemaFieldType::Group,
+            core::SchemaFieldType::Slider => SchemaFieldType::Slider,
+            core::SchemaFieldType::Select => SchemaFieldType::Select,
+            core::SchemaFieldType::Bool => SchemaFieldType::Bool,
+            core::SchemaFieldType::Int => SchemaFieldType::Int,
+            core::SchemaFieldType::Float => SchemaFieldType::Float,
+            core::SchemaFieldType::Text => SchemaFieldType::Text,
+            core::SchemaFieldType::Date => SchemaFieldType::Date,
+            core::SchemaFieldType::Project => SchemaFieldType::Project,
+            core::SchemaFieldType::Dataset => SchemaFieldType::Dataset,
+            core::SchemaFieldType::Trainer => SchemaFieldType::Trainer,
+            core::SchemaFieldType::Upload => SchemaFieldType::Upload,
+            core::SchemaFieldType::Info => SchemaFieldType::Info,
+            core::SchemaFieldType::Unknown => SchemaFieldType::Unknown,
+        }
+    }
+}
+
+/// One selectable option of a `select` schema field.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SchemaOption {
+    /// Option value; may be any JSON scalar (string, number, …).
+    pub name: Option<Parameter>,
+    pub label: Option<String>,
+    /// Nested fields revealed when this option is selected.
+    pub children: Vec<SchemaField>,
+}
+
+impl From<core::SchemaOption> for SchemaOption {
+    fn from(o: core::SchemaOption) -> Self {
+        Self {
+            name: o.name.map(Parameter::from),
+            label: o.label,
+            children: o.children.into_iter().map(SchemaField::from).collect(),
+        }
+    }
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema. Describes one hyperparameter: its name, type, default and
+/// constraints. Nested parameter groups are exposed via `children`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SchemaField {
+    /// Parameter name — the key to use in the launch params map.
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub required: bool,
+    pub default: Option<Parameter>,
+    pub field_type: Option<SchemaFieldType>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub options: Vec<SchemaOption>,
+    pub children: Vec<SchemaField>,
+    pub is_dropdown: bool,
+    pub multi_select: bool,
+    pub is_multi_line: bool,
+    pub hidden: bool,
+    pub numeric_only: bool,
+    pub enable_tags_selection: bool,
+    pub enable_annotation_set_selection: bool,
+    pub values: Option<Vec<Parameter>>,
+}
+
+impl From<core::SchemaField> for SchemaField {
+    fn from(f: core::SchemaField) -> Self {
+        Self {
+            name: f.name,
+            label: f.label,
+            description: f.description,
+            required: f.required,
+            default: f.default.map(Parameter::from),
+            field_type: f.field_type.map(SchemaFieldType::from),
+            min: f.min,
+            max: f.max,
+            step: f.step,
+            options: f.options.into_iter().map(SchemaOption::from).collect(),
+            children: f.children.into_iter().map(SchemaField::from).collect(),
+            is_dropdown: f.is_dropdown,
+            multi_select: f.multi_select,
+            is_multi_line: f.is_multi_line,
+            hidden: f.hidden,
+            numeric_only: f.numeric_only,
+            enable_tags_selection: f.enable_tags_selection,
+            enable_annotation_set_selection: f.enable_annotation_set_selection,
+            values: f
+                .values
+                .map(|v| v.into_iter().map(Parameter::from).collect()),
+        }
+    }
+}
+
+/// A validator parameter schema, as returned by
+/// `Client::validator_schemas`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ValidatorSchema {
+    pub schema_type: String,
+    pub name: String,
+    pub schema: Vec<SchemaField>,
+}
+
+impl From<core::ValidatorSchema> for ValidatorSchema {
+    fn from(s: core::ValidatorSchema) -> Self {
+        Self {
+            schema_type: s.schema_type,
+            name: s.name,
+            schema: s.schema.into_iter().map(SchemaField::from).collect(),
+        }
+    }
+}
+
+/// Request payload for `Client::start_training_session`.
+///
+/// Launches a new training session against a single dataset using
+/// group-based train/validation splits. `tag_name: None` selects the
+/// dataset's latest tag; `train_group` / `val_group: None` use the
+/// dataset's default `train` / `val` split groups.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StartTrainingRequest {
+    pub project_id: ProjectId,
+    pub name: String,
+    pub experiment_id: ExperimentId,
+    pub trainer_type: String,
+    pub dataset_id: DatasetId,
+    pub annotation_set_id: AnnotationSetId,
+    pub tag_name: Option<String>,
+    pub train_group: Option<String>,
+    pub val_group: Option<String>,
+    pub session_name: Option<String>,
+    pub session_description: Option<String>,
+    pub weights_session: Option<TrainingSessionId>,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+}
+
+impl From<StartTrainingRequest> for core::StartTrainingRequest {
+    fn from(req: StartTrainingRequest) -> Self {
+        Self {
+            project_id: req.project_id.into(),
+            name: req.name,
+            experiment_id: req.experiment_id.into(),
+            trainer_type: req.trainer_type,
+            dataset_id: req.dataset_id.into(),
+            annotation_set_id: req.annotation_set_id.into(),
+            tag_name: req.tag_name,
+            train_group: req.train_group,
+            val_group: req.val_group,
+            session_name: req.session_name,
+            session_description: req.session_description,
+            weights_session: req.weights_session.map(Into::into),
+            params: req.params.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            is_local: req.is_local,
+            is_kubernetes: req.is_kubernetes,
+        }
+    }
+}
+
+/// Result of `Client::start_training_session`: the launch task id and
+/// the freshly-created training session id.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct NewTrainingSession {
+    pub task_id: TaskId,
+    pub session_id: Option<TrainingSessionId>,
+}
+
+impl From<core::NewTrainingSession> for NewTrainingSession {
+    fn from(s: core::NewTrainingSession) -> Self {
+        Self {
+            task_id: s.task_id.into(),
+            session_id: s.session_id.map(Into::into),
+        }
+    }
+}
+
+/// Request payload for `Client::start_validation_session`.
+///
+/// Set `is_local: true` for a user-managed session (no cloud instance
+/// is provisioned). One of `dataset_id` + `annotation_set_id` or
+/// `snapshot_id` selects the validation data source.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StartValidationRequest {
+    pub project_id: ProjectId,
+    pub name: String,
+    pub training_session_id: TrainingSessionId,
+    pub model_file: String,
+    pub val_type: String,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+    pub description: Option<String>,
+    pub dataset_id: Option<DatasetId>,
+    pub annotation_set_id: Option<AnnotationSetId>,
+    pub snapshot_id: Option<SnapshotId>,
+}
+
+impl From<StartValidationRequest> for core::StartValidationRequest {
+    fn from(req: StartValidationRequest) -> Self {
+        Self {
+            project_id: req.project_id.into(),
+            name: req.name,
+            training_session_id: req.training_session_id.into(),
+            model_file: req.model_file,
+            val_type: req.val_type,
+            params: req.params.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            is_local: req.is_local,
+            is_kubernetes: req.is_kubernetes,
+            description: req.description,
+            dataset_id: req.dataset_id.map(Into::into),
+            annotation_set_id: req.annotation_set_id.map(Into::into),
+            snapshot_id: req.snapshot_id.map(Into::into),
+        }
+    }
+}
+
+/// Result of `Client::start_validation_session`: the launch task id
+/// and the freshly-created validation session id.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct NewValidationSession {
+    pub task_id: TaskId,
+    pub session_id: Option<ValidationSessionId>,
+}
+
+impl From<core::NewValidationSession> for NewValidationSession {
+    fn from(s: core::NewValidationSession) -> Self {
+        Self {
+            task_id: s.task_id.into(),
+            session_id: s.session_id.map(Into::into),
+        }
+    }
+}
+
+/// A validation session in an experiment.
+///
+/// This is a UniFFI object (handle) that wraps a `core::ValidationSession`
+/// and exposes both field getters and methods for uploading/downloading data.
+#[derive(uniffi::Object)]
+pub struct ValidationSession {
+    inner: core::ValidationSession,
+}
+
+impl ValidationSession {
+    pub(crate) fn new(inner: core::ValidationSession) -> Self {
+        Self { inner }
+    }
+}
+
+#[uniffi::export]
+impl ValidationSession {
+    /// The validation session ID.
+    pub fn id(&self) -> ValidationSessionId {
+        self.inner.id().into()
+    }
+
+    /// The experiment this session belongs to.
+    pub fn experiment_id(&self) -> ExperimentId {
+        self.inner.experiment_id().into()
+    }
+
+    /// The training session this validation is based on.
+    pub fn training_session_id(&self) -> TrainingSessionId {
+        self.inner.training_session_id().into()
+    }
+
+    /// The dataset used for validation.
+    pub fn dataset_id(&self) -> DatasetId {
+        self.inner.dataset_id().into()
+    }
+
+    /// The annotation set used for validation.
+    pub fn annotation_set_id(&self) -> AnnotationSetId {
+        self.inner.annotation_set_id().into()
+    }
+
+    /// Human-readable description of the session.
+    pub fn description(&self) -> String {
+        self.inner.description().to_string()
+    }
+
+    /// Uploads files to this validation session's data folder.
+    ///
+    /// `files` is a list of `FileEntry` records (name + local path).
+    /// `folder` is an optional logical subdirectory.
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the upload.  Pass `None` to suppress progress reporting.
+    pub fn upload_data(
+        &self,
+        client: &Client,
+        files: Vec<FileEntry>,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let files: Vec<(String, std::path::PathBuf)> = files
+            .into_iter()
+            .map(|e| (e.name, std::path::PathBuf::from(e.path)))
+            .collect();
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        Ok(client.runtime.block_on(self.inner.upload_data(
+            &client.inner,
+            &files,
+            folder.as_deref(),
+            tx,
+        ))?)
+    }
+
+    /// Streams a file from this validation session's data folder to `output_path`.
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the download.  Pass `None` to suppress progress reporting.
+    pub fn download_data(
+        &self,
+        client: &Client,
+        filename: String,
+        output_path: String,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let output = std::path::PathBuf::from(output_path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        Ok(client.runtime.block_on(self.inner.download_data(
+            &client.inner,
+            &filename,
+            &output,
+            tx,
+        ))?)
+    }
+
+    /// Lists files attached to this validation session's data folder.
+    ///
+    /// Returns a flat list of relative file paths (slash-separated,
+    /// e.g. `"folder/file.txt"`), sorted lexicographically.
+    pub fn data_list(&self, client: &Client) -> Result<Vec<String>, ClientError> {
+        Ok(client
+            .runtime
+            .block_on(self.inner.data_list(&client.inner))?)
+    }
+}
+
+#[uniffi::export]
+impl ValidationSession {
+    /// Uploads files to this validation session's data folder (async).
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the upload.  Pass `None` to suppress progress reporting.
+    pub async fn upload_data_async(
+        &self,
+        client: &Client,
+        files: Vec<FileEntry>,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let files: Vec<(String, std::path::PathBuf)> = files
+            .into_iter()
+            .map(|e| (e.name, std::path::PathBuf::from(e.path)))
+            .collect();
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        async {
+            Ok(self
+                .inner
+                .upload_data(&client.inner, &files, folder.as_deref(), tx)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Streams a file from this validation session to `output_path` (async).
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the download.  Pass `None` to suppress progress reporting.
+    pub async fn download_data_async(
+        &self,
+        client: &Client,
+        filename: String,
+        output_path: String,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let output = std::path::PathBuf::from(output_path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        async {
+            Ok(self
+                .inner
+                .download_data(&client.inner, &filename, &output, tx)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Lists files attached to this validation session's data folder (async).
+    ///
+    /// Returns a flat list of relative file paths (slash-separated,
+    /// e.g. `"folder/file.txt"`), sorted lexicographically.
+    pub async fn data_list_async(&self, client: &Client) -> Result<Vec<String>, ClientError> {
+        async { Ok(self.inner.data_list(&client.inner).await?) }
+            .compat()
+            .await
     }
 }
 
@@ -947,27 +1449,352 @@ impl From<core::Task> for Task {
 }
 
 /// Detailed task information.
-#[derive(uniffi::Record, Clone, Debug)]
+///
+/// This is a UniFFI object (handle) that wraps a `core::TaskInfo` and exposes
+/// both field getters and methods for data/chart operations on the task.
+#[derive(uniffi::Object)]
 pub struct TaskInfo {
-    pub id: TaskId,
-    pub project_id: Option<ProjectId>,
-    pub description: String,
-    pub workflow: String,
-    pub status: Option<String>,
-    pub created: String,
-    pub completed: String,
+    inner: core::TaskInfo,
 }
 
-impl From<core::TaskInfo> for TaskInfo {
-    fn from(t: core::TaskInfo) -> Self {
-        Self {
-            id: t.id().into(),
-            project_id: t.project_id().map(|id| id.into()),
-            description: t.description().to_string(),
-            workflow: t.workflow().to_string(),
-            status: t.status().clone(),
-            created: t.created().to_rfc3339(),
-            completed: t.completed().to_rfc3339(),
+impl TaskInfo {
+    pub(crate) fn new(inner: core::TaskInfo) -> Self {
+        Self { inner }
+    }
+}
+
+#[uniffi::export]
+impl TaskInfo {
+    /// The task ID.
+    pub fn id(&self) -> TaskId {
+        self.inner.id().into()
+    }
+
+    /// The project this task belongs to, if any.
+    pub fn project_id(&self) -> Option<ProjectId> {
+        self.inner.project_id().map(|id| id.into())
+    }
+
+    /// Human-readable description of the task.
+    pub fn description(&self) -> String {
+        self.inner.description().to_string()
+    }
+
+    /// Workflow identifier for this task.
+    pub fn workflow(&self) -> String {
+        self.inner.workflow().to_string()
+    }
+
+    /// Current task status string, if available.
+    pub fn status(&self) -> Option<String> {
+        self.inner.status().clone()
+    }
+
+    /// Task creation timestamp as RFC 3339 string.
+    pub fn created(&self) -> String {
+        self.inner.created().to_rfc3339()
+    }
+
+    /// Task completion timestamp as RFC 3339 string.
+    pub fn completed(&self) -> String {
+        self.inner.completed().to_rfc3339()
+    }
+
+    /// Lists the data artefacts (non-chart files) attached to this task.
+    pub fn data_list(&self, client: &Client) -> Result<TaskDataList, ClientError> {
+        Ok(client
+            .runtime
+            .block_on(self.inner.data_list(&client.inner))?
+            .into())
+    }
+
+    /// Uploads a single file to this task's data folder.
+    ///
+    /// `path` is the local filesystem path to the file. `folder` is an
+    /// optional logical subdirectory under the task data root.
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the upload.  Pass `None` to suppress progress reporting.
+    pub fn upload_data(
+        &self,
+        client: &Client,
+        path: String,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let path = std::path::PathBuf::from(path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        Ok(client.runtime.block_on(self.inner.upload_data(
+            &client.inner,
+            &path,
+            folder.as_deref(),
+            tx,
+        ))?)
+    }
+
+    /// Streams a data file from this task to `output_path`.
+    ///
+    /// `folder` is the logical subdirectory under the task data root; pass
+    /// `None` to download from the root.
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the download.  Pass `None` to suppress progress reporting.
+    pub fn download_data(
+        &self,
+        client: &Client,
+        file: String,
+        output_path: String,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let output = std::path::PathBuf::from(output_path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        Ok(client.runtime.block_on(self.inner.download_data(
+            &client.inner,
+            &file,
+            folder.as_deref(),
+            &output,
+            tx,
+        ))?)
+    }
+
+    /// Adds (or overwrites) a chart under `(group, name)` for this task.
+    pub fn add_chart(
+        &self,
+        client: &Client,
+        group: String,
+        name: String,
+        data: Parameter,
+        params: Option<Parameter>,
+    ) -> Result<(), ClientError> {
+        Ok(client.runtime.block_on(self.inner.add_chart(
+            &client.inner,
+            &group,
+            &name,
+            data.into(),
+            params.map(Into::into),
+        ))?)
+    }
+
+    /// Lists charts attached to this task, optionally filtered to a single group.
+    pub fn list_charts(
+        &self,
+        client: &Client,
+        group: Option<String>,
+    ) -> Result<TaskDataList, ClientError> {
+        Ok(client
+            .runtime
+            .block_on(self.inner.list_charts(&client.inner, group.as_deref()))?
+            .into())
+    }
+
+    /// Fetches the raw chart body for `(group, name)` on this task.
+    pub fn get_chart(
+        &self,
+        client: &Client,
+        group: String,
+        name: String,
+    ) -> Result<Parameter, ClientError> {
+        Ok(client
+            .runtime
+            .block_on(self.inner.get_chart(&client.inner, &group, &name))?
+            .into())
+    }
+}
+
+#[uniffi::export]
+impl TaskInfo {
+    /// Lists the data artefacts attached to this task (async).
+    pub async fn data_list_async(&self, client: &Client) -> Result<TaskDataList, ClientError> {
+        async { Ok(self.inner.data_list(&client.inner).await?.into()) }
+            .compat()
+            .await
+    }
+
+    /// Uploads a single file to this task's data folder (async).
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the upload.  Pass `None` to suppress progress reporting.
+    pub async fn upload_data_async(
+        &self,
+        client: &Client,
+        path: String,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let path = std::path::PathBuf::from(path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        async {
+            Ok(self
+                .inner
+                .upload_data(&client.inner, &path, folder.as_deref(), tx)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Streams a data file from this task to `output_path` (async).
+    ///
+    /// Pass a `ProgressCallback` implementation to receive byte-level progress
+    /// events during the download.  Pass `None` to suppress progress reporting.
+    pub async fn download_data_async(
+        &self,
+        client: &Client,
+        file: String,
+        output_path: String,
+        folder: Option<String>,
+        progress: Option<Box<dyn ProgressCallback>>,
+    ) -> Result<(), ClientError> {
+        let output = std::path::PathBuf::from(output_path);
+        let tx = progress.map(|cb| spawn_progress_bridge(&client.runtime, cb));
+        async {
+            Ok(self
+                .inner
+                .download_data(&client.inner, &file, folder.as_deref(), &output, tx)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Adds (or overwrites) a chart under `(group, name)` for this task (async).
+    pub async fn add_chart_async(
+        &self,
+        client: &Client,
+        group: String,
+        name: String,
+        data: Parameter,
+        params: Option<Parameter>,
+    ) -> Result<(), ClientError> {
+        async {
+            Ok(self
+                .inner
+                .add_chart(
+                    &client.inner,
+                    &group,
+                    &name,
+                    data.into(),
+                    params.map(Into::into),
+                )
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Lists charts attached to this task (async).
+    pub async fn list_charts_async(
+        &self,
+        client: &Client,
+        group: Option<String>,
+    ) -> Result<TaskDataList, ClientError> {
+        async {
+            Ok(self
+                .inner
+                .list_charts(&client.inner, group.as_deref())
+                .await?
+                .into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Fetches the raw chart body for `(group, name)` on this task (async).
+    pub async fn get_chart_async(
+        &self,
+        client: &Client,
+        group: String,
+        name: String,
+    ) -> Result<Parameter, ClientError> {
+        async {
+            Ok(self
+                .inner
+                .get_chart(&client.inner, &group, &name)
+                .await?
+                .into())
+        }
+        .compat()
+        .await
+    }
+}
+
+/// A named file entry used when uploading multiple files.
+///
+/// UniFFI does not support tuple types across language boundaries, so this
+/// record is used instead of `(name, path)` pairs in `ValidationSession::upload_data`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct FileEntry {
+    /// Logical filename as it will appear on the server.
+    pub name: String,
+    /// Local filesystem path to the file to upload.
+    pub path: String,
+}
+
+/// List of data artefacts attached to a task or validation session.
+///
+/// The `data` map is keyed by folder name; values are the filenames within
+/// that folder. Trace files are also listed separately in `traces`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TaskDataList {
+    pub server: String,
+    pub organization_uid: String,
+    pub traces: Vec<String>,
+    pub data: HashMap<String, Vec<String>>,
+}
+
+impl From<core::TaskDataList> for TaskDataList {
+    fn from(v: core::TaskDataList) -> Self {
+        TaskDataList {
+            server: v.server,
+            organization_uid: v.organization_uid,
+            traces: v.traces,
+            data: v.data,
+        }
+    }
+}
+
+/// A job (app run) entry returned by `Client::jobs`.
+///
+/// The `task_id` field links back to the underlying task that can be polled
+/// via `Client::task_info`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct Job {
+    /// App code (e.g. `"edgefirst-validator:2.9.5"`).
+    pub code: String,
+    /// Display title from the app definition.
+    pub title: String,
+    /// User-supplied job label provided at `job_run` time.
+    pub job_name: String,
+    /// Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+    pub job_id: String,
+    /// Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+    pub state: String,
+    /// Job launch timestamp as RFC 3339 string, if known.
+    pub launch: Option<String>,
+    /// The Studio task id linked to this job, ready to pass directly to
+    /// `Client::task_info` or `Client::job_stop` in Swift / Kotlin.
+    ///
+    /// The server emits Go `int64`; negative values are clamped to 0 via the
+    /// core `task_id()` accessor before being exposed to FFI callers, so this
+    /// field is always a well-formed `TaskId`.
+    pub task_id: TaskId,
+}
+
+impl From<core::Job> for Job {
+    fn from(v: core::Job) -> Self {
+        // Use the core accessor (`task_id()`) so negative `int64` values are
+        // clamped to 0 instead of being silently reinterpreted as a giant
+        // `u64`.
+        let task_id: TaskId = v.task_id().into();
+        Job {
+            code: v.code,
+            title: v.title,
+            job_name: v.job_name,
+            job_id: v.job_id,
+            state: v.state,
+            launch: v.launch.map(|dt| dt.to_rfc3339()),
+            task_id,
         }
     }
 }
@@ -1776,6 +2603,45 @@ impl Client {
         Ok(labels.into_iter().map(Label::from).collect())
     }
 
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// Accepts a list of sample dimension updates and sends them to the server.
+    /// Returns the number of samples successfully updated.
+    pub fn update_sample_dimensions(
+        &self,
+        dataset_id: DatasetId,
+        updates: Vec<SampleDimensionUpdate>,
+    ) -> Result<u64, ClientError> {
+        let updates = updates
+            .into_iter()
+            .map(|u| core::SampleDimensionUpdate {
+                id: u.sample_id.into(),
+                width: u.width,
+                height: u.height,
+            })
+            .collect();
+        Ok(self.runtime.block_on(
+            self.inner
+                .update_sample_dimensions(dataset_id.into(), updates),
+        )?)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads images for samples that are missing width/height,
+    /// extracts dimensions, and updates the server.
+    /// Returns the number of samples whose dimensions were updated.
+    ///
+    /// Note: This method does not support progress callbacks. For
+    /// long-running operations on large datasets, use the Python or
+    /// Rust API which provides progress reporting.
+    pub fn backfill_sample_dimensions(&self, dataset_id: DatasetId) -> Result<u64, ClientError> {
+        Ok(self.runtime.block_on(
+            self.inner
+                .backfill_sample_dimensions(dataset_id.into(), None),
+        )?)
+    }
+
     // =========================================================================
     // Experiments
     // =========================================================================
@@ -1842,11 +2708,14 @@ impl Client {
     pub fn validation_sessions(
         &self,
         project_id: ProjectId,
-    ) -> Result<Vec<ValidationSession>, ClientError> {
+    ) -> Result<Vec<Arc<ValidationSession>>, ClientError> {
         let sessions = self
             .runtime
             .block_on(self.inner.validation_sessions(project_id.into()))?;
-        Ok(sessions.into_iter().map(ValidationSession::from).collect())
+        Ok(sessions
+            .into_iter()
+            .map(|s| Arc::new(ValidationSession::new(s)))
+            .collect())
     }
 
     // =========================================================================
@@ -1871,10 +2740,174 @@ impl Client {
     // Tasks
     // =========================================================================
 
-    /// Get task information by ID.
-    pub fn task_info(&self, id: TaskId) -> Result<TaskInfo, ClientError> {
+    /// Get task information and methods by ID.
+    ///
+    /// Returns a `TaskInfo` handle with field getters and data/chart methods.
+    pub fn task_info(&self, id: TaskId) -> Result<Arc<TaskInfo>, ClientError> {
         let info = self.runtime.block_on(self.inner.task_info(id.into()))?;
-        Ok(info.into())
+        Ok(Arc::new(TaskInfo::new(info)))
+    }
+
+    // =========================================================================
+    // Jobs
+    // =========================================================================
+
+    /// Launch an application job.
+    ///
+    /// Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+    /// ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+    /// task ID for calling `task_info`.
+    pub fn job_run(
+        &self,
+        app_name: String,
+        job_name: String,
+        env: HashMap<String, String>,
+        data: HashMap<String, Parameter>,
+    ) -> Result<Job, ClientError> {
+        let core_data: HashMap<String, core::Parameter> =
+            data.into_iter().map(|(k, v)| (k, v.into())).collect();
+        let job = self
+            .runtime
+            .block_on(self.inner.job_run(&app_name, &job_name, env, core_data))?;
+        Ok(job.into())
+    }
+
+    /// List jobs, optionally filtered by name (substring match).
+    pub fn jobs(&self, name: Option<String>) -> Result<Vec<Job>, ClientError> {
+        let r = self.runtime.block_on(self.inner.jobs(name.as_deref()))?;
+        Ok(r.into_iter().map(Into::into).collect())
+    }
+
+    /// Request a running job to stop.
+    pub fn job_stop(&self, task_id: TaskId) -> Result<(), ClientError> {
+        Ok(self.runtime.block_on(self.inner.job_stop(task_id.into()))?)
+    }
+
+    // =========================================================================
+    // Validation Session
+    // =========================================================================
+
+    /// Get a validation session by ID (enables upload/download/data_list).
+    pub fn validation_session(
+        &self,
+        id: ValidationSessionId,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        let inner = self
+            .runtime
+            .block_on(self.inner.validation_session(id.into()))?;
+        Ok(Arc::new(ValidationSession::new(inner)))
+    }
+
+    // =========================================================================
+    // Session Management
+    // =========================================================================
+
+    /// Delete one or more training sessions.
+    ///
+    /// The server cascades this delete: validation sessions attached to
+    /// the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints.
+    pub fn delete_training_sessions(
+        &self,
+        session_ids: Vec<TrainingSessionId>,
+    ) -> Result<(), ClientError> {
+        let ids: Vec<core::TrainingSessionID> = session_ids.into_iter().map(Into::into).collect();
+        Ok(self
+            .runtime
+            .block_on(self.inner.delete_training_sessions(&ids))?)
+    }
+
+    /// Delete one or more validation sessions.
+    ///
+    /// Only the validation sessions are removed; the parent training
+    /// session is never affected.
+    pub fn delete_validation_sessions(
+        &self,
+        session_ids: Vec<ValidationSessionId>,
+    ) -> Result<(), ClientError> {
+        let ids: Vec<core::ValidationSessionID> = session_ids.into_iter().map(Into::into).collect();
+        Ok(self
+            .runtime
+            .block_on(self.inner.delete_validation_sessions(&ids))?)
+    }
+
+    /// Update the name and/or description of a training session,
+    /// returning the refreshed session. Fields left as `None` are not
+    /// modified.
+    pub fn update_training_session(
+        &self,
+        session_id: TrainingSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<TrainingSession, ClientError> {
+        let session = self.runtime.block_on(self.inner.update_training_session(
+            session_id.into(),
+            name.as_deref(),
+            description.as_deref(),
+        ))?;
+        Ok(session.into())
+    }
+
+    /// Update the name and/or description of a validation session,
+    /// returning the refreshed session. Fields left as `None` are not
+    /// modified.
+    pub fn update_validation_session(
+        &self,
+        session_id: ValidationSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        let inner = self.runtime.block_on(self.inner.update_validation_session(
+            session_id.into(),
+            name.as_deref(),
+            description.as_deref(),
+        ))?;
+        Ok(Arc::new(ValidationSession::new(inner)))
+    }
+
+    /// List the trainer types available on the server.
+    pub fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, ClientError> {
+        let schemas = self.runtime.block_on(self.inner.trainer_schemas())?;
+        Ok(schemas.into_iter().map(TrainerSchemaInfo::from).collect())
+    }
+
+    /// Fetch the parameter schema for a specific trainer type.
+    pub fn trainer_schema(&self, schema_type: String) -> Result<Vec<SchemaField>, ClientError> {
+        let fields = self
+            .runtime
+            .block_on(self.inner.trainer_schema(&schema_type))?;
+        Ok(fields.into_iter().map(SchemaField::from).collect())
+    }
+
+    /// List the validator schemas available on the server.
+    pub fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, ClientError> {
+        let schemas = self.runtime.block_on(self.inner.validator_schemas())?;
+        Ok(schemas.into_iter().map(ValidatorSchema::from).collect())
+    }
+
+    /// Launch a new training session (Studio `cloud.server.start`).
+    ///
+    /// See `StartTrainingRequest` for the defaulting rules (latest tag,
+    /// standard train/val groups).
+    pub fn start_training_session(
+        &self,
+        request: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, ClientError> {
+        let session = self
+            .runtime
+            .block_on(self.inner.start_training_session(request.into()))?;
+        Ok(session.into())
+    }
+
+    /// Create a new validation session (Studio `cloud.server.start`).
+    pub fn start_validation_session(
+        &self,
+        request: StartValidationRequest,
+    ) -> Result<NewValidationSession, ClientError> {
+        let session = self
+            .runtime
+            .block_on(self.inner.start_validation_session(request.into()))?;
+        Ok(session.into())
     }
 
     // =========================================================================
@@ -2130,6 +3163,45 @@ impl Client {
         .await
     }
 
+    /// Update image dimensions for existing samples (async).
+    pub async fn update_sample_dimensions_async(
+        &self,
+        dataset_id: DatasetId,
+        updates: Vec<SampleDimensionUpdate>,
+    ) -> Result<u64, ClientError> {
+        async {
+            let updates = updates
+                .into_iter()
+                .map(|u| core::SampleDimensionUpdate {
+                    id: u.sample_id.into(),
+                    width: u.width,
+                    height: u.height,
+                })
+                .collect();
+            Ok(self
+                .inner
+                .update_sample_dimensions(dataset_id.into(), updates)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Backfill missing image dimensions for a dataset (async).
+    pub async fn backfill_sample_dimensions_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<u64, ClientError> {
+        async {
+            Ok(self
+                .inner
+                .backfill_sample_dimensions(dataset_id.into(), None)
+                .await?)
+        }
+        .compat()
+        .await
+    }
+
     /// List experiments in a project (async).
     pub async fn experiments_async(
         &self,
@@ -2204,10 +3276,13 @@ impl Client {
     pub async fn validation_sessions_async(
         &self,
         project_id: ProjectId,
-    ) -> Result<Vec<ValidationSession>, ClientError> {
+    ) -> Result<Vec<Arc<ValidationSession>>, ClientError> {
         async {
             let sessions = self.inner.validation_sessions(project_id.into()).await?;
-            Ok(sessions.into_iter().map(ValidationSession::from).collect())
+            Ok(sessions
+                .into_iter()
+                .map(|s| Arc::new(ValidationSession::new(s)))
+                .collect())
         }
         .compat()
         .await
@@ -2236,11 +3311,13 @@ impl Client {
         .await
     }
 
-    /// Get task information by ID (async).
-    pub async fn task_info_async(&self, id: TaskId) -> Result<TaskInfo, ClientError> {
+    /// Get task information and methods by ID (async).
+    ///
+    /// Returns a `TaskInfo` handle with field getters and data/chart methods.
+    pub async fn task_info_async(&self, id: TaskId) -> Result<Arc<TaskInfo>, ClientError> {
         async {
             let info = self.inner.task_info(id.into()).await?;
-            Ok(info.into())
+            Ok(Arc::new(TaskInfo::new(info)))
         }
         .compat()
         .await
@@ -2283,6 +3360,114 @@ impl Client {
                 .version_tag_create(dataset_id.into(), &name, description.as_deref())
                 .await?;
             Ok(tag.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Launch an application job (async).
+    ///
+    /// Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
+    /// ID, state, and the linked `task_id`. Use `job.task_id` to obtain the
+    /// task ID for calling `task_info_async`.
+    pub async fn job_run_async(
+        &self,
+        app_name: String,
+        job_name: String,
+        env: HashMap<String, String>,
+        data: HashMap<String, Parameter>,
+    ) -> Result<Job, ClientError> {
+        let core_data: HashMap<String, core::Parameter> =
+            data.into_iter().map(|(k, v)| (k, v.into())).collect();
+        async {
+            let job = self
+                .inner
+                .job_run(&app_name, &job_name, env, core_data)
+                .await?;
+            Ok(job.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// List jobs, optionally filtered by name (async).
+    pub async fn jobs_async(&self, name: Option<String>) -> Result<Vec<Job>, ClientError> {
+        async {
+            let r = self.inner.jobs(name.as_deref()).await?;
+            Ok(r.into_iter().map(Into::into).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Request a running job to stop (async).
+    pub async fn job_stop_async(&self, task_id: TaskId) -> Result<(), ClientError> {
+        async { Ok(self.inner.job_stop(task_id.into()).await?) }
+            .compat()
+            .await
+    }
+
+    /// Get a validation session by ID (async).
+    pub async fn validation_session_async(
+        &self,
+        id: ValidationSessionId,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        async {
+            let inner = self.inner.validation_session(id.into()).await?;
+            Ok(Arc::new(ValidationSession::new(inner)))
+        }
+        .compat()
+        .await
+    }
+
+    /// Delete one or more training sessions (async).
+    ///
+    /// The server cascades this delete: validation sessions attached to
+    /// the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints.
+    pub async fn delete_training_sessions_async(
+        &self,
+        session_ids: Vec<TrainingSessionId>,
+    ) -> Result<(), ClientError> {
+        async {
+            let ids: Vec<core::TrainingSessionID> =
+                session_ids.into_iter().map(Into::into).collect();
+            Ok(self.inner.delete_training_sessions(&ids).await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Delete one or more validation sessions (async).
+    ///
+    /// Only the validation sessions are removed; the parent training
+    /// session is never affected.
+    pub async fn delete_validation_sessions_async(
+        &self,
+        session_ids: Vec<ValidationSessionId>,
+    ) -> Result<(), ClientError> {
+        async {
+            let ids: Vec<core::ValidationSessionID> =
+                session_ids.into_iter().map(Into::into).collect();
+            Ok(self.inner.delete_validation_sessions(&ids).await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Update the name and/or description of a training session (async).
+    pub async fn update_training_session_async(
+        &self,
+        session_id: TrainingSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<TrainingSession, ClientError> {
+        async {
+            let session = self
+                .inner
+                .update_training_session(session_id.into(), name.as_deref(), description.as_deref())
+                .await?;
+            Ok(session.into())
         }
         .compat()
         .await
@@ -2377,6 +3562,28 @@ impl Client {
         .await
     }
 
+    /// Update the name and/or description of a validation session (async).
+    pub async fn update_validation_session_async(
+        &self,
+        session_id: ValidationSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        async {
+            let inner = self
+                .inner
+                .update_validation_session(
+                    session_id.into(),
+                    name.as_deref(),
+                    description.as_deref(),
+                )
+                .await?;
+            Ok(Arc::new(ValidationSession::new(inner)))
+        }
+        .compat()
+        .await
+    }
+
     /// Get the count of changelog entries between two versions (async).
     pub async fn version_changelog_count_async(
         &self,
@@ -2401,6 +3608,16 @@ impl Client {
         .await
     }
 
+    /// List the trainer types available on the server (async).
+    pub async fn trainer_schemas_async(&self) -> Result<Vec<TrainerSchemaInfo>, ClientError> {
+        async {
+            let schemas = self.inner.trainer_schemas().await?;
+            Ok(schemas.into_iter().map(TrainerSchemaInfo::from).collect())
+        }
+        .compat()
+        .await
+    }
+
     /// Get the current version information for a dataset (async).
     pub async fn version_current_async(
         &self,
@@ -2409,6 +3626,19 @@ impl Client {
         async {
             let result = self.inner.version_current(dataset_id.into()).await?;
             Ok(result.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Fetch the parameter schema for a specific trainer type (async).
+    pub async fn trainer_schema_async(
+        &self,
+        schema_type: String,
+    ) -> Result<Vec<SchemaField>, ClientError> {
+        async {
+            let fields = self.inner.trainer_schema(&schema_type).await?;
+            Ok(fields.into_iter().map(SchemaField::from).collect())
         }
         .compat()
         .await
@@ -2427,6 +3657,16 @@ impl Client {
         .await
     }
 
+    /// List the validator schemas available on the server (async).
+    pub async fn validator_schemas_async(&self) -> Result<Vec<ValidatorSchema>, ClientError> {
+        async {
+            let schemas = self.inner.validator_schemas().await?;
+            Ok(schemas.into_iter().map(ValidatorSchema::from).collect())
+        }
+        .compat()
+        .await
+    }
+
     /// Recalculate the version summary for a dataset (async).
     pub async fn version_summary_recalculate_async(
         &self,
@@ -2438,6 +3678,35 @@ impl Client {
                 .version_summary_recalculate(dataset_id.into())
                 .await?;
             Ok(summary.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Launch a new training session (async).
+    ///
+    /// See `StartTrainingRequest` for the defaulting rules (latest tag,
+    /// standard train/val groups).
+    pub async fn start_training_session_async(
+        &self,
+        request: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, ClientError> {
+        async {
+            let session = self.inner.start_training_session(request.into()).await?;
+            Ok(session.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Create a new validation session (async).
+    pub async fn start_validation_session_async(
+        &self,
+        request: StartValidationRequest,
+    ) -> Result<NewValidationSession, ClientError> {
+        async {
+            let session = self.inner.start_validation_session(request.into()).await?;
+            Ok(session.into())
         }
         .compat()
         .await

@@ -89,7 +89,7 @@ impl From<Error> for PyErr {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub enum Parameter {
     Integer(i64),
@@ -596,7 +596,7 @@ impl Display for Parameter {
 }
 
 // Individual ID wrapper types for Python
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ProjectID(edgefirst_client::ProjectID);
 
@@ -681,7 +681,7 @@ impl ProjectID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct DatasetID(edgefirst_client::DatasetID);
 
@@ -760,7 +760,7 @@ impl DatasetID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ExperimentID(edgefirst_client::ExperimentID);
 
@@ -839,7 +839,7 @@ impl ExperimentID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct OrganizationID(edgefirst_client::OrganizationID);
 
@@ -917,7 +917,7 @@ impl OrganizationID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SampleID(edgefirst_client::SampleID);
 
@@ -995,7 +995,7 @@ impl SampleID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct AnnotationSetID(edgefirst_client::AnnotationSetID);
 
@@ -1074,7 +1074,7 @@ impl AnnotationSetID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct TaskID(edgefirst_client::TaskID);
 
@@ -1153,7 +1153,7 @@ impl TaskID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct TrainingSessionID(edgefirst_client::TrainingSessionID);
 
@@ -1232,7 +1232,7 @@ impl TrainingSessionID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ValidationSessionID(edgefirst_client::ValidationSessionID);
 
@@ -1310,7 +1310,7 @@ impl ValidationSessionID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SnapshotID(edgefirst_client::SnapshotID);
 
@@ -1388,7 +1388,7 @@ impl SnapshotID {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ImageId(edgefirst_client::ImageId);
 
@@ -1466,7 +1466,7 @@ impl ImageId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SequenceId(edgefirst_client::SequenceId);
 
@@ -1544,7 +1544,7 @@ impl SequenceId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct AppId(edgefirst_client::AppId);
 
@@ -1620,7 +1620,7 @@ impl AppId {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Debug, Clone, Copy)]
 pub enum FileType {
     Image,
@@ -1633,7 +1633,7 @@ pub enum FileType {
     All,
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum AnnotationType {
     Box2d,
@@ -2071,18 +2071,37 @@ impl Dataset {
         Ok(labels.into_iter().map(Label).collect())
     }
 
-    /// Add a label to this dataset.
+    /// Add a label to this dataset, optionally preserving its source index.
     ///
-    /// New API (v2.6.0+): `dataset.add_label("name")` - uses embedded client
-    /// reference Deprecated API: `dataset.add_label(client, "name")` -
-    /// passing client explicitly
-    #[pyo3(signature = (name_or_client, name=None))]
+    /// New API (v2.6.0+): ``dataset.add_label(name)`` or
+    /// ``dataset.add_label(name, index=N)`` — uses the embedded client.
+    /// Deprecated API: ``dataset.add_label(client, name)`` — passing the
+    /// client explicitly (will be removed in v3.0.0).
+    ///
+    /// When ``index`` is ``None``, the server assigns the next available
+    /// ``label_index``. When set, the index is pinned via a two-pass
+    /// ``label.update`` — use this to preserve COCO ``category_id`` or
+    /// other source indices across round-trips.
+    ///
+    /// Args:
+    ///     name: Label name (new API, first positional argument).
+    ///     index: Optional source-faithful ``label_index`` to assign.
+    ///
+    /// Raises:
+    ///     TypeError: If the dataset has no embedded client reference.
+    ///     Error: If the requested index is already held by a different label.
+    ///
+    /// Example:
+    ///     >>> dataset.add_label("person")
+    ///     >>> dataset.add_label("car", index=3)
+    #[pyo3(signature = (name_or_client, name=None, index=None))]
     #[tokio_wrap::sync]
     pub fn add_label(
         &self,
         py: Python<'_>,
         name_or_client: &Bound<'_, PyAny>,
         name: Option<String>,
+        index: Option<u64>,
     ) -> Result<(), Error> {
         // Try to extract as Client first (deprecated API)
         if let Ok(client) = name_or_client.extract::<PyRef<Client>>() {
@@ -2090,7 +2109,15 @@ impl Dataset {
             let label_name = name.ok_or_else(|| {
                 Error::TypeError("add_label(client, name) requires name parameter".to_string())
             })?;
-            client.0.add_label(self.inner.id(), &label_name).await?;
+            match index {
+                None => client.0.add_label(self.inner.id(), &label_name).await?,
+                Some(i) => {
+                    client
+                        .0
+                        .add_label_with_index(self.inner.id(), &label_name, i)
+                        .await?
+                }
+            }
             return Ok(());
         }
 
@@ -2102,7 +2129,14 @@ impl Dataset {
                         .to_string(),
                 )
             })?;
-            client_ref.add_label(self.inner.id(), &label_name).await?;
+            match index {
+                None => client_ref.add_label(self.inner.id(), &label_name).await?,
+                Some(i) => {
+                    client_ref
+                        .add_label_with_index(self.inner.id(), &label_name, i)
+                        .await?
+                }
+            }
             return Ok(());
         }
 
@@ -2605,7 +2639,7 @@ impl Dataset {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Label(edgefirst_client::Label);
 
@@ -2685,7 +2719,7 @@ impl Display for Label {
 ///     ...     print(f"{group.name}: {group.id}")
 ///     train: 1
 ///     val: 2
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Group(edgefirst_client::Group);
 
@@ -3472,6 +3506,44 @@ impl TrainingSession {
     }
 }
 
+/// Result of `Client.start_validation_session`.
+///
+/// `task_id` is the backing BackgroundTask row id (passable to
+/// `task_info` etc.); `session_id` is the freshly-minted
+/// `ValidationSessionID` for downstream data ops and the matching
+/// `delete_validation_sessions` call in test teardown. The session_id
+/// is optional because the underlying `cloud.server.start` endpoint
+/// also returns non-validation tasks; for a user-managed validation
+/// session this is always populated.
+#[pyclass(module = "edgefirst_client")]
+pub struct NewValidationSession {
+    inner: edgefirst_client::NewValidationSession,
+}
+
+#[pymethods]
+impl NewValidationSession {
+    #[getter]
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.inner.task_id)
+    }
+
+    #[getter]
+    pub fn session_id(&self) -> Option<ValidationSessionID> {
+        self.inner.session_id.map(ValidationSessionID)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "NewValidationSession(task_id={}, session_id={})",
+            self.inner.task_id,
+            self.inner
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct ValidationSession {
     inner: edgefirst_client::ValidationSession,
@@ -3682,45 +3754,153 @@ impl ValidationSession {
         Ok(artifacts)
     }
 
-    /// Upload files to the validation session.
+    /// Upload files to this validation session's data folder.
     ///
-    /// New API (v2.6.0+): `session.upload(files)` - uses embedded client
-    /// reference Deprecated API: `session.upload(client, files)` - passing
-    /// client explicitly
-    #[pyo3(signature = (files_or_client, files=None))]
-    #[tokio_wrap::sync]
-    pub fn upload(
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     files: List of ``(filename, path)`` tuples to upload.
+    ///     folder: Optional logical subdirectory under the session data root.
+    ///     progress: Optional callback for upload progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Progress:
+    ///     Emits byte-level progress as data is streamed to the server.
+    ///     ``total`` equals the sum of all file sizes; ``current`` tracks
+    ///     aggregate bytes sent across all files.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the upload fails.
+    #[pyo3(signature = (client, files, folder=None, progress=None))]
+    pub fn upload_data(
         &self,
-        py: Python<'_>,
-        files_or_client: &Bound<'_, PyAny>,
-        files: Option<Vec<(String, PathBuf)>>,
+        client: &Client,
+        files: Vec<(String, PathBuf)>,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
     ) -> Result<(), Error> {
-        // Try to extract as Client first (deprecated API)
-        if let Ok(client) = files_or_client.extract::<PyRef<Client>>() {
-            warn_method_deprecated(py, "ValidationSession", "upload")?;
-            let files = files.ok_or_else(|| {
-                Error::TypeError(
-                    "upload() requires 'files' argument when using deprecated API".to_string(),
-                )
-            })?;
-            return Ok(self.inner.upload(&client.0, &files).await?);
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.inner.clone();
+                let client_inner = client.0.clone();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .upload_data(&client_inner, &files, folder_clone.as_deref(), Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.inner
+                        .upload_data(&client.0, &files, folder.as_deref(), None),
+                )?;
+                Ok(())
+            }
         }
+    }
 
-        // Try to extract as files list (new API)
-        if let Ok(files_list) = files_or_client.extract::<Vec<(String, PathBuf)>>() {
-            let client_ref = self.client.as_ref().ok_or_else(|| {
-                Error::TypeError(
-                    "ValidationSession has no client reference. Use session.upload(client, files) instead."
-                        .to_string(),
-                )
-            })?;
-            return Ok(self.inner.upload(client_ref.as_ref(), &files_list).await?);
+    /// Download a file from this validation session's data folder.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     filename: Name of the file to download.
+    ///     output_path: Local path to write the downloaded file.
+    ///     progress: Optional callback for download progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Raises:
+    ///     RuntimeError: If the download fails.
+    #[pyo3(signature = (client, filename, output_path, progress=None))]
+    pub fn download_data(
+        &self,
+        client: &Client,
+        filename: &str,
+        output_path: PathBuf,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.inner.clone();
+                let client_inner = client.0.clone();
+                let filename_owned = filename.to_owned();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .download_data(&client_inner, &filename_owned, &output_path, Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.inner
+                        .download_data(&client.0, filename, &output_path, None),
+                )?;
+                Ok(())
+            }
         }
+    }
 
-        Err(Error::TypeError(
-            "upload() first argument must be a list of (str, Path) tuples or Client (deprecated)"
-                .to_string(),
-        ))
+    /// List files attached to this validation session's data folder.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///
+    /// Returns:
+    ///     list[str]: Flat list of relative file paths (e.g. ``"folder/file.txt"``),
+    ///     sorted lexicographically.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    pub fn data_list(&self, client: &Client) -> Result<Vec<String>, Error> {
+        Ok(self.inner.data_list(&client.0).await?)
     }
 
     /// Download an artifact file from the associated training session.
@@ -4052,8 +4232,8 @@ impl SnapshotRestoreResult {
     }
 
     #[getter]
-    pub fn date(&self) -> String {
-        self.0.date.to_string()
+    pub fn date(&self) -> Option<String> {
+        self.0.date.as_ref().map(|d| d.to_string())
     }
 
     pub fn __repr__(&self) -> String {
@@ -4256,6 +4436,235 @@ impl TaskInfo {
         self.0.set_stages(&client.0, &stages).await?;
         Ok(())
     }
+
+    /// List data artefacts (non-chart files) attached to this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///
+    /// Returns:
+    ///     TaskDataList: Data artefacts keyed by folder name.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    pub fn data_list(&self, client: &Client) -> Result<TaskDataList, Error> {
+        Ok(TaskDataList(self.0.data_list(&client.0).await?))
+    }
+
+    /// Upload a data file to this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     path: Local file path to upload.
+    ///     folder: Optional logical subdirectory under the task data root.
+    ///     progress: Optional callback for upload progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Progress:
+    ///     Emits byte-level progress as data is streamed to the server.
+    ///     ``total`` equals the file size in bytes; ``current`` tracks bytes
+    ///     sent.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the upload fails.
+    #[pyo3(signature = (client, path, folder=None, progress=None))]
+    pub fn upload_data(
+        &self,
+        client: &Client,
+        path: PathBuf,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.0.clone();
+                let client_inner = client.0.clone();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .upload_data(&client_inner, &path, folder_clone.as_deref(), Some(tx))
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(
+                    self.0
+                        .upload_data(&client.0, &path, folder.as_deref(), None),
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Download a data file from this task to a local path.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     file: Filename to download.
+    ///     output_path: Local path to write the downloaded file.
+    ///     folder: Optional logical subdirectory under the task data root.
+    ///     progress: Optional callback for download progress. Supports two
+    ///         signatures:
+    ///         - ``callback(current, total)`` - basic progress (backwards
+    ///           compatible)
+    ///         - ``callback(current, total, status)`` - with status message
+    ///
+    /// Raises:
+    ///     RuntimeError: If the download fails.
+    #[pyo3(signature = (client, file, output_path, folder=None, progress=None))]
+    pub fn download_data(
+        &self,
+        client: &Client,
+        file: &str,
+        output_path: PathBuf,
+        folder: Option<String>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<(), Error> {
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(32);
+                let inner = self.0.clone();
+                let client_inner = client.0.clone();
+                let file_owned = file.to_owned();
+                let folder_clone = folder.clone();
+                let task = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        inner
+                            .download_data(
+                                &client_inner,
+                                &file_owned,
+                                folder_clone.as_deref(),
+                                &output_path,
+                                Some(tx),
+                            )
+                            .await
+                    })
+                });
+                while let Some(prog) = rx.blocking_recv() {
+                    let current = prog.current;
+                    let total = prog.total;
+                    let status = prog.status.clone();
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (current, total, status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (current, total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+                Ok(task.join().unwrap()?)
+            }
+            None => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(self.0.download_data(
+                    &client.0,
+                    file,
+                    folder.as_deref(),
+                    &output_path,
+                    None,
+                ))?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Add (or overwrite) a chart under `(group, name)` for this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Chart group name (non-empty).
+    ///     name: Chart name within the group (non-empty).
+    ///     data: Chart body as a `Parameter` (arbitrary JSON).
+    ///     params: Optional chart-rendering parameters as a `Parameter`.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails or group/name are empty.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (client, group, name, data, params=None))]
+    pub fn add_chart(
+        &self,
+        client: &Client,
+        group: &str,
+        name: &str,
+        data: Parameter,
+        params: Option<Parameter>,
+    ) -> Result<(), Error> {
+        Ok(self
+            .0
+            .add_chart(
+                &client.0,
+                group,
+                name,
+                data.into(),
+                params.map(|p| p.into()),
+            )
+            .await?)
+    }
+
+    /// List charts attached to this task, optionally filtered to a single group.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Optional group name to filter charts.
+    ///
+    /// Returns:
+    ///     TaskDataList: Charts keyed by group name.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (client, group=None))]
+    pub fn list_charts(&self, client: &Client, group: Option<&str>) -> Result<TaskDataList, Error> {
+        Ok(TaskDataList(self.0.list_charts(&client.0, group).await?))
+    }
+
+    /// Fetch the raw chart body for `(group, name)` on this task.
+    ///
+    /// Args:
+    ///     client: The authenticated `Client` instance.
+    ///     group: Chart group name (non-empty).
+    ///     name: Chart name within the group (non-empty).
+    ///
+    /// Returns:
+    ///     Parameter: The deserialized chart JSON.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the request fails or group/name are empty.
+    #[tokio_wrap::sync]
+    pub fn get_chart(&self, client: &Client, group: &str, name: &str) -> Result<Parameter, Error> {
+        Ok(Parameter::from(
+            self.0.get_chart(&client.0, group, name).await?,
+        ))
+    }
 }
 
 #[pyclass(module = "edgefirst_client")]
@@ -4311,6 +4720,349 @@ impl Artifact {
 }
 
 // =============================================================================
+// Trainer/validator schemas and training session launch
+// =============================================================================
+
+/// Result of `Client.start_training_session`. Carries the id of the
+/// launch task (pollable via `Client.task_info`) and the id of the
+/// freshly-created training session.
+#[pyclass(module = "edgefirst_client")]
+pub struct NewTrainingSession {
+    inner: edgefirst_client::NewTrainingSession,
+}
+
+#[pymethods]
+impl NewTrainingSession {
+    #[getter]
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.inner.task_id)
+    }
+
+    #[getter]
+    pub fn session_id(&self) -> Option<TrainingSessionID> {
+        self.inner.session_id.map(TrainingSessionID)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "NewTrainingSession(task_id={}, session_id={})",
+            self.inner.task_id,
+            self.inner
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
+/// Catalog entry describing an available trainer type, as returned by
+/// `Client.trainer_schemas`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct TrainerSchemaInfo(edgefirst_client::TrainerSchemaInfo);
+
+#[pymethods]
+impl TrainerSchemaInfo {
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[getter]
+    pub fn label(&self) -> &str {
+        &self.0.label
+    }
+
+    #[getter]
+    pub fn schema_type(&self) -> &str {
+        &self.0.schema_type
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "TrainerSchemaInfo(name='{}', label='{}', schema_type='{}')",
+            self.0.name, self.0.label, self.0.schema_type
+        )
+    }
+}
+
+/// One selectable option of a ``select`` schema field.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct SchemaOption(edgefirst_client::SchemaOption);
+
+#[pymethods]
+impl SchemaOption {
+    #[getter]
+    pub fn name(&self) -> Option<Parameter> {
+        self.0.name.clone().map(Parameter::from)
+    }
+
+    #[getter]
+    pub fn label(&self) -> Option<&str> {
+        self.0.label.as_deref()
+    }
+
+    #[getter]
+    pub fn children(&self) -> Vec<SchemaField> {
+        self.0.children.iter().cloned().map(SchemaField).collect()
+    }
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema. Describes one hyperparameter: its name, type, default and
+/// constraints. Nested parameter groups are exposed via ``children``.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct SchemaField(edgefirst_client::SchemaField);
+
+#[pymethods]
+impl SchemaField {
+    #[getter]
+    pub fn name(&self) -> Option<&str> {
+        self.0.name.as_deref()
+    }
+
+    #[getter]
+    pub fn label(&self) -> Option<&str> {
+        self.0.label.as_deref()
+    }
+
+    #[getter]
+    pub fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
+
+    #[getter]
+    pub fn required(&self) -> bool {
+        self.0.required
+    }
+
+    #[getter]
+    pub fn default(&self) -> Option<Parameter> {
+        self.0.default.clone().map(Parameter::from)
+    }
+
+    /// The field type as a lowercase string (``"int"``, ``"group"``,
+    /// ``"select"``, …); ``"unknown"`` for types this client version
+    /// does not recognize, ``None`` when the server omits the type.
+    #[getter]
+    pub fn field_type(&self) -> Option<String> {
+        self.0.field_type.map(|t| format!("{:?}", t).to_lowercase())
+    }
+
+    #[getter]
+    pub fn min(&self) -> Option<f64> {
+        self.0.min
+    }
+
+    #[getter]
+    pub fn max(&self) -> Option<f64> {
+        self.0.max
+    }
+
+    #[getter]
+    pub fn step(&self) -> Option<f64> {
+        self.0.step
+    }
+
+    #[getter]
+    pub fn options(&self) -> Vec<SchemaOption> {
+        self.0.options.iter().cloned().map(SchemaOption).collect()
+    }
+
+    #[getter]
+    pub fn children(&self) -> Vec<SchemaField> {
+        self.0.children.iter().cloned().map(SchemaField).collect()
+    }
+
+    #[getter]
+    pub fn is_dropdown(&self) -> bool {
+        self.0.is_dropdown
+    }
+
+    #[getter]
+    pub fn multi_select(&self) -> bool {
+        self.0.multi_select
+    }
+
+    #[getter]
+    pub fn is_multi_line(&self) -> bool {
+        self.0.is_multi_line
+    }
+
+    #[getter]
+    pub fn hidden(&self) -> bool {
+        self.0.hidden
+    }
+
+    #[getter]
+    pub fn numeric_only(&self) -> bool {
+        self.0.numeric_only
+    }
+
+    #[getter]
+    pub fn enable_tags_selection(&self) -> bool {
+        self.0.enable_tags_selection
+    }
+
+    #[getter]
+    pub fn enable_annotation_set_selection(&self) -> bool {
+        self.0.enable_annotation_set_selection
+    }
+
+    #[getter]
+    pub fn values(&self) -> Option<Vec<Parameter>> {
+        self.0
+            .values
+            .clone()
+            .map(|v| v.into_iter().map(Parameter::from).collect())
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "SchemaField(name={}, type={})",
+            self.0.name.as_deref().unwrap_or("None"),
+            self.field_type().unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
+/// A validator parameter schema, as returned by
+/// `Client.validator_schemas`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct ValidatorSchema(edgefirst_client::ValidatorSchema);
+
+#[pymethods]
+impl ValidatorSchema {
+    #[getter]
+    pub fn schema_type(&self) -> &str {
+        &self.0.schema_type
+    }
+
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[getter]
+    pub fn schema(&self) -> Vec<SchemaField> {
+        self.0.schema.iter().cloned().map(SchemaField).collect()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ValidatorSchema(schema_type='{}', name='{}')",
+            self.0.schema_type, self.0.name
+        )
+    }
+}
+
+// =============================================================================
+// TaskDataList and Job
+// =============================================================================
+
+/// List of data and chart artefacts attached to a task.
+///
+/// Returned by `TaskInfo.data_list` and `TaskInfo.list_charts`. Validation
+/// sessions use a flat `list[str]` of relative paths (returned by
+/// `ValidationSession.data_list`), not this type.
+#[pyclass(module = "edgefirst_client", from_py_object)]
+#[derive(Clone)]
+pub struct TaskDataList(pub(crate) edgefirst_client::TaskDataList);
+
+#[pymethods]
+impl TaskDataList {
+    /// The server hostname for the underlying storage.
+    #[getter]
+    pub fn server(&self) -> &str {
+        &self.0.server
+    }
+
+    /// Owning organization identifier (e.g. `'org-abc123'`).
+    #[getter]
+    pub fn organization_uid(&self) -> &str {
+        &self.0.organization_uid
+    }
+
+    /// Trace files surfaced from the `trace` folder.
+    #[getter]
+    pub fn traces(&self) -> Vec<String> {
+        self.0.traces.clone()
+    }
+
+    /// Folder -> filename map of artefacts.
+    #[getter]
+    pub fn data(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.0.data.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TaskDataList(server='{}', data={} folders, traces={} files)",
+            self.0.server,
+            self.0.data.len(),
+            self.0.traces.len()
+        )
+    }
+}
+
+/// A job (app run) entry returned by `Client.jobs`.
+///
+/// The `task_id` field links back to the underlying task that can be polled
+/// via `Client.task_info`.
+#[pyclass(module = "edgefirst_client", from_py_object)]
+#[derive(Clone)]
+pub struct Job(pub(crate) edgefirst_client::Job);
+
+#[pymethods]
+impl Job {
+    /// App code (e.g. `"edgefirst-validator:2.9.5"`).
+    #[getter]
+    pub fn code(&self) -> &str {
+        &self.0.code
+    }
+
+    /// Display title from the app definition.
+    #[getter]
+    pub fn title(&self) -> &str {
+        &self.0.title
+    }
+
+    /// User-supplied job label provided at `job_run` time.
+    #[getter]
+    pub fn job_name(&self) -> &str {
+        &self.0.job_name
+    }
+
+    /// Cloud-batch job identifier (e.g. AWS Batch job ID). Opaque string.
+    #[getter]
+    pub fn job_id(&self) -> &str {
+        &self.0.job_id
+    }
+
+    /// Cloud-batch state (e.g. `"RUNNING"`, `"SUCCEEDED"`, `"FAILED"`).
+    #[getter]
+    pub fn state(&self) -> &str {
+        &self.0.state
+    }
+
+    /// Returns the `TaskID` corresponding to this job, for use with
+    /// `Client.task_info`.
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.0.task_id())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Job(code='{}', state='{}', task_id={})",
+            self.0.code, self.0.state, self.0.task_id
+        )
+    }
+}
+
+// =============================================================================
 // Token Storage Classes
 // =============================================================================
 
@@ -4318,7 +5070,7 @@ impl Artifact {
 ///
 /// Stores the authentication token in a file on the local filesystem.
 /// By default, uses the platform-specific config directory.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct FileTokenStorage(Arc<edgefirst_client::FileTokenStorage>);
 
@@ -4383,7 +5135,7 @@ impl FileTokenStorage {
 ///
 /// Stores the authentication token in memory only. The token is lost when
 /// the application exits.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct MemoryTokenStorage(Arc<edgefirst_client::MemoryTokenStorage>);
 
@@ -4854,10 +5606,73 @@ impl Client {
         Ok(labels)
     }
 
+    /// Add a label to the dataset, optionally preserving its source index.
+    ///
+    /// When ``index`` is ``None``, the server assigns the next available
+    /// ``label_index``. When set, the index is pinned to the provided value via
+    /// a two-pass ``label.update`` — use this to preserve COCO ``category_id``
+    /// or other non-contiguous source indices across round-trips.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     name: Label name, unique within the dataset.
+    ///     index: Optional source-faithful ``label_index`` to assign.
+    ///
+    /// Raises:
+    ///     Error: If the requested index is already held by a different label.
+    ///
+    /// Example:
+    ///     >>> client.add_label(dataset_id, "person")          # server-assigned index
+    ///     >>> client.add_label(dataset_id, "person", index=1) # pin to index 1
+    #[pyo3(signature = (dataset_id, name, index=None))]
     #[tokio_wrap::sync]
-    pub fn add_label<'py>(&self, dataset_id: Bound<'py, PyAny>, name: &str) -> Result<(), Error> {
+    pub fn add_label<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+        index: Option<u64>,
+    ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
-        Ok(self.0.add_label(dataset_id.0, name).await?)
+        match index {
+            None => Ok(self.0.add_label(dataset_id.0, name).await?),
+            Some(i) => Ok(self.0.add_label_with_index(dataset_id.0, name, i).await?),
+        }
+    }
+
+    /// Add multiple labels, optionally assigning source-faithful indices.
+    ///
+    /// When ``indices`` is ``None``, creates all labels with server-assigned
+    /// indices in one request. When provided, pins each label to the
+    /// corresponding index value (``None`` entries use server defaults).
+    /// Existing labels are skipped without error. Uses a two-pass update to
+    /// avoid collisions when labels within the batch swap positions.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     names: List of label names to create.
+    ///     indices: Optional list of ``label_index`` values parallel to
+    ///         ``names``. Must have the same length as ``names`` when provided.
+    ///         Use ``None`` entries to let the server assign specific labels.
+    ///
+    /// Raises:
+    ///     Error: If ``indices`` length differs from ``names``, or if any
+    ///         requested index conflicts with an existing unrelated label.
+    #[pyo3(signature = (dataset_id, names, indices=None))]
+    #[tokio_wrap::sync]
+    pub fn add_labels<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        names: Vec<String>,
+        indices: Option<Vec<Option<u64>>>,
+    ) -> Result<(), Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        match indices {
+            None => Ok(self.0.add_labels(dataset_id.0, &names).await?),
+            Some(indices) => Ok(self
+                .0
+                .add_labels_with_indices(dataset_id.0, &names, &indices)
+                .await?),
+        }
     }
 
     #[tokio_wrap::sync]
@@ -5216,6 +6031,87 @@ impl Client {
         }?;
 
         Ok(df)
+    }
+
+    /// Update image dimensions for existing samples in a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset containing the samples
+    ///     updates: List of tuples (sample_id, width, height)
+    ///
+    /// Returns:
+    ///     Number of samples successfully updated
+    #[pyo3(signature = (dataset_id, updates))]
+    #[tokio_wrap::sync]
+    pub fn update_sample_dimensions<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        updates: Vec<(Bound<'py, PyAny>, u32, u32)>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let updates: Vec<edgefirst_client::SampleDimensionUpdate> = updates
+            .into_iter()
+            .map(|(id, width, height)| {
+                let id: SampleID = id.try_into()?;
+                Ok(edgefirst_client::SampleDimensionUpdate {
+                    id: id.0,
+                    width,
+                    height,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+
+        Ok(self
+            .0
+            .update_sample_dimensions(dataset_id.0, updates)
+            .await?)
+    }
+
+    /// Backfill missing image dimensions for a dataset.
+    ///
+    /// Downloads image data for samples missing width/height, extracts
+    /// dimensions, and updates the server with the computed values.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset to backfill
+    ///     progress: Optional callback(current, total, status)
+    ///
+    /// Returns:
+    ///     Number of samples whose dimensions were updated
+    #[pyo3(signature = (dataset_id, progress = None))]
+    pub fn backfill_sample_dimensions<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        progress: Option<Py<PyAny>>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+
+        match progress {
+            Some(progress) => {
+                let (tx, mut rx) = mpsc::channel(1);
+
+                let client = Client(self.0.clone());
+                let task = std::thread::spawn(move || {
+                    client.backfill_sample_dimensions_sync(dataset_id, Some(tx))
+                });
+
+                while let Some(status) = rx.blocking_recv() {
+                    Python::attach(|py| {
+                        if progress
+                            .call1(py, (status.current, status.total, status.status.clone()))
+                            .is_err()
+                        {
+                            progress
+                                .call1(py, (status.current, status.total))
+                                .expect("Progress callback should be callable");
+                        }
+                    });
+                }
+
+                Ok(task.join().unwrap()?)
+            }
+            None => Ok(self.backfill_sample_dimensions_sync(dataset_id, None)?),
+        }
     }
 
     #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], version = None))]
@@ -6028,6 +6924,290 @@ impl Client {
         ))
     }
 
+    /// Create a new validation session (Studio `cloud.server.start`).
+    ///
+    /// Pass ``is_local=True`` for a user-managed session: the session
+    /// row is created and data uploads / downloads work normally, but
+    /// no EC2 instance is provisioned and no automated validator
+    /// pipeline runs. That is the mode the test fixtures use — the
+    /// caller is responsible for cleanup via
+    /// :py:meth:`delete_validation_sessions`.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (
+        project_id,
+        name,
+        training_session_id,
+        model_file,
+        val_type,
+        params = HashMap::new(),
+        is_local = false,
+        is_kubernetes = false,
+        description = None,
+        dataset_id = None,
+        annotation_set_id = None,
+        snapshot_id = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_validation_session<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        name: &str,
+        training_session_id: Bound<'py, PyAny>,
+        model_file: &str,
+        val_type: &str,
+        params: HashMap<String, Bound<'py, PyAny>>,
+        is_local: bool,
+        is_kubernetes: bool,
+        description: Option<&str>,
+        dataset_id: Option<Bound<'py, PyAny>>,
+        annotation_set_id: Option<Bound<'py, PyAny>>,
+        snapshot_id: Option<Bound<'py, PyAny>>,
+    ) -> Result<NewValidationSession, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let training_session_id: TrainingSessionID = training_session_id.try_into()?;
+        let dataset_id = match dataset_id {
+            Some(v) => Some(DatasetID::try_from(v)?.0),
+            None => None,
+        };
+        let annotation_set_id = match annotation_set_id {
+            Some(v) => Some(AnnotationSetID::try_from(v)?.0),
+            None => None,
+        };
+        let snapshot_id = match snapshot_id {
+            Some(v) => Some(SnapshotID::try_from(v)?.0),
+            None => None,
+        };
+        let mut params_map = HashMap::<String, edgefirst_client::Parameter>::new();
+        for (key, value) in params {
+            let value: Parameter = value.try_into()?;
+            params_map.insert(key, value.into());
+        }
+        let req = edgefirst_client::StartValidationRequest {
+            project_id: project_id.0,
+            name: name.to_string(),
+            training_session_id: training_session_id.0,
+            model_file: model_file.to_string(),
+            val_type: val_type.to_string(),
+            params: params_map,
+            is_local,
+            is_kubernetes,
+            description: description.map(|s| s.to_string()),
+            dataset_id,
+            annotation_set_id,
+            snapshot_id,
+        };
+        let inner = self.0.start_validation_session(req).await?;
+        Ok(NewValidationSession { inner })
+    }
+
+    /// Delete one or more validation sessions (Studio
+    /// ``validate.session.delete``).
+    ///
+    /// Accepts a list of ids in any of the forms ``TaskUID`` accepts
+    /// (``ValidationSessionID``, ``int``, or ``"v-…"`` string). Used in
+    /// integration-test teardown to remove sessions previously created
+    /// via :py:meth:`start_validation_session`.
+    #[tokio_wrap::sync]
+    pub fn delete_validation_sessions<'py>(
+        &self,
+        session_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let mut ids = Vec::with_capacity(session_ids.len());
+        for v in session_ids {
+            let id: ValidationSessionID = v.try_into()?;
+            ids.push(id.0);
+        }
+        Ok(self.0.delete_validation_sessions(&ids).await?)
+    }
+
+    /// Delete one or more training sessions (Studio
+    /// ``trainer.session.delete``).
+    ///
+    /// **The server cascades this delete**: validation sessions attached
+    /// to the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints. The reverse is not true — deleting a
+    /// validation session never affects its parent training session.
+    #[tokio_wrap::sync]
+    pub fn delete_training_sessions<'py>(
+        &self,
+        session_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let mut ids = Vec::with_capacity(session_ids.len());
+        for v in session_ids {
+            let id: TrainingSessionID = v.try_into()?;
+            ids.push(id.0);
+        }
+        Ok(self.0.delete_training_sessions(&ids).await?)
+    }
+
+    /// Update the name and/or description of a training session,
+    /// returning the refreshed session. Fields left as ``None`` are not
+    /// modified; at least one must be provided.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (session_id, name = None, description = None))]
+    pub fn update_training_session<'py>(
+        &self,
+        session_id: Bound<'py, PyAny>,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<TrainingSession, Error> {
+        let session_id: TrainingSessionID = session_id.try_into()?;
+        let inner = self
+            .0
+            .update_training_session(session_id.0, name, description)
+            .await?;
+        Ok(TrainingSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
+        ))
+    }
+
+    /// Update the name and/or description of a validation session,
+    /// returning the refreshed session. Fields left as ``None`` are not
+    /// modified; at least one must be provided.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (session_id, name = None, description = None))]
+    pub fn update_validation_session<'py>(
+        &self,
+        session_id: Bound<'py, PyAny>,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<ValidationSession, Error> {
+        let session_id: ValidationSessionID = session_id.try_into()?;
+        let inner = self
+            .0
+            .update_validation_session(session_id.0, name, description)
+            .await?;
+        Ok(ValidationSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
+        ))
+    }
+
+    /// List the trainer types available on the server. Pass a returned
+    /// ``schema_type`` to :py:meth:`trainer_schema` for the full
+    /// parameter schema, or to :py:meth:`start_training_session`.
+    #[tokio_wrap::sync]
+    pub fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, Error> {
+        Ok(self
+            .0
+            .trainer_schemas()
+            .await?
+            .into_iter()
+            .map(TrainerSchemaInfo)
+            .collect())
+    }
+
+    /// Fetch the parameter schema for a specific trainer type. The
+    /// returned fields describe the hyperparameters accepted by
+    /// :py:meth:`start_training_session`.
+    #[tokio_wrap::sync]
+    pub fn trainer_schema(&self, schema_type: &str) -> Result<Vec<SchemaField>, Error> {
+        Ok(self
+            .0
+            .trainer_schema(schema_type)
+            .await?
+            .into_iter()
+            .map(SchemaField)
+            .collect())
+    }
+
+    /// List the validator schemas available on the server. Each schema
+    /// carries its parameter field descriptors inline.
+    #[tokio_wrap::sync]
+    pub fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
+        Ok(self
+            .0
+            .validator_schemas()
+            .await?
+            .into_iter()
+            .map(ValidatorSchema)
+            .collect())
+    }
+
+    /// Launch a new training session (Studio ``cloud.server.start``).
+    ///
+    /// The session trains on a single dataset using group-based
+    /// train/validation splits. ``tag_name`` defaults to the dataset's
+    /// latest tag (it is an error if the dataset has no tags);
+    /// ``train_group`` / ``val_group`` default to the dataset's standard
+    /// ``train`` / ``val`` groups.
+    ///
+    /// Pass ``is_local=True`` for a user-managed session: the session
+    /// row is created but no cloud instance is provisioned — the caller
+    /// runs the training loop and uploads artifacts/metrics. Cleanup is
+    /// via :py:meth:`delete_training_sessions`.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (
+        project_id,
+        name,
+        experiment_id,
+        trainer_type,
+        dataset_id,
+        annotation_set_id,
+        params = HashMap::new(),
+        tag_name = None,
+        train_group = None,
+        val_group = None,
+        session_name = None,
+        session_description = None,
+        weights_session = None,
+        is_local = false,
+        is_kubernetes = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_training_session<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        name: &str,
+        experiment_id: Bound<'py, PyAny>,
+        trainer_type: &str,
+        dataset_id: Bound<'py, PyAny>,
+        annotation_set_id: Bound<'py, PyAny>,
+        params: HashMap<String, Bound<'py, PyAny>>,
+        tag_name: Option<&str>,
+        train_group: Option<&str>,
+        val_group: Option<&str>,
+        session_name: Option<&str>,
+        session_description: Option<&str>,
+        weights_session: Option<Bound<'py, PyAny>>,
+        is_local: bool,
+        is_kubernetes: bool,
+    ) -> Result<NewTrainingSession, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let experiment_id: ExperimentID = experiment_id.try_into()?;
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let weights_session = match weights_session {
+            Some(v) => Some(TrainingSessionID::try_from(v)?.0),
+            None => None,
+        };
+        let mut params_map = HashMap::<String, edgefirst_client::Parameter>::new();
+        for (key, value) in params {
+            let value: Parameter = value.try_into()?;
+            params_map.insert(key, value.into());
+        }
+        let req = edgefirst_client::StartTrainingRequest {
+            project_id: project_id.0,
+            name: name.to_string(),
+            experiment_id: experiment_id.0,
+            trainer_type: trainer_type.to_string(),
+            dataset_id: dataset_id.0,
+            annotation_set_id: annotation_set_id.0,
+            tag_name: tag_name.map(|s| s.to_string()),
+            train_group: train_group.map(|s| s.to_string()),
+            val_group: val_group.map(|s| s.to_string()),
+            session_name: session_name.map(|s| s.to_string()),
+            session_description: session_description.map(|s| s.to_string()),
+            weights_session,
+            params: params_map,
+            is_local,
+            is_kubernetes,
+        };
+        let inner = self.0.start_training_session(req).await?;
+        Ok(NewTrainingSession { inner })
+    }
+
     #[tokio_wrap::sync]
     pub fn snapshots(&self) -> Result<Vec<Snapshot>, Error> {
         let client_arc = Arc::new(self.0.clone());
@@ -6489,7 +7669,8 @@ impl Client {
 
     /// Get the information about a specific task.
     #[tokio_wrap::sync]
-    pub fn task_info(&self, task_id: TaskID) -> Result<TaskInfo, Error> {
+    pub fn task_info<'py>(&self, task_id: Bound<'py, PyAny>) -> Result<TaskInfo, Error> {
+        let task_id: TaskID = task_id.try_into()?;
         Ok(TaskInfo(self.0.task_info(task_id.0).await?))
     }
 
@@ -6526,6 +7707,72 @@ impl Client {
             .update_stage(task_id.0, stage, status, message, percentage)
             .await?;
         Ok(())
+    }
+
+    /// Launch a job (app run) on EdgeFirst Studio.
+    ///
+    /// Args:
+    ///     app_name: The app code to run (e.g. ``"edgefirst-validator"``).
+    ///     job_name: A user-supplied label for this job run.
+    ///     env: Optional environment variables to pass to the job.
+    ///     data: Optional data parameters for the job (arbitrary JSON via
+    ///         `Parameter`).
+    ///
+    /// Returns:
+    ///     Job: The full job record returned by the server (BK_BATCH wrapper),
+    ///     including AWS Batch job ID, state, and the linked task ID.
+    ///     Call ``.task_id()`` on the result to obtain a `TaskID` for use with
+    ///     ``client.task_info(task_id)``.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server rejects the request.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (app_name, job_name, env=None, data=None))]
+    pub fn job_run(
+        &self,
+        app_name: &str,
+        job_name: &str,
+        env: Option<std::collections::HashMap<String, String>>,
+        data: Option<std::collections::HashMap<String, Parameter>>,
+    ) -> Result<Job, Error> {
+        let env = env.unwrap_or_default();
+        let data: std::collections::HashMap<String, edgefirst_client::Parameter> = data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+        Ok(Job(self.0.job_run(app_name, job_name, env, data).await?))
+    }
+
+    /// List job (app-run) entries visible to the authenticated user.
+    ///
+    /// Args:
+    ///     name: Optional substring filter applied client-side against each
+    ///         job's ``job_name``.
+    ///
+    /// Returns:
+    ///     List[Job]: Jobs visible to the current user.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server returns an error.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (name=None))]
+    pub fn jobs(&self, name: Option<&str>) -> Result<Vec<Job>, Error> {
+        Ok(self.0.jobs(name).await?.into_iter().map(Job).collect())
+    }
+
+    /// Request that a running job task be stopped.
+    ///
+    /// Args:
+    ///     task_id: The task ID of the job to stop (from ``job_run`` or
+    ///         ``jobs``).
+    ///
+    /// Raises:
+    ///     RuntimeError: If the server rejects the request.
+    #[tokio_wrap::sync]
+    pub fn job_stop<'py>(&self, task_id: Bound<'py, PyAny>) -> Result<(), Error> {
+        let task_id: TaskID = task_id.try_into()?;
+        Ok(self.0.job_stop(task_id.0).await?)
     }
 }
 
@@ -6606,6 +7853,17 @@ impl Client {
             )
             .await?;
         Ok(PyDataFrame(df))
+    }
+
+    #[tokio_wrap::sync]
+    fn backfill_sample_dimensions_sync(
+        &self,
+        dataset_id: DatasetID,
+        progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+    ) -> Result<u64, edgefirst_client::Error> {
+        self.0
+            .backfill_sample_dimensions(dataset_id.0, progress)
+            .await
     }
 
     #[tokio_wrap::sync]
@@ -7739,6 +8997,12 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Experiment>()?;
     m.add_class::<TrainingSession>()?;
     m.add_class::<ValidationSession>()?;
+    m.add_class::<NewValidationSession>()?;
+    m.add_class::<NewTrainingSession>()?;
+    m.add_class::<TrainerSchemaInfo>()?;
+    m.add_class::<SchemaField>()?;
+    m.add_class::<SchemaOption>()?;
+    m.add_class::<ValidatorSchema>()?;
     m.add_class::<Snapshot>()?;
     m.add_class::<SnapshotRestoreResult>()?;
     m.add_class::<SnapshotFromDatasetResult>()?;
@@ -7762,6 +9026,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Task>()?;
     m.add_class::<TaskInfo>()?;
     m.add_class::<Stage>()?;
+    m.add_class::<TaskDataList>()?;
+    m.add_class::<Job>()?;
 
     // Version management types
     m.add_class::<VersionTag>()?;

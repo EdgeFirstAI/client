@@ -19,6 +19,252 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings and `.pyi` type stubs for all new versioning APIs
 - Swift/Kotlin FFI bindings for versioning types and methods
 - Integration tests for tag lifecycle, tagged data fetch, changelog, and restore workflows
+- Training session management: `Client::delete_training_sessions` (`trainer.session.delete`; the server cascades the delete to attached validation sessions) and `Client::update_training_session` for renaming/editing descriptions
+- Validation session management: `Client::update_validation_session` for renaming/editing descriptions; deleting validation sessions never affects the parent training session
+- Training session launch: `Client::start_training_session` (`cloud.server.start`) with `StartTrainingRequest`/`NewTrainingSession` — group-based dataset splits, dataset tag defaulting to the latest tag, and train/val groups defaulting to the dataset's standard split
+- Trainer/validator schema queries: `Client::trainer_schemas`, `Client::trainer_schema`, `Client::validator_schemas` with typed `SchemaField` descriptors (tolerant of unknown field types) for discovering launch hyperparameters
+- `Client::dataset_tags` (`tags.list_dataset`) for dataset version tag listing and latest-tag resolution
+- CLI commands: `start-training-session`, `update-training-session`, `delete-training-sessions`, `trainer-schemas`, `trainer-schema`, `update-validation-session`, `delete-validation-sessions`, `validator-schemas`
+- Python bindings and `.pyi` stubs for all new session management and schema APIs (`NewTrainingSession`, `TrainerSchemaInfo`, `SchemaField`, `SchemaOption`, `ValidatorSchema`)
+- Swift/Kotlin FFI bindings (sync + async) for the new APIs, plus previously missing `start_validation_session` and `delete_validation_sessions`
+
+### Notes
+
+- Removing individual artifacts from a session is deferred: EdgeFirst Studio has no server-side RPC for artifact deletion; artifacts are only removed when their training session is deleted
+
+## [2.11.1] - 2026-06-25
+
+### Added
+
+- Python tutorial suite under `examples/`: paired `.py` scripts and `.ipynb` notebooks covering authentication, Coffee Cup (`ds-145f`) read workflows, Polars/Pandas DataFrames, downloads, and sandbox write examples (DE-2762)
+- `examples/README.md` with PyPI quick start (`pip install edgefirst-client` installs CLI + Python API)
+- `examples/requirements.txt` listing the tutorials' optional dependencies (tqdm, Pillow, Pandas, pyarrow, Jupyter)
+
+### Changed
+
+- `CLI.md`: pip install note, Coffee Cup examples, Python integration section, cross-links to `examples/`
+- `edgefirst_client.pyi`: module overview, example cross-references, removed stale `with_token_path` doc examples
+- `examples/05_download_dataset.py`: writes a flat YOLO/Darknet layout (`images/<group>/` + `labels/<group>/`) instead of nested sequence directories
+- Refreshed `Cargo.lock` (quinn-proto, memmap2, rustls, uniffi, and related crates) and hash-locked `requirements.txt` for CI security audit and `--require-hashes` installs
+
+### Fixed
+
+- Removed the stale `test/test_examples.py`, which imported the deleted `examples/download.py` and broke Python test discovery in CI
+- `examples/05_download_dataset.ipynb`: parses arguments with defaults so the notebook no longer fails on Jupyter's injected `-f kernel.json`
+- Example scripts raise an actionable message pointing to `examples/requirements.txt` when an optional dependency (tqdm, Pillow) is missing
+- `download-annotations`: send the server-recognized annotation type names (`box2d`/`box3d`/`mask`) for the `--types` filter; previously `box`/`seg` were sent, silently dropping the filter so JSON/Arrow exports returned no annotations (DE-2762)
+- `delete-annotation-set`: call the server's `annset.del` RPC instead of the non-existent `annset.delete` (was failing with `Invalid Method`)
+- `restore-snapshot`: tolerate snapshot responses that omit the `date` field instead of failing with `missing field 'date'`
+- `validate-snapshot --verbose`: no longer panics; the flag now routes through the global verbosity option instead of a colliding local definition
+- `organization`: also reports Funds and Total available (via `accounting.get_usage_summary`), so users with funds but no plan credits no longer see only `Credits: 0`
+- Invalid `--types` values now list the accepted file types in the error message
+
+## [2.11.0] - 2026-06-12
+
+### Added
+
+- `Client::add_label_with_index` — create a single label with a caller-specified `label_index`; used by `upload-dataset` to preserve source indices
+- `Client::add_labels_with_indices` — batch-create labels with explicit index values in one request (`label.add2` + `label.update`)
+
+### Fixed
+
+- `upload-dataset`: `label_index` values from the source dataset (COCO `category_id`, LVIS, etc.) are now preserved on snapshot upload. Previously labels were assigned new auto-incremented indices, causing snapshots to diverge from the source and breaking downstream workflows that depend on stable category indices (DE-2709)
+- `edgefirst_client.pyi`: corrected `Box2d.__init__` parameter names from `left`/`top` back to `x`/`y` to match the Rust implementation; fixed `set_stages` parameter type from `Dict[str, str]` to `List[Tuple[str, str]]`; aligned additional method signatures with their runtime counterparts (DE-2693)
+
+### Changed
+
+- Updated Rust workspace dependencies (Polars 0.54, PyO3 0.28, pyo3-polars 0.27, and related crates)
+- Upgraded `ctor` 1.0, `sha1`/`sha2` 0.11, `png` 0.18, `dirs` 6.0, and `thiserror` 2.0 for project hygiene
+- Added `#[pyclass(from_py_object)]` on Python binding types that implement `Clone` (PyO3 0.28 migration)
+- Refreshed hash-locked Python test/build dependencies in `requirements.txt`
+
+### Security
+
+- Added `.cargo/audit.toml` ignores for [RUSTSEC-2026-0176](https://rustsec.org/advisories/RUSTSEC-2026-0176) and [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177) until `pyo3-polars` and `rust-numpy` publish PyO3 0.29-compatible releases (same upstream blocker as [pola-rs/polars#27949](https://github.com/pola-rs/polars/pull/27949))
+
+## [2.10.3] - 2026-06-04
+
+### Added
+
+- `Client::add_labels` — create multiple labels in one request (`label.add2`),
+  used to pre-create a dataset's full label set before a bulk upload
+
+### Changed
+
+- `upload-dataset`: sample batches now upload through a fixed pool of
+  `EDGEFIRST_UPLOAD_BATCHES` worker tasks (default **4**) instead of an 8-wide
+  `buffer_unordered` pipeline, giving deterministic concurrency. A validation
+  depth sweep showed throughput scaling cleanly with depth but strong diminishing
+  returns past 4 (≈93% of depth-8 throughput at half the concurrent
+  S3/`populate2` load), hence the default of 4
+- `upload-dataset`: the dataset's labels are now pre-created (and verified
+  committed) before the concurrent batches run, in addition to groups. Server
+  profiling showed concurrent `populate2` calls racing on per-annotation label
+  creation (`AddLabel`) was the dominant cost under concurrency; pre-creating the
+  known label set up front removes the contention
+
+## [2.10.2] - 2026-06-03
+
+### Changed
+
+- `upload-dataset`: sample batches are now uploaded through a pipeline (up to 8
+  concurrent batches, configurable via the `EDGEFIRST_UPLOAD_BATCHES` env var)
+  instead of strictly one at a time. This overlaps each batch's
+  `samples.populate2` RPC with other batches' presigned-URL file uploads —
+  profiling a full COCO 2017 upload (123,287 samples) showed these were ~37% and
+  ~63% of wall time respectively and previously never overlapped because batches
+  ran serially. The bulk-transfer HTTP client also keeps more idle connections
+  warm (`pool_max_idle_per_host` 10 → 64) to reuse TLS connections across the
+  wider upload fan-out
+
+### Fixed
+
+- `upload-dataset`: presigned-URL file uploads now retry transient transport
+  errors such as hyper's `IncompleteMessage` (a peer closing a keep-alive
+  connection mid-send), not just timeouts and connect failures. The upload body
+  is buffered in memory and the PUT is idempotent, so replaying is safe. These
+  transients are rare during serial uploads but common under high-concurrency
+  pipelined uploads, where a single unretried blip previously aborted the entire
+  upload
+- `coco-to-arrow`: images without annotations are no longer dropped during
+  COCO→Arrow conversion. Every image in the COCO `images` array now produces a
+  row (null label, with the dataset `group` preserved), so train/val splits
+  cover all images. Previously a placeholder row was emitted only for LVIS
+  images carrying `neg_category_ids` / `not_exhaustive_category_ids`, silently
+  losing ordinary unannotated images (e.g. 1069 COCO 2017 images: 48 val +
+  1021 train)
+- `upload-dataset`: fixed an O(n²) slowdown in Arrow parsing
+  (`parse_annotations_from_arrow`) that re-cast the entire Categorical `group`
+  and `label` columns on every row. The casts are now hoisted out of the row
+  loop, making parsing linear in the number of rows. Parsing the full COCO 2017
+  train Arrow (118,287 images / 861k annotation rows) dropped from ~37 h
+  (an effective hang) to ~10 s
+
+### Documentation
+
+- `CLI.md`: documented the `update-dimensions` command shipped in 2.10.1 (was missing from the 2.10.1 docs); described batching, progress output, and the FFI no-progress limitation
+- `edgefirst_client.pyi`: added usage examples for `update_sample_dimensions` and `backfill_sample_dimensions`, and clarified that the progress `total` counts only samples missing dimensions (not the full dataset)
+
+## [2.10.1] - 2026-05-19
+
+### Added
+
+- `Client::update_sample_dimensions` — batch-update image dimensions for
+  existing samples in a dataset
+- `Client::backfill_sample_dimensions` — one-time repair operation that
+  downloads images, extracts dimensions, and updates the server for legacy
+  datasets missing width/height metadata
+- CLI command `edgefirst update-dimensions <dataset_id>` — triggers dimension
+  backfill with progress reporting
+- Python bindings for both new methods with progress callback support
+- UniFFI (Swift/Kotlin) bindings for both new methods
+
+### Fixed
+
+- Multipart upload (`Val_Data_Upload`) now processes all files in a batch
+  instead of silently dropping every file after the first
+
+## [2.10.0] - 2026-05-17
+
+### Versioning note
+
+This release contains breaking changes (see "Changed (BREAKING)" and
+"Compatibility notes" below). A strict SemVer reading would call for a
+3.0.0 major bump. The maintainers have deliberately chosen to ship this
+as a 2.10.0 minor bump consistent with the project's established
+cadence for the internal client SDK; the breaking changes are
+narrowly scoped, fully documented here, and accompanied by inline
+migration recipes for every renamed API.
+
+### Added
+
+- New SDK methods to support EdgeFirst Profiler + Validator workflows (DE-2565):
+  - `Client::job_run` — submit a Studio batch job; returns a `Job` (the full server `BK_BATCH` response: code, title, job_name, job_id, state, launch, task_id)
+  - `Client::jobs` — list batch jobs visible to the authenticated user (returns `Vec<Job>`; optional client-side substring `name` filter)
+  - `Client::job_stop` — request termination of a running job by `TaskID`
+  - `TaskInfo::data_list`, `upload_data`, `download_data` — task data artefact list / multipart upload / streaming download (no `data_delete` yet — server endpoint not exposed)
+  - `TaskInfo::list_charts`, `get_chart`, `add_chart` — task charts API; charts are S3-backed JSON blobs identified by `(group, name)` with upsert semantics. `get_chart` returns the raw chart body as a `Parameter`
+  - `ValidationSession::download_data` — streaming download of a single file from `val.data.download`
+  - `ValidationSession::data_list` — flat `Vec<String>` of relative file paths in the session data folder (matches the server's `val.data.list` shape)
+  - `Client::start_validation_session` — wraps `cloud.server.start` with `type: "validation"` and the [`StartValidationRequest`] param shape. Pass `is_local: true` for a **user-managed** session: the DB row is created and the session is fully usable for data uploads / downloads / metric updates, but no EC2 instance is provisioned and no automated validator pipeline runs. Used by the Python integration tests to create their own fixture session in `setUpClass` instead of mutating an arbitrary live session. Returns `NewValidationSession { task_id, session_id }`
+  - `Client::delete_validation_sessions` — wraps `validate.session.delete` (plural `session_ids` array). Used by the same Python tests to tear down their fixture in `tearDownClass`
+- New `StartValidationRequest` input struct and `NewValidationSession` result struct backing the two methods above
+- New `TaskDataList` type representing folder→filename listings on tasks
+- New `Job` type modelling an AWS Batch job entry with linked `task_id` (returned by `Client::job_run` and `Client::jobs`). Use `Job::task_id()` and `Client::task_info` to fetch the underlying task. In the Rust core, `Job::task_id` is `i64` to match the server's Go `int64`; the accessor saturates negative values at zero. In the UniFFI (Swift/Kotlin) layer, `Job.taskId` is exposed as a `TaskId` record so it can be passed directly to `Client.taskInfo` / `Client.jobStop` without manual conversion — the saturation happens in the core-to-FFI boundary
+- New `Error` variants: `TaskNotFound(TaskID)`, `PermissionDenied(String)`, `PayloadTooLarge { method, size_hint }`, and `InsecureUrl(String)`. The first three are emitted by the new DE-2565 methods only — existing methods continue returning `Error::RpcError(code, message)` unchanged. `TaskNotFound` fires whenever the server returns its error code `101` (resource-not-found) and the caller passed a `task_id`, regardless of the human-readable message phrasing (the server emits a mix of `"not found"`, `"Cannot find task..."`, etc.). `PermissionDenied` fires on codes `401`/`403` and records the RPC method for diagnostics. `PayloadTooLarge` fires both on the HTTP-status path of `rpc_download` for `413` responses and on JSON-RPC code `413` envelopes. `InsecureUrl` is returned by `Client::with_url` (and by `Client::with_server` when given a full URL) for plain `http://` to non-loopback hosts — see the new HTTPS enforcement note below
+- Internal `Client::rpc_download` helper for binary-streaming JSON-RPC responses. Detects `Content-Type: application/json` on HTTP 200 and surfaces the JSON-RPC error envelope as `Error::RpcError` rather than streaming an error blob to disk
+- Internal `stream_response_to_file` helper shared by `download_artifact` and `rpc_download` (deduplicates the stream-with-progress-to-disk path)
+- Python (PyO3) and UniFFI (Swift/Kotlin) bindings for all of the above
+- Integration test scaffolding: `test/test_jobs.py` (jobs() + job_stop smoke against an invalid task ID), `test/test_task_data.py`, `test/test_task_charts.py`, `test/test_val_data.py` (gated on `STUDIO_*` plus per-test ID env vars; `job_run` end-to-end test is out of scope until a no-op test app exists on the staging server)
+
+### Changed (BREAKING)
+
+- `ValidationSession::upload` renamed to `upload_data`, now takes an optional
+  `folder` parameter, and targets the new `val.data.upload` endpoint. The new
+  server endpoint uses singular `session_id` (not `session_ids`), supports a
+  `folder` argument, and uses session-scoped permissions.
+
+  Migration:
+
+  ```rust
+  // before (2.9.x)
+  session.upload(&client, &files).await?;
+
+  // after (2.10.0)
+  session.upload_data(&client, &files, None, None).await?;
+  // (the third argument is `folder: Option<&str>`; pass `Some("subdir")`
+  //  to target a subfolder. The fourth is `progress: Option<Sender<Progress>>`
+  //  — pass a `Sender<Progress>` to receive byte-level upload progress events.)
+  ```
+
+  Python:
+
+  ```python
+  # before
+  session.upload(client, files)
+  # after
+  session.upload_data(client, files)            # folder defaults to None
+  session.upload_data(client, files, "subdir")  # with folder
+  ```
+
+### Compatibility notes
+
+- The `Error` enum is **not** `#[non_exhaustive]`. Adding the four new variants is technically a breaking change for downstream `match err { ... }` arms — affected callers must add a wildcard arm (`_ =>`) or extend their match to cover `TaskNotFound`, `PermissionDenied`, `PayloadTooLarge`, and `InsecureUrl`. This is the documented mitigation rather than introducing `#[non_exhaustive]` (which itself constitutes a breaking pattern shift)
+- `Client::with_url` now enforces HTTPS. Plain `http://` URLs are rejected with `Error::InsecureUrl(url)` unless the host is a loopback address (`127.0.0.1`, `::1`, `localhost`, `*.localhost`), because the Studio bearer token rides in the `Authorization` header and would otherwise leak in the clear. Non-`http(s)` schemes (`file://`, `ftp://`, …) are also rejected. `Client::with_server` validates full-URL inputs through the same check, so any code that was previously passing `http://studio.example.com` to either method must migrate to HTTPS
+- `Client::with_server` now clears the bearer token (both in-memory and from `TokenStorage`) whether the caller passed a short name (`"test"`) or a full URL (`"https://studio.example.com"`). Previously the full-URL path short-circuited through `with_url` and preserved the old token; callers that relied on that behaviour for self-hosted Studio deployments must re-authenticate after `with_server`
+- `Job::launch` is exposed as `Option<DateTime<Utc>>` in the Rust core. UniFFI bindings expose it as `Option<String>` (RFC 3339) because UniFFI does not natively bridge `DateTime`. Python bindings omit the field entirely; use `job.state` to distinguish completed runs
+- Upload progress channels: `TaskInfo::upload_data` and `ValidationSession::upload_data` both emit byte-level progress events via the optional `progress: Option<Sender<Progress>>` channel. Progress is reported as the multipart body streams to the server. All bindings (Rust core, Python, UniFFI/Swift/Kotlin) wire progress through the same path as downloads
+
+## [2.9.5] - 2026-04-29
+
+### Security
+
+- Upgrade transitive `rustls-webpki` dependency from `0.103.12` to `0.103.13` to address [RUSTSEC-2026-0104](https://rustsec.org/advisories/RUSTSEC-2026-0104) — a reachable panic in certificate revocation list parsing. Follow-up to the `0.103.10 → 0.103.12` bump in 2.9.4 (RUSTSEC-2026-0098/0099)
+
+### Added
+
+- `CocoDatasetBuilder::add_annotation_with_id` accepts an optional explicit annotation ID. When `Some`, the supplied ID is used verbatim and `next_annotation_id` is bumped past it so subsequent auto-generated IDs do not collide; when `None`, behaviour matches the pre-existing auto-increment path. Mirrors `add_category_with_id` semantics. Used to round-trip COCO/LVIS annotation IDs through Arrow
+
+### Fixed
+
+- **Arrow ↔ COCO/LVIS now round-trip annotation IDs losslessly.** `coco-to-arrow` populates the `object_id` column from the source COCO/LVIS annotation `id`, and `arrow-to-coco` reads `object_id` back, parses it as `u64`, and threads it into the `CocoDatasetBuilder` so the original ID is preserved in the output JSON. Previously every row was emitted with `object_id = None` on import and a fresh auto-incremented `id` on export, breaking downstream tools that rely on a stable per-instance identifier — most notably prompted-segmentation workflows where the annotation ID is the join key linking a predicted mask back to the ground-truth instance that prompted it. Source IDs are stringified as decimal `u64` so the full LVIS v1.0 ID range round-trips. Non-numeric `object_id` values (e.g., MCAP-derived instance UUIDs) parse to `None` and fall back to the auto-increment path on export
+
+## [2.9.4] - 2026-04-15
+
+### Security
+
+- Upgrade transitive `rustls-webpki` dependency from `0.103.10` to `0.103.12` to address [RUSTSEC-2026-0098](https://rustsec.org/advisories/RUSTSEC-2026-0098) (name constraints for URI names were incorrectly accepted) and [RUSTSEC-2026-0099](https://rustsec.org/advisories/RUSTSEC-2026-0099) (name constraints were accepted for certificates asserting a wildcard name). Both advisories were published 2026-04-14 and flagged by `cargo audit` on the release branch
+- `derive_file_name_from_coco_url` now rejects absolute paths, `..` traversals, Windows drive prefixes, and backslash separators so a malformed LVIS `coco_url` cannot escape the images directory when joined downstream
+
+### Added
+
+- `make security-audit` target mirroring the `.github/workflows` Security Audit job. Runs `cargo audit` and auto-installs `cargo-audit` if missing. Wired into both `make pre-commit` and `make pre-release` so advisory regressions fail locally before hitting CI
+
+### Fixed
+
+- **LVIS upload polygons were silently dropped by `samples.populate2`.** The `Annotation.polygon` field was renamed from `mask: Mask` in 2.9.0, but its wire key was not preserved — the client started sending `"polygon": [[[x,y]]]` while the server still expects `"mask": [[[x,y]]]`. Every polygon upload since 2.9.0 was lost server-side. Uploads now serialise polygons under the `mask` key again. The `test_annotation_serialization_with_mask_and_box` regression test now asserts the wire key explicitly so this cannot recur
+- `coco-to-arrow` now accepts LVIS v1 annotation JSON, which omits `file_name` on image records and expects consumers to derive the path from `coco_url`. `CocoImage.file_name` is now optional at the Serde layer and populated from `coco_url` during read via `fill_missing_file_names`
+- Arrow `label` column physical type widened from `Categorical(U8)` to `Categorical(U16)` so taxonomies larger than 255 labels fit. LVIS v1 has 1,203 categories and previously hit `"attempted to insert more categories than the maximum allowed"` during conversion
 
 ## [2.9.3] - 2026-04-06
 

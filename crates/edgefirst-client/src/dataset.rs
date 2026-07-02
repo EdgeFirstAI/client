@@ -103,6 +103,9 @@ impl TryFrom<&str> for FileType {
     type Error = crate::Error;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // Source of truth for accepted file-type tokens. When changing these
+        // arms, also update the user-facing lists in `Error::InvalidFileType`
+        // (error.rs) and the CLI `--types` help text (edgefirst-cli main.rs).
         match s {
             "image" => Ok(FileType::Image),
             "lidar.pcd" => Ok(FileType::LidarPcd),
@@ -276,19 +279,22 @@ impl From<&String> for AnnotationType {
 }
 
 impl AnnotationType {
-    /// Returns the server API type name for this annotation type.
+    /// Returns the annotation type name expected by the server's
+    /// samples/annotations RPC `types` filter.
     ///
-    /// The server uses different naming conventions than the client:
-    /// - `Box2d` → `"box"` (server) vs `"box2d"` (client display)
-    /// - `Box3d` → `"box3d"` (same)
-    /// - `Polygon` → `"seg"` (server) vs `"polygon"` (client display)
-    /// - `Mask` → `"seg"` (server) vs `"mask"` (client display)
+    /// The bridge endpoint accepts these I/O names and maps them to its
+    /// internal DB types (`box`/`3dbox`/`seg`) itself; sending the DB names
+    /// directly does not match the filter and silently drops it (see
+    /// dve-database `api/bridge_handler.go` `TYPE_MAP`).
+    /// - `Box2d` → `"box2d"`
+    /// - `Box3d` → `"box3d"`
+    /// - `Polygon` / `Mask` → `"mask"`
     pub fn as_server_type(&self) -> &'static str {
         match self {
-            AnnotationType::Box2d => "box",
+            AnnotationType::Box2d => "box2d",
             AnnotationType::Box3d => "box3d",
-            AnnotationType::Polygon => "seg",
-            AnnotationType::Mask => "seg",
+            AnnotationType::Polygon => "mask",
+            AnnotationType::Mask => "mask",
         }
     }
 }
@@ -407,6 +413,15 @@ impl Dataset {
 
     pub async fn add_label(&self, client: &Client, name: &str) -> Result<(), Error> {
         client.add_label(self.id, name).await
+    }
+
+    pub async fn add_label_with_index(
+        &self,
+        client: &Client,
+        name: &str,
+        index: u64,
+    ) -> Result<(), Error> {
+        client.add_label_with_index(self.id, name, index).await
     }
 
     pub async fn remove_label(&self, client: &Client, name: &str) -> Result<(), Error> {
@@ -1562,7 +1577,15 @@ pub struct Annotation {
     box2d: Option<Box2d>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box3d: Option<Box3d>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Polygon vertices for instance segmentation.
+    ///
+    /// Wire name is `mask` for historical reasons: the Rust field was
+    /// renamed from `mask: Mask` to `polygon: Polygon` after the
+    /// `samples.populate2` contract was already locked in, and the server
+    /// still expects the key to be `mask`. Uploads that emit `polygon`
+    /// here get silently dropped. Deserialisation accepts both names
+    /// because `AnnotationRaw` carries `alias = "mask"`.
+    #[serde(rename(serialize = "mask"), skip_serializing_if = "Option::is_none")]
     polygon: Option<Polygon>,
     /// PNG-encoded raster mask (populated from Arrow, not from Studio JSON-RPC).
     #[serde(skip)]
@@ -2119,11 +2142,15 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let objects_col: Column = Series::new("object_id".into(), objects).into();
 
     // Column name: "label" (NOT "label_name")
+    //
+    // Physical is U16 so taxonomies larger than 255 labels fit (LVIS v1 has
+    // 1,203 categories). U16 caps at 65,535 — comfortably above any realistic
+    // object-detection taxonomy — and only costs one extra byte per row vs U8.
     let labels_col: Column = Series::new("label".into(), labels)
         .cast(&DataType::Categorical(
-            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U8),
+            Categories::new("labels".into(), "labels".into(), CategoricalPhysical::U16),
             Arc::new(CategoricalMapping::with_hasher(
-                u8::MAX as usize,
+                u16::MAX as usize,
                 Default::default(),
             )),
         ))?
@@ -2788,6 +2815,29 @@ mod tests {
         assert_eq!(
             AnnotationType::try_from(AnnotationType::Polygon.to_string().as_str()).unwrap(),
             AnnotationType::Polygon
+        );
+    }
+
+    #[test]
+    fn test_annotation_type_as_server_type() {
+        // `as_server_type` returns the IO names the samples/annotations RPC
+        // accepts for its `types` filter; the server maps these to DB types.
+        // Note Polygon -> "mask" here (an accepted filter alias), which differs
+        // from the Display/column name ("polygon").
+        assert_eq!(AnnotationType::Box2d.as_server_type(), "box2d");
+        assert_eq!(AnnotationType::Box3d.as_server_type(), "box3d");
+        assert_eq!(AnnotationType::Polygon.as_server_type(), "mask");
+        assert_eq!(AnnotationType::Mask.as_server_type(), "mask");
+
+        // The server type differs from the Display name only for Polygon — the
+        // distinction the issue-#8 download-annotations fix depended on.
+        assert_ne!(
+            AnnotationType::Polygon.as_server_type(),
+            AnnotationType::Polygon.to_string().as_str()
+        );
+        assert_eq!(
+            AnnotationType::Box2d.as_server_type(),
+            AnnotationType::Box2d.to_string().as_str()
         );
     }
 
@@ -3572,11 +3622,20 @@ mod tests {
 
         let annotation_json = annotations[0].as_object().expect("annotation object");
         assert!(annotation_json.contains_key("box2d"));
-        assert!(annotation_json.contains_key("polygon"));
+        // samples.populate2 expects the polygon geometry under the "mask" key
+        // (historical: struct was renamed Rust-side from Mask to Polygon but
+        // the wire contract did not follow). Emitting "polygon" here is what
+        // caused polygons to be silently dropped on upload.
+        assert!(
+            annotation_json.contains_key("mask"),
+            "Annotation must serialise polygon under 'mask' key for samples.populate2; got keys: {:?}",
+            annotation_json.keys().collect::<Vec<_>>()
+        );
+        assert!(!annotation_json.contains_key("polygon"));
         assert!(!annotation_json.contains_key("x"));
         assert!(
             annotation_json
-                .get("polygon")
+                .get("mask")
                 .and_then(|value| value.as_array())
                 .is_some()
         );
@@ -4028,6 +4087,68 @@ mod tests {
             df.column("timing").is_err(),
             "All-null timing should be dropped"
         );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_size_column() {
+        // Samples with width/height should produce the size column
+        let sample1 = Sample {
+            image_name: Some("img1.jpg".to_string()),
+            width: Some(1920),
+            height: Some(1080),
+            ..Default::default()
+        };
+        let sample2 = Sample {
+            image_name: Some("img2.jpg".to_string()),
+            width: Some(640),
+            height: Some(480),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample1, sample2]).unwrap();
+
+        // Size column should be present (not dropped by all-null rule)
+        let size_col = df
+            .column("size")
+            .expect("size column should be present when width/height are set");
+        assert_eq!(size_col.len(), 2);
+
+        // Each row should be an Array(UInt32, 2) with [width, height]
+        let arr = size_col.array().expect("size column should be Array dtype");
+        let row0 = arr.get_as_series(0).unwrap();
+        let row0_vals: Vec<u32> = row0.u32().unwrap().into_no_null_iter().collect();
+        assert_eq!(row0_vals, vec![1920, 1080]);
+
+        let row1 = arr.get_as_series(1).unwrap();
+        let row1_vals: Vec<u32> = row1.u32().unwrap().into_no_null_iter().collect();
+        assert_eq!(row1_vals, vec![640, 480]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_size_column_partial() {
+        // When only some samples have dimensions, size column should still be present
+        let sample1 = Sample {
+            image_name: Some("img1.jpg".to_string()),
+            width: Some(1920),
+            height: Some(1080),
+            ..Default::default()
+        };
+        let sample2 = Sample {
+            image_name: Some("img2.jpg".to_string()),
+            // No width/height
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample1, sample2]).unwrap();
+
+        // Size column should be present (not all null)
+        let size_col = df
+            .column("size")
+            .expect("size column should be present when at least one sample has dimensions");
+        assert_eq!(size_col.len(), 2);
+        assert_eq!(size_col.null_count(), 1, "one row should be null");
     }
 
     #[cfg(feature = "polars")]
