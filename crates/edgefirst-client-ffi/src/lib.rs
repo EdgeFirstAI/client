@@ -974,6 +974,282 @@ impl From<core::TrainingSession> for TrainingSession {
     }
 }
 
+/// Catalog entry describing an available trainer type.
+///
+/// Returned by `Client::trainer_schemas`. The `schema_type` value is
+/// what gets passed to `Client::trainer_schema` and to
+/// `StartTrainingRequest::trainer_type`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TrainerSchemaInfo {
+    pub name: String,
+    pub label: String,
+    pub schema_type: String,
+}
+
+impl From<core::TrainerSchemaInfo> for TrainerSchemaInfo {
+    fn from(info: core::TrainerSchemaInfo) -> Self {
+        Self {
+            name: info.name,
+            label: info.label,
+            schema_type: info.schema_type,
+        }
+    }
+}
+
+/// The kind of input a `SchemaField` describes.
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum SchemaFieldType {
+    Group,
+    Slider,
+    Select,
+    Bool,
+    Int,
+    Float,
+    Text,
+    Date,
+    Project,
+    Dataset,
+    Trainer,
+    Upload,
+    /// Any type this client version does not recognize.
+    Unknown,
+}
+
+impl From<core::SchemaFieldType> for SchemaFieldType {
+    fn from(t: core::SchemaFieldType) -> Self {
+        match t {
+            core::SchemaFieldType::Group => SchemaFieldType::Group,
+            core::SchemaFieldType::Slider => SchemaFieldType::Slider,
+            core::SchemaFieldType::Select => SchemaFieldType::Select,
+            core::SchemaFieldType::Bool => SchemaFieldType::Bool,
+            core::SchemaFieldType::Int => SchemaFieldType::Int,
+            core::SchemaFieldType::Float => SchemaFieldType::Float,
+            core::SchemaFieldType::Text => SchemaFieldType::Text,
+            core::SchemaFieldType::Date => SchemaFieldType::Date,
+            core::SchemaFieldType::Project => SchemaFieldType::Project,
+            core::SchemaFieldType::Dataset => SchemaFieldType::Dataset,
+            core::SchemaFieldType::Trainer => SchemaFieldType::Trainer,
+            core::SchemaFieldType::Upload => SchemaFieldType::Upload,
+            core::SchemaFieldType::Unknown => SchemaFieldType::Unknown,
+        }
+    }
+}
+
+/// One selectable option of a `select` schema field.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SchemaOption {
+    /// Option value; may be any JSON scalar (string, number, …).
+    pub name: Option<Parameter>,
+    pub label: Option<String>,
+    /// Nested fields revealed when this option is selected.
+    pub children: Vec<SchemaField>,
+}
+
+impl From<core::SchemaOption> for SchemaOption {
+    fn from(o: core::SchemaOption) -> Self {
+        Self {
+            name: o.name.map(Parameter::from),
+            label: o.label,
+            children: o.children.into_iter().map(SchemaField::from).collect(),
+        }
+    }
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema. Describes one hyperparameter: its name, type, default and
+/// constraints. Nested parameter groups are exposed via `children`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SchemaField {
+    /// Parameter name — the key to use in the launch params map.
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub required: bool,
+    pub default: Option<Parameter>,
+    pub field_type: Option<SchemaFieldType>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub options: Vec<SchemaOption>,
+    pub children: Vec<SchemaField>,
+    pub is_dropdown: bool,
+    pub multi_select: bool,
+    pub is_multi_line: bool,
+    pub hidden: bool,
+    pub numeric_only: bool,
+    pub enable_tags_selection: bool,
+    pub enable_annotation_set_selection: bool,
+    pub values: Option<Vec<Parameter>>,
+}
+
+impl From<core::SchemaField> for SchemaField {
+    fn from(f: core::SchemaField) -> Self {
+        Self {
+            name: f.name,
+            label: f.label,
+            description: f.description,
+            required: f.required,
+            default: f.default.map(Parameter::from),
+            field_type: f.field_type.map(SchemaFieldType::from),
+            min: f.min,
+            max: f.max,
+            step: f.step,
+            options: f.options.into_iter().map(SchemaOption::from).collect(),
+            children: f.children.into_iter().map(SchemaField::from).collect(),
+            is_dropdown: f.is_dropdown,
+            multi_select: f.multi_select,
+            is_multi_line: f.is_multi_line,
+            hidden: f.hidden,
+            numeric_only: f.numeric_only,
+            enable_tags_selection: f.enable_tags_selection,
+            enable_annotation_set_selection: f.enable_annotation_set_selection,
+            values: f
+                .values
+                .map(|v| v.into_iter().map(Parameter::from).collect()),
+        }
+    }
+}
+
+/// A validator parameter schema, as returned by
+/// `Client::validator_schemas`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ValidatorSchema {
+    pub schema_type: String,
+    pub name: String,
+    pub schema: Vec<SchemaField>,
+}
+
+impl From<core::ValidatorSchema> for ValidatorSchema {
+    fn from(s: core::ValidatorSchema) -> Self {
+        Self {
+            schema_type: s.schema_type,
+            name: s.name,
+            schema: s.schema.into_iter().map(SchemaField::from).collect(),
+        }
+    }
+}
+
+/// Request payload for `Client::start_training_session`.
+///
+/// Launches a new training session against a single dataset using
+/// group-based train/validation splits. `tag_name: None` selects the
+/// dataset's latest tag; `train_group` / `val_group: None` use the
+/// dataset's default `train` / `val` split groups.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StartTrainingRequest {
+    pub project_id: ProjectId,
+    pub name: String,
+    pub experiment_id: ExperimentId,
+    pub trainer_type: String,
+    pub dataset_id: DatasetId,
+    pub annotation_set_id: AnnotationSetId,
+    pub tag_name: Option<String>,
+    pub train_group: Option<String>,
+    pub val_group: Option<String>,
+    pub session_name: Option<String>,
+    pub session_description: Option<String>,
+    pub weights_session: Option<TrainingSessionId>,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+}
+
+impl From<StartTrainingRequest> for core::StartTrainingRequest {
+    fn from(req: StartTrainingRequest) -> Self {
+        Self {
+            project_id: req.project_id.into(),
+            name: req.name,
+            experiment_id: req.experiment_id.into(),
+            trainer_type: req.trainer_type,
+            dataset_id: req.dataset_id.into(),
+            annotation_set_id: req.annotation_set_id.into(),
+            tag_name: req.tag_name,
+            train_group: req.train_group,
+            val_group: req.val_group,
+            session_name: req.session_name,
+            session_description: req.session_description,
+            weights_session: req.weights_session.map(Into::into),
+            params: req.params.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            is_local: req.is_local,
+            is_kubernetes: req.is_kubernetes,
+        }
+    }
+}
+
+/// Result of `Client::start_training_session`: the launch task id and
+/// the freshly-created training session id.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct NewTrainingSession {
+    pub task_id: TaskId,
+    pub session_id: Option<TrainingSessionId>,
+}
+
+impl From<core::NewTrainingSession> for NewTrainingSession {
+    fn from(s: core::NewTrainingSession) -> Self {
+        Self {
+            task_id: s.task_id.into(),
+            session_id: s.session_id.map(Into::into),
+        }
+    }
+}
+
+/// Request payload for `Client::start_validation_session`.
+///
+/// Set `is_local: true` for a user-managed session (no cloud instance
+/// is provisioned). One of `dataset_id` + `annotation_set_id` or
+/// `snapshot_id` selects the validation data source.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StartValidationRequest {
+    pub project_id: ProjectId,
+    pub name: String,
+    pub training_session_id: TrainingSessionId,
+    pub model_file: String,
+    pub val_type: String,
+    pub params: HashMap<String, Parameter>,
+    pub is_local: bool,
+    pub is_kubernetes: bool,
+    pub description: Option<String>,
+    pub dataset_id: Option<DatasetId>,
+    pub annotation_set_id: Option<AnnotationSetId>,
+    pub snapshot_id: Option<SnapshotId>,
+}
+
+impl From<StartValidationRequest> for core::StartValidationRequest {
+    fn from(req: StartValidationRequest) -> Self {
+        Self {
+            project_id: req.project_id.into(),
+            name: req.name,
+            training_session_id: req.training_session_id.into(),
+            model_file: req.model_file,
+            val_type: req.val_type,
+            params: req.params.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            is_local: req.is_local,
+            is_kubernetes: req.is_kubernetes,
+            description: req.description,
+            dataset_id: req.dataset_id.map(Into::into),
+            annotation_set_id: req.annotation_set_id.map(Into::into),
+            snapshot_id: req.snapshot_id.map(Into::into),
+        }
+    }
+}
+
+/// Result of `Client::start_validation_session`: the launch task id
+/// and the freshly-created validation session id.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct NewValidationSession {
+    pub task_id: TaskId,
+    pub session_id: Option<ValidationSessionId>,
+}
+
+impl From<core::NewValidationSession> for NewValidationSession {
+    fn from(s: core::NewValidationSession) -> Self {
+        Self {
+            task_id: s.task_id.into(),
+            session_id: s.session_id.map(Into::into),
+        }
+    }
+}
+
 /// A validation session in an experiment.
 ///
 /// This is a UniFFI object (handle) that wraps a `core::ValidationSession`
@@ -2305,6 +2581,118 @@ impl Client {
             .block_on(self.inner.validation_session(id.into()))?;
         Ok(Arc::new(ValidationSession::new(inner)))
     }
+
+    // =========================================================================
+    // Session Management
+    // =========================================================================
+
+    /// Delete one or more training sessions.
+    ///
+    /// The server cascades this delete: validation sessions attached to
+    /// the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints.
+    pub fn delete_training_sessions(
+        &self,
+        session_ids: Vec<TrainingSessionId>,
+    ) -> Result<(), ClientError> {
+        let ids: Vec<core::TrainingSessionID> = session_ids.into_iter().map(Into::into).collect();
+        Ok(self
+            .runtime
+            .block_on(self.inner.delete_training_sessions(&ids))?)
+    }
+
+    /// Delete one or more validation sessions.
+    ///
+    /// Only the validation sessions are removed; the parent training
+    /// session is never affected.
+    pub fn delete_validation_sessions(
+        &self,
+        session_ids: Vec<ValidationSessionId>,
+    ) -> Result<(), ClientError> {
+        let ids: Vec<core::ValidationSessionID> = session_ids.into_iter().map(Into::into).collect();
+        Ok(self
+            .runtime
+            .block_on(self.inner.delete_validation_sessions(&ids))?)
+    }
+
+    /// Update the name and/or description of a training session,
+    /// returning the refreshed session. Fields left as `None` are not
+    /// modified.
+    pub fn update_training_session(
+        &self,
+        session_id: TrainingSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<TrainingSession, ClientError> {
+        let session = self.runtime.block_on(self.inner.update_training_session(
+            session_id.into(),
+            name.as_deref(),
+            description.as_deref(),
+        ))?;
+        Ok(session.into())
+    }
+
+    /// Update the name and/or description of a validation session,
+    /// returning the refreshed session. Fields left as `None` are not
+    /// modified.
+    pub fn update_validation_session(
+        &self,
+        session_id: ValidationSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        let inner = self.runtime.block_on(self.inner.update_validation_session(
+            session_id.into(),
+            name.as_deref(),
+            description.as_deref(),
+        ))?;
+        Ok(Arc::new(ValidationSession::new(inner)))
+    }
+
+    /// List the trainer types available on the server.
+    pub fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, ClientError> {
+        let schemas = self.runtime.block_on(self.inner.trainer_schemas())?;
+        Ok(schemas.into_iter().map(TrainerSchemaInfo::from).collect())
+    }
+
+    /// Fetch the parameter schema for a specific trainer type.
+    pub fn trainer_schema(&self, schema_type: String) -> Result<Vec<SchemaField>, ClientError> {
+        let fields = self
+            .runtime
+            .block_on(self.inner.trainer_schema(&schema_type))?;
+        Ok(fields.into_iter().map(SchemaField::from).collect())
+    }
+
+    /// List the validator schemas available on the server.
+    pub fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, ClientError> {
+        let schemas = self.runtime.block_on(self.inner.validator_schemas())?;
+        Ok(schemas.into_iter().map(ValidatorSchema::from).collect())
+    }
+
+    /// Launch a new training session (Studio `cloud.server.start`).
+    ///
+    /// See `StartTrainingRequest` for the defaulting rules (latest tag,
+    /// standard train/val groups).
+    pub fn start_training_session(
+        &self,
+        request: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, ClientError> {
+        let session = self
+            .runtime
+            .block_on(self.inner.start_training_session(request.into()))?;
+        Ok(session.into())
+    }
+
+    /// Create a new validation session (Studio `cloud.server.start`).
+    pub fn start_validation_session(
+        &self,
+        request: StartValidationRequest,
+    ) -> Result<NewValidationSession, ClientError> {
+        let session = self
+            .runtime
+            .block_on(self.inner.start_validation_session(request.into()))?;
+        Ok(session.into())
+    }
 }
 
 // =============================================================================
@@ -2647,6 +3035,143 @@ impl Client {
         async {
             let inner = self.inner.validation_session(id.into()).await?;
             Ok(Arc::new(ValidationSession::new(inner)))
+        }
+        .compat()
+        .await
+    }
+
+    /// Delete one or more training sessions (async).
+    ///
+    /// The server cascades this delete: validation sessions attached to
+    /// the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints.
+    pub async fn delete_training_sessions_async(
+        &self,
+        session_ids: Vec<TrainingSessionId>,
+    ) -> Result<(), ClientError> {
+        async {
+            let ids: Vec<core::TrainingSessionID> =
+                session_ids.into_iter().map(Into::into).collect();
+            Ok(self.inner.delete_training_sessions(&ids).await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Delete one or more validation sessions (async).
+    ///
+    /// Only the validation sessions are removed; the parent training
+    /// session is never affected.
+    pub async fn delete_validation_sessions_async(
+        &self,
+        session_ids: Vec<ValidationSessionId>,
+    ) -> Result<(), ClientError> {
+        async {
+            let ids: Vec<core::ValidationSessionID> =
+                session_ids.into_iter().map(Into::into).collect();
+            Ok(self.inner.delete_validation_sessions(&ids).await?)
+        }
+        .compat()
+        .await
+    }
+
+    /// Update the name and/or description of a training session (async).
+    pub async fn update_training_session_async(
+        &self,
+        session_id: TrainingSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<TrainingSession, ClientError> {
+        async {
+            let session = self
+                .inner
+                .update_training_session(session_id.into(), name.as_deref(), description.as_deref())
+                .await?;
+            Ok(session.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Update the name and/or description of a validation session (async).
+    pub async fn update_validation_session_async(
+        &self,
+        session_id: ValidationSessionId,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<Arc<ValidationSession>, ClientError> {
+        async {
+            let inner = self
+                .inner
+                .update_validation_session(
+                    session_id.into(),
+                    name.as_deref(),
+                    description.as_deref(),
+                )
+                .await?;
+            Ok(Arc::new(ValidationSession::new(inner)))
+        }
+        .compat()
+        .await
+    }
+
+    /// List the trainer types available on the server (async).
+    pub async fn trainer_schemas_async(&self) -> Result<Vec<TrainerSchemaInfo>, ClientError> {
+        async {
+            let schemas = self.inner.trainer_schemas().await?;
+            Ok(schemas.into_iter().map(TrainerSchemaInfo::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Fetch the parameter schema for a specific trainer type (async).
+    pub async fn trainer_schema_async(
+        &self,
+        schema_type: String,
+    ) -> Result<Vec<SchemaField>, ClientError> {
+        async {
+            let fields = self.inner.trainer_schema(&schema_type).await?;
+            Ok(fields.into_iter().map(SchemaField::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// List the validator schemas available on the server (async).
+    pub async fn validator_schemas_async(&self) -> Result<Vec<ValidatorSchema>, ClientError> {
+        async {
+            let schemas = self.inner.validator_schemas().await?;
+            Ok(schemas.into_iter().map(ValidatorSchema::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Launch a new training session (async).
+    ///
+    /// See `StartTrainingRequest` for the defaulting rules (latest tag,
+    /// standard train/val groups).
+    pub async fn start_training_session_async(
+        &self,
+        request: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, ClientError> {
+        async {
+            let session = self.inner.start_training_session(request.into()).await?;
+            Ok(session.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Create a new validation session (async).
+    pub async fn start_validation_session_async(
+        &self,
+        request: StartValidationRequest,
+    ) -> Result<NewValidationSession, ClientError> {
+        async {
+            let session = self.inner.start_validation_session(request.into()).await?;
+            Ok(session.into())
         }
         .compat()
         .await
