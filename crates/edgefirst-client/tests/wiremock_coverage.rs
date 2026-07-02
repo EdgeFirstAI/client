@@ -34,11 +34,11 @@
 use base64::Engine as _;
 use edgefirst_client::{
     Client, DatasetID, Error, Parameter, SampleDimensionUpdate, SampleID, TaskID,
-    ValidationSessionID,
+    TrainingSessionID, ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
-use wiremock::matchers::{body_partial_json, method, path, query_param};
+use wiremock::matchers::{body_json, body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -946,6 +946,548 @@ async fn delete_validation_sessions_maps_permission_denied() {
     assert!(
         matches!(err, Error::PermissionDenied(_) | Error::RpcError(100, _)),
         "expected PermissionDenied or RpcError(100), got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `Client::delete_training_sessions` / `Client::update_training_session` /
+// `Client::update_validation_session`
+// ---------------------------------------------------------------------------
+
+/// Full `trainer.session.get` row: the client's TrainingSession
+/// deserializer requires `params.{model_params,dataset_params}` and the
+/// embedded `docker_task`.
+fn training_session_json(id: u64, name: &str, description: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "trainer_id": 7,
+        "model": "modelpack",
+        "name": name,
+        "description": description,
+        "params": {
+            "model_params": { "epochs": 5 },
+            "dataset_params": {
+                "dataset_id": 3,
+                "annotation_set_id": 4,
+                "train_group_name": "train",
+                "val_group_name": "val"
+            }
+        },
+        "docker_task": {
+            "id": id,
+            "name": name,
+            "type": "trainer",
+            "status": "running",
+            "manage_type": null,
+            "instance_type": "wiremock",
+            "date": "2026-05-15T00:00:00Z"
+        }
+    })
+}
+
+#[tokio::test]
+async fn delete_training_sessions_passes_session_ids_array() {
+    let server = MockServer::start().await;
+
+    // trainer.session.delete parses `session_ids` with ParseIntArray on
+    // the server, so the ids must serialize as bare integers.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "trainer.session.delete",
+            "params": { "session_ids": [0x111, 0x222] }
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!("Training Session Deleted"))),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .delete_training_sessions(&[
+            TrainingSessionID::from(0x111u64),
+            TrainingSessionID::from(0x222u64),
+        ])
+        .await
+        .expect("trainer.session.delete via mock");
+}
+
+#[tokio::test]
+async fn delete_training_sessions_maps_permission_denied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(100, "permission denied")))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .delete_training_sessions(&[TrainingSessionID::from(0x111u64)])
+        .await
+        .expect_err("expected permission failure");
+    assert!(
+        matches!(err, Error::PermissionDenied(_) | Error::RpcError(100, _)),
+        "expected PermissionDenied or RpcError(100), got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn update_training_session_updates_then_refetches() {
+    let server = MockServer::start().await;
+
+    // Exact body match (not partial): locks in that unset fields —
+    // `description` here — are omitted from the update params entirely,
+    // so the server does not overwrite them with empty strings.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_json(json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "method": "trainer.session.update",
+            "params": { "id": 0x111, "name": "renamed" }
+        })))
+        // The update RPC returns the bare DB row without `docker_task`;
+        // the client must not try to deserialize it as a TrainingSession.
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x111,
+            "trainer_id": 7,
+            "name": "renamed",
+            "description": "old description"
+        }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.get"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(training_session_json(
+                0x111,
+                "renamed",
+                "old description",
+            ))),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .update_training_session(TrainingSessionID::from(0x111u64), Some("renamed"), None)
+        .await
+        .expect("trainer.session.update via mock");
+    assert_eq!(session.name(), "renamed");
+    assert_eq!(session.description(), "old description");
+}
+
+#[tokio::test]
+async fn update_sessions_require_a_field_without_any_rpc() {
+    // Both update methods must reject an empty update client-side —
+    // the unreachable URL proves no RPC is attempted.
+    let client = client_for("http://localhost:1");
+
+    let err = match client
+        .update_training_session(TrainingSessionID::from(0x111u64), None, None)
+        .await
+    {
+        Ok(_) => panic!("empty training-session update must fail"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
+
+    let err = match client
+        .update_validation_session(ValidationSessionID::from(0x111u64), None, None)
+        .await
+    {
+        Ok(_) => panic!("empty validation-session update must fail"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn update_validation_session_sends_int_id_and_refetches() {
+    let server = MockServer::start().await;
+
+    // Mounts the `validate.session.get` mock used for the post-update
+    // re-fetch (and proves the fixture deserializes).
+    let _ = mock_validation_session(&server, 0x5678).await;
+
+    // validate.session.update parses `validate_session_id` with ParseInt
+    // on the server — it must be a bare integer, not a "v-" string.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_json(json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "method": "validate.session.update",
+            "params": {
+                "validate_session_id": 0x5678,
+                "name": "renamed",
+                "description": "new description"
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x5678,
+            "description": "new description"
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .update_validation_session(
+            ValidationSessionID::from(0x5678u64),
+            Some("renamed"),
+            Some("new description"),
+        )
+        .await
+        .expect("validate.session.update via mock");
+    assert_eq!(session.id(), ValidationSessionID::from(0x5678u64));
+}
+
+// ---------------------------------------------------------------------------
+// `Client::trainer_schemas` / `Client::trainer_schema` /
+// `Client::validator_schemas`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn trainer_schemas_parses_schema_list() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.server.schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "schema_list": [
+                {
+                    "name": "modelpack",
+                    "label": "ModelPack",
+                    "schema_type": "modelpack",
+                    // Unknown keys must be tolerated.
+                    "future_field": { "nested": true }
+                },
+                { "name": "legacy" }
+            ]
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let schemas = client
+        .trainer_schemas()
+        .await
+        .expect("trainer.server.schema");
+    assert_eq!(schemas.len(), 2);
+    assert_eq!(schemas[0].name, "modelpack");
+    assert_eq!(schemas[0].label, "ModelPack");
+    assert_eq!(schemas[0].schema_type, "modelpack");
+    // Missing optional keys default to empty.
+    assert_eq!(schemas[1].label, "");
+}
+
+#[tokio::test]
+async fn trainer_schema_parses_nested_fields() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "trainer.server.schema",
+            "params": { "type": "modelpack" }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            {
+                "name": "training",
+                "label": "Training",
+                "type": "group",
+                "children": [
+                    {
+                        "name": "epochs",
+                        "type": "int",
+                        "required": true,
+                        "default": 50,
+                        "min": 1,
+                        "max": 1000
+                    },
+                    {
+                        "name": "learning_rate",
+                        "type": "slider",
+                        "default": 0.001,
+                        "min": 0.0001,
+                        "max": 0.1,
+                        "step": 0.0001,
+                        "values": [1]
+                    }
+                ]
+            },
+            {
+                "name": "optimizer",
+                "type": "select",
+                "is_dropdown": true,
+                "default": "adam",
+                "options": [
+                    { "name": "adam", "label": "Adam" },
+                    // Option values can be non-string scalars.
+                    { "name": 8, "label": "Eight" }
+                ]
+            },
+            // A field type this client version does not know about must
+            // deserialize as Unknown rather than failing the whole schema.
+            { "name": "novelty", "type": "holo-picker" }
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let fields = client
+        .trainer_schema("modelpack")
+        .await
+        .expect("trainer.server.schema with type");
+    assert_eq!(fields.len(), 3);
+
+    let group = &fields[0];
+    assert_eq!(
+        group.field_type,
+        Some(edgefirst_client::SchemaFieldType::Group)
+    );
+    assert_eq!(group.children.len(), 2);
+    let epochs = &group.children[0];
+    assert!(epochs.required);
+    assert_eq!(epochs.default, Some(Parameter::Integer(50)));
+    assert_eq!(epochs.min, Some(1.0));
+    assert_eq!(epochs.max, Some(1000.0));
+
+    let select = &fields[1];
+    assert!(select.is_dropdown);
+    assert_eq!(select.options.len(), 2);
+    assert_eq!(
+        select.options[0].name,
+        Some(Parameter::String("adam".into()))
+    );
+    assert_eq!(select.options[1].name, Some(Parameter::Integer(8)));
+
+    assert_eq!(
+        fields[2].field_type,
+        Some(edgefirst_client::SchemaFieldType::Unknown)
+    );
+}
+
+#[tokio::test]
+async fn validator_schemas_parses_catalog() {
+    let server = MockServer::start().await;
+
+    // Fixture mirrors real server quirks: an `info` metadata entry with
+    // unknown keys (ami/entrypoint), and select options with *numeric*
+    // labels/names (`{"label": 1, "name": 1}`) that must coerce rather
+    // than fail deserialization.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("validate.schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            {
+                "type": "modelpack",
+                "name": "EdgeFirst Validator",
+                "schema": [
+                    {
+                        "name": "modelpack",
+                        "type": "info",
+                        "ami": "ami-12345",
+                        "entrypoint": "/entrypoint.sh"
+                    },
+                    { "name": "iou", "type": "float", "default": 0.5 },
+                    {
+                        "name": "kernel_sizes",
+                        "type": "select",
+                        "multi_select": true,
+                        "default": [1, 3],
+                        "options": [
+                            { "label": 1, "name": 1 },
+                            { "label": 3, "name": 3 }
+                        ]
+                    }
+                ]
+            }
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let schemas = client.validator_schemas().await.expect("validate.schema");
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0].schema_type, "modelpack");
+    assert_eq!(schemas[0].schema.len(), 3);
+    assert_eq!(
+        schemas[0].schema[0].field_type,
+        Some(edgefirst_client::SchemaFieldType::Info)
+    );
+    assert_eq!(schemas[0].schema[1].default, Some(Parameter::Real(0.5)));
+    let select = &schemas[0].schema[2];
+    assert_eq!(select.options[0].label.as_deref(), Some("1"));
+    assert_eq!(select.options[0].name, Some(Parameter::Integer(1)));
+    assert_eq!(
+        select.default,
+        Some(Parameter::Array(vec![
+            Parameter::Integer(1),
+            Parameter::Integer(3)
+        ]))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `Client::start_training_session` / `Client::dataset_tags`
+// ---------------------------------------------------------------------------
+
+fn start_training_request() -> edgefirst_client::StartTrainingRequest {
+    edgefirst_client::StartTrainingRequest {
+        project_id: edgefirst_client::ProjectID::from(0x222u64),
+        name: "smoke-training".into(),
+        experiment_id: edgefirst_client::ExperimentID::from(0x777u64),
+        trainer_type: "modelpack".into(),
+        dataset_id: DatasetID::from(0x333u64),
+        annotation_set_id: edgefirst_client::AnnotationSetID::from(0x444u64),
+        tag_name: None,
+        train_group: None,
+        val_group: None,
+        session_name: None,
+        session_description: None,
+        weights_session: None,
+        params: std::collections::HashMap::new(),
+        is_local: true,
+        is_kubernetes: false,
+    }
+}
+
+#[tokio::test]
+async fn start_training_session_round_trips_group_split() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        // The trainer callback reads dataset selection from `params`
+        // and hyperparameters from `params.params` — one envelope, not
+        // the validation launch's two.
+        .and(body_partial_json(json!({
+            "method": "cloud.server.start",
+            "params": {
+                "type": "trainer",
+                "name": "smoke-training",
+                "project_id": 0x222,
+                "is_local": true,
+                "is_kubernetes": false,
+                "params": {
+                    "trainer_id": 0x777,
+                    "trainer_type": "modelpack",
+                    "split_mode": "group",
+                    "dataset_id": 0x333,
+                    "annotation_set_id": 0x444,
+                    "tag_name": "v2.0",
+                    "train_group_name": "daylight",
+                    "val_group_name": "night",
+                    "session_name": "run-1",
+                    "session_description": "smoke test",
+                    "weights_session": 0x888,
+                    "params": { "epochs": 5 }
+                }
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x1234,
+            "train_session_id": 0x9999,
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let mut req = start_training_request();
+    req.tag_name = Some("v2.0".into());
+    req.train_group = Some("daylight".into());
+    req.val_group = Some("night".into());
+    req.session_name = Some("run-1".into());
+    req.session_description = Some("smoke test".into());
+    req.weights_session = Some(TrainingSessionID::from(0x888u64));
+    req.params.insert("epochs".into(), Parameter::Integer(5));
+
+    let session = client
+        .start_training_session(req)
+        .await
+        .expect("cloud.server.start via mock");
+    assert_eq!(session.task_id, TaskID::from(0x1234u64));
+    assert_eq!(session.session_id, Some(TrainingSessionID::from(0x9999u64)));
+}
+
+#[tokio::test]
+async fn start_training_session_resolves_latest_tag_and_default_groups() {
+    let server = MockServer::start().await;
+
+    // Tags deliberately unordered: latest = highest id, not last entry.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "tags.list_dataset",
+            "params": { "dataset_id": 0x333 }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            { "id": 1, "name": "v1", "dataset_id": 0x333 },
+            { "id": 3, "name": "v3", "dataset_id": 0x333 },
+            { "id": 2, "name": "v2", "dataset_id": 0x333 },
+        ]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "cloud.server.start",
+            "params": {
+                "params": {
+                    "tag_name": "v3",
+                    "train_group_name": "train",
+                    "val_group_name": "val",
+                    // session_name is required by the server; it
+                    // defaults to the task name.
+                    "session_name": "smoke-training",
+                }
+            }
+        })))
+        // A response without `train_session_id` must map to `None`
+        // rather than failing deserialization.
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x1234,
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .start_training_session(start_training_request())
+        .await
+        .expect("cloud.server.start with resolved defaults");
+    assert_eq!(session.task_id, TaskID::from(0x1234u64));
+    assert_eq!(session.session_id, None);
+}
+
+#[tokio::test]
+async fn start_training_session_errors_when_dataset_has_no_tags() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("tags.list_dataset"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .start_training_session(start_training_request())
+        .await
+        .expect_err("expected missing-tag failure");
+    assert!(
+        matches!(err, Error::InvalidParameters(ref msg) if msg.contains("tag")),
+        "expected InvalidParameters about tags, got {err:?}"
     );
 }
 

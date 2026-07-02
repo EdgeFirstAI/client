@@ -5,12 +5,13 @@ use crate::{
     Annotation, Error, Sample, Task,
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
-        NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
-        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset, UsageSummary,
-        SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
-        StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
-        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
-        ValidationSessionID,
+        NewTrainingSession, NewValidationSession, Organization, Project, ProjectID, SampleID,
+        SamplesCountResult, SamplesListParams, SamplesListResult, SchemaField, Snapshot,
+        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
+        SnapshotRestoreResult, Stage, StartTrainingRequest, StartValidationRequest, Tag, TaskID,
+        TaskInfo, TaskStages, TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo,
+        TrainingSession, TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
+        ValidatorSchema,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -4698,6 +4699,305 @@ impl Client {
             .rpc("validate.session.delete".to_owned(), Some(body))
             .await?;
         Ok(())
+    }
+
+    /// Delete one or more training sessions via `trainer.session.delete`.
+    ///
+    /// **The server cascades this delete**: validation sessions attached
+    /// to the deleted training sessions are removed as well, along with
+    /// the session's artifacts and checkpoints. The reverse is not true —
+    /// deleting a validation session with
+    /// [`Client::delete_validation_sessions`] never affects its parent
+    /// training session.
+    ///
+    /// The delete is a soft delete on the server: deleted sessions no
+    /// longer appear in [`Client::training_sessions`] listings, but a
+    /// direct [`Client::training_session`] lookup may still resolve
+    /// until the session is purged.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.session.delete`, such as an
+    /// `RpcError` if one of the session ids cannot be resolved.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_training_sessions(
+        &self,
+        session_ids: &[TrainingSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
+        let _: serde_json::Value = self
+            .rpc("trainer.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
+    }
+
+    /// Update the name and/or description of a training session via
+    /// `trainer.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` must be provided.
+    ///
+    /// The update RPC returns the bare database row without the session's
+    /// task information, so the session is re-fetched with
+    /// `trainer.session.get` after the update to return a fully populated
+    /// [`TrainingSession`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `trainer.session.update` or the follow-up
+    /// `trainer.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_training_session(
+        &self,
+        session_id: TrainingSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<TrainingSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
+        let mut body = serde_json::Map::new();
+        body.insert("id".into(), serde_json::to_value(session_id)?);
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("trainer.session.update".to_owned(), Some(body))
+            .await?;
+        self.training_session(session_id).await
+    }
+
+    /// Update the name and/or description of a validation session via
+    /// `validate.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` must be provided. Renaming a validation session also
+    /// renames its associated background task on the server.
+    ///
+    /// The session is re-fetched with `validate.session.get` after the
+    /// update to return a fully populated [`ValidationSession`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `validate.session.update` or the follow-up
+    /// `validate.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_validation_session(
+        &self,
+        session_id: ValidationSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<ValidationSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "validate_session_id".into(),
+            serde_json::to_value(session_id)?,
+        );
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("validate.session.update".to_owned(), Some(body))
+            .await?;
+        self.validation_session(session_id).await
+    }
+
+    /// List the trainer types available on the server.
+    ///
+    /// Returns the catalog of trainer schemas via `trainer.server.schema`
+    /// (no parameters). Pass a returned
+    /// [`TrainerSchemaInfo::schema_type`] to [`Client::trainer_schema`]
+    /// for the full parameter schema, or to
+    /// [`StartTrainingRequest::trainer_type`](crate::StartTrainingRequest)
+    /// when launching a training session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, Error> {
+        #[derive(Deserialize)]
+        struct SchemaList {
+            schema_list: Vec<TrainerSchemaInfo>,
+        }
+        let result: SchemaList = self
+            .rpc::<(), SchemaList>("trainer.server.schema".to_owned(), None)
+            .await?;
+        Ok(result.schema_list)
+    }
+
+    /// Fetch the parameter schema for a specific trainer type.
+    ///
+    /// The returned [`SchemaField`] descriptors define the
+    /// hyperparameters the trainer accepts — names, defaults, ranges and
+    /// nested groups — which map onto the `params` map of a
+    /// [`StartTrainingRequest`](crate::StartTrainingRequest).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.server.schema`, such as an
+    /// unknown `schema_type`.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schema(&self, schema_type: &str) -> Result<Vec<SchemaField>, Error> {
+        let params = HashMap::from([("type", schema_type)]);
+        self.rpc("trainer.server.schema".to_owned(), Some(params))
+            .await
+    }
+
+    /// List the validator schemas available on the server.
+    ///
+    /// Each [`ValidatorSchema`] carries its parameter field descriptors
+    /// inline; select the schema whose `schema_type` matches the model's
+    /// trainer type.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
+        self.rpc::<(), Vec<ValidatorSchema>>("validate.schema".to_owned(), None)
+            .await
+    }
+
+    /// List the version tags of a dataset via `tags.list_dataset`.
+    ///
+    /// Tags are creation-ordered; the highest [`Tag::id`] is the most
+    /// recent version. Used by [`Client::start_training_session`] to
+    /// resolve the latest tag when the request does not name one.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn dataset_tags(&self, dataset_id: DatasetID) -> Result<Vec<Tag>, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("tags.list_dataset".to_owned(), Some(params)).await
+    }
+
+    /// Launch a new training session via Studio's `cloud.server.start`.
+    ///
+    /// The session trains on a single dataset using group-based
+    /// train/validation splits. Defaults are resolved client-side before
+    /// the launch call:
+    ///
+    /// * `tag_name: None` → the dataset's latest tag (from
+    ///   [`Client::dataset_tags`]); it is an error to launch against a
+    ///   dataset that has no tags without naming one explicitly.
+    /// * `train_group` / `val_group: None` → the dataset's default split
+    ///   groups `"train"` / `"val"`.
+    ///
+    /// Query the trainer's parameter schema with
+    /// [`Client::trainer_schema`] to build the `params` map. Pass
+    /// `is_local: true` to create a **user-managed** session (no cloud
+    /// instance is provisioned) — the mode integration tests use, paired
+    /// with [`Client::delete_training_sessions`] in teardown.
+    ///
+    /// Returns a [`NewTrainingSession`] carrying the backing task id and
+    /// the freshly-minted training session id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`] if the dataset has no tags
+    /// and no `tag_name` was provided. Surfaces any RPC error from
+    /// `cloud.server.start`; a `PermissionDenied` indicates the caller
+    /// can't write to the target project.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, req)))]
+    pub async fn start_training_session(
+        &self,
+        req: StartTrainingRequest,
+    ) -> Result<NewTrainingSession, Error> {
+        // The server requires a concrete tag name; resolve "latest"
+        // client-side from the creation-ordered tag list.
+        let tag_name = match req.tag_name {
+            Some(tag) => tag,
+            None => self
+                .dataset_tags(req.dataset_id)
+                .await?
+                .into_iter()
+                .max_by_key(|tag| tag.id)
+                .map(|tag| tag.name)
+                .ok_or_else(|| {
+                    Error::InvalidParameters(format!(
+                        "dataset {} has no version tags; create one or specify tag_name",
+                        req.dataset_id
+                    ))
+                })?,
+        };
+
+        let mut body = serde_json::Map::new();
+        body.insert("type".into(), serde_json::Value::String("trainer".into()));
+        body.insert("name".into(), serde_json::Value::String(req.name.clone()));
+        body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
+        body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
+        body.insert(
+            "is_kubernetes".into(),
+            serde_json::Value::Bool(req.is_kubernetes),
+        );
+
+        // Unlike validation launches, the trainer callback reads its
+        // dataset selection from `params` directly and the raw
+        // hyperparameters from `params.params` (single envelope). The
+        // group-based split is the only mode the server supports here.
+        let mut inner = serde_json::Map::new();
+        inner.insert(
+            "trainer_id".into(),
+            serde_json::to_value(req.experiment_id)?,
+        );
+        inner.insert(
+            "trainer_type".into(),
+            serde_json::Value::String(req.trainer_type),
+        );
+        inner.insert(
+            "split_mode".into(),
+            serde_json::Value::String("group".into()),
+        );
+        inner.insert("dataset_id".into(), serde_json::to_value(req.dataset_id)?);
+        inner.insert(
+            "annotation_set_id".into(),
+            serde_json::to_value(req.annotation_set_id)?,
+        );
+        inner.insert("tag_name".into(), serde_json::Value::String(tag_name));
+        inner.insert(
+            "train_group_name".into(),
+            serde_json::Value::String(req.train_group.unwrap_or_else(|| "train".into())),
+        );
+        inner.insert(
+            "val_group_name".into(),
+            serde_json::Value::String(req.val_group.unwrap_or_else(|| "val".into())),
+        );
+        inner.insert("params".into(), serde_json::to_value(req.params)?);
+        // The server requires `session_name`; default to the task name,
+        // matching how the Studio UI derives it.
+        inner.insert(
+            "session_name".into(),
+            serde_json::Value::String(req.session_name.unwrap_or(req.name)),
+        );
+        if let Some(description) = req.session_description {
+            inner.insert(
+                "session_description".into(),
+                serde_json::Value::String(description),
+            );
+        }
+        if let Some(id) = req.weights_session {
+            inner.insert("weights_session".into(), serde_json::to_value(id)?);
+        }
+        body.insert("params".into(), serde_json::Value::Object(inner));
+
+        self.rpc("cloud.server.start".to_owned(), Some(body)).await
     }
 
     /// List the artifacts for the specified trainer session.  The artifacts

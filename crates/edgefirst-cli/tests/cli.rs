@@ -5621,3 +5621,156 @@ fn test_migrate_coco_to_arrow_roundtrip() {
         .success()
         .stdout(predicates::str::contains("no migration needed"));
 }
+
+// ---------------------------------------------------------------------------
+// Session management: schemas, launch, update, delete
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_trainer_schemas_and_schema() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("trainer-schemas");
+
+    let output = cmd.ok()?.stdout;
+    let output_str = String::from_utf8(output)?;
+
+    // Output format: "schema_type: label (name)" — fetch the first
+    // catalog entry's full schema.
+    if let Some(schema_type) = output_str
+        .lines()
+        .find_map(|line| line.split(':').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("trainer-schema").arg(schema_type);
+        cmd.assert().success();
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_validator_schemas() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("validator-schemas");
+    cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn test_update_training_session_requires_field() -> Result<(), Box<dyn std::error::Error>> {
+    // Offline validation: with neither --name nor --description the
+    // command must fail before any RPC is attempted.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("update-training-session").arg("t-1");
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("--name or --description"));
+    Ok(())
+}
+
+/// Full lifecycle against the live test server: launch a user-managed
+/// training session, rename it, verify, and delete it. Skips gracefully
+/// when the test dataset has no version tags (launch requires one).
+#[test]
+fn test_training_session_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+    let project_id = match get_project_id_by_name("Unit Testing")? {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("experiments")
+        .arg(&project_id)
+        .arg("--name")
+        .arg("Unit Testing");
+    let output = String::from_utf8(cmd.ok()?.stdout)?;
+    let experiment_id = match output.lines().find_map(|line| {
+        line.split('[')
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .map(|s| s.trim().to_string())
+    }) {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+
+    let (dataset_id, annotation_set_id) =
+        get_dataset_and_first_annotation_set(&get_test_dataset())?;
+
+    let start_cmd = |tag: Option<&str>| {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("start-training-session")
+            .arg(&project_id)
+            .arg("--name")
+            .arg("cli-lifecycle-test")
+            .arg("--experiment-id")
+            .arg(&experiment_id)
+            .arg("--trainer-type")
+            .arg("modelpack")
+            .arg("--dataset-id")
+            .arg(&dataset_id)
+            .arg("--annotation-set-id")
+            .arg(&annotation_set_id)
+            .arg("--param")
+            .arg("epochs=1")
+            .arg("--local");
+        if let Some(tag) = tag {
+            cmd.arg("--tag").arg(tag);
+        }
+        cmd
+    };
+
+    let mut output = start_cmd(None).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.contains("no version tags") {
+            return Err(format!("start-training-session failed: {stderr}").into());
+        }
+        // The test dataset has no version tags; retry with an explicit
+        // empty tag (an untagged run), which the server accepts.
+        output = start_cmd(Some("")).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("start-training-session --tag '' failed: {stderr}").into());
+        }
+    }
+
+    // Output format: "Started training session task task-x session t-y"
+    let stdout = String::from_utf8(output.stdout)?;
+    let session_id = stdout
+        .split_whitespace()
+        .find(|token| token.starts_with("t-"))
+        .ok_or("no session id in start-training-session output")?
+        .to_string();
+
+    let result = {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("update-training-session")
+            .arg(&session_id)
+            .arg("--name")
+            .arg("cli-lifecycle-renamed")
+            .arg("--description")
+            .arg("cli lifecycle test");
+        cmd.assert()
+            .success()
+            .stdout(predicates::str::contains("cli-lifecycle-renamed"));
+
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("training-session").arg(&session_id);
+        cmd.assert()
+            .success()
+            .stdout(predicates::str::contains("cli-lifecycle-renamed"));
+        Ok(())
+    };
+
+    // Always delete the session, even if the update assertions failed.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("delete-training-sessions").arg(&session_id);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("Deleted training session"));
+
+    result
+}

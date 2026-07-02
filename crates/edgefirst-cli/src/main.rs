@@ -3,8 +3,8 @@
 
 use clap::{Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Progress,
-    SnapshotID, TaskID, TrainingSession,
+    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Parameter,
+    Progress, SchemaField, SnapshotID, StartTrainingRequest, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -321,6 +321,108 @@ enum Command {
         #[clap(long)]
         name: Option<String>,
     },
+    /// Launch a new training session for an experiment.  The session trains
+    /// on a single dataset using group-based train/validation splits.  The
+    /// dataset tag defaults to the latest tag and the split groups default
+    /// to the dataset's standard "train" and "val" groups.
+    StartTrainingSession {
+        /// Project ID owning the experiment and dataset
+        project_id: String,
+
+        /// Name for the training task
+        #[clap(long)]
+        name: String,
+
+        /// Experiment ID the session belongs to
+        #[clap(long)]
+        experiment_id: String,
+
+        /// Trainer schema type (see trainer-schemas command)
+        #[clap(long)]
+        trainer_type: String,
+
+        /// Dataset ID to train on
+        #[clap(long)]
+        dataset_id: String,
+
+        /// Annotation set ID providing the ground-truth labels
+        #[clap(long)]
+        annotation_set_id: String,
+
+        /// Dataset tag to train against, defaults to the latest tag
+        #[clap(long)]
+        tag: Option<String>,
+
+        /// Training split group name, defaults to "train"
+        #[clap(long)]
+        train_group: Option<String>,
+
+        /// Validation split group name, defaults to "val"
+        #[clap(long)]
+        val_group: Option<String>,
+
+        /// Trainer hyperparameter as KEY=VALUE, repeatable.  Values are
+        /// parsed as JSON (numbers, booleans) and fall back to strings.
+        /// See the trainer-schema command for accepted parameters.
+        #[clap(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+
+        /// Optional display name for the training session
+        #[clap(long)]
+        session_name: Option<String>,
+
+        /// Optional description for the training session
+        #[clap(long)]
+        session_description: Option<String>,
+
+        /// Optional source training session ID for transfer-learning weights
+        #[clap(long)]
+        weights_session: Option<String>,
+
+        /// Create a user-managed session (no cloud instance is provisioned)
+        #[clap(long)]
+        local: bool,
+
+        /// Schedule onto the organization's Kubernetes runner
+        #[clap(long)]
+        kubernetes: bool,
+
+        /// Monitor the launched task's progress until completion
+        #[clap(long)]
+        monitor: bool,
+    },
+    /// Update the name and/or description of a training session.  At least
+    /// one of --name or --description must be provided.
+    UpdateTrainingSession {
+        /// Training Session ID
+        session_id: String,
+
+        /// New session name
+        #[clap(long)]
+        name: Option<String>,
+
+        /// New session description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete one or more training sessions.  WARNING: validation sessions
+    /// attached to the deleted training sessions are removed as well, along
+    /// with all artifacts and checkpoints.
+    DeleteTrainingSessions {
+        /// Training Session IDs to delete
+        #[clap(required = true)]
+        session_ids: Vec<String>,
+    },
+    /// List the trainer types available on the server.  The reported schema
+    /// type is used with the trainer-schema and start-training-session
+    /// commands.
+    TrainerSchemas,
+    /// Show the parameter schema for a trainer type.  The schema describes
+    /// the hyperparameters accepted by start-training-session --param.
+    TrainerSchema {
+        /// Trainer schema type (see trainer-schemas command)
+        schema_type: String,
+    },
     /// List all tasks for the current user.
     Tasks {
         /// Retrieve the task stages.
@@ -361,6 +463,34 @@ enum Command {
     ValidationSession {
         /// Validation Session ID
         session_id: String,
+    },
+    /// Update the name and/or description of a validation session.  At
+    /// least one of --name or --description must be provided.
+    UpdateValidationSession {
+        /// Validation Session ID
+        session_id: String,
+
+        /// New session name
+        #[clap(long)]
+        name: Option<String>,
+
+        /// New session description
+        #[clap(long)]
+        description: Option<String>,
+    },
+    /// Delete one or more validation sessions.  Only the validation
+    /// sessions are removed; the parent training session is never affected.
+    DeleteValidationSessions {
+        /// Validation Session IDs to delete
+        #[clap(required = true)]
+        session_ids: Vec<String>,
+    },
+    /// List the validator schemas available on the server.  Each schema
+    /// describes the parameters accepted by the matching validator type.
+    ValidatorSchemas {
+        /// Only show the schema with this type
+        #[clap(long = "type")]
+        schema_type: Option<String>,
     },
     /// List all snapshots available to the user.
     Snapshots,
@@ -3276,6 +3406,195 @@ async fn handle_upload_artifact(
     Ok(())
 }
 
+/// Parse a repeatable `--param KEY=VALUE` argument.  Values are parsed as
+/// JSON so numbers and booleans keep their types; anything that isn't
+/// valid JSON is treated as a plain string.
+fn parse_param(arg: &str) -> Result<(String, Parameter), Error> {
+    let (key, value) = arg.split_once('=').ok_or_else(|| {
+        Error::InvalidParameters(format!("expected KEY=VALUE for --param, got '{arg}'"))
+    })?;
+    if key.is_empty() {
+        return Err(Error::InvalidParameters(format!(
+            "expected KEY=VALUE for --param, got '{arg}'"
+        )));
+    }
+    let param = serde_json::from_str::<Parameter>(value)
+        .unwrap_or_else(|_| Parameter::String(value.to_owned()));
+    Ok((key.to_owned(), param))
+}
+
+struct StartTrainingSessionArgs {
+    project_id: String,
+    name: String,
+    experiment_id: String,
+    trainer_type: String,
+    dataset_id: String,
+    annotation_set_id: String,
+    tag: Option<String>,
+    train_group: Option<String>,
+    val_group: Option<String>,
+    params: Vec<String>,
+    session_name: Option<String>,
+    session_description: Option<String>,
+    weights_session: Option<String>,
+    local: bool,
+    kubernetes: bool,
+    monitor: bool,
+}
+
+async fn handle_start_training_session(
+    client: &Client,
+    args: StartTrainingSessionArgs,
+) -> Result<(), Error> {
+    let mut params = std::collections::HashMap::new();
+    for arg in &args.params {
+        let (key, value) = parse_param(arg)?;
+        params.insert(key, value);
+    }
+
+    let request = StartTrainingRequest {
+        project_id: args.project_id.try_into()?,
+        name: args.name,
+        experiment_id: args.experiment_id.try_into()?,
+        trainer_type: args.trainer_type,
+        dataset_id: args.dataset_id.try_into()?,
+        annotation_set_id: args.annotation_set_id.try_into()?,
+        tag_name: args.tag,
+        train_group: args.train_group,
+        val_group: args.val_group,
+        session_name: args.session_name,
+        session_description: args.session_description,
+        weights_session: args.weights_session.map(TryInto::try_into).transpose()?,
+        params,
+        is_local: args.local,
+        is_kubernetes: args.kubernetes,
+    };
+
+    let session = client.start_training_session(request).await?;
+    println!("Started training session {}", session);
+
+    if args.monitor {
+        monitor_task(client, session.task_id).await?;
+    }
+    Ok(())
+}
+
+async fn handle_update_training_session(
+    client: &Client,
+    session_id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), Error> {
+    if name.is_none() && description.is_none() {
+        return Err(Error::InvalidParameters(
+            "at least one of --name or --description is required".to_owned(),
+        ));
+    }
+    let session = client
+        .update_training_session(
+            session_id.try_into()?,
+            name.as_deref(),
+            description.as_deref(),
+        )
+        .await?;
+    println!(
+        "{} {}: {}",
+        session.id(),
+        session.name(),
+        session.description()
+    );
+    Ok(())
+}
+
+async fn handle_delete_training_sessions(
+    client: &Client,
+    session_ids: Vec<String>,
+) -> Result<(), Error> {
+    let ids = session_ids
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    client.delete_training_sessions(&ids).await?;
+    for id in ids {
+        println!("Deleted training session {}", id);
+    }
+    println!("Note: validation sessions attached to deleted training sessions are also removed.");
+    Ok(())
+}
+
+async fn handle_trainer_schemas(client: &Client) -> Result<(), Error> {
+    for schema in client.trainer_schemas().await? {
+        // Older servers may omit schema_type/label; fall back to the
+        // trainer name so the printed type is always usable with the
+        // trainer-schema and start-training-session commands.
+        let schema_type = if schema.schema_type.is_empty() {
+            &schema.name
+        } else {
+            &schema.schema_type
+        };
+        let label = if schema.label.is_empty() {
+            &schema.name
+        } else {
+            &schema.label
+        };
+        println!("{}: {} ({})", schema_type, label, schema.name);
+    }
+    Ok(())
+}
+
+/// Print schema fields recursively, indenting nested children.
+fn print_schema_fields(fields: &[SchemaField], indent: usize) {
+    for field in fields {
+        let name = field.name.as_deref().unwrap_or("<unnamed>");
+        let field_type = field
+            .field_type
+            .map(|t| format!("{:?}", t).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let mut details = Vec::new();
+        if field.required {
+            details.push("required".to_owned());
+        }
+        if let Some(default) = &field.default {
+            details.push(format!("default: {:?}", default));
+        }
+        if let (Some(min), Some(max)) = (field.min, field.max) {
+            details.push(format!("range: {}..{}", min, max));
+        }
+        if !field.options.is_empty() {
+            let options = field
+                .options
+                .iter()
+                .filter_map(|o| o.name.as_ref())
+                .map(|n| format!("{:?}", n))
+                .collect::<Vec<_>>()
+                .join(", ");
+            details.push(format!("options: [{}]", options));
+        }
+        let details = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", details.join(", "))
+        };
+        println!(
+            "{}{} [{}]{}",
+            "    ".repeat(indent),
+            name,
+            field_type,
+            details
+        );
+        print_schema_fields(&field.children, indent + 1);
+        for option in &field.options {
+            print_schema_fields(&option.children, indent + 1);
+        }
+    }
+}
+
+async fn handle_trainer_schema(client: &Client, schema_type: String) -> Result<(), Error> {
+    let fields = client.trainer_schema(&schema_type).await?;
+    print_schema_fields(&fields, 0);
+    Ok(())
+}
+
 async fn handle_tasks(
     client: &Client,
     stages: bool,
@@ -3482,6 +3801,64 @@ async fn handle_validation_session(client: &Client, session_id: String) -> Resul
         session.name(),
         session.description()
     );
+    Ok(())
+}
+
+async fn handle_update_validation_session(
+    client: &Client,
+    session_id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), Error> {
+    if name.is_none() && description.is_none() {
+        return Err(Error::InvalidParameters(
+            "at least one of --name or --description is required".to_owned(),
+        ));
+    }
+    let session = client
+        .update_validation_session(
+            session_id.try_into()?,
+            name.as_deref(),
+            description.as_deref(),
+        )
+        .await?;
+    println!(
+        "[{}] {}: {}",
+        session.id(),
+        session.name(),
+        session.description()
+    );
+    Ok(())
+}
+
+async fn handle_delete_validation_sessions(
+    client: &Client,
+    session_ids: Vec<String>,
+) -> Result<(), Error> {
+    let ids = session_ids
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    client.delete_validation_sessions(&ids).await?;
+    for id in ids {
+        println!("Deleted validation session {}", id);
+    }
+    Ok(())
+}
+
+async fn handle_validator_schemas(
+    client: &Client,
+    schema_type: Option<String>,
+) -> Result<(), Error> {
+    for schema in client.validator_schemas().await? {
+        if let Some(filter) = &schema_type
+            && &schema.schema_type != filter
+        {
+            continue;
+        }
+        println!("{}: {}", schema.schema_type, schema.name);
+        print_schema_fields(&schema.schema, 1);
+    }
     Ok(())
 }
 
@@ -5344,6 +5721,57 @@ async fn main() -> Result<(), Error> {
             path,
             name,
         } => handle_upload_artifact(&client, session_id, path, name).await,
+        Command::StartTrainingSession {
+            project_id,
+            name,
+            experiment_id,
+            trainer_type,
+            dataset_id,
+            annotation_set_id,
+            tag,
+            train_group,
+            val_group,
+            params,
+            session_name,
+            session_description,
+            weights_session,
+            local,
+            kubernetes,
+            monitor,
+        } => {
+            handle_start_training_session(
+                &client,
+                StartTrainingSessionArgs {
+                    project_id,
+                    name,
+                    experiment_id,
+                    trainer_type,
+                    dataset_id,
+                    annotation_set_id,
+                    tag,
+                    train_group,
+                    val_group,
+                    params,
+                    session_name,
+                    session_description,
+                    weights_session,
+                    local,
+                    kubernetes,
+                    monitor,
+                },
+            )
+            .await
+        }
+        Command::UpdateTrainingSession {
+            session_id,
+            name,
+            description,
+        } => handle_update_training_session(&client, session_id, name, description).await,
+        Command::DeleteTrainingSessions { session_ids } => {
+            handle_delete_training_sessions(&client, session_ids).await
+        }
+        Command::TrainerSchemas => handle_trainer_schemas(&client).await,
+        Command::TrainerSchema { schema_type } => handle_trainer_schema(&client, schema_type).await,
         Command::Tasks {
             stages,
             name,
@@ -5357,6 +5785,17 @@ async fn main() -> Result<(), Error> {
         }
         Command::ValidationSession { session_id } => {
             handle_validation_session(&client, session_id).await
+        }
+        Command::UpdateValidationSession {
+            session_id,
+            name,
+            description,
+        } => handle_update_validation_session(&client, session_id, name, description).await,
+        Command::DeleteValidationSessions { session_ids } => {
+            handle_delete_validation_sessions(&client, session_ids).await
+        }
+        Command::ValidatorSchemas { schema_type } => {
+            handle_validator_schemas(&client, schema_type).await
         }
         Command::Snapshots => handle_snapshots(&client).await,
         Command::Snapshot { snapshot_id } => handle_snapshot(&client, snapshot_id).await,
@@ -5511,6 +5950,39 @@ mod tests {
     type Polygon = Vec<PolygonPoint>;
     type OptionalBox2dData = Option<Vec<Option<BoundingBox>>>;
     type OptionalMaskData = Option<Vec<Option<Polygon>>>;
+
+    #[test]
+    fn test_parse_param_types() {
+        // JSON values keep their types.
+        assert_eq!(
+            parse_param("epochs=50").unwrap(),
+            ("epochs".to_owned(), Parameter::Integer(50))
+        );
+        assert_eq!(
+            parse_param("learning_rate=0.001").unwrap(),
+            ("learning_rate".to_owned(), Parameter::Real(0.001))
+        );
+        assert_eq!(
+            parse_param("augment=true").unwrap(),
+            ("augment".to_owned(), Parameter::Boolean(true))
+        );
+        // Non-JSON values fall back to plain strings.
+        assert_eq!(
+            parse_param("optimizer=adam").unwrap(),
+            ("optimizer".to_owned(), Parameter::String("adam".to_owned()))
+        );
+        // Values may contain '=' — only the first is the separator.
+        assert_eq!(
+            parse_param("expr=a=b").unwrap(),
+            ("expr".to_owned(), Parameter::String("a=b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_parse_param_invalid() {
+        assert!(parse_param("no-separator").is_err());
+        assert!(parse_param("=value").is_err());
+    }
 
     #[test]
     fn test_is_valid_image_extension() {

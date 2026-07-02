@@ -1,7 +1,16 @@
 # Temporary ignores for pyo3 0.28.x advisories until pyo3-polars and rust-numpy
 # publish releases compatible with pyo3 >=0.29. See pola-rs/polars#27949.
+#
+# quick-xml <0.41 advisories are pulled in via object_store (polars-io cloud
+# feature). The fix (quick-xml 0.41) is semver-incompatible with the
+# object_store release polars 0.54 pins, so the upgrade is blocked on a
+# polars/object_store bump. quick-xml is lockfile-only for us: the cloud
+# object_store feature is not enabled, so the crate is not compiled into any
+# shipped artifact (`cargo tree -i quick-xml` finds no path).
 [advisories]
 ignore = [
     "RUSTSEC-2026-0176", # OOB read in PyList/PyTuple iterators; fixed in pyo3 >=0.29.0
     "RUSTSEC-2026-0177", # Missing Sync on PyCFunction::new_closure; fixed in pyo3 >=0.29.0
+    "RUSTSEC-2026-0194", # quick-xml quadratic duplicate-attribute check; fixed in >=0.41.0
+    "RUSTSEC-2026-0195", # quick-xml NsReader memory-exhaustion DoS; fixed in >=0.41.0
 ]

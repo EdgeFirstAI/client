@@ -1420,6 +1420,105 @@ impl Display for NewValidationSession {
     }
 }
 
+/// Request payload for [`client::Client::start_training_session`].
+///
+/// Launches a new training session against a single dataset using
+/// group-based train/validation splits. When `train_group` / `val_group`
+/// are `None`, the dataset's default split groups (`"train"` / `"val"`)
+/// are used. When `tag_name` is `None`, the dataset's most recent tag is
+/// used.
+///
+/// The hyperparameters in `params` are trainer-specific; query the
+/// trainer's parameter schema with `Client::trainer_schema` (using a
+/// `schema_type` from `Client::trainer_schemas`) to discover the
+/// accepted parameter names, defaults, and ranges.
+///
+/// Set `is_local: true` for a **user-managed** session: the session row
+/// is created and fully usable for artifact/metric uploads, but no cloud
+/// instance is provisioned — the caller runs the training loop
+/// themselves. `is_kubernetes: true` schedules onto the organization's
+/// Kubernetes runner; with both flags false the server provisions a
+/// cloud (AWS EC2) instance.
+#[derive(Debug, Clone)]
+pub struct StartTrainingRequest {
+    /// Project owning the experiment and dataset.
+    pub project_id: ProjectID,
+    /// Name for the session's background task.
+    pub name: String,
+    /// Experiment (trainer) the session belongs to.
+    pub experiment_id: ExperimentID,
+    /// Trainer schema type (e.g. `"modelpack"`), from
+    /// `Client::trainer_schemas`.
+    pub trainer_type: String,
+    /// Dataset to train on.
+    pub dataset_id: DatasetID,
+    /// Annotation set providing the ground-truth labels.
+    pub annotation_set_id: AnnotationSetID,
+    /// Dataset tag to train against; `None` selects the latest tag.
+    pub tag_name: Option<String>,
+    /// Training split group name; `None` uses the default `"train"`.
+    pub train_group: Option<String>,
+    /// Validation split group name; `None` uses the default `"val"`.
+    pub val_group: Option<String>,
+    /// Display name for the training session itself; `None` uses the
+    /// task `name`.
+    pub session_name: Option<String>,
+    /// Optional description for the training session.
+    pub session_description: Option<String>,
+    /// Optional source session for transfer-learning weights.
+    pub weights_session: Option<TrainingSessionID>,
+    /// Trainer hyperparameters, keyed by schema parameter name.
+    pub params: HashMap<String, Parameter>,
+    /// Create a user-managed session (no cloud instance).
+    pub is_local: bool,
+    /// Schedule onto the organization's Kubernetes runner.
+    pub is_kubernetes: bool,
+}
+
+/// Result of [`client::Client::start_training_session`].
+///
+/// Studio's `cloud.server.start` returns the freshly-created
+/// `BackgroundTask` row. `task_id` can be polled via `Client::task_info`
+/// to monitor the launch; `session_id` is the handle to the new training
+/// session (for `Client::training_session`,
+/// `Client::update_training_session`, and
+/// `Client::delete_training_sessions`).
+///
+/// `session_id` is `Option` because the same endpoint also returns
+/// non-trainer tasks and those don't populate `train_session_id`; for a
+/// `type = "trainer"` launch it is always populated.
+#[derive(Deserialize, Debug, Clone)]
+pub struct NewTrainingSession {
+    #[serde(rename = "id")]
+    pub task_id: TaskID,
+    #[serde(rename = "train_session_id", default)]
+    pub session_id: Option<TrainingSessionID>,
+}
+
+impl Display for NewTrainingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.session_id {
+            Some(id) => write!(f, "task {} session {}", self.task_id, id),
+            None => write!(f, "task {} (no session)", self.task_id),
+        }
+    }
+}
+
+/// A dataset version tag, as returned by `Client::dataset_tags`.
+///
+/// Tags mark dataset versions for reproducible training. The most
+/// recently created tag (highest `id`) is treated as the latest.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Tag {
+    /// Tag identifier; creation-ordered, so the highest id is newest.
+    pub id: u64,
+    /// Tag name, referenced by training sessions as `tag_name`.
+    pub name: String,
+    /// The dataset this tag belongs to.
+    #[serde(default)]
+    pub dataset_id: u64,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct DatasetParams {
     dataset_id: DatasetID,
@@ -2107,6 +2206,181 @@ impl Artifact {
     pub fn model_type(&self) -> &str {
         &self.model_type
     }
+}
+
+/// Catalog entry describing an available trainer type.
+///
+/// Returned by `Client::trainer_schemas`. The `schema_type` value is
+/// what gets passed to `Client::trainer_schema` to fetch the full
+/// parameter schema, and to `StartTrainingRequest::trainer_type` when
+/// launching a training session.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TrainerSchemaInfo {
+    /// Internal trainer name (e.g. `"modelpack"`).
+    pub name: String,
+    /// Human-readable label shown in the Studio UI.
+    #[serde(default)]
+    pub label: String,
+    /// Schema type identifier used for schema lookup and launch.
+    #[serde(default)]
+    pub schema_type: String,
+}
+
+/// The kind of input a [`SchemaField`] describes.
+///
+/// Mirrors the field types rendered by the Studio UI's dynamic schema
+/// forms. Unrecognized types deserialize as [`SchemaFieldType::Unknown`]
+/// so newer servers never break older clients.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SchemaFieldType {
+    /// Container of nested fields (see [`SchemaField::children`]).
+    Group,
+    /// Numeric slider with `min`/`max`/`step` bounds.
+    Slider,
+    /// Selection from [`SchemaField::options`].
+    Select,
+    /// Boolean toggle, optionally revealing nested `children`.
+    Bool,
+    /// Integer input.
+    Int,
+    /// Floating-point input.
+    Float,
+    /// Text input.
+    Text,
+    /// Date input.
+    Date,
+    /// Studio project reference.
+    Project,
+    /// Studio dataset reference.
+    Dataset,
+    /// Studio training-session reference.
+    Trainer,
+    /// File upload.
+    Upload,
+    /// Server-side metadata entry (machine image, entrypoint); not a
+    /// user-facing parameter.
+    Info,
+    /// Any type this client version does not recognize.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Deserialize an optional string leniently: schema authors sometimes
+/// use bare numbers or booleans for display fields (e.g. an option
+/// labelled `1`), which are coerced to their string representation.
+fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(|v| match v {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }))
+}
+
+/// One selectable option of a `select` [`SchemaField`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemaOption {
+    /// Option value; may be any JSON scalar (string, number, …).
+    #[serde(default)]
+    pub name: Option<Parameter>,
+    /// Human-readable label; non-string labels (e.g. a bare number)
+    /// are coerced to strings.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub label: Option<String>,
+    /// Nested fields revealed when this option is selected.
+    #[serde(default)]
+    pub children: Vec<SchemaField>,
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema.
+///
+/// Schemas describe the hyperparameters a trainer/validator accepts —
+/// the same descriptors the Studio UI renders as dynamic forms. Use them
+/// to discover parameter names, defaults, and valid ranges before
+/// launching a session with `Client::start_training_session`.
+///
+/// Deserialization is tolerant: unknown JSON keys are ignored and most
+/// fields are optional, so schema evolution on the server does not break
+/// this client.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemaField {
+    /// Parameter name — the key to use in the launch `params` map.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub name: Option<String>,
+    /// Human-readable label; non-string labels are coerced to strings.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub label: Option<String>,
+    /// Longer description of the parameter.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub description: Option<String>,
+    /// Whether a value is required to launch.
+    #[serde(default)]
+    pub required: bool,
+    /// Default value applied when the parameter is omitted.
+    #[serde(default)]
+    pub default: Option<Parameter>,
+    /// The kind of input this field describes.
+    #[serde(rename = "type", default)]
+    pub field_type: Option<SchemaFieldType>,
+    /// Minimum value (numeric fields).
+    #[serde(default)]
+    pub min: Option<f64>,
+    /// Maximum value (numeric fields).
+    #[serde(default)]
+    pub max: Option<f64>,
+    /// Step size (numeric fields).
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// Selectable options (`select` fields).
+    #[serde(default)]
+    pub options: Vec<SchemaOption>,
+    /// Nested fields (`group` fields, or `bool` fields that reveal
+    /// sub-parameters when enabled).
+    #[serde(default)]
+    pub children: Vec<SchemaField>,
+    /// Render the select as a dropdown.
+    #[serde(default)]
+    pub is_dropdown: bool,
+    /// Allow selecting multiple options.
+    #[serde(default)]
+    pub multi_select: bool,
+    /// Render the text input as multi-line.
+    #[serde(default)]
+    pub is_multi_line: bool,
+    /// Mask the text input (passwords).
+    #[serde(default)]
+    pub hidden: bool,
+    /// Restrict text input to numeric characters.
+    #[serde(default)]
+    pub numeric_only: bool,
+    /// Dataset fields: enable dataset tag selection.
+    #[serde(default)]
+    pub enable_tags_selection: bool,
+    /// Dataset fields: enable annotation set selection.
+    #[serde(default)]
+    pub enable_annotation_set_selection: bool,
+    /// Slider fields: number of slider handles (1 = value, 2 = range).
+    #[serde(default)]
+    pub values: Option<Vec<Parameter>>,
+}
+
+/// A validator parameter schema, as returned by
+/// `Client::validator_schemas`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorSchema {
+    /// Schema type identifier (matched against a model's trainer type).
+    #[serde(rename = "type", default)]
+    pub schema_type: String,
+    /// Internal validator name.
+    #[serde(default)]
+    pub name: String,
+    /// The parameter field descriptors.
+    #[serde(default)]
+    pub schema: Vec<SchemaField>,
 }
 
 #[cfg(test)]
