@@ -34,11 +34,11 @@
 use base64::Engine as _;
 use edgefirst_client::{
     Client, DatasetID, Error, Parameter, SampleDimensionUpdate, SampleID, TaskID,
-    ValidationSessionID,
+    TrainingSessionID, ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
-use wiremock::matchers::{body_partial_json, method, path, query_param};
+use wiremock::matchers::{body_json, body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -947,6 +947,178 @@ async fn delete_validation_sessions_maps_permission_denied() {
         matches!(err, Error::PermissionDenied(_) | Error::RpcError(100, _)),
         "expected PermissionDenied or RpcError(100), got {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `Client::delete_training_sessions` / `Client::update_training_session` /
+// `Client::update_validation_session`
+// ---------------------------------------------------------------------------
+
+/// Full `trainer.session.get` row: the client's TrainingSession
+/// deserializer requires `params.{model_params,dataset_params}` and the
+/// embedded `docker_task`.
+fn training_session_json(id: u64, name: &str, description: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "trainer_id": 7,
+        "model": "modelpack",
+        "name": name,
+        "description": description,
+        "params": {
+            "model_params": { "epochs": 5 },
+            "dataset_params": {
+                "dataset_id": 3,
+                "annotation_set_id": 4,
+                "train_group_name": "train",
+                "val_group_name": "val"
+            }
+        },
+        "docker_task": {
+            "id": id,
+            "name": name,
+            "type": "trainer",
+            "status": "running",
+            "manage_type": null,
+            "instance_type": "wiremock",
+            "date": "2026-05-15T00:00:00Z"
+        }
+    })
+}
+
+#[tokio::test]
+async fn delete_training_sessions_passes_session_ids_array() {
+    let server = MockServer::start().await;
+
+    // trainer.session.delete parses `session_ids` with ParseIntArray on
+    // the server, so the ids must serialize as bare integers.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "trainer.session.delete",
+            "params": { "session_ids": [0x111, 0x222] }
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_result(json!("Training Session Deleted"))),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .delete_training_sessions(&[
+            TrainingSessionID::from(0x111u64),
+            TrainingSessionID::from(0x222u64),
+        ])
+        .await
+        .expect("trainer.session.delete via mock");
+}
+
+#[tokio::test]
+async fn delete_training_sessions_maps_permission_denied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(100, "permission denied")))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .delete_training_sessions(&[TrainingSessionID::from(0x111u64)])
+        .await
+        .expect_err("expected permission failure");
+    assert!(
+        matches!(err, Error::PermissionDenied(_) | Error::RpcError(100, _)),
+        "expected PermissionDenied or RpcError(100), got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn update_training_session_updates_then_refetches() {
+    let server = MockServer::start().await;
+
+    // Exact body match (not partial): locks in that unset fields —
+    // `description` here — are omitted from the update params entirely,
+    // so the server does not overwrite them with empty strings.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_json(json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "method": "trainer.session.update",
+            "params": { "id": 0x111, "name": "renamed" }
+        })))
+        // The update RPC returns the bare DB row without `docker_task`;
+        // the client must not try to deserialize it as a TrainingSession.
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x111,
+            "trainer_id": 7,
+            "name": "renamed",
+            "description": "old description"
+        }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.get"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_result(training_session_json(0x111, "renamed", "old description"))),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .update_training_session(TrainingSessionID::from(0x111u64), Some("renamed"), None)
+        .await
+        .expect("trainer.session.update via mock");
+    assert_eq!(session.name(), "renamed");
+    assert_eq!(session.description(), "old description");
+}
+
+#[tokio::test]
+async fn update_validation_session_sends_int_id_and_refetches() {
+    let server = MockServer::start().await;
+
+    // Mounts the `validate.session.get` mock used for the post-update
+    // re-fetch (and proves the fixture deserializes).
+    let _ = mock_validation_session(&server, 0x5678).await;
+
+    // validate.session.update parses `validate_session_id` with ParseInt
+    // on the server — it must be a bare integer, not a "v-" string.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_json(json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "method": "validate.session.update",
+            "params": {
+                "validate_session_id": 0x5678,
+                "name": "renamed",
+                "description": "new description"
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0x5678,
+            "description": "new description"
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let session = client
+        .update_validation_session(
+            ValidationSessionID::from(0x5678u64),
+            Some("renamed"),
+            Some("new description"),
+        )
+        .await
+        .expect("validate.session.update via mock");
+    assert_eq!(session.id(), ValidationSessionID::from(0x5678u64));
 }
 
 // ---------------------------------------------------------------------------

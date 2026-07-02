@@ -4700,6 +4700,113 @@ impl Client {
         Ok(())
     }
 
+    /// Delete one or more training sessions via `trainer.session.delete`.
+    ///
+    /// **The server cascades this delete**: validation sessions attached
+    /// to the deleted training sessions are removed as well, along with
+    /// the session's artifacts and checkpoints. The reverse is not true —
+    /// deleting a validation session with
+    /// [`Client::delete_validation_sessions`] never affects its parent
+    /// training session.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.session.delete`, such as an
+    /// `RpcError` if one of the session ids cannot be resolved.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_training_sessions(
+        &self,
+        session_ids: &[TrainingSessionID],
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("session_ids".into(), serde_json::to_value(session_ids)?);
+        let _: serde_json::Value = self
+            .rpc("trainer.session.delete".to_owned(), Some(body))
+            .await?;
+        Ok(())
+    }
+
+    /// Update the name and/or description of a training session via
+    /// `trainer.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` should be provided; the call is a no-op otherwise.
+    ///
+    /// The update RPC returns the bare database row without the session's
+    /// task information, so the session is re-fetched with
+    /// `trainer.session.get` after the update to return a fully populated
+    /// [`TrainingSession`].
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.session.update` or the
+    /// follow-up `trainer.session.get`. A `PermissionDenied` indicates
+    /// the caller lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_training_session(
+        &self,
+        session_id: TrainingSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<TrainingSession, Error> {
+        let mut body = serde_json::Map::new();
+        body.insert("id".into(), serde_json::to_value(session_id)?);
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("trainer.session.update".to_owned(), Some(body))
+            .await?;
+        self.training_session(session_id).await
+    }
+
+    /// Update the name and/or description of a validation session via
+    /// `validate.session.update`, returning the refreshed session.
+    ///
+    /// Fields left as `None` are not modified. Renaming a validation
+    /// session also renames its associated background task on the server.
+    ///
+    /// The session is re-fetched with `validate.session.get` after the
+    /// update to return a fully populated [`ValidationSession`].
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `validate.session.update` or the
+    /// follow-up `validate.session.get`. A `PermissionDenied` indicates
+    /// the caller lacks `TrainerWrite` on the session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn update_validation_session(
+        &self,
+        session_id: ValidationSessionID,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<ValidationSession, Error> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "validate_session_id".into(),
+            serde_json::to_value(session_id)?,
+        );
+        if let Some(name) = name {
+            body.insert("name".into(), serde_json::Value::String(name.to_owned()));
+        }
+        if let Some(description) = description {
+            body.insert(
+                "description".into(),
+                serde_json::Value::String(description.to_owned()),
+            );
+        }
+        let _: serde_json::Value = self
+            .rpc("validate.session.update".to_owned(), Some(body))
+            .await?;
+        self.validation_session(session_id).await
+    }
+
     /// List the artifacts for the specified trainer session.  The artifacts
     /// are returned as a vector of strings.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
