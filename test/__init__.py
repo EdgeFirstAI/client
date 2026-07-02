@@ -145,3 +145,85 @@ def cleanup_validation_session(client, session_id):
         client.delete_validation_sessions([session_id])
     except Exception:  # noqa: BLE001
         pass
+
+
+def make_user_managed_training_session(client, name_suffix=""):
+    """Create a user-managed training session in the canonical test project.
+
+    Walks the ``Unit Testing`` project (override via
+    ``STUDIO_TEST_PROJECT``) for an experiment and a dataset with an
+    annotation set, then posts a ``cloud.server.start`` with
+    ``is_local=True`` — a **user-managed** session: the DB row exists
+    and accepts artifact uploads / metric updates, but no cloud
+    instance is provisioned and no trainer pipeline runs. The caller
+    is responsible for cleanup via
+    :py:meth:`Client.delete_training_sessions`.
+
+    The launch relies on the dataset having at least one version tag
+    (the client resolves the latest tag when none is named).
+
+    Args:
+        client: Authenticated :py:class:`Client`.
+        name_suffix: Short tag baked into the session name so logs/UI
+            can attribute the session back to its originating test.
+
+    Returns:
+        NewTrainingSession on success, or ``None`` if any of the
+        required fixtures is missing on the server (no project,
+        experiment, dataset, annotation set, or dataset tag). The
+        caller should :py:meth:`unittest.TestCase.skipTest` in that
+        case rather than silently fall back to a stranger's data.
+    """
+    projects = client.projects(TEST_PROJECT_NAME)
+    if not projects:
+        return None
+    project = projects[0]
+
+    experiments = client.experiments(project.id)
+    if not experiments:
+        return None
+
+    dataset = None
+    annotation_set = None
+    for candidate in client.datasets(project.id):
+        annotation_sets = client.annotation_sets(candidate.id)
+        if annotation_sets:
+            dataset = candidate
+            annotation_set = annotation_sets[0]
+            break
+    if dataset is None:
+        return None
+
+    suffix = name_suffix or "fixture"
+    try:
+        return client.start_training_session(
+            project_id=project.id,
+            name=f"session-mgmt-test-{suffix}-{int(time.time())}",
+            experiment_id=experiments[0].id,
+            trainer_type="modelpack",
+            dataset_id=dataset.id,
+            annotation_set_id=annotation_set.id,
+            params={"epochs": 1},
+            is_local=True,
+        )
+    except Exception as err:  # noqa: BLE001
+        # A dataset without version tags cannot be trained against;
+        # treat it as a missing fixture rather than a test failure.
+        if "tag" in str(err):
+            return None
+        raise
+
+
+def cleanup_training_session(client, session_id):
+    """Best-effort delete for a fixture training session.
+
+    Used in ``tearDownClass`` so a successful test pass doesn't leak
+    stranded sessions; swallows errors because cleanup failures should
+    never mask a real test failure.
+    """
+    if session_id is None:
+        return
+    try:
+        client.delete_training_sessions([session_id])
+    except Exception:  # noqa: BLE001
+        pass

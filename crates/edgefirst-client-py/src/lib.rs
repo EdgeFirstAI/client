@@ -4695,6 +4695,246 @@ impl Artifact {
 }
 
 // =============================================================================
+// Trainer/validator schemas and training session launch
+// =============================================================================
+
+/// Result of `Client.start_training_session`. Carries the id of the
+/// launch task (pollable via `Client.task_info`) and the id of the
+/// freshly-created training session.
+#[pyclass(module = "edgefirst_client")]
+pub struct NewTrainingSession {
+    inner: edgefirst_client::NewTrainingSession,
+}
+
+#[pymethods]
+impl NewTrainingSession {
+    #[getter]
+    pub fn task_id(&self) -> TaskID {
+        TaskID(self.inner.task_id)
+    }
+
+    #[getter]
+    pub fn session_id(&self) -> Option<TrainingSessionID> {
+        self.inner.session_id.map(TrainingSessionID)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "NewTrainingSession(task_id={}, session_id={})",
+            self.inner.task_id,
+            self.inner
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
+/// Catalog entry describing an available trainer type, as returned by
+/// `Client.trainer_schemas`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct TrainerSchemaInfo(edgefirst_client::TrainerSchemaInfo);
+
+#[pymethods]
+impl TrainerSchemaInfo {
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[getter]
+    pub fn label(&self) -> &str {
+        &self.0.label
+    }
+
+    #[getter]
+    pub fn schema_type(&self) -> &str {
+        &self.0.schema_type
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "TrainerSchemaInfo(name='{}', label='{}', schema_type='{}')",
+            self.0.name, self.0.label, self.0.schema_type
+        )
+    }
+}
+
+/// One selectable option of a ``select`` schema field.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct SchemaOption(edgefirst_client::SchemaOption);
+
+#[pymethods]
+impl SchemaOption {
+    #[getter]
+    pub fn name(&self) -> Option<Parameter> {
+        self.0.name.clone().map(Parameter::from)
+    }
+
+    #[getter]
+    pub fn label(&self) -> Option<&str> {
+        self.0.label.as_deref()
+    }
+
+    #[getter]
+    pub fn children(&self) -> Vec<SchemaField> {
+        self.0.children.iter().cloned().map(SchemaField).collect()
+    }
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema. Describes one hyperparameter: its name, type, default and
+/// constraints. Nested parameter groups are exposed via ``children``.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct SchemaField(edgefirst_client::SchemaField);
+
+#[pymethods]
+impl SchemaField {
+    #[getter]
+    pub fn name(&self) -> Option<&str> {
+        self.0.name.as_deref()
+    }
+
+    #[getter]
+    pub fn label(&self) -> Option<&str> {
+        self.0.label.as_deref()
+    }
+
+    #[getter]
+    pub fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
+
+    #[getter]
+    pub fn required(&self) -> bool {
+        self.0.required
+    }
+
+    #[getter]
+    pub fn default(&self) -> Option<Parameter> {
+        self.0.default.clone().map(Parameter::from)
+    }
+
+    /// The field type as a lowercase string (``"int"``, ``"group"``,
+    /// ``"select"``, …); ``"unknown"`` for types this client version
+    /// does not recognize, ``None`` when the server omits the type.
+    #[getter]
+    pub fn field_type(&self) -> Option<String> {
+        self.0.field_type.map(|t| format!("{:?}", t).to_lowercase())
+    }
+
+    #[getter]
+    pub fn min(&self) -> Option<f64> {
+        self.0.min
+    }
+
+    #[getter]
+    pub fn max(&self) -> Option<f64> {
+        self.0.max
+    }
+
+    #[getter]
+    pub fn step(&self) -> Option<f64> {
+        self.0.step
+    }
+
+    #[getter]
+    pub fn options(&self) -> Vec<SchemaOption> {
+        self.0.options.iter().cloned().map(SchemaOption).collect()
+    }
+
+    #[getter]
+    pub fn children(&self) -> Vec<SchemaField> {
+        self.0.children.iter().cloned().map(SchemaField).collect()
+    }
+
+    #[getter]
+    pub fn is_dropdown(&self) -> bool {
+        self.0.is_dropdown
+    }
+
+    #[getter]
+    pub fn multi_select(&self) -> bool {
+        self.0.multi_select
+    }
+
+    #[getter]
+    pub fn is_multi_line(&self) -> bool {
+        self.0.is_multi_line
+    }
+
+    #[getter]
+    pub fn hidden(&self) -> bool {
+        self.0.hidden
+    }
+
+    #[getter]
+    pub fn numeric_only(&self) -> bool {
+        self.0.numeric_only
+    }
+
+    #[getter]
+    pub fn enable_tags_selection(&self) -> bool {
+        self.0.enable_tags_selection
+    }
+
+    #[getter]
+    pub fn enable_annotation_set_selection(&self) -> bool {
+        self.0.enable_annotation_set_selection
+    }
+
+    #[getter]
+    pub fn values(&self) -> Option<Vec<Parameter>> {
+        self.0
+            .values
+            .clone()
+            .map(|v| v.into_iter().map(Parameter::from).collect())
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "SchemaField(name={}, type={})",
+            self.0.name.as_deref().unwrap_or("None"),
+            self.field_type().unwrap_or_else(|| "None".to_string()),
+        )
+    }
+}
+
+/// A validator parameter schema, as returned by
+/// `Client.validator_schemas`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone)]
+pub struct ValidatorSchema(edgefirst_client::ValidatorSchema);
+
+#[pymethods]
+impl ValidatorSchema {
+    #[getter]
+    pub fn schema_type(&self) -> &str {
+        &self.0.schema_type
+    }
+
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[getter]
+    pub fn schema(&self) -> Vec<SchemaField> {
+        self.0.schema.iter().cloned().map(SchemaField).collect()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ValidatorSchema(schema_type='{}', name='{}')",
+            self.0.schema_type, self.0.name
+        )
+    }
+}
+
+// =============================================================================
 // TaskDataList and Job
 // =============================================================================
 
@@ -6483,6 +6723,194 @@ impl Client {
         Ok(self.0.delete_validation_sessions(&ids).await?)
     }
 
+    /// Delete one or more training sessions (Studio
+    /// ``trainer.session.delete``).
+    ///
+    /// **The server cascades this delete**: validation sessions attached
+    /// to the deleted training sessions are removed as well, along with
+    /// artifacts and checkpoints. The reverse is not true — deleting a
+    /// validation session never affects its parent training session.
+    #[tokio_wrap::sync]
+    pub fn delete_training_sessions<'py>(
+        &self,
+        session_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let mut ids = Vec::with_capacity(session_ids.len());
+        for v in session_ids {
+            let id: TrainingSessionID = v.try_into()?;
+            ids.push(id.0);
+        }
+        Ok(self.0.delete_training_sessions(&ids).await?)
+    }
+
+    /// Update the name and/or description of a training session,
+    /// returning the refreshed session. Fields left as ``None`` are not
+    /// modified; at least one should be provided.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (session_id, name = None, description = None))]
+    pub fn update_training_session<'py>(
+        &self,
+        session_id: Bound<'py, PyAny>,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<TrainingSession, Error> {
+        let session_id: TrainingSessionID = session_id.try_into()?;
+        let inner = self
+            .0
+            .update_training_session(session_id.0, name, description)
+            .await?;
+        Ok(TrainingSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
+        ))
+    }
+
+    /// Update the name and/or description of a validation session,
+    /// returning the refreshed session. Fields left as ``None`` are not
+    /// modified; at least one should be provided.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (session_id, name = None, description = None))]
+    pub fn update_validation_session<'py>(
+        &self,
+        session_id: Bound<'py, PyAny>,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<ValidationSession, Error> {
+        let session_id: ValidationSessionID = session_id.try_into()?;
+        let inner = self
+            .0
+            .update_validation_session(session_id.0, name, description)
+            .await?;
+        Ok(ValidationSession::with_client(
+            inner,
+            Arc::new(self.0.clone()),
+        ))
+    }
+
+    /// List the trainer types available on the server. Pass a returned
+    /// ``schema_type`` to :py:meth:`trainer_schema` for the full
+    /// parameter schema, or to :py:meth:`start_training_session`.
+    #[tokio_wrap::sync]
+    pub fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, Error> {
+        Ok(self
+            .0
+            .trainer_schemas()
+            .await?
+            .into_iter()
+            .map(TrainerSchemaInfo)
+            .collect())
+    }
+
+    /// Fetch the parameter schema for a specific trainer type. The
+    /// returned fields describe the hyperparameters accepted by
+    /// :py:meth:`start_training_session`.
+    #[tokio_wrap::sync]
+    pub fn trainer_schema(&self, schema_type: &str) -> Result<Vec<SchemaField>, Error> {
+        Ok(self
+            .0
+            .trainer_schema(schema_type)
+            .await?
+            .into_iter()
+            .map(SchemaField)
+            .collect())
+    }
+
+    /// List the validator schemas available on the server. Each schema
+    /// carries its parameter field descriptors inline.
+    #[tokio_wrap::sync]
+    pub fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
+        Ok(self
+            .0
+            .validator_schemas()
+            .await?
+            .into_iter()
+            .map(ValidatorSchema)
+            .collect())
+    }
+
+    /// Launch a new training session (Studio ``cloud.server.start``).
+    ///
+    /// The session trains on a single dataset using group-based
+    /// train/validation splits. ``tag_name`` defaults to the dataset's
+    /// latest tag (it is an error if the dataset has no tags);
+    /// ``train_group`` / ``val_group`` default to the dataset's standard
+    /// ``train`` / ``val`` groups.
+    ///
+    /// Pass ``is_local=True`` for a user-managed session: the session
+    /// row is created but no cloud instance is provisioned — the caller
+    /// runs the training loop and uploads artifacts/metrics. Cleanup is
+    /// via :py:meth:`delete_training_sessions`.
+    #[tokio_wrap::sync]
+    #[pyo3(signature = (
+        project_id,
+        name,
+        experiment_id,
+        trainer_type,
+        dataset_id,
+        annotation_set_id,
+        params = HashMap::new(),
+        tag_name = None,
+        train_group = None,
+        val_group = None,
+        session_name = None,
+        session_description = None,
+        weights_session = None,
+        is_local = false,
+        is_kubernetes = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_training_session<'py>(
+        &self,
+        project_id: Bound<'py, PyAny>,
+        name: &str,
+        experiment_id: Bound<'py, PyAny>,
+        trainer_type: &str,
+        dataset_id: Bound<'py, PyAny>,
+        annotation_set_id: Bound<'py, PyAny>,
+        params: HashMap<String, Bound<'py, PyAny>>,
+        tag_name: Option<&str>,
+        train_group: Option<&str>,
+        val_group: Option<&str>,
+        session_name: Option<&str>,
+        session_description: Option<&str>,
+        weights_session: Option<Bound<'py, PyAny>>,
+        is_local: bool,
+        is_kubernetes: bool,
+    ) -> Result<NewTrainingSession, Error> {
+        let project_id: ProjectID = project_id.try_into()?;
+        let experiment_id: ExperimentID = experiment_id.try_into()?;
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let weights_session = match weights_session {
+            Some(v) => Some(TrainingSessionID::try_from(v)?.0),
+            None => None,
+        };
+        let mut params_map = HashMap::<String, edgefirst_client::Parameter>::new();
+        for (key, value) in params {
+            let value: Parameter = value.try_into()?;
+            params_map.insert(key, value.into());
+        }
+        let req = edgefirst_client::StartTrainingRequest {
+            project_id: project_id.0,
+            name: name.to_string(),
+            experiment_id: experiment_id.0,
+            trainer_type: trainer_type.to_string(),
+            dataset_id: dataset_id.0,
+            annotation_set_id: annotation_set_id.0,
+            tag_name: tag_name.map(|s| s.to_string()),
+            train_group: train_group.map(|s| s.to_string()),
+            val_group: val_group.map(|s| s.to_string()),
+            session_name: session_name.map(|s| s.to_string()),
+            session_description: session_description.map(|s| s.to_string()),
+            weights_session,
+            params: params_map,
+            is_local,
+            is_kubernetes,
+        };
+        let inner = self.0.start_training_session(req).await?;
+        Ok(NewTrainingSession { inner })
+    }
+
     #[tokio_wrap::sync]
     pub fn snapshots(&self) -> Result<Vec<Snapshot>, Error> {
         let client_arc = Arc::new(self.0.clone());
@@ -7843,6 +8271,11 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TrainingSession>()?;
     m.add_class::<ValidationSession>()?;
     m.add_class::<NewValidationSession>()?;
+    m.add_class::<NewTrainingSession>()?;
+    m.add_class::<TrainerSchemaInfo>()?;
+    m.add_class::<SchemaField>()?;
+    m.add_class::<SchemaOption>()?;
+    m.add_class::<ValidatorSchema>()?;
     m.add_class::<Snapshot>()?;
     m.add_class::<SnapshotRestoreResult>()?;
     m.add_class::<SnapshotFromDatasetResult>()?;

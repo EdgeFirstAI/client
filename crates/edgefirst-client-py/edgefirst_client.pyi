@@ -3522,6 +3522,210 @@ class NewValidationSession:
 
     def __repr__(self) -> str: ...
 
+class NewTrainingSession:
+    """Result of :py:meth:`Client.start_training_session`.
+
+    The handle returned when a training session is freshly created via
+    ``cloud.server.start``. The task_id can be polled with
+    :py:meth:`Client.task_info`; the session_id is the handle for
+    :py:meth:`Client.training_session`,
+    :py:meth:`Client.update_training_session` and
+    :py:meth:`Client.delete_training_sessions`.
+    """
+
+    @property
+    def task_id(self) -> TaskID:
+        """Backing BackgroundTask row id (acceptable to
+        ``task_info`` / ``task_status`` / ``job_stop``)."""
+        ...
+
+    @property
+    def session_id(self) -> Optional[TrainingSessionID]:
+        """Freshly-minted training session id.
+
+        Optional because the underlying ``cloud.server.start`` endpoint
+        also returns non-trainer tasks. For a trainer start request
+        this is always populated.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+class TrainerSchemaInfo:
+    """Catalog entry describing an available trainer type.
+
+    Returned by :py:meth:`Client.trainer_schemas`. The ``schema_type``
+    value is what gets passed to :py:meth:`Client.trainer_schema` and to
+    :py:meth:`Client.start_training_session`.
+    """
+
+    @property
+    def name(self) -> str:
+        """Internal trainer name (e.g. ``"modelpack"``)."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """Human-readable label shown in the Studio UI."""
+        ...
+
+    @property
+    def schema_type(self) -> str:
+        """Schema type identifier used for schema lookup and launch."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class SchemaOption:
+    """One selectable option of a ``select`` schema field."""
+
+    @property
+    def name(self) -> Optional[Parameter]:
+        """Option value; may be any JSON scalar (string, number, ...)."""
+        ...
+
+    @property
+    def label(self) -> Optional[str]:
+        """Human-readable label."""
+        ...
+
+    @property
+    def children(self) -> List[SchemaField]:
+        """Nested fields revealed when this option is selected."""
+        ...
+
+class SchemaField:
+    """A single field descriptor from a trainer or validator schema.
+
+    Describes one hyperparameter: its name, type, default and
+    constraints. Nested parameter groups are exposed via ``children``.
+    Use the descriptors to build the ``params`` dict for
+    :py:meth:`Client.start_training_session`.
+    """
+
+    @property
+    def name(self) -> Optional[str]:
+        """Parameter name — the key to use in the launch params dict."""
+        ...
+
+    @property
+    def label(self) -> Optional[str]:
+        """Human-readable label."""
+        ...
+
+    @property
+    def description(self) -> Optional[str]:
+        """Longer description of the parameter."""
+        ...
+
+    @property
+    def required(self) -> bool:
+        """Whether a value is required to launch."""
+        ...
+
+    @property
+    def default(self) -> Optional[Parameter]:
+        """Default value applied when the parameter is omitted."""
+        ...
+
+    @property
+    def field_type(self) -> Optional[str]:
+        """Field type as a lowercase string (``"int"``, ``"group"``,
+        ``"select"``, ...); ``"unknown"`` for types this client version
+        does not recognize, ``None`` when the server omits the type."""
+        ...
+
+    @property
+    def min(self) -> Optional[float]:
+        """Minimum value (numeric fields)."""
+        ...
+
+    @property
+    def max(self) -> Optional[float]:
+        """Maximum value (numeric fields)."""
+        ...
+
+    @property
+    def step(self) -> Optional[float]:
+        """Step size (numeric fields)."""
+        ...
+
+    @property
+    def options(self) -> List[SchemaOption]:
+        """Selectable options (``select`` fields)."""
+        ...
+
+    @property
+    def children(self) -> List[SchemaField]:
+        """Nested fields (``group`` fields, or ``bool`` fields that
+        reveal sub-parameters when enabled)."""
+        ...
+
+    @property
+    def is_dropdown(self) -> bool:
+        """Render the select as a dropdown."""
+        ...
+
+    @property
+    def multi_select(self) -> bool:
+        """Allow selecting multiple options."""
+        ...
+
+    @property
+    def is_multi_line(self) -> bool:
+        """Render the text input as multi-line."""
+        ...
+
+    @property
+    def hidden(self) -> bool:
+        """Mask the text input (passwords)."""
+        ...
+
+    @property
+    def numeric_only(self) -> bool:
+        """Restrict text input to numeric characters."""
+        ...
+
+    @property
+    def enable_tags_selection(self) -> bool:
+        """Dataset fields: enable dataset tag selection."""
+        ...
+
+    @property
+    def enable_annotation_set_selection(self) -> bool:
+        """Dataset fields: enable annotation set selection."""
+        ...
+
+    @property
+    def values(self) -> Optional[List[Parameter]]:
+        """Slider fields: number of slider handles (1 = value,
+        2 = range)."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+class ValidatorSchema:
+    """A validator parameter schema, as returned by
+    :py:meth:`Client.validator_schemas`."""
+
+    @property
+    def schema_type(self) -> str:
+        """Schema type identifier (matched against a model's trainer
+        type)."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Internal validator name."""
+        ...
+
+    @property
+    def schema(self) -> List[SchemaField]:
+        """The parameter field descriptors."""
+        ...
+
+    def __repr__(self) -> str: ...
+
 class ValidationSession:
     """
     This class represents a validation session for a given model and dataset.
@@ -5683,6 +5887,8 @@ class Client:
         (Studio ``validate.session.delete``).
 
         Idempotent against already-deleted ids on the server side.
+        Only the validation sessions are removed; the parent training
+        session is never affected.
 
         Args:
             session_ids: Sessions to remove; each accepts the
@@ -5691,6 +5897,196 @@ class Client:
         Raises:
             Error: ``PermissionDenied`` if the caller lacks the
                 ``TrainerWrite`` permission on at least one session.
+        """
+        ...
+
+    def delete_training_sessions(
+        self, session_ids: List[TrainingSessionUID]
+    ) -> None:
+        """Delete one or more training sessions
+        (Studio ``trainer.session.delete``).
+
+        **The server cascades this delete**: validation sessions
+        attached to the deleted training sessions are removed as well,
+        along with artifacts and checkpoints.
+
+        Args:
+            session_ids: Sessions to remove; each accepts the
+                :py:data:`TrainingSessionUID` typing.
+
+        Raises:
+            Error: If a session id cannot be resolved or the request
+                fails.
+        """
+        ...
+
+    def update_training_session(
+        self,
+        session_id: TrainingSessionUID,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> TrainingSession:
+        """Update the name and/or description of a training session.
+
+        Fields left as ``None`` are not modified; at least one should
+        be provided.
+
+        Args:
+            session_id: The training session to update.
+            name: New session name.
+            description: New session description.
+
+        Returns:
+            TrainingSession: The refreshed session after the update.
+
+        Raises:
+            Error: ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on the session.
+        """
+        ...
+
+    def update_validation_session(
+        self,
+        session_id: ValidationSessionUID,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> ValidationSession:
+        """Update the name and/or description of a validation session.
+
+        Fields left as ``None`` are not modified; at least one should
+        be provided. Renaming a validation session also renames its
+        associated background task on the server.
+
+        Args:
+            session_id: The validation session to update.
+            name: New session name.
+            description: New session description.
+
+        Returns:
+            ValidationSession: The refreshed session after the update.
+
+        Raises:
+            Error: ``PermissionDenied`` if the caller lacks the
+                ``TrainerWrite`` permission on the session.
+        """
+        ...
+
+    def trainer_schemas(self) -> List[TrainerSchemaInfo]:
+        """List the trainer types available on the server.
+
+        Pass a returned ``schema_type`` to :py:meth:`trainer_schema`
+        for the full parameter schema, or to
+        :py:meth:`start_training_session` when launching.
+
+        Returns:
+            List[TrainerSchemaInfo]: The trainer type catalog.
+
+        Raises:
+            Error: If the request fails.
+        """
+        ...
+
+    def trainer_schema(self, schema_type: str) -> List[SchemaField]:
+        """Fetch the parameter schema for a specific trainer type.
+
+        The returned fields describe the hyperparameters the trainer
+        accepts — names, defaults, ranges and nested groups — which map
+        onto the ``params`` dict of
+        :py:meth:`start_training_session`.
+
+        Args:
+            schema_type: Trainer schema type from
+                :py:meth:`trainer_schemas`.
+
+        Returns:
+            List[SchemaField]: The parameter field descriptors.
+
+        Raises:
+            Error: If the schema type is unknown or the request fails.
+        """
+        ...
+
+    def validator_schemas(self) -> List[ValidatorSchema]:
+        """List the validator schemas available on the server.
+
+        Each schema carries its parameter field descriptors inline;
+        select the schema whose ``schema_type`` matches the model's
+        trainer type.
+
+        Returns:
+            List[ValidatorSchema]: The validator schema catalog.
+
+        Raises:
+            Error: If the request fails.
+        """
+        ...
+
+    def start_training_session(
+        self,
+        project_id: ProjectUID,
+        name: str,
+        experiment_id: ExperimentUID,
+        trainer_type: str,
+        dataset_id: DatasetUID,
+        annotation_set_id: AnnotationSetUID,
+        params: Dict[str, Any] = {},
+        tag_name: Optional[str] = None,
+        train_group: Optional[str] = None,
+        val_group: Optional[str] = None,
+        session_name: Optional[str] = None,
+        session_description: Optional[str] = None,
+        weights_session: Optional[TrainingSessionUID] = None,
+        is_local: bool = False,
+        is_kubernetes: bool = False,
+    ) -> "NewTrainingSession":
+        """Launch a new training session (Studio ``cloud.server.start``).
+
+        The session trains on a single dataset using group-based
+        train/validation splits. ``tag_name`` defaults to the dataset's
+        latest tag (it is an error if the dataset has no tags and no
+        tag is named); ``train_group`` / ``val_group`` default to the
+        dataset's standard ``train`` / ``val`` groups.
+
+        Pass ``is_local=True`` to create a **user-managed** session:
+        the DB row is created but no cloud instance is provisioned —
+        the caller runs the training loop and uploads
+        artifacts/metrics. Cleanup is via
+        :py:meth:`delete_training_sessions`.
+
+        Args:
+            project_id: Project owning the experiment and dataset.
+            name: Name for the training task.
+            experiment_id: Experiment the session belongs to.
+            trainer_type: Trainer schema type from
+                :py:meth:`trainer_schemas` (e.g. ``"modelpack"``).
+            dataset_id: Dataset to train on.
+            annotation_set_id: Annotation set providing the
+                ground-truth labels.
+            params: Trainer hyperparameters keyed by schema parameter
+                name; see :py:meth:`trainer_schema`.
+            tag_name: Dataset tag to train against; defaults to the
+                latest tag.
+            train_group: Training split group name; defaults to
+                ``"train"``.
+            val_group: Validation split group name; defaults to
+                ``"val"``.
+            session_name: Optional display name for the session.
+            session_description: Optional session description.
+            weights_session: Optional source training session for
+                transfer-learning weights.
+            is_local: ``True`` for a user-managed session with no
+                cloud provisioning.
+            is_kubernetes: ``True`` to schedule onto the
+                organization's Kubernetes runner.
+
+        Returns:
+            NewTrainingSession: Backing task id and the freshly-minted
+            ``TrainingSessionID``.
+
+        Raises:
+            Error: ``InvalidParameters`` if the dataset has no tags
+                and no ``tag_name`` was provided; ``PermissionDenied``
+                if the caller can't write to the target project.
         """
         ...
 
