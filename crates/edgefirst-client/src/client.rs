@@ -6,11 +6,11 @@ use crate::{
     api::{
         AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
         NewValidationSession, Organization, Project, ProjectID, SampleID, SamplesCountResult,
-        SamplesListParams, SamplesListResult, Snapshot, SnapshotCreateFromDataset, UsageSummary,
+        SamplesListParams, SamplesListResult, SchemaField, Snapshot, SnapshotCreateFromDataset,
         SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
         StartValidationRequest, TaskID, TaskInfo, TaskStages, TaskStatus, TasksListParams,
-        TasksListResult, TrainingSession, TrainingSessionID, ValidationSession,
-        ValidationSessionID,
+        TasksListResult, TrainerSchemaInfo, TrainingSession, TrainingSessionID, UsageSummary,
+        ValidationSession, ValidationSessionID, ValidatorSchema,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -4805,6 +4805,55 @@ impl Client {
             .rpc("validate.session.update".to_owned(), Some(body))
             .await?;
         self.validation_session(session_id).await
+    }
+
+    /// List the trainer types available on the server.
+    ///
+    /// Returns the catalog of trainer schemas via `trainer.server.schema`
+    /// (no parameters). Pass a returned
+    /// [`TrainerSchemaInfo::schema_type`] to [`Client::trainer_schema`]
+    /// for the full parameter schema, or to
+    /// [`StartTrainingRequest::trainer_type`](crate::StartTrainingRequest)
+    /// when launching a training session.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schemas(&self) -> Result<Vec<TrainerSchemaInfo>, Error> {
+        #[derive(Deserialize)]
+        struct SchemaList {
+            schema_list: Vec<TrainerSchemaInfo>,
+        }
+        let result: SchemaList = self
+            .rpc::<(), SchemaList>("trainer.server.schema".to_owned(), None)
+            .await?;
+        Ok(result.schema_list)
+    }
+
+    /// Fetch the parameter schema for a specific trainer type.
+    ///
+    /// The returned [`SchemaField`] descriptors define the
+    /// hyperparameters the trainer accepts — names, defaults, ranges and
+    /// nested groups — which map onto the `params` map of a
+    /// [`StartTrainingRequest`](crate::StartTrainingRequest).
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `trainer.server.schema`, such as an
+    /// unknown `schema_type`.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn trainer_schema(&self, schema_type: &str) -> Result<Vec<SchemaField>, Error> {
+        let params = HashMap::from([("type", schema_type)]);
+        self.rpc("trainer.server.schema".to_owned(), Some(params))
+            .await
+    }
+
+    /// List the validator schemas available on the server.
+    ///
+    /// Each [`ValidatorSchema`] carries its parameter field descriptors
+    /// inline; select the schema whose `schema_type` matches the model's
+    /// trainer type.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn validator_schemas(&self) -> Result<Vec<ValidatorSchema>, Error> {
+        self.rpc::<(), Vec<ValidatorSchema>>("validate.schema".to_owned(), None)
+            .await
     }
 
     /// List the artifacts for the specified trainer session.  The artifacts

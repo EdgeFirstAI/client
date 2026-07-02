@@ -2109,6 +2109,163 @@ impl Artifact {
     }
 }
 
+/// Catalog entry describing an available trainer type.
+///
+/// Returned by `Client::trainer_schemas`. The `schema_type` value is
+/// what gets passed to `Client::trainer_schema` to fetch the full
+/// parameter schema, and to `StartTrainingRequest::trainer_type` when
+/// launching a training session.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TrainerSchemaInfo {
+    /// Internal trainer name (e.g. `"modelpack"`).
+    pub name: String,
+    /// Human-readable label shown in the Studio UI.
+    #[serde(default)]
+    pub label: String,
+    /// Schema type identifier used for schema lookup and launch.
+    #[serde(default)]
+    pub schema_type: String,
+}
+
+/// The kind of input a [`SchemaField`] describes.
+///
+/// Mirrors the field types rendered by the Studio UI's dynamic schema
+/// forms. Unrecognized types deserialize as [`SchemaFieldType::Unknown`]
+/// so newer servers never break older clients.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SchemaFieldType {
+    /// Container of nested fields (see [`SchemaField::children`]).
+    Group,
+    /// Numeric slider with `min`/`max`/`step` bounds.
+    Slider,
+    /// Selection from [`SchemaField::options`].
+    Select,
+    /// Boolean toggle, optionally revealing nested `children`.
+    Bool,
+    /// Integer input.
+    Int,
+    /// Floating-point input.
+    Float,
+    /// Text input.
+    Text,
+    /// Date input.
+    Date,
+    /// Studio project reference.
+    Project,
+    /// Studio dataset reference.
+    Dataset,
+    /// Studio training-session reference.
+    Trainer,
+    /// File upload.
+    Upload,
+    /// Any type this client version does not recognize.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One selectable option of a `select` [`SchemaField`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemaOption {
+    /// Option value; may be any JSON scalar (string, number, …).
+    #[serde(default)]
+    pub name: Option<Parameter>,
+    /// Human-readable label.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Nested fields revealed when this option is selected.
+    #[serde(default)]
+    pub children: Vec<SchemaField>,
+}
+
+/// A single field descriptor from a trainer or validator parameter
+/// schema.
+///
+/// Schemas describe the hyperparameters a trainer/validator accepts —
+/// the same descriptors the Studio UI renders as dynamic forms. Use them
+/// to discover parameter names, defaults, and valid ranges before
+/// launching a session with `Client::start_training_session`.
+///
+/// Deserialization is tolerant: unknown JSON keys are ignored and most
+/// fields are optional, so schema evolution on the server does not break
+/// this client.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemaField {
+    /// Parameter name — the key to use in the launch `params` map.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Human-readable label.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Longer description of the parameter.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Whether a value is required to launch.
+    #[serde(default)]
+    pub required: bool,
+    /// Default value applied when the parameter is omitted.
+    #[serde(default)]
+    pub default: Option<Parameter>,
+    /// The kind of input this field describes.
+    #[serde(rename = "type", default)]
+    pub field_type: Option<SchemaFieldType>,
+    /// Minimum value (numeric fields).
+    #[serde(default)]
+    pub min: Option<f64>,
+    /// Maximum value (numeric fields).
+    #[serde(default)]
+    pub max: Option<f64>,
+    /// Step size (numeric fields).
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// Selectable options (`select` fields).
+    #[serde(default)]
+    pub options: Vec<SchemaOption>,
+    /// Nested fields (`group` fields, or `bool` fields that reveal
+    /// sub-parameters when enabled).
+    #[serde(default)]
+    pub children: Vec<SchemaField>,
+    /// Render the select as a dropdown.
+    #[serde(default)]
+    pub is_dropdown: bool,
+    /// Allow selecting multiple options.
+    #[serde(default)]
+    pub multi_select: bool,
+    /// Render the text input as multi-line.
+    #[serde(default)]
+    pub is_multi_line: bool,
+    /// Mask the text input (passwords).
+    #[serde(default)]
+    pub hidden: bool,
+    /// Restrict text input to numeric characters.
+    #[serde(default)]
+    pub numeric_only: bool,
+    /// Dataset fields: enable dataset tag selection.
+    #[serde(default)]
+    pub enable_tags_selection: bool,
+    /// Dataset fields: enable annotation set selection.
+    #[serde(default)]
+    pub enable_annotation_set_selection: bool,
+    /// Slider fields: number of slider handles (1 = value, 2 = range).
+    #[serde(default)]
+    pub values: Option<Vec<Parameter>>,
+}
+
+/// A validator parameter schema, as returned by
+/// `Client::validator_schemas`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorSchema {
+    /// Schema type identifier (matched against a model's trainer type).
+    #[serde(rename = "type", default)]
+    pub schema_type: String,
+    /// Internal validator name.
+    #[serde(default)]
+    pub name: String,
+    /// The parameter field descriptors.
+    #[serde(default)]
+    pub schema: Vec<SchemaField>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

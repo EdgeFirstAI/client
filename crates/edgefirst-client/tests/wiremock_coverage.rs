@@ -1122,6 +1122,154 @@ async fn update_validation_session_sends_int_id_and_refetches() {
 }
 
 // ---------------------------------------------------------------------------
+// `Client::trainer_schemas` / `Client::trainer_schema` /
+// `Client::validator_schemas`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn trainer_schemas_parses_schema_list() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.server.schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "schema_list": [
+                {
+                    "name": "modelpack",
+                    "label": "ModelPack",
+                    "schema_type": "modelpack",
+                    // Unknown keys must be tolerated.
+                    "future_field": { "nested": true }
+                },
+                { "name": "legacy" }
+            ]
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let schemas = client.trainer_schemas().await.expect("trainer.server.schema");
+    assert_eq!(schemas.len(), 2);
+    assert_eq!(schemas[0].name, "modelpack");
+    assert_eq!(schemas[0].label, "ModelPack");
+    assert_eq!(schemas[0].schema_type, "modelpack");
+    // Missing optional keys default to empty.
+    assert_eq!(schemas[1].label, "");
+}
+
+#[tokio::test]
+async fn trainer_schema_parses_nested_fields() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "trainer.server.schema",
+            "params": { "type": "modelpack" }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            {
+                "name": "training",
+                "label": "Training",
+                "type": "group",
+                "children": [
+                    {
+                        "name": "epochs",
+                        "type": "int",
+                        "required": true,
+                        "default": 50,
+                        "min": 1,
+                        "max": 1000
+                    },
+                    {
+                        "name": "learning_rate",
+                        "type": "slider",
+                        "default": 0.001,
+                        "min": 0.0001,
+                        "max": 0.1,
+                        "step": 0.0001,
+                        "values": [1]
+                    }
+                ]
+            },
+            {
+                "name": "optimizer",
+                "type": "select",
+                "is_dropdown": true,
+                "default": "adam",
+                "options": [
+                    { "name": "adam", "label": "Adam" },
+                    // Option values can be non-string scalars.
+                    { "name": 8, "label": "Eight" }
+                ]
+            },
+            // A field type this client version does not know about must
+            // deserialize as Unknown rather than failing the whole schema.
+            { "name": "novelty", "type": "holo-picker" }
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let fields = client
+        .trainer_schema("modelpack")
+        .await
+        .expect("trainer.server.schema with type");
+    assert_eq!(fields.len(), 3);
+
+    let group = &fields[0];
+    assert_eq!(group.field_type, Some(edgefirst_client::SchemaFieldType::Group));
+    assert_eq!(group.children.len(), 2);
+    let epochs = &group.children[0];
+    assert!(epochs.required);
+    assert_eq!(epochs.default, Some(Parameter::Integer(50)));
+    assert_eq!(epochs.min, Some(1.0));
+    assert_eq!(epochs.max, Some(1000.0));
+
+    let select = &fields[1];
+    assert!(select.is_dropdown);
+    assert_eq!(select.options.len(), 2);
+    assert_eq!(
+        select.options[0].name,
+        Some(Parameter::String("adam".into()))
+    );
+    assert_eq!(select.options[1].name, Some(Parameter::Integer(8)));
+
+    assert_eq!(
+        fields[2].field_type,
+        Some(edgefirst_client::SchemaFieldType::Unknown)
+    );
+}
+
+#[tokio::test]
+async fn validator_schemas_parses_catalog() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("validate.schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            {
+                "type": "modelpack",
+                "name": "EdgeFirst Validator",
+                "schema": [
+                    { "name": "iou", "type": "float", "default": 0.5 }
+                ]
+            }
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let schemas = client.validator_schemas().await.expect("validate.schema");
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0].schema_type, "modelpack");
+    assert_eq!(schemas[0].schema.len(), 1);
+    assert_eq!(schemas[0].schema[0].default, Some(Parameter::Real(0.5)));
+}
+
+// ---------------------------------------------------------------------------
 // update_sample_dimensions
 // ---------------------------------------------------------------------------
 
