@@ -1126,6 +1126,150 @@ edgefirst-client upload-artifact t-1a2b ./final.pth \
     --name production_model.pth
 ```
 
+### trainer-schemas
+
+List the trainer types available on the server. The reported schema type is used with the **trainer-schema** and **start-training-session** commands.
+
+**edgefirst-client trainer-schemas**
+
+### trainer-schema
+
+Show the parameter schema for a trainer type. The schema describes the hyperparameters accepted by **start-training-session \--param**, including defaults, ranges, and nested parameter groups.
+
+**edgefirst-client trainer-schema** *SCHEMA_TYPE*
+
+**Arguments:**
+
+*SCHEMA_TYPE*
+:   Trainer schema type (see the **trainer-schemas** command).
+
+**Example:**
+
+```bash
+edgefirst-client trainer-schema modelpack
+```
+
+### start-training-session
+
+Launch a new training session for an experiment. The session trains on a single dataset using group-based train/validation splits. The dataset tag defaults to the latest tag and the split groups default to the dataset's standard **train** and **val** groups.
+
+**edgefirst-client start-training-session** [*OPTIONS*] **\--name** *NAME* **\--experiment-id** *ID* **\--trainer-type** *TYPE* **\--dataset-id** *ID* **\--annotation-set-id** *ID* *PROJECT_ID*
+
+**Arguments:**
+
+*PROJECT_ID*
+:   Project ID owning the experiment and dataset.
+
+**Options:**
+
+**\--name** *NAME*
+:   Name for the training task (required).
+
+**\--experiment-id** *ID*
+:   Experiment ID the session belongs to (required).
+
+**\--trainer-type** *TYPE*
+:   Trainer schema type (required, see **trainer-schemas**).
+
+**\--dataset-id** *ID*
+:   Dataset ID to train on (required).
+
+**\--annotation-set-id** *ID*
+:   Annotation set ID providing the ground-truth labels (required).
+
+**\--tag** *TAG*
+:   Dataset tag to train against. Defaults to the latest tag; it is an error if the dataset has no tags and none is provided.
+
+**\--train-group** *GROUP*
+:   Training split group name. Defaults to **train**.
+
+**\--val-group** *GROUP*
+:   Validation split group name. Defaults to **val**.
+
+**\--param** *KEY=VALUE*
+:   Trainer hyperparameter, repeatable. Values are parsed as JSON (numbers, booleans) and fall back to strings. See **trainer-schema** for accepted parameters.
+
+**\--session-name** *NAME*
+:   Optional display name for the training session.
+
+**\--session-description** *DESC*
+:   Optional description for the training session.
+
+**\--weights-session** *ID*
+:   Optional source training session ID for transfer-learning weights.
+
+**\--local**
+:   Create a user-managed session. No cloud instance is provisioned; the caller runs the training loop and uploads artifacts/metrics.
+
+**\--kubernetes**
+:   Schedule onto the organization's Kubernetes runner instead of a cloud instance.
+
+**\--monitor**
+:   Monitor the launched task's progress until completion.
+
+**Example:**
+
+```bash
+# Launch a cloud training session with the latest dataset tag
+edgefirst-client start-training-session p-123 \
+    --name nightly-run --experiment-id exp-45 \
+    --trainer-type modelpack \
+    --dataset-id ds-678 --annotation-set-id as-910 \
+    --param epochs=100 --param batch_size=8 --monitor
+
+# Launch a user-managed session against a specific tag and groups
+edgefirst-client start-training-session p-123 \
+    --name local-run --experiment-id exp-45 \
+    --trainer-type modelpack \
+    --dataset-id ds-678 --annotation-set-id as-910 \
+    --tag v2.0 --train-group daylight --val-group night --local
+```
+
+### update-training-session
+
+Update the name and/or description of a training session. At least one of **\--name** or **\--description** must be provided.
+
+**edgefirst-client update-training-session** [*OPTIONS*] *SESSION_ID*
+
+**Arguments:**
+
+*SESSION_ID*
+:   Training session ID.
+
+**Options:**
+
+**\--name** *NAME*
+:   New session name.
+
+**\--description** *DESC*
+:   New session description.
+
+**Example:**
+
+```bash
+edgefirst-client update-training-session t-1a2b \
+    --name "baseline v2" --description "retrained with new tags"
+```
+
+### delete-training-sessions
+
+Delete one or more training sessions.
+
+**WARNING:** validation sessions attached to the deleted training sessions are removed as well, along with all artifacts and checkpoints.
+
+**edgefirst-client delete-training-sessions** *SESSION_IDS*...
+
+**Arguments:**
+
+*SESSION_IDS*
+:   One or more training session IDs to delete.
+
+**Example:**
+
+```bash
+edgefirst-client delete-training-sessions t-1a2b t-3c4d
+```
+
 ## TASKS
 
 ### tasks
@@ -1201,6 +1345,53 @@ Retrieve validation session information for the provided session ID.
 
 *SESSION_ID*
 :   The unique identifier of the validation session.
+
+### update-validation-session
+
+Update the name and/or description of a validation session. At least one of **\--name** or **\--description** must be provided.
+
+**edgefirst-client update-validation-session** [*OPTIONS*] *SESSION_ID*
+
+**Arguments:**
+
+*SESSION_ID*
+:   Validation session ID.
+
+**Options:**
+
+**\--name** *NAME*
+:   New session name.
+
+**\--description** *DESC*
+:   New session description.
+
+### delete-validation-sessions
+
+Delete one or more validation sessions. Only the validation sessions are removed; the parent training session is never affected.
+
+**edgefirst-client delete-validation-sessions** *SESSION_IDS*...
+
+**Arguments:**
+
+*SESSION_IDS*
+:   One or more validation session IDs to delete.
+
+**Example:**
+
+```bash
+edgefirst-client delete-validation-sessions v-5e6f v-7a8b
+```
+
+### validator-schemas
+
+List the validator schemas available on the server. Each schema describes the parameters accepted by the matching validator type.
+
+**edgefirst-client validator-schemas** [**\--type** *TYPE*]
+
+**Options:**
+
+**\--type** *TYPE*
+:   Only show the schema with this type.
 
 # ENVIRONMENT VARIABLES
 

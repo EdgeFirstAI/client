@@ -998,8 +998,7 @@ async fn delete_training_sessions_passes_session_ids_array() {
             "params": { "session_ids": [0x111, 0x222] }
         })))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(rpc_result(json!("Training Session Deleted"))),
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!("Training Session Deleted"))),
         )
         .mount(&server)
         .await;
@@ -1065,8 +1064,11 @@ async fn update_training_session_updates_then_refetches() {
         .and(path("/api"))
         .and(rpc_method_body("trainer.session.get"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(rpc_result(training_session_json(0x111, "renamed", "old description"))),
+            ResponseTemplate::new(200).set_body_json(rpc_result(training_session_json(
+                0x111,
+                "renamed",
+                "old description",
+            ))),
         )
         .mount(&server)
         .await;
@@ -1149,7 +1151,10 @@ async fn trainer_schemas_parses_schema_list() {
         .await;
 
     let client = client_for(&server.uri());
-    let schemas = client.trainer_schemas().await.expect("trainer.server.schema");
+    let schemas = client
+        .trainer_schemas()
+        .await
+        .expect("trainer.server.schema");
     assert_eq!(schemas.len(), 2);
     assert_eq!(schemas[0].name, "modelpack");
     assert_eq!(schemas[0].label, "ModelPack");
@@ -1219,7 +1224,10 @@ async fn trainer_schema_parses_nested_fields() {
     assert_eq!(fields.len(), 3);
 
     let group = &fields[0];
-    assert_eq!(group.field_type, Some(edgefirst_client::SchemaFieldType::Group));
+    assert_eq!(
+        group.field_type,
+        Some(edgefirst_client::SchemaFieldType::Group)
+    );
     assert_eq!(group.children.len(), 2);
     let epochs = &group.children[0];
     assert!(epochs.required);
@@ -1341,8 +1349,7 @@ async fn start_training_session_round_trips_group_split() {
     req.session_name = Some("run-1".into());
     req.session_description = Some("smoke test".into());
     req.weights_session = Some(TrainingSessionID::from(0x888u64));
-    req.params
-        .insert("epochs".into(), Parameter::Integer(5));
+    req.params.insert("epochs".into(), Parameter::Integer(5));
 
     let session = client
         .start_training_session(req)

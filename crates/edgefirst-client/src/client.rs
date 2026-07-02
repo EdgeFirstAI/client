@@ -4865,8 +4865,7 @@ impl Client {
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn dataset_tags(&self, dataset_id: DatasetID) -> Result<Vec<Tag>, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);
-        self.rpc("tags.list_dataset".to_owned(), Some(params))
-            .await
+        self.rpc("tags.list_dataset".to_owned(), Some(params)).await
     }
 
     /// Launch a new training session via Studio's `cloud.server.start`.
@@ -4934,7 +4933,10 @@ impl Client {
         // hyperparameters from `params.params` (single envelope). The
         // group-based split is the only mode the server supports here.
         let mut inner = serde_json::Map::new();
-        inner.insert("trainer_id".into(), serde_json::to_value(req.experiment_id)?);
+        inner.insert(
+            "trainer_id".into(),
+            serde_json::to_value(req.experiment_id)?,
+        );
         inner.insert(
             "trainer_type".into(),
             serde_json::Value::String(req.trainer_type),
