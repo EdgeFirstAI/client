@@ -1011,6 +1011,9 @@ pub enum SchemaFieldType {
     Dataset,
     Trainer,
     Upload,
+    /// Server-side metadata entry (machine image, entrypoint); not a
+    /// user-facing parameter.
+    Info,
     /// Any type this client version does not recognize.
     Unknown,
 }
@@ -1030,6 +1033,7 @@ impl From<core::SchemaFieldType> for SchemaFieldType {
             core::SchemaFieldType::Dataset => SchemaFieldType::Dataset,
             core::SchemaFieldType::Trainer => SchemaFieldType::Trainer,
             core::SchemaFieldType::Upload => SchemaFieldType::Upload,
+            core::SchemaFieldType::Info => SchemaFieldType::Info,
             core::SchemaFieldType::Unknown => SchemaFieldType::Unknown,
         }
     }

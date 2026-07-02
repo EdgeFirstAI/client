@@ -5699,31 +5699,42 @@ fn test_training_session_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let (dataset_id, annotation_set_id) =
         get_dataset_and_first_annotation_set(&get_test_dataset())?;
 
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("start-training-session")
-        .arg(&project_id)
-        .arg("--name")
-        .arg("cli-lifecycle-test")
-        .arg("--experiment-id")
-        .arg(&experiment_id)
-        .arg("--trainer-type")
-        .arg("modelpack")
-        .arg("--dataset-id")
-        .arg(&dataset_id)
-        .arg("--annotation-set-id")
-        .arg(&annotation_set_id)
-        .arg("--param")
-        .arg("epochs=1")
-        .arg("--local");
-
-    let output = cmd.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("no version tags") {
-            eprintln!("skipping lifecycle test: test dataset has no version tags");
-            return Ok(());
+    let start_cmd = |tag: Option<&str>| {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("start-training-session")
+            .arg(&project_id)
+            .arg("--name")
+            .arg("cli-lifecycle-test")
+            .arg("--experiment-id")
+            .arg(&experiment_id)
+            .arg("--trainer-type")
+            .arg("modelpack")
+            .arg("--dataset-id")
+            .arg(&dataset_id)
+            .arg("--annotation-set-id")
+            .arg(&annotation_set_id)
+            .arg("--param")
+            .arg("epochs=1")
+            .arg("--local");
+        if let Some(tag) = tag {
+            cmd.arg("--tag").arg(tag);
         }
-        return Err(format!("start-training-session failed: {stderr}").into());
+        cmd
+    };
+
+    let mut output = start_cmd(None).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.contains("no version tags") {
+            return Err(format!("start-training-session failed: {stderr}").into());
+        }
+        // The test dataset has no version tags; retry with an explicit
+        // empty tag (an untagged run), which the server accepts.
+        output = start_cmd(Some("")).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("start-training-session --tag '' failed: {stderr}").into());
+        }
     }
 
     // Output format: "Started training session task task-x session t-y"

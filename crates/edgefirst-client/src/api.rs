@@ -1460,7 +1460,8 @@ pub struct StartTrainingRequest {
     pub train_group: Option<String>,
     /// Validation split group name; `None` uses the default `"val"`.
     pub val_group: Option<String>,
-    /// Optional display name for the training session itself.
+    /// Display name for the training session itself; `None` uses the
+    /// task `name`.
     pub session_name: Option<String>,
     /// Optional description for the training session.
     pub session_description: Option<String>,
@@ -2257,9 +2258,26 @@ pub enum SchemaFieldType {
     Trainer,
     /// File upload.
     Upload,
+    /// Server-side metadata entry (machine image, entrypoint); not a
+    /// user-facing parameter.
+    Info,
     /// Any type this client version does not recognize.
     #[serde(other)]
     Unknown,
+}
+
+/// Deserialize an optional string leniently: schema authors sometimes
+/// use bare numbers or booleans for display fields (e.g. an option
+/// labelled `1`), which are coerced to their string representation.
+fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(|v| match v {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }))
 }
 
 /// One selectable option of a `select` [`SchemaField`].
@@ -2268,8 +2286,9 @@ pub struct SchemaOption {
     /// Option value; may be any JSON scalar (string, number, …).
     #[serde(default)]
     pub name: Option<Parameter>,
-    /// Human-readable label.
-    #[serde(default)]
+    /// Human-readable label; non-string labels (e.g. a bare number)
+    /// are coerced to strings.
+    #[serde(default, deserialize_with = "lenient_string")]
     pub label: Option<String>,
     /// Nested fields revealed when this option is selected.
     #[serde(default)]
@@ -2290,13 +2309,13 @@ pub struct SchemaOption {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SchemaField {
     /// Parameter name — the key to use in the launch `params` map.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub name: Option<String>,
-    /// Human-readable label.
-    #[serde(default)]
+    /// Human-readable label; non-string labels are coerced to strings.
+    #[serde(default, deserialize_with = "lenient_string")]
     pub label: Option<String>,
     /// Longer description of the parameter.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub description: Option<String>,
     /// Whether a value is required to launch.
     #[serde(default)]

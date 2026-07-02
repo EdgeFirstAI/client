@@ -1254,6 +1254,10 @@ async fn trainer_schema_parses_nested_fields() {
 async fn validator_schemas_parses_catalog() {
     let server = MockServer::start().await;
 
+    // Fixture mirrors real server quirks: an `info` metadata entry with
+    // unknown keys (ami/entrypoint), and select options with *numeric*
+    // labels/names (`{"label": 1, "name": 1}`) that must coerce rather
+    // than fail deserialization.
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("validate.schema"))
@@ -1262,7 +1266,23 @@ async fn validator_schemas_parses_catalog() {
                 "type": "modelpack",
                 "name": "EdgeFirst Validator",
                 "schema": [
-                    { "name": "iou", "type": "float", "default": 0.5 }
+                    {
+                        "name": "modelpack",
+                        "type": "info",
+                        "ami": "ami-12345",
+                        "entrypoint": "/entrypoint.sh"
+                    },
+                    { "name": "iou", "type": "float", "default": 0.5 },
+                    {
+                        "name": "kernel_sizes",
+                        "type": "select",
+                        "multi_select": true,
+                        "default": [1, 3],
+                        "options": [
+                            { "label": 1, "name": 1 },
+                            { "label": 3, "name": 3 }
+                        ]
+                    }
                 ]
             }
         ]))))
@@ -1273,8 +1293,22 @@ async fn validator_schemas_parses_catalog() {
     let schemas = client.validator_schemas().await.expect("validate.schema");
     assert_eq!(schemas.len(), 1);
     assert_eq!(schemas[0].schema_type, "modelpack");
-    assert_eq!(schemas[0].schema.len(), 1);
-    assert_eq!(schemas[0].schema[0].default, Some(Parameter::Real(0.5)));
+    assert_eq!(schemas[0].schema.len(), 3);
+    assert_eq!(
+        schemas[0].schema[0].field_type,
+        Some(edgefirst_client::SchemaFieldType::Info)
+    );
+    assert_eq!(schemas[0].schema[1].default, Some(Parameter::Real(0.5)));
+    let select = &schemas[0].schema[2];
+    assert_eq!(select.options[0].label.as_deref(), Some("1"));
+    assert_eq!(select.options[0].name, Some(Parameter::Integer(1)));
+    assert_eq!(
+        select.default,
+        Some(Parameter::Array(vec![
+            Parameter::Integer(1),
+            Parameter::Integer(3)
+        ]))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,6 +1421,9 @@ async fn start_training_session_resolves_latest_tag_and_default_groups() {
                     "tag_name": "v3",
                     "train_group_name": "train",
                     "val_group_name": "val",
+                    // session_name is required by the server; it
+                    // defaults to the task name.
+                    "session_name": "smoke-training",
                 }
             }
         })))

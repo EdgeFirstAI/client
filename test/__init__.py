@@ -195,23 +195,29 @@ def make_user_managed_training_session(client, name_suffix=""):
         return None
 
     suffix = name_suffix or "fixture"
-    try:
+    name = f"session-mgmt-test-{suffix}-{int(time.time())}"
+
+    def launch(tag_name):
         return client.start_training_session(
             project_id=project.id,
-            name=f"session-mgmt-test-{suffix}-{int(time.time())}",
+            name=name,
             experiment_id=experiments[0].id,
             trainer_type="modelpack",
             dataset_id=dataset.id,
             annotation_set_id=annotation_set.id,
             params={"epochs": 1},
+            tag_name=tag_name,
             is_local=True,
         )
+
+    try:
+        return launch(None)
     except Exception as err:  # noqa: BLE001
-        # A dataset without version tags cannot be trained against;
-        # treat it as a missing fixture rather than a test failure.
-        if "tag" in str(err):
-            return None
-        raise
+        # A dataset without version tags cannot resolve a latest tag;
+        # retry as an untagged run (empty tag), which the server accepts.
+        if "tag" not in str(err):
+            raise
+        return launch("")
 
 
 def cleanup_training_session(client, session_id):

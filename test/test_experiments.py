@@ -302,7 +302,8 @@ class TestSchemas(unittest.TestCase):
 
         known_types = {
             "group", "slider", "select", "bool", "int", "float", "text",
-            "date", "project", "dataset", "trainer", "upload", "unknown",
+            "date", "project", "dataset", "trainer", "upload", "info",
+            "unknown",
         }
 
         def check_fields(fields):
@@ -352,6 +353,7 @@ class TestTrainingSessionLifecycle(unittest.TestCase):
         assert new_session.session_id is not None
 
         session_id = new_session.session_id
+        experiment_id = client.training_session(session_id).experiment_id
         try:
             updated = client.update_training_session(
                 session_id,
@@ -370,8 +372,12 @@ class TestTrainingSessionLifecycle(unittest.TestCase):
         finally:
             cleanup_training_session(client, session_id)
 
-        with self.assertRaises(Exception):
-            client.training_session(session_id)
+        # The delete is a soft delete on the server, so a direct get can
+        # still resolve; the session must vanish from listings though.
+        remaining = [
+            s.id.value for s in client.training_sessions(experiment_id)
+        ]
+        self.assertNotIn(session_id.value, remaining)
 
 
 class TestValidationSessionManagement(unittest.TestCase):

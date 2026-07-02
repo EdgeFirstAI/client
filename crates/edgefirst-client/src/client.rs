@@ -4710,6 +4710,11 @@ impl Client {
     /// [`Client::delete_validation_sessions`] never affects its parent
     /// training session.
     ///
+    /// The delete is a soft delete on the server: deleted sessions no
+    /// longer appear in [`Client::training_sessions`] listings, but a
+    /// direct [`Client::training_session`] lookup may still resolve
+    /// until the session is purged.
+    ///
     /// # Errors
     ///
     /// Surfaces any RPC error from `trainer.session.delete`, such as an
@@ -4920,7 +4925,7 @@ impl Client {
 
         let mut body = serde_json::Map::new();
         body.insert("type".into(), serde_json::Value::String("trainer".into()));
-        body.insert("name".into(), serde_json::Value::String(req.name));
+        body.insert("name".into(), serde_json::Value::String(req.name.clone()));
         body.insert("project_id".into(), serde_json::to_value(req.project_id)?);
         body.insert("is_local".into(), serde_json::Value::Bool(req.is_local));
         body.insert(
@@ -4960,9 +4965,12 @@ impl Client {
             serde_json::Value::String(req.val_group.unwrap_or_else(|| "val".into())),
         );
         inner.insert("params".into(), serde_json::to_value(req.params)?);
-        if let Some(name) = req.session_name {
-            inner.insert("session_name".into(), serde_json::Value::String(name));
-        }
+        // The server requires `session_name`; default to the task name,
+        // matching how the Studio UI derives it.
+        inner.insert(
+            "session_name".into(),
+            serde_json::Value::String(req.session_name.unwrap_or(req.name)),
+        );
         if let Some(description) = req.session_description {
             inner.insert(
                 "session_description".into(),

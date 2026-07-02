@@ -5,6 +5,23 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Training session management: `Client::delete_training_sessions` (`trainer.session.delete`; the server cascades the delete to attached validation sessions) and `Client::update_training_session` for renaming/editing descriptions
+- Validation session management: `Client::update_validation_session` for renaming/editing descriptions; deleting validation sessions never affects the parent training session
+- Training session launch: `Client::start_training_session` (`cloud.server.start`) with `StartTrainingRequest`/`NewTrainingSession` — group-based dataset splits, dataset tag defaulting to the latest tag, and train/val groups defaulting to the dataset's standard split
+- Trainer/validator schema queries: `Client::trainer_schemas`, `Client::trainer_schema`, `Client::validator_schemas` with typed `SchemaField` descriptors (tolerant of unknown field types) for discovering launch hyperparameters
+- `Client::dataset_tags` (`tags.list_dataset`) for dataset version tag listing and latest-tag resolution
+- CLI commands: `start-training-session`, `update-training-session`, `delete-training-sessions`, `trainer-schemas`, `trainer-schema`, `update-validation-session`, `delete-validation-sessions`, `validator-schemas`
+- Python bindings and `.pyi` stubs for all new session management and schema APIs (`NewTrainingSession`, `TrainerSchemaInfo`, `SchemaField`, `SchemaOption`, `ValidatorSchema`)
+- Swift/Kotlin FFI bindings (sync + async) for the new APIs, plus previously missing `start_validation_session` and `delete_validation_sessions`
+
+### Notes
+
+- Removing individual artifacts from a session is deferred: EdgeFirst Studio has no server-side RPC for artifact deletion; artifacts are only removed when their training session is deleted
+
 ## [2.11.1] - 2026-06-25
 
 ### Added
