@@ -3524,7 +3524,20 @@ async fn handle_delete_training_sessions(
 
 async fn handle_trainer_schemas(client: &Client) -> Result<(), Error> {
     for schema in client.trainer_schemas().await? {
-        println!("{}: {} ({})", schema.schema_type, schema.label, schema.name);
+        // Older servers may omit schema_type/label; fall back to the
+        // trainer name so the printed type is always usable with the
+        // trainer-schema and start-training-session commands.
+        let schema_type = if schema.schema_type.is_empty() {
+            &schema.name
+        } else {
+            &schema.schema_type
+        };
+        let label = if schema.label.is_empty() {
+            &schema.name
+        } else {
+            &schema.label
+        };
+        println!("{}: {} ({})", schema_type, label, schema.name);
     }
     Ok(())
 }

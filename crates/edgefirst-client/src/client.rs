@@ -4736,7 +4736,7 @@ impl Client {
     /// `trainer.session.update`, returning the refreshed session.
     ///
     /// Fields left as `None` are not modified. At least one of `name` or
-    /// `description` should be provided; the call is a no-op otherwise.
+    /// `description` must be provided.
     ///
     /// The update RPC returns the bare database row without the session's
     /// task information, so the session is re-fetched with
@@ -4745,9 +4745,11 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Surfaces any RPC error from `trainer.session.update` or the
-    /// follow-up `trainer.session.get`. A `PermissionDenied` indicates
-    /// the caller lacks `TrainerWrite` on the session.
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `trainer.session.update` or the follow-up
+    /// `trainer.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn update_training_session(
         &self,
@@ -4755,6 +4757,11 @@ impl Client {
         name: Option<&str>,
         description: Option<&str>,
     ) -> Result<TrainingSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
         let mut body = serde_json::Map::new();
         body.insert("id".into(), serde_json::to_value(session_id)?);
         if let Some(name) = name {
@@ -4775,17 +4782,20 @@ impl Client {
     /// Update the name and/or description of a validation session via
     /// `validate.session.update`, returning the refreshed session.
     ///
-    /// Fields left as `None` are not modified. Renaming a validation
-    /// session also renames its associated background task on the server.
+    /// Fields left as `None` are not modified. At least one of `name` or
+    /// `description` must be provided. Renaming a validation session also
+    /// renames its associated background task on the server.
     ///
     /// The session is re-fetched with `validate.session.get` after the
     /// update to return a fully populated [`ValidationSession`].
     ///
     /// # Errors
     ///
-    /// Surfaces any RPC error from `validate.session.update` or the
-    /// follow-up `validate.session.get`. A `PermissionDenied` indicates
-    /// the caller lacks `TrainerWrite` on the session.
+    /// Returns [`Error::InvalidParameters`] when both `name` and
+    /// `description` are `None` (no RPC is made). Surfaces any RPC error
+    /// from `validate.session.update` or the follow-up
+    /// `validate.session.get`. A `PermissionDenied` indicates the caller
+    /// lacks `TrainerWrite` on the session.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn update_validation_session(
         &self,
@@ -4793,6 +4803,11 @@ impl Client {
         name: Option<&str>,
         description: Option<&str>,
     ) -> Result<ValidationSession, Error> {
+        if name.is_none() && description.is_none() {
+            return Err(Error::InvalidParameters(
+                "at least one of name or description is required".to_owned(),
+            ));
+        }
         let mut body = serde_json::Map::new();
         body.insert(
             "validate_session_id".into(),

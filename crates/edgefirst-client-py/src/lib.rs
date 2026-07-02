@@ -6745,7 +6745,7 @@ impl Client {
 
     /// Update the name and/or description of a training session,
     /// returning the refreshed session. Fields left as ``None`` are not
-    /// modified; at least one should be provided.
+    /// modified; at least one must be provided.
     #[tokio_wrap::sync]
     #[pyo3(signature = (session_id, name = None, description = None))]
     pub fn update_training_session<'py>(
@@ -6767,7 +6767,7 @@ impl Client {
 
     /// Update the name and/or description of a validation session,
     /// returning the refreshed session. Fields left as ``None`` are not
-    /// modified; at least one should be provided.
+    /// modified; at least one must be provided.
     #[tokio_wrap::sync]
     #[pyo3(signature = (session_id, name = None, description = None))]
     pub fn update_validation_session<'py>(

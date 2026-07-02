@@ -5928,8 +5928,8 @@ class Client:
     ) -> TrainingSession:
         """Update the name and/or description of a training session.
 
-        Fields left as ``None`` are not modified; at least one should
-        be provided.
+        Fields left as ``None`` are not modified; at least one must be
+        provided.
 
         Args:
             session_id: The training session to update.
@@ -5940,7 +5940,9 @@ class Client:
             TrainingSession: The refreshed session after the update.
 
         Raises:
-            Error: ``PermissionDenied`` if the caller lacks the
+            Error: ``InvalidParameters`` when both ``name`` and
+                ``description`` are ``None`` (no request is made);
+                ``PermissionDenied`` if the caller lacks the
                 ``TrainerWrite`` permission on the session.
         """
         ...
@@ -5953,8 +5955,8 @@ class Client:
     ) -> ValidationSession:
         """Update the name and/or description of a validation session.
 
-        Fields left as ``None`` are not modified; at least one should
-        be provided. Renaming a validation session also renames its
+        Fields left as ``None`` are not modified; at least one must be
+        provided. Renaming a validation session also renames its
         associated background task on the server.
 
         Args:
@@ -5966,7 +5968,9 @@ class Client:
             ValidationSession: The refreshed session after the update.
 
         Raises:
-            Error: ``PermissionDenied`` if the caller lacks the
+            Error: ``InvalidParameters`` when both ``name`` and
+                ``description`` are ``None`` (no request is made);
+                ``PermissionDenied`` if the caller lacks the
                 ``TrainerWrite`` permission on the session.
         """
         ...

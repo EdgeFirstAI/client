@@ -1083,6 +1083,31 @@ async fn update_training_session_updates_then_refetches() {
 }
 
 #[tokio::test]
+async fn update_sessions_require_a_field_without_any_rpc() {
+    // Both update methods must reject an empty update client-side —
+    // the unreachable URL proves no RPC is attempted.
+    let client = client_for("http://localhost:1");
+
+    let err = match client
+        .update_training_session(TrainingSessionID::from(0x111u64), None, None)
+        .await
+    {
+        Ok(_) => panic!("empty training-session update must fail"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
+
+    let err = match client
+        .update_validation_session(ValidationSessionID::from(0x111u64), None, None)
+        .await
+    {
+        Ok(_) => panic!("empty validation-session update must fail"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
+}
+
+#[tokio::test]
 async fn update_validation_session_sends_int_id_and_refetches() {
     let server = MockServer::start().await;
 

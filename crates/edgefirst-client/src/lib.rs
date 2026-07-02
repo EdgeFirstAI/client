@@ -641,9 +641,16 @@ mod tests {
         let client = get_client().await?;
         let tasks = client.tasks(None, None, None, None).await?;
 
+        // Tolerate individual task_info failures during enumeration: a
+        // launch that failed server-side can leave an orphaned task row
+        // whose `task.get` errors (`sql: no rows in result set`), and the
+        // suite must not be hostage to another user's failed run. The
+        // fixture path below still asserts task_info strictly.
         for task in tasks {
-            let task_info = client.task_info(task.id()).await?;
-            println!("{} - {}", task, task_info);
+            match client.task_info(task.id()).await {
+                Ok(task_info) => println!("{} - {}", task, task_info),
+                Err(err) => println!("{} - task_info failed: {}", task, err),
+            }
         }
 
         // Prefer the historical `modelpack-usermanaged` fixture, but fall back
