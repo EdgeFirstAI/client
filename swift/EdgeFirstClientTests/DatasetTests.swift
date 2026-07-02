@@ -113,7 +113,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let annotationSets = try await client.annotationSetsAsync(datasetId: dataset.id)
+    let annotationSets = try await client.annotationSetsAsync(datasetId: dataset.id, version: nil)
 
     print("Found \(annotationSets.count) annotation sets (async) in dataset \(dataset.name)")
 
@@ -145,7 +145,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let labels = try await client.labelsAsync(datasetId: dataset.id)
+    let labels = try await client.labelsAsync(datasetId: dataset.id, version: nil)
 
     print("Found \(labels.count) labels (async) in dataset \(dataset.name)")
 
@@ -207,7 +207,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let annotationSets = try client.annotationSets(datasetId: dataset.id)
+    let annotationSets = try client.annotationSets(datasetId: dataset.id, version: nil)
 
     print("Found \(annotationSets.count) annotation sets in dataset \(dataset.name)")
 
@@ -240,7 +240,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let labels = try client.labels(datasetId: dataset.id)
+    let labels = try client.labels(datasetId: dataset.id, version: nil)
 
     print("Found \(labels.count) labels in dataset \(dataset.name)")
 
