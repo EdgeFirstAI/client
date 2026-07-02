@@ -427,7 +427,7 @@ final class DomainStructTests: XCTestCase {
   // MARK: - AnnotationSet Tests
 
   /// Test AnnotationSet construction.
-  func testAnnotationSetConstruction() {
+  func testAnnotationSetConstruction() throws {
     let annotationSet = AnnotationSet(
       id: AnnotationSetId(value: 600),
       datasetId: DatasetId(value: 100),
@@ -437,10 +437,12 @@ final class DomainStructTests: XCTestCase {
     )
 
     XCTAssertEqual(annotationSet.id.value, 600)
-    XCTAssertEqual(annotationSet.datasetId.value, 100)
+    let datasetId = try XCTUnwrap(
+      annotationSet.datasetId, "datasetId should be present for a directly-constructed set")
+    XCTAssertEqual(datasetId.value, 100)
     XCTAssertEqual(annotationSet.name, "Ground Truth")
     XCTAssertEqual(annotationSet.description, "Human-verified annotations")
-    XCTAssertEqual(annotationSet.created, "2024-01-15T10:00:00Z")
+    XCTAssertEqual(annotationSet.created, "2024-01-15T10:00:00Z" as String?)
   }
 
   /// Test AnnotationSet equality.
@@ -498,7 +500,7 @@ final class DomainStructTests: XCTestCase {
   }
 
   /// Test AnnotationSet relationship to Dataset.
-  func testAnnotationSetDatasetRelationship() {
+  func testAnnotationSetDatasetRelationship() throws {
     let datasetId = DatasetId(value: 100)
 
     let annotationSet1 = AnnotationSet(
@@ -512,7 +514,9 @@ final class DomainStructTests: XCTestCase {
       name: "Set2", description: "", created: ""
     )
 
-    XCTAssertEqual(annotationSet1.datasetId.value, annotationSet2.datasetId.value)
+    let datasetId1 = try XCTUnwrap(annotationSet1.datasetId)
+    let datasetId2 = try XCTUnwrap(annotationSet2.datasetId)
+    XCTAssertEqual(datasetId1.value, datasetId2.value)
   }
 
   // MARK: - Artifact Tests
