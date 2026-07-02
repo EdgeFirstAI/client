@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings and `.pyi` type stubs for all new versioning APIs
 - Swift/Kotlin FFI bindings for versioning types and methods
 - Integration tests for tag lifecycle, tagged data fetch, changelog, and restore workflows
+- `VersionTag.is_current`, `Dataset.tag_id`/`tag`/`tag_description` — previously undocumented server fields, now exposed on the Rust, Python, and FFI surfaces.
 - Training session management: `Client::delete_training_sessions` (`trainer.session.delete`; the server cascades the delete to attached validation sessions) and `Client::update_training_session` for renaming/editing descriptions
 - Validation session management: `Client::update_validation_session` for renaming/editing descriptions; deleting validation sessions never affects the parent training session
 - Training session launch: `Client::start_training_session` (`cloud.server.start`) with `StartTrainingRequest`/`NewTrainingSession` — group-based dataset splits, dataset tag defaulting to the latest tag, and train/val groups defaulting to the dataset's standard split

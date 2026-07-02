@@ -790,6 +790,9 @@ pub struct Dataset {
     pub name: String,
     pub description: String,
     pub created: String,
+    pub tag_id: Option<u64>,
+    pub tag: String,
+    pub tag_description: String,
 }
 
 impl From<core::Dataset> for Dataset {
@@ -800,6 +803,9 @@ impl From<core::Dataset> for Dataset {
             name: d.name().to_string(),
             description: d.description().to_string(),
             created: d.created().to_rfc3339(),
+            tag_id: d.tag_id(),
+            tag: d.tag().to_string(),
+            tag_description: d.tag_description().to_string(),
         }
     }
 }
@@ -1877,6 +1883,7 @@ pub struct VersionTag {
     pub label_count: u64,
     pub annotation_set_count: u64,
     pub snapshot_id: Option<u64>,
+    pub is_current: bool,
 }
 
 impl From<core::VersionTag> for VersionTag {
@@ -1895,6 +1902,7 @@ impl From<core::VersionTag> for VersionTag {
             label_count: t.label_count(),
             annotation_set_count: t.annotation_set_count(),
             snapshot_id: t.snapshot_id(),
+            is_current: t.is_current(),
         }
     }
 }

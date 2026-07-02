@@ -358,6 +358,12 @@ pub struct Dataset {
     cloud_key: String,
     #[serde(rename = "createdAt")]
     created: DateTime<Utc>,
+    #[serde(default)]
+    tag_id: Option<u64>,
+    #[serde(default)]
+    tag: String,
+    #[serde(default)]
+    tag_description: String,
 }
 
 impl Display for Dataset {
@@ -389,6 +395,24 @@ impl Dataset {
 
     pub fn created(&self) -> &DateTime<Utc> {
         &self.created
+    }
+
+    /// Returns the ID of this dataset's current version tag, if one has
+    /// been set (via tag creation or restore).
+    pub fn tag_id(&self) -> Option<u64> {
+        self.tag_id
+    }
+
+    /// Returns the name of this dataset's current version tag, or an
+    /// empty string if none is set.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    /// Returns the description of this dataset's current version tag, or
+    /// an empty string if none is set.
+    pub fn tag_description(&self) -> &str {
+        &self.tag_description
     }
 
     pub async fn project(&self, client: &Client) -> Result<crate::api::Project, Error> {
@@ -4501,5 +4525,36 @@ mod versioning_deser_tests {
         let label = result.unwrap();
         assert!(label.dataset_id().is_some());
         assert_eq!(label.color(), None);
+    }
+
+    #[test]
+    fn test_dataset_deserializes_tag_fields() {
+        // Dataset/Project IDs are wire-encoded as bare JSON numbers (the
+        // "ds-"/"prj-" prefixed form is only used for the Display/FromStr
+        // human-readable representation), so `id`/`project_id` use numeric
+        // literals here rather than the brief's prefixed-string form.
+        let json = r#"{
+            "id": 1, "project_id": 1, "name": "My Dataset",
+            "description": "", "cloud_key": "k", "createdAt": "2026-01-01T00:00:00Z",
+            "tag_id": 42, "tag": "v1.0", "tag_description": "Release candidate"
+        }"#;
+        let dataset: Dataset = serde_json::from_str(json).unwrap();
+        assert_eq!(dataset.tag_id(), Some(42));
+        assert_eq!(dataset.tag(), "v1.0");
+        assert_eq!(dataset.tag_description(), "Release candidate");
+    }
+
+    #[test]
+    fn test_dataset_deserializes_without_tag_fields() {
+        // Datasets with no current tag omit tag_id (omitempty) but tag/tag_description
+        // are plain strings defaulting to "" server-side.
+        let json = r#"{
+            "id": 1, "project_id": 1, "name": "My Dataset",
+            "description": "", "cloud_key": "k", "createdAt": "2026-01-01T00:00:00Z"
+        }"#;
+        let dataset: Dataset = serde_json::from_str(json).unwrap();
+        assert_eq!(dataset.tag_id(), None);
+        assert_eq!(dataset.tag(), "");
+        assert_eq!(dataset.tag_description(), "");
     }
 }

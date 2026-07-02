@@ -22,7 +22,10 @@ final class DomainStructTests: XCTestCase {
       projectId: ProjectId(value: 50),
       name: "COCO Dataset",
       description: "Common Objects in Context",
-      created: "2024-01-15T10:00:00Z"
+      created: "2024-01-15T10:00:00Z",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
 
     XCTAssertEqual(dataset.id.value, 100)
@@ -39,21 +42,30 @@ final class DomainStructTests: XCTestCase {
       projectId: ProjectId(value: 1),
       name: "Dataset",
       description: "Test",
-      created: "2024-01-01"
+      created: "2024-01-01",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
     let dataset2 = Dataset(
       id: DatasetId(value: 1),
       projectId: ProjectId(value: 1),
       name: "Dataset",
       description: "Test",
-      created: "2024-01-01"
+      created: "2024-01-01",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
     let dataset3 = Dataset(
       id: DatasetId(value: 2),
       projectId: ProjectId(value: 1),
       name: "Dataset",
       description: "Test",
-      created: "2024-01-01"
+      created: "2024-01-01",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
 
     XCTAssertEqual(dataset1, dataset2)
@@ -68,19 +80,22 @@ final class DomainStructTests: XCTestCase {
       Dataset(
         id: DatasetId(value: 1),
         projectId: ProjectId(value: 1),
-        name: "D1", description: "", created: ""
+        name: "D1", description: "", created: "",
+        tagId: nil, tag: "", tagDescription: ""
       ))
     datasetSet.insert(
       Dataset(
         id: DatasetId(value: 2),
         projectId: ProjectId(value: 1),
-        name: "D2", description: "", created: ""
+        name: "D2", description: "", created: "",
+        tagId: nil, tag: "", tagDescription: ""
       ))
     datasetSet.insert(
       Dataset(
         id: DatasetId(value: 1),
         projectId: ProjectId(value: 1),
-        name: "D1", description: "", created: ""
+        name: "D1", description: "", created: "",
+        tagId: nil, tag: "", tagDescription: ""
       ))  // Duplicate
 
     XCTAssertEqual(datasetSet.count, 2)
@@ -93,7 +108,10 @@ final class DomainStructTests: XCTestCase {
       projectId: ProjectId(value: 1),
       name: "",
       description: "",
-      created: ""
+      created: "",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
 
     XCTAssertTrue(dataset.name.isEmpty)
@@ -107,7 +125,10 @@ final class DomainStructTests: XCTestCase {
       projectId: ProjectId(value: 1),
       name: "数据集 🎯",
       description: "中文描述",
-      created: "2024-01-01"
+      created: "2024-01-01",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
 
     XCTAssertEqual(dataset.name, "数据集 🎯")
@@ -649,7 +670,10 @@ final class DomainStructTests: XCTestCase {
       projectId: projectId,
       name: "Test Dataset",
       description: "",
-      created: ""
+      created: "",
+      tagId: nil,
+      tag: "",
+      tagDescription: ""
     )
 
     XCTAssertEqual(project.id.value, dataset.projectId.value)
@@ -681,9 +705,11 @@ final class DomainStructTests: XCTestCase {
 
     let datasets = [
       Dataset(
-        id: DatasetId(value: 1), projectId: projectId, name: "D1", description: "", created: ""),
+        id: DatasetId(value: 1), projectId: projectId, name: "D1", description: "", created: "",
+        tagId: nil, tag: "", tagDescription: ""),
       Dataset(
-        id: DatasetId(value: 2), projectId: projectId, name: "D2", description: "", created: ""),
+        id: DatasetId(value: 2), projectId: projectId, name: "D2", description: "", created: "",
+        tagId: nil, tag: "", tagDescription: ""),
     ]
 
     let experiments = [

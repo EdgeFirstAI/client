@@ -2038,6 +2038,21 @@ impl Dataset {
         Ok(self.inner.created().into_pyobject(py)?.into())
     }
 
+    #[getter]
+    pub fn tag_id(&self) -> Option<u64> {
+        self.inner.tag_id()
+    }
+
+    #[getter]
+    pub fn tag(&self) -> &str {
+        self.inner.tag()
+    }
+
+    #[getter]
+    pub fn tag_description(&self) -> &str {
+        self.inner.tag_description()
+    }
+
     /// Get labels for this dataset.
     ///
     /// New API (v2.6.0+): `dataset.labels()` - uses embedded client reference
@@ -8680,6 +8695,11 @@ impl VersionTag {
     #[getter]
     pub fn snapshot_id(&self) -> Option<u64> {
         self.0.snapshot_id()
+    }
+
+    #[getter]
+    pub fn is_current(&self) -> bool {
+        self.0.is_current()
     }
 
     pub fn __repr__(&self) -> String {

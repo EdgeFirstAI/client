@@ -2251,6 +2251,8 @@ pub struct VersionTag {
     annotation_set_count: u64,
     #[serde(default)]
     snapshot_id: Option<u64>,
+    #[serde(default)]
+    is_current: bool,
 }
 
 impl VersionTag {
@@ -2317,6 +2319,12 @@ impl VersionTag {
     /// Returns the optional snapshot export ID.
     pub fn snapshot_id(&self) -> Option<u64> {
         self.snapshot_id
+    }
+
+    /// Returns whether this tag is the dataset's current tag (i.e. matches
+    /// `Dataset::tag_id`).
+    pub fn is_current(&self) -> bool {
+        self.is_current
     }
 }
 
@@ -3677,6 +3685,28 @@ mod tests {
         let resp: VersionCurrentResponse = serde_json::from_str(json).unwrap();
         assert!(resp.latest_tag.is_some());
         assert_eq!(resp.latest_tag.unwrap().name(), "v1.0");
+    }
+
+    #[test]
+    fn test_version_tag_is_current_field() {
+        let json = r#"{
+            "id": 1, "dataset_id": 5, "name": "v1.0", "serial": 10,
+            "created_by": "alice", "created_at": "2026-01-01T00:00:00Z",
+            "is_current": true
+        }"#;
+        let tag: VersionTag = serde_json::from_str(json).unwrap();
+        assert!(tag.is_current());
+    }
+
+    #[test]
+    fn test_version_tag_is_current_false() {
+        let json = r#"{
+            "id": 1, "dataset_id": 5, "name": "v1.0", "serial": 10,
+            "created_by": "alice", "created_at": "2026-01-01T00:00:00Z",
+            "is_current": false
+        }"#;
+        let tag: VersionTag = serde_json::from_str(json).unwrap();
+        assert!(!tag.is_current());
     }
 
     #[test]

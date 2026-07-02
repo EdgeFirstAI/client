@@ -1354,6 +1354,30 @@ class Dataset:
         """The creation date of the dataset."""
         ...
 
+    @property
+    def tag_id(self) -> Optional[int]:
+        """
+        The ID of this dataset's current version tag, if one has been set
+        (via tag creation or restore).
+        """
+        ...
+
+    @property
+    def tag(self) -> str:
+        """
+        The name of this dataset's current version tag, or an empty string
+        if none is set.
+        """
+        ...
+
+    @property
+    def tag_description(self) -> str:
+        """
+        The description of this dataset's current version tag, or an empty
+        string if none is set.
+        """
+        ...
+
     @overload
     def labels(self, *, version: Optional[str] = None) -> List[Label]:
         """
@@ -4605,6 +4629,14 @@ class VersionTag:
     @property
     def snapshot_id(self) -> Optional[int]:
         """Optional snapshot export ID."""
+        ...
+
+    @property
+    def is_current(self) -> bool:
+        """
+        Whether this tag is the dataset's current tag (i.e. matches
+        ``Dataset.tag_id``).
+        """
         ...
 
     def __repr__(self) -> str: ...
