@@ -1846,12 +1846,23 @@ impl Annotation {
     }
 }
 
+/// A label used to identify annotations in a dataset.
+///
+/// When fetched with a `version` tag, the server returns a reduced snapshot
+/// shape (`database.TagLabel`) that omits `dataset_id` but includes
+/// `color` — [`Label::dataset_id`] is backfilled by the client from the
+/// query context in that case. The HEAD-scoped path returns `dataset_id`
+/// but has historically not modeled `color`, so [`Label::color`] returns
+/// `None` there unless the server starts including it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Label {
     id: u64,
-    dataset_id: DatasetID,
+    #[serde(default)]
+    dataset_id: Option<DatasetID>,
     index: u64,
     name: String,
+    #[serde(default)]
+    color: Option<u64>,
 }
 
 impl Label {
@@ -1859,8 +1870,21 @@ impl Label {
         self.id
     }
 
-    pub fn dataset_id(&self) -> DatasetID {
+    /// Returns the dataset ID this label belongs to. When this value was
+    /// fetched via a tag-scoped query, the server does not return
+    /// `dataset_id` on the wire; the client backfills it from the
+    /// `dataset_id` argument the query was made with.
+    pub fn dataset_id(&self) -> Option<DatasetID> {
         self.dataset_id
+    }
+
+    /// Backfills `dataset_id` from the query context when the server's
+    /// response omitted it (tag-scoped `label.list` reads). No-op if
+    /// `dataset_id` is already populated.
+    pub(crate) fn backfill_dataset_id(&mut self, dataset_id: DatasetID) {
+        if self.dataset_id.is_none() {
+            self.dataset_id = Some(dataset_id);
+        }
     }
 
     pub fn index(&self) -> u64 {
@@ -1869,6 +1893,12 @@ impl Label {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the label's display color as a packed RGB integer, if the
+    /// server returned one. Populated on both HEAD and tag-scoped reads.
+    pub fn color(&self) -> Option<u64> {
+        self.color
     }
 
     pub async fn remove(&self, client: &Client) -> Result<(), Error> {
@@ -4437,5 +4467,39 @@ mod versioning_deser_tests {
         assert!(result.is_ok(), "HEAD annotation set response must deserialize: {:?}", result.err());
         let annset = result.unwrap();
         assert!(annset.created().is_some());
+    }
+
+    #[test]
+    fn test_label_deserializes_from_tag_scoped_response() {
+        // Tag-scoped `label.list` response shape (database.TagLabel in
+        // dve-database): id/name/index/color, no dataset_id.
+        let json = r#"{"id": 7, "name": "circle", "index": 0, "color": 16711680}"#;
+        let result: Result<Label, _> = serde_json::from_str(json);
+        assert!(
+            result.is_ok(),
+            "tag-scoped label response must deserialize: {:?}",
+            result.err()
+        );
+        let label = result.unwrap();
+        assert_eq!(label.name(), "circle");
+        assert_eq!(label.color(), Some(16711680));
+        assert_eq!(label.dataset_id(), None);
+    }
+
+    #[test]
+    fn test_label_deserializes_from_head_response() {
+        // HEAD-path response shape: full row including dataset_id, no color.
+        // dataset_id is a raw JSON number on the wire (see the comment on
+        // test_annotation_set_deserializes_from_head_response above).
+        let json = r#"{"id": 7, "dataset_id": 1, "name": "circle", "index": 0}"#;
+        let result: Result<Label, _> = serde_json::from_str(json);
+        assert!(
+            result.is_ok(),
+            "HEAD label response must deserialize: {:?}",
+            result.err()
+        );
+        let label = result.unwrap();
+        assert!(label.dataset_id().is_some());
+        assert_eq!(label.color(), None);
     }
 }

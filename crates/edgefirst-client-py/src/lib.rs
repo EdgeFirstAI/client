@@ -2660,9 +2660,19 @@ impl Label {
         self.0.index()
     }
 
+    /// Dataset ID this label belongs to. `None` if this label was fetched
+    /// via a tag-scoped query where the server omitted `dataset_id` and no
+    /// backfill was available.
     #[getter]
-    pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.0.dataset_id())
+    pub fn dataset_id(&self) -> Option<DatasetID> {
+        self.0.dataset_id().map(DatasetID)
+    }
+
+    /// The label's display color as a packed RGB integer, if the server
+    /// returned one. Populated on both HEAD and tag-scoped reads.
+    #[getter]
+    pub fn color(&self) -> Option<u64> {
+        self.0.color()
     }
 
     #[allow(deprecated)]

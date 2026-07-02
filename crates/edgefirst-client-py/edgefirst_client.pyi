@@ -1108,8 +1108,21 @@ class Label:
         ...
 
     @property
-    def dataset_id(self) -> DatasetID:
-        """The ID of the dataset that the label belongs to."""
+    def dataset_id(self) -> Optional[DatasetID]:
+        """
+        The ID of the dataset that the label belongs to.
+
+        ``None`` if this label was fetched via a tag-scoped query where the
+        server omitted ``dataset_id`` and no backfill was available.
+        """
+        ...
+
+    @property
+    def color(self) -> Optional[int]:
+        """
+        The label's display color as a packed RGB integer, if the server
+        returned one. Populated on both HEAD and tag-scoped reads.
+        """
         ...
 
     def remove(self, client: Client) -> None:

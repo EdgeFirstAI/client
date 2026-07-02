@@ -1498,7 +1498,11 @@ impl Client {
         if let Some(v) = version {
             params["tag"] = serde_json::json!(v);
         }
-        self.rpc("label.list".to_owned(), Some(params)).await
+        let mut labels: Vec<Label> = self.rpc("label.list".to_owned(), Some(params)).await?;
+        for label in &mut labels {
+            label.backfill_dataset_id(dataset_id);
+        }
+        Ok(labels)
     }
 
     /// Add a new label to the dataset with the specified name.
@@ -1713,7 +1717,11 @@ impl Client {
     pub async fn update_label(&self, label: &Label) -> Result<(), Error> {
         #[derive(Serialize)]
         struct Params {
-            dataset_id: DatasetID,
+            // Label IDs are globally unique, so the server does not require
+            // dataset_id; omitted entirely when the label was obtained from
+            // a tag-scoped read that didn't have one to backfill.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            dataset_id: Option<DatasetID>,
             label_id: u64,
             label_name: String,
             label_index: u64,
