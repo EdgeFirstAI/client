@@ -314,3 +314,38 @@ Actions CI to run integration tests automatically.
 **Rust tests time out when running all together**
 : Run lib and CLI tests separately (`-p edgefirst-client --lib` and
 `-p edgefirst-cli`) or pass `-- --test-threads=1`.
+
+---
+
+## Known Limitations
+
+### `version tag restore` does not revert image counts (server-side bug)
+
+`restore_tag_to_head()` in `dve-database` reverts image state by toggling
+the `images.tagged` boolean column rather than deleting/re-inserting rows.
+The HEAD-path sample queries (`ListSamplesCount`/`ListSamples`) never
+filter on `images.tagged`, so `samples_count()`/`samples()`/
+`download_dataset()` after a restore still reflect every image ever added
+to the dataset, not the tag's snapshot. Labels and annotation sets ARE
+correctly reverted (their restore path deletes and re-inserts rows).
+
+This is tracked as [DE-2790](https://au-zone.atlassian.net/browse/DE-2790),
+a server-side bug against `dve-database`, not something fixable in this
+client. `test.test_versioning.VersionTagRestoreTest.test_restore_to_tag`
+documents the current (broken) behavior explicitly so a server-side fix
+becomes visible as a test failure here, prompting the assertion to be
+updated.
+
+### Changelog `entity_type` for restores is `"tag"`, not `"dataset"`
+
+The server's `VERSIONING.md` documents restore changelog entries as
+`entity_type: "dataset"`, but `RestoreTagToHead()`
+(`database/changelog.go:590-636` in `dve-database`) rewrites the stored
+procedure's initial `"dataset"` entry to `"tag"` immediately after
+insert, specifically so restore events group with tag-create events under
+changelog filtering. If you filter `version_changelog(dataset_id,
+entity_types=["dataset"])` expecting to see restore events, you won't —
+filter on `"tag"` instead. `ChangelogEntry.entity_type()` in this client is
+a plain `String` (not a restricted enum), so no client-side code change is
+needed here — this is a documentation-only gap in the server's own spec,
+noted here so client users aren't caught by it.
