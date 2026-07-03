@@ -570,6 +570,7 @@ class VersionTagRestoreTest(TestCase):
         client = get_client()
         skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
         dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+        client.add_label(dataset_id, "circle")
 
         try:
             _populate_samples(client, dataset_id, annotation_set_id, count=2)
