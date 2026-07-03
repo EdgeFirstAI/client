@@ -160,9 +160,17 @@ edgefirst-client delete-dataset $DATASET_ID
 The Python integration tests in `test/test_versioning.py` cover:
 
 - `VersionTagLifecycleTest` — create, list, get, delete tags
-- `VersionTaggedDataFetchTest` — verify tagged fetch returns old state after HEAD modifications
-- `VersionChangelogTest` — changelog entries are recorded and filterable
+- `VersionTaggedDataFetchTest` — verify tagged fetch returns old state after HEAD
+  modifications, including a regression test for non-empty tagged
+  labels()/annotation_sets() (the crash scenario that previously escaped
+  detection) and a check that annotation-triggered label creation completes
+  by the time populate_samples() returns
+- `VersionChangelogTest` — changelog entries are recorded and filterable,
+  including across a tag boundary
 - `VersionTagRestoreTest` — restore returns the dataset to the tagged state
+- `VersionEditAfterTagTest` — tags remain immutable snapshots under live HEAD
+  mutations (post-tag additions), fetching the oldest of several historical
+  tags back, and HEAD never being "pinned" by tag creation
 
 ### 2.1 Build the Python Bindings
 
@@ -177,16 +185,23 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 venv/bin/python -m unittest test.test_versioning -v
 ```
 
-Expected output:
+Expected output (18 tests: 12 tag/changelog/restore/fetch tests plus 6 in
+`VersionEditAfterTagTest` and the two tagged-fetch regression tests):
 
 ```
 test_tag_lifecycle (test.test_versioning.VersionTagLifecycleTest) ... ok
 test_tagged_vs_head_data (test.test_versioning.VersionTaggedDataFetchTest) ... ok
+test_tagged_labels_and_annotation_sets_nonempty (test.test_versioning.VersionTaggedDataFetchTest) ... ok
+test_annotation_triggered_label_creation_is_async (test.test_versioning.VersionTaggedDataFetchTest) ... ok
 test_changelog_entries (test.test_versioning.VersionChangelogTest) ... ok
+test_changelog_records_edits_after_tag (test.test_versioning.VersionChangelogTest) ... ok
 test_restore_to_tag (test.test_versioning.VersionTagRestoreTest) ... ok
+test_edit_annotation_after_tag_does_not_change_tagged_view (test.test_versioning.VersionEditAfterTagTest) ... ok
+test_fetch_back_multiple_historical_tags (test.test_versioning.VersionEditAfterTagTest) ... ok
+test_head_reflects_latest_after_tagging_and_editing (test.test_versioning.VersionEditAfterTagTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 4 tests in X.XXXs
+Ran 18 tests in X.XXXs
 
 OK
 ```
@@ -335,6 +350,31 @@ client. `test.test_versioning.VersionTagRestoreTest.test_restore_to_tag`
 documents the current (broken) behavior explicitly so a server-side fix
 becomes visible as a test failure here, prompting the assertion to be
 updated.
+
+### No supported way to edit an existing annotation from Python
+
+`populate_samples()` silently no-ops for a sample whose image filename
+already exists in the dataset: `Samples_Populate2` in `dve-database`
+(`api/bridge_handler_v2.go`, "check image duplicate") skips the entire
+sample — annotations included — via `continue`, before any annotation
+parsing happens. This is intentional server-side de-duplication (it
+protects against accidental re-import), not a bug, but it means
+re-populating the same filename cannot be used to change an annotation's
+label.
+
+The server does support updating existing annotations via
+`annotation.add_bulk` / `annotation.bulk.del` — this is what the CLI's
+`import-coco --update` flag uses under the hood
+(`edgefirst_client::coco::studio::update_coco_annotations`) — but neither
+RPC is exposed through the Python bindings (`add_annotations_bulk` /
+`delete_annotations_bulk` on `Client` are Rust-only). Until one of these
+is exposed to Python, there is no supported way to edit an already-uploaded
+annotation from the Python client.
+
+`test.test_versioning.VersionEditAfterTagTest.test_edit_annotation_after_tag_does_not_change_tagged_view`
+documents this in its docstring and instead proves tag immutability using
+a mutation the SDK does support (adding a new, differently-labeled
+annotation after the tag exists).
 
 ### Changelog `entity_type` for restores is `"tag"`, not `"dataset"`
 

@@ -25,6 +25,7 @@ from test import get_client, get_test_data_dir
 from test.fixtures import (
     create_sample_with_circle_annotation,
     create_test_image_with_circle,
+    wait_for_label,
 )
 
 
@@ -95,13 +96,20 @@ def _populate_samples(client, dataset_id, annotation_set_id, count=3):
         image_path = test_data_dir / image_name
         image_names.append(image_name)
 
-        create_test_image_with_circle(
+        _, bbox = create_test_image_with_circle(
             image_path,
             center_x=100.0 + i * 50,
             center_y=100.0 + i * 30,
         )
 
-        sample = create_sample_with_circle_annotation(image_path, label_name="circle")
+        # Attach the real bounding box: without box2d/box3d/mask geometry,
+        # the server's samples.populate2 handler silently drops the
+        # annotation (and never creates/references its label) instead of
+        # creating a usable one. See create_sample_with_circle_annotation's
+        # docstring for detail.
+        sample = create_sample_with_circle_annotation(
+            image_path, label_name="circle", box2d=bbox
+        )
         samples.append(sample)
 
     client.populate_samples(
@@ -361,6 +369,85 @@ class VersionTaggedDataFetchTest(TestCase):
             if not skip_cleanup:
                 client.delete_dataset(dataset_id)
 
+    def test_tagged_labels_and_annotation_sets_nonempty(self):
+        """Regression test: tag-scoped labels()/annotation_sets() must not
+        crash when the tag snapshot actually contains data.
+
+        This is the exact scenario that escaped detection before this fix:
+        prior tests happened to tag datasets before their async
+        label-creation completed, so the tag snapshot's label list was
+        always empty and the (now-fixed) deserialization crash never
+        triggered.
+        """
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            # Explicit add_label (not annotation-triggered) guarantees a
+            # non-empty label list at tag time, deterministically.
+            client.add_label(dataset_id, "circle")
+            _populate_samples(client, dataset_id, annotation_set_id, count=2)
+
+            tag = client.version_tag_create(dataset_id, "with-labels")
+            self.assertGreater(tag.label_count, 0)
+
+            tagged_labels = client.labels(dataset_id, version="with-labels")
+            self.assertGreater(len(tagged_labels), 0)
+            self.assertEqual(tagged_labels[0].name, "circle")
+            # dataset_id is backfilled by the client from the query context
+            # for tag-scoped label.list reads (see Label::backfill_dataset_id
+            # in dataset.rs) — it is populated by design, not left None, so
+            # callers always get a usable dataset_id regardless of whether
+            # the read was tag-scoped or HEAD-scoped.
+            self.assertEqual(str(tagged_labels[0].dataset_id), dataset_id)
+
+            tagged_annsets = client.annotation_sets(dataset_id, version="with-labels")
+            self.assertGreater(len(tagged_annsets), 0)
+            self.assertEqual(tagged_annsets[0].name, "Default")
+            self.assertIsNone(tagged_annsets[0].created)
+
+            print(
+                f"Tagged fetch with {len(tagged_labels)} label(s), "
+                f"{len(tagged_annsets)} annotation set(s) — no crash"
+            )
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+    def test_annotation_triggered_label_creation_is_async(self):
+        """Verifies that a label referenced only through an annotation (no
+        explicit add_label() call) is created by populate_samples(), using
+        polling rather than an immediate check.
+
+        Investigating this test live (see TESTING.md) found that the
+        server actually resolves/creates the label row synchronously,
+        inside the same samples.populate2 request that inserts the
+        annotation — *provided* the annotation carries real geometry
+        (box2d/box3d/mask). Annotations with only a label name and no
+        geometry are silently dropped server-side and never create or
+        reference a label at all, which is what previously made tag
+        snapshots taken right after populate_samples() come back with zero
+        labels (see create_sample_with_circle_annotation's box2d
+        parameter). This test still polls via wait_for_label rather than
+        asserting immediacy, since the API makes no documented guarantee
+        of synchronous visibility and a fixed assumption would be fragile.
+        """
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+            label = wait_for_label(client, dataset_id, "circle", timeout=5.0)
+            self.assertEqual(label.name, "circle")
+            print(
+                f"Label '{label.name}' appeared after populate_samples (async creation confirmed)"
+            )
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
 
 class VersionChangelogTest(TestCase):
     """Test changelog tracking, filtering, and counting."""
@@ -545,6 +632,44 @@ class VersionChangelogTest(TestCase):
             if not skip_cleanup:
                 client.delete_dataset(dataset_id)
 
+    def test_changelog_records_edits_after_tag(self):
+        """Every edit after a tag is created must still be recorded in the
+        changelog, distinct from the tag-creation entry itself."""
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+            serial_before_tag = client.version_current(dataset_id).current_serial
+
+            client.version_tag_create(dataset_id, "checkpoint")
+            serial_after_tag = client.version_current(dataset_id).current_serial
+            self.assertGreater(serial_after_tag, serial_before_tag)
+
+            time.sleep(1)
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+            serial_after_edit = client.version_current(dataset_id).current_serial
+            self.assertGreater(serial_after_edit, serial_after_tag)
+
+            entries = client.version_changelog(
+                dataset_id, from_version=str(serial_after_tag)
+            )
+            self.assertGreater(len(entries.entries), 0)
+            # from_version is inclusive (server: GetDatasetChangelog filters
+            # "serial >= fromSerial"), matching the >= convention already
+            # exercised by test_changelog_version_range. The tag-creation
+            # entry itself lands at serial_after_tag, so it is legitimately
+            # included alongside the post-tag edit entries.
+            self.assertTrue(all(e.serial >= serial_after_tag for e in entries.entries))
+            print(
+                f"serial before tag={serial_before_tag}, after tag={serial_after_tag}, "
+                f"after edit={serial_after_edit}, entries since tag={len(entries.entries)}"
+            )
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
 
 class VersionTagRestoreTest(TestCase):
     """Test tag restore functionality."""
@@ -613,6 +738,168 @@ class VersionTagRestoreTest(TestCase):
             self.assertGreater(len(annsets), 0)
             print(f"Restored: {len(labels)} labels, {len(annsets)} annotation sets")
 
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+
+class VersionEditAfterTagTest(TestCase):
+    """Test editing annotations/labels after tagging, and fetching each
+    historical tag back correctly (not just the most recent one)."""
+
+    def setUp(self):
+        if not _server_supports_versioning(get_client()):
+            self.skipTest("Server does not support versioning APIs")
+
+    def test_edit_annotation_after_tag_does_not_change_tagged_view(self):
+        """A mutation to HEAD made after tagging must not retroactively
+        change what the tag returns — tags are immutable snapshots.
+
+        SCOPE NOTE: this test originally tried to "edit" an existing
+        annotation by re-populating the same image filename with a
+        different label. Live testing showed that's a no-op: dve-database's
+        samples.populate2 handler skips a sample entirely — annotations
+        included — whenever its image filename already exists in the
+        dataset ("check image duplicate" -> continue), which is
+        intentional de-duplication, not a bug. Editing an already-uploaded
+        annotation's label requires annotation.bulk.del / annotation.add_bulk
+        (what the CLI's `import-coco --update` uses under the hood, via
+        edgefirst_client::coco::studio::update_coco_annotations) — neither
+        is exposed through the Python bindings today, so there is currently
+        no supported way to edit an existing annotation from this SDK.
+        Rather than assert a "successful edit" that never actually happened,
+        this test proves the same tag-immutability property using a
+        mutation the SDK does support: adding a new, differently-labeled
+        annotation to the same annotation set after the tag exists.
+        """
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            client.add_label(dataset_id, "circle")
+            client.add_label(dataset_id, "square")
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+
+            client.version_tag_create(dataset_id, "pre-edit")
+
+            tagged_annotations_before = client.annotations(
+                annotation_set_id, version="pre-edit"
+            )
+            self.assertEqual(len(tagged_annotations_before), 1)
+            self.assertEqual(tagged_annotations_before[0].label, "circle")
+
+            # Mutate HEAD after the tag: add a second, differently-labeled
+            # sample to the same annotation set (a supported stand-in for
+            # "editing", per the scope note above).
+            time.sleep(1)
+            image_path = (
+                get_test_data_dir() / f"version_edit_{int(time.time() * 1000)}.png"
+            )
+            _, bbox = create_test_image_with_circle(image_path)
+            new_sample = create_sample_with_circle_annotation(
+                image_path, label_name="square", box2d=bbox
+            )
+            client.populate_samples(dataset_id, annotation_set_id, [new_sample])
+
+            head_annotations = client.annotations(annotation_set_id)
+            self.assertEqual(len(head_annotations), 2)
+            head_labels = {a.label for a in head_annotations}
+            self.assertEqual(head_labels, {"circle", "square"})
+
+            # The tag must still reflect only the original, single annotation.
+            tagged_annotations_after = client.annotations(
+                annotation_set_id, version="pre-edit"
+            )
+            self.assertEqual(
+                len(tagged_annotations_after), len(tagged_annotations_before)
+            )
+            self.assertEqual(tagged_annotations_after[0].label, "circle")
+            print(
+                f"HEAD now has {len(head_annotations)} annotations {head_labels}, "
+                f"tag 'pre-edit' still has {len(tagged_annotations_after)} "
+                f"({tagged_annotations_after[0].label})"
+            )
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+    def test_fetch_back_multiple_historical_tags(self):
+        """Create three tags at three different states; verify each can
+        still be fetched independently by name, not just the newest."""
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+            client.version_tag_create(dataset_id, "v1")
+            v1_count = client.samples_count(dataset_id, version="v1").total
+
+            time.sleep(1)
+            _populate_samples(client, dataset_id, annotation_set_id, count=2)
+            client.version_tag_create(dataset_id, "v2")
+            v2_count = client.samples_count(dataset_id, version="v2").total
+
+            time.sleep(1)
+            _populate_samples(client, dataset_id, annotation_set_id, count=3)
+            client.version_tag_create(dataset_id, "v3")
+            v3_count = client.samples_count(dataset_id, version="v3").total
+
+            self.assertEqual(v1_count, 1)
+            self.assertEqual(v2_count, 3)
+            self.assertEqual(v3_count, 6)
+
+            # Fetch the OLDEST tag back after creating newer ones — proves
+            # tags aren't just "the latest", each is independently addressable.
+            v1_recheck = client.samples_count(dataset_id, version="v1").total
+            self.assertEqual(
+                v1_recheck,
+                1,
+                "Oldest tag must still be fetchable after newer tags exist",
+            )
+
+            tags = client.version_tag_list(dataset_id)
+            self.assertEqual(len(tags), 3)
+            tag_names = {t.name for t in tags}
+            self.assertEqual(tag_names, {"v1", "v2", "v3"})
+
+            print(
+                f"v1={v1_count}, v2={v2_count}, v3={v3_count}; oldest tag re-fetched as {v1_recheck}"
+            )
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+    def test_head_reflects_latest_after_tagging_and_editing(self):
+        """HEAD reads (no version param) must always reflect the current
+        live state, regardless of how many tags exist or when they were
+        created — tags never "pin" HEAD."""
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=2)
+            client.version_tag_create(dataset_id, "checkpoint")
+
+            time.sleep(1)
+            _populate_samples(client, dataset_id, annotation_set_id, count=4)
+
+            head_count = client.samples_count(dataset_id).total
+            tagged_count = client.samples_count(dataset_id, version="checkpoint").total
+
+            self.assertEqual(head_count, 6)
+            self.assertEqual(tagged_count, 2)
+            self.assertNotEqual(head_count, tagged_count)
+
+            current = client.version_current(dataset_id)
+            self.assertEqual(
+                current.current_serial, client.version_changelog_count(dataset_id)
+            )
+            print(
+                f"HEAD={head_count}, tagged='checkpoint'={tagged_count}, current_serial={current.current_serial}"
+            )
         finally:
             if not skip_cleanup:
                 client.delete_dataset(dataset_id)
