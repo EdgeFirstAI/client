@@ -158,3 +158,34 @@ def get_unique_image_filename(
     """
     timestamp = int(time.time())
     return f"{prefix}_{timestamp}{extension}"
+
+
+def wait_for_label(client, dataset_id: str, name: str, timeout: float = 5.0):
+    """Poll client.labels() until a label with the given name appears.
+
+    Label rows are created asynchronously by the server after
+    populate_samples() returns (when an annotation references a new label
+    name). Use this instead of a fixed sleep when a test needs to observe
+    label creation triggered by populating annotations, rather than via an
+    explicit add_label() call.
+
+    Args:
+        client: Authenticated client.
+        dataset_id: Dataset to check.
+        name: Label name to wait for.
+        timeout: Maximum seconds to wait.
+
+    Returns:
+        The matching Label object.
+
+    Raises:
+        TimeoutError: If the label does not appear within timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        labels = client.labels(dataset_id)
+        for label in labels:
+            if label.name == name:
+                return label
+        time.sleep(0.25)
+    raise TimeoutError(f"Label '{name}' did not appear on dataset {dataset_id} within {timeout}s")
