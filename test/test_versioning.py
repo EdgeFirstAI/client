@@ -374,10 +374,12 @@ class VersionTaggedDataFetchTest(TestCase):
         crash when the tag snapshot actually contains data.
 
         This is the exact scenario that escaped detection before this fix:
-        prior tests happened to tag datasets before their async
-        label-creation completed, so the tag snapshot's label list was
-        always empty and the (now-fixed) deserialization crash never
-        triggered.
+        prior test fixtures never attached box2d geometry to their
+        annotations, so the server silently dropped those annotations and
+        never created a label at all (not a timing issue — see
+        test_annotation_triggered_label_creation_completes below). The tag
+        snapshot's label list was therefore always empty, and the
+        (now-fixed) deserialization crash never triggered.
         """
         client = get_client()
         skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
@@ -415,7 +417,7 @@ class VersionTaggedDataFetchTest(TestCase):
             if not skip_cleanup:
                 client.delete_dataset(dataset_id)
 
-    def test_annotation_triggered_label_creation_is_async(self):
+    def test_annotation_triggered_label_creation_completes(self):
         """Verifies that a label referenced only through an annotation (no
         explicit add_label() call) is created by populate_samples(), using
         polling rather than an immediate check.
@@ -442,7 +444,7 @@ class VersionTaggedDataFetchTest(TestCase):
             label = wait_for_label(client, dataset_id, "circle", timeout=5.0)
             self.assertEqual(label.name, "circle")
             print(
-                f"Label '{label.name}' appeared after populate_samples (async creation confirmed)"
+                f"Label '{label.name}' appeared after populate_samples (synchronous creation confirmed)"
             )
         finally:
             if not skip_cleanup:
@@ -695,9 +697,9 @@ class VersionTagRestoreTest(TestCase):
         client = get_client()
         skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
         dataset_id, annotation_set_id, _ = _create_test_dataset(client)
-        client.add_label(dataset_id, "circle")
 
         try:
+            client.add_label(dataset_id, "circle")
             _populate_samples(client, dataset_id, annotation_set_id, count=2)
             initial_count = client.samples_count(dataset_id).total
 

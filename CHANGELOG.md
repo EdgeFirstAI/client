@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - Removing individual artifacts from a session is deferred: EdgeFirst Studio has no server-side RPC for artifact deletion; artifacts are only removed when their training session is deleted
+- There is no supported way to edit an existing annotation from the Python client yet (`add_annotations_bulk`/`delete_annotations_bulk` exist in Rust core but are not exposed via PyO3); see TESTING.md's Known Limitations for detail
 
 ## [2.11.1] - 2026-06-25
 

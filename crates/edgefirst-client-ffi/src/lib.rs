@@ -837,6 +837,10 @@ impl From<core::AnnotationSet> for AnnotationSet {
 }
 
 /// A label for annotations.
+// Deliberately omits dataset_id/color (Rust-core-only fields) — no FFI
+// consumer reads them yet; adding either would force every hand-written
+// Swift/Kotlin call site to gain an unused argument. Extend here if a
+// consumer needs them.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct Label {
     pub id: u64,

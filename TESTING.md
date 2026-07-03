@@ -185,14 +185,17 @@ maturin develop -m crates/edgefirst-client-py/Cargo.toml
 venv/bin/python -m unittest test.test_versioning -v
 ```
 
-Expected output (18 tests: 12 tag/changelog/restore/fetch tests plus 6 in
-`VersionEditAfterTagTest` and the two tagged-fetch regression tests):
+Expected output (18 tests total: 4 in `VersionTagLifecycleTest`, 4 in
+`VersionTaggedDataFetchTest`, 6 in `VersionChangelogTest`, 1 in
+`VersionTagRestoreTest`, and 3 in `VersionEditAfterTagTest`). The excerpt
+below is a representative subset, not the full 18-line run — see the
+command above for the complete list:
 
 ```
 test_tag_lifecycle (test.test_versioning.VersionTagLifecycleTest) ... ok
 test_tagged_vs_head_data (test.test_versioning.VersionTaggedDataFetchTest) ... ok
 test_tagged_labels_and_annotation_sets_nonempty (test.test_versioning.VersionTaggedDataFetchTest) ... ok
-test_annotation_triggered_label_creation_is_async (test.test_versioning.VersionTaggedDataFetchTest) ... ok
+test_annotation_triggered_label_creation_completes (test.test_versioning.VersionTaggedDataFetchTest) ... ok
 test_changelog_entries (test.test_versioning.VersionChangelogTest) ... ok
 test_changelog_records_edits_after_tag (test.test_versioning.VersionChangelogTest) ... ok
 test_restore_to_tag (test.test_versioning.VersionTagRestoreTest) ... ok
