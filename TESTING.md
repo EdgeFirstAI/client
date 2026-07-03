@@ -337,23 +337,6 @@ Actions CI to run integration tests automatically.
 
 ## Known Limitations
 
-### `version tag restore` does not revert image counts (server-side bug)
-
-`restore_tag_to_head()` in `dve-database` reverts image state by toggling
-the `images.tagged` boolean column rather than deleting/re-inserting rows.
-The HEAD-path sample queries (`ListSamplesCount`/`ListSamples`) never
-filter on `images.tagged`, so `samples_count()`/`samples()`/
-`download_dataset()` after a restore still reflect every image ever added
-to the dataset, not the tag's snapshot. Labels and annotation sets ARE
-correctly reverted (their restore path deletes and re-inserts rows).
-
-This is tracked as [DE-2790](https://au-zone.atlassian.net/browse/DE-2790),
-a server-side bug against `dve-database`, not something fixable in this
-client. `test.test_versioning.VersionTagRestoreTest.test_restore_to_tag`
-documents the current (broken) behavior explicitly so a server-side fix
-becomes visible as a test failure here, prompting the assertion to be
-updated.
-
 ### No supported way to edit an existing annotation from Python
 
 `populate_samples()` silently no-ops for a sample whose image filename

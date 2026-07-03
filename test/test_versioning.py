@@ -683,16 +683,14 @@ class VersionTagRestoreTest(TestCase):
     def test_restore_to_tag(self):
         """Create tag, modify, restore, verify state matches tag.
 
-        KNOWN LIMITATION (server-side, dve-database): restore_tag_to_head()
-        reverts image state by toggling the images.tagged boolean column,
-        but database.ListSamplesCount/ListSamples (the HEAD-path samples
-        queries) never filter on images.tagged, so samples_count() after a
-        restore still reflects every image ever added to the dataset, not
-        the tag's snapshot count. This has been reported to the
-        dve-database team; this test verifies everything restore DOES
-        correctly revert (labels, annotation sets) and documents the image
-        count gap with an explicit, non-silent assertion so this doesn't
-        regress into a passing-but-wrong test if the client changes.
+        Previously tracked as DE-2790 (server-side, dve-database):
+        restore_tag_to_head() reverts image state by toggling the
+        images.tagged boolean column, but database.ListSamplesCount/
+        ListSamples (the HEAD-path samples queries) did not filter on
+        images.tagged, so samples_count() after a restore still reflected
+        every image ever added to the dataset, not the tag's snapshot
+        count. This has been fixed and deployed on the test server —
+        verified below by asserting the correct reverted count.
         """
         client = get_client()
         skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
@@ -717,22 +715,19 @@ class VersionTagRestoreTest(TestCase):
             self.assertGreater(result.new_serial, 0)
             print(f"Restore result: {result.message}")
 
-            # KNOWN SERVER BUG: image count is NOT reverted by restore.
-            # See TESTING.md "Known Limitations". This assertion documents
-            # the current (broken) behavior so a real server-side fix is
-            # visible here as a test failure prompting an update, rather
-            # than silently passing either way.
+            # DE-2790 fixed: image count is now correctly reverted by restore.
             restored_count = client.samples_count(dataset_id).total
             self.assertEqual(
                 restored_count,
-                modified_count,
-                "If this fails, the dve-database restore bug (images.tagged "
-                "is ignored by ListSamplesCount) may have been fixed — "
-                "update this test to assert restored_count == initial_count "
-                "instead, and remove the Known Limitations entry in TESTING.md.",
+                initial_count,
+                "Restore should revert the sample count to the tag's snapshot.",
+            )
+            print(
+                f"After restore: {restored_count} samples "
+                f"(matches original {initial_count})"
             )
 
-            # Labels and annotation sets ARE correctly reverted by restore
+            # Labels and annotation sets are also correctly reverted by restore
             # (restore_tag_to_head deletes and re-inserts these tables).
             labels = client.labels(dataset_id)
             annsets = client.annotation_sets(dataset_id)
