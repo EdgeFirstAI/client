@@ -32,11 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings for `Client.usage_summary`, `Client.with_url`, `Client.download` (new `UsageSummary` type)
 - Python bindings for `Client.dataset_tags` (new `Tag` type) and module-level `collect_labels_from_samples`
 - `Annotation.set_sample_id`/`set_name`/`set_sequence_name`/`set_frame_number`/`set_category_frequency` setters and `frame_number`/`category_frequency` getters on the Python `Annotation` type
-- Corrected two phantom entries in the Python `.pyi` stubs (`Client.login`, `Client.download_sample`) that didn't correspond to any real method
 
 ### Fixed
 
 - Confirmed [DE-2790](https://au-zone.atlassian.net/browse/DE-2790) (server-side `dve-database` bug where `version.tag.restore` didn't revert HEAD-path sample counts) fixed and deployed on the test server; `test_restore_to_tag` now asserts the correct reverted count
+- Removed two phantom entries from the Python `.pyi` stubs (`Client.login`, `Client.download_sample`) that didn't correspond to any real method
 
 ### Notes
 
