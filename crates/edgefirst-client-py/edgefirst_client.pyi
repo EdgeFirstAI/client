@@ -2109,6 +2109,26 @@ class Annotation:
         """Set the object identifier for this annotation."""
         ...
 
+    def set_sample_id(self, sample_id: Optional[SampleID]) -> None:
+        """Set the sample this annotation belongs to."""
+        ...
+
+    def set_name(self, name: Optional[str]) -> None:
+        """Set the annotation's name (typically the sample's image filename)."""
+        ...
+
+    def set_sequence_name(self, sequence_name: Optional[str]) -> None:
+        """Set the sequence name this annotation's sample belongs to."""
+        ...
+
+    def set_frame_number(self, frame_number: Optional[int]) -> None:
+        """Set the frame number within the annotation's sequence."""
+        ...
+
+    def set_category_frequency(self, category_frequency: Optional[str]) -> None:
+        """Set the category frequency label (e.g. "common", "rare")."""
+        ...
+
     def set_box2d(self, box2d: Optional[Box2d]) -> None:
         """Set the 2D bounding box for this annotation."""
         ...
@@ -2218,6 +2238,16 @@ class Annotation:
         Returns:
             Optional[int]: The label index or None.
         """
+        ...
+
+    @property
+    def frame_number(self) -> Optional[int]:
+        """The frame number within the annotation's sequence, if any."""
+        ...
+
+    @property
+    def category_frequency(self) -> Optional[str]:
+        """The category frequency label (e.g. "common", "rare"), if any."""
         ...
 
     @property

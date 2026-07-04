@@ -1081,6 +1081,30 @@ class DatasetTest(TestCase):
         self.assertEqual(set(names), {"circle", "square"})
         self.assertEqual(len(indices), len(names))
 
+    def test_annotation_full_metadata_setters(self):
+        """Annotation setters for sample_id, name, sequence_name,
+        frame_number, and category_frequency should all work."""
+        from edgefirst_client import Annotation, SampleID
+
+        ann = Annotation()
+        ann.set_sample_id(SampleID(42))
+        ann.set_name("frame_001.png")
+        ann.set_sequence_name("seq-a")
+        ann.set_frame_number(5)
+        ann.set_category_frequency("common")
+
+        self.assertEqual(ann.sample_id.value, 42)
+        self.assertEqual(ann.name, "frame_001.png")
+        self.assertEqual(ann.sequence_name, "seq-a")
+        self.assertEqual(ann.frame_number, 5)
+        self.assertEqual(ann.category_frequency, "common")
+
+        # Clearing back to None must also work (all fields are Optional).
+        ann.set_frame_number(None)
+        ann.set_category_frequency(None)
+        self.assertIsNone(ann.frame_number)
+        self.assertIsNone(ann.category_frequency)
+
 
 class TestLabels(TestCase):
     """Test label management operations."""

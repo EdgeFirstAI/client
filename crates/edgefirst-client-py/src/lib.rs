@@ -8252,6 +8252,33 @@ impl Annotation {
         self.0.set_object_id(object_id);
     }
 
+    /// Sets the sample this annotation belongs to.
+    pub fn set_sample_id(&mut self, sample_id: Option<SampleID>) {
+        self.0.set_sample_id(sample_id.map(|s| s.0));
+    }
+
+    /// Sets the annotation's name (typically mirrors the parent sample's
+    /// image filename).
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.0.set_name(name);
+    }
+
+    /// Sets the sequence name this annotation's sample belongs to.
+    pub fn set_sequence_name(&mut self, sequence_name: Option<String>) {
+        self.0.set_sequence_name(sequence_name);
+    }
+
+    /// Sets the frame number within the annotation's sequence.
+    pub fn set_frame_number(&mut self, frame_number: Option<u32>) {
+        self.0.set_frame_number(frame_number);
+    }
+
+    /// Sets the category frequency label (e.g. "common", "rare") used by
+    /// some dataset formats for class-balance metadata.
+    pub fn set_category_frequency(&mut self, category_frequency: Option<String>) {
+        self.0.set_category_frequency(category_frequency);
+    }
+
     /// Sets the 2D bounding box for this annotation.
     pub fn set_box2d(&mut self, box2d: Option<&Box2d>) {
         self.0.set_box2d(box2d.map(|b| b.0.clone()));
@@ -8344,6 +8371,16 @@ impl Annotation {
     #[getter]
     pub fn label_index(&self) -> Option<u64> {
         self.0.label_index()
+    }
+
+    #[getter]
+    pub fn frame_number(&self) -> Option<u32> {
+        self.0.frame_number()
+    }
+
+    #[getter]
+    pub fn category_frequency(&self) -> Option<String> {
+        self.0.category_frequency().cloned()
     }
 
     #[getter]
