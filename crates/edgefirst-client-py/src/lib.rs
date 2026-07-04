@@ -2916,7 +2916,9 @@ impl Dataset {
             )
         })?;
         Ok(DatasetSummary(
-            client_ref.version_summary_recalculate(self.inner.id()).await?,
+            client_ref
+                .version_summary_recalculate(self.inner.id())
+                .await?,
         ))
     }
 }

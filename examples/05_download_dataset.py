@@ -100,7 +100,9 @@ def download_group(client, dataset_id, annotation_set_id, group: str, output: st
     for sample in tqdm(samples, desc=f"Organizing {group} (YOLO)"):
         image_path = find_image_file(raw_dir, sample.name)
         if image_path:
-            shutil.move(str(image_path), str(images_dir / f"{sample.name}{image_path.suffix}"))
+            shutil.move(
+                str(image_path), str(images_dir / f"{sample.name}{image_path.suffix}")
+            )
             save_yolo_annotation(labels_dir / f"{sample.name}.txt", sample.annotations)
 
     shutil.rmtree(out / ".raw", ignore_errors=True)

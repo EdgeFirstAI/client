@@ -4488,7 +4488,11 @@ mod versioning_deser_tests {
         // crate (e.g. api.rs's `"dataset_id": 1715004`).
         let json = r#"{"id": 42, "dataset_id": 1, "name": "Default", "description": "Default set", "date": "2026-01-01T00:00:00Z"}"#;
         let result: Result<AnnotationSet, _> = serde_json::from_str(json);
-        assert!(result.is_ok(), "HEAD annotation set response must deserialize: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "HEAD annotation set response must deserialize: {:?}",
+            result.err()
+        );
         let annset = result.unwrap();
         assert!(annset.created().is_some());
     }
