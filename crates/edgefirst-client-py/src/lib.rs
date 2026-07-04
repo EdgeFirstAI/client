@@ -8499,6 +8499,15 @@ impl Annotation {
 /// this maps directly to the `annotation.add_bulk` RPC's expected shape
 /// and requires an existing `image_id`/`annotation_set_id` — it edits an
 /// already-uploaded sample rather than creating a new one.
+///
+/// `label_id`, `label_index`, and `label_name` are not interchangeable:
+/// the server's `annotation.add_bulk` RPC only resolves the label from
+/// `label_id`. Set `label_id` to a real label ID (e.g. looked up via
+/// `Client.labels`) if the annotation should carry a label — passing
+/// only `label_name` and/or `label_index` will silently fail to resolve
+/// a label. This mirrors the CLI's `import-coco --update` path
+/// (`edgefirst_client::coco::studio::update_coco_annotations`), which
+/// always sets `label_id` alongside `label_name`.
 #[pyclass(module = "edgefirst_client")]
 #[derive(Clone)]
 pub struct ServerAnnotation(edgefirst_client::ServerAnnotation);
@@ -8512,6 +8521,14 @@ impl ServerAnnotation {
         object_reference=None
     ))]
     #[allow(clippy::too_many_arguments)]
+    /// # Arguments
+    /// * `label_id` - The label ID that the server resolves the annotation's
+    ///   label from. Set this (e.g. from `Client.labels`) whenever the
+    ///   annotation should carry a label.
+    /// * `label_index` - Optional source-faithful label index to record
+    ///   alongside `label_id`; it does not itself resolve a label.
+    /// * `label_name` - Optional label name to record alongside `label_id`;
+    ///   it does not itself resolve a label.
     pub fn new(
         annotation_type: String,
         x: f64,

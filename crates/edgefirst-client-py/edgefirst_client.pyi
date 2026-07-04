@@ -2350,6 +2350,16 @@ class ServerAnnotation:
     directly to the ``annotation.add_bulk`` RPC's expected shape and edits
     an already-uploaded sample in place — it requires an existing
     ``image_id``, not a new one created via upload.
+
+    ``label_id``, ``label_index``, and ``label_name`` are not
+    interchangeable: the server's ``annotation.add_bulk`` RPC only
+    resolves the label from ``label_id``. Set ``label_id`` to a real
+    label ID (e.g. looked up via ``Client.labels``) whenever the
+    annotation should carry a label — passing only ``label_name``
+    and/or ``label_index`` will silently fail to resolve a label. This
+    matches the CLI's ``import-coco --update`` path
+    (``edgefirst_client::coco::studio::update_coco_annotations``), which
+    always sets ``label_id`` alongside ``label_name``.
     """
 
     def __init__(
@@ -2378,9 +2388,14 @@ class ServerAnnotation:
             score: Confidence score (0-1).
             image_id: Image/sample ID in the database.
             annotation_set_id: Annotation set ID.
-            label_id: Label ID (alternative to label_name/label_index).
-            label_index: Label index (alternative to label_id/label_name).
-            label_name: Label name (alternative to label_id/label_index).
+            label_id: Label ID. This is the only field the server's
+                ``annotation.add_bulk`` RPC uses to resolve a label; set it
+                (e.g. from ``Client.labels``) whenever the annotation
+                should carry a label.
+            label_index: Optional source-faithful label index to record
+                alongside label_id. Does not itself resolve a label.
+            label_name: Optional label name to record alongside label_id.
+                Does not itself resolve a label.
             polygon: Polygon data as a JSON string (for segmentation).
             object_reference: Optional object tracking reference.
         """
@@ -5810,10 +5825,14 @@ class Client:
             List[dict]: The created annotation records from the server.
 
         Example:
+            >>> # label_id is required for the server to resolve the label;
+            >>> # label_name/label_index alone are not honored.
+            >>> label_ids = {label.name: label.id for label in client.labels(dataset_id)}
             >>> ann = ServerAnnotation(
             ...     annotation_type="box", x=0.1, y=0.1, w=0.2, h=0.2,
             ...     score=1.0, image_id=sample_id.value,
-            ...     annotation_set_id=annset_id.value, label_name="circle",
+            ...     annotation_set_id=annset_id.value,
+            ...     label_id=label_ids["circle"], label_name="circle",
             ... )
             >>> client.add_annotations_bulk(annset_id, [ann])
         """
