@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings and `.pyi` stubs for all new session management and schema APIs (`NewTrainingSession`, `TrainerSchemaInfo`, `SchemaField`, `SchemaOption`, `ValidatorSchema`)
 - Swift/Kotlin FFI bindings (sync + async) for the new APIs, plus previously missing `start_validation_session` and `delete_validation_sessions`
 - `Client.add_annotations_bulk`/`Client.delete_annotations_bulk` exposed to Python, along with a new `ServerAnnotation` pyclass for the server wire format — closes the previous gap where there was no supported way to edit an already-uploaded annotation from the Python client
+- Python bindings for `Client.usage_summary`, `Client.with_url`, `Client.download` (new `UsageSummary` type)
+- Python bindings for `Client.dataset_tags` (new `Tag` type) and module-level `collect_labels_from_samples`
+- `Annotation.set_sample_id`/`set_name`/`set_sequence_name`/`set_frame_number`/`set_category_frequency` setters and `frame_number`/`category_frequency` getters on the Python `Annotation` type
+- Corrected two phantom entries in the Python `.pyi` stubs (`Client.login`, `Client.download_sample`) that didn't correspond to any real method
+
+### Fixed
+
+- Confirmed [DE-2790](https://au-zone.atlassian.net/browse/DE-2790) (server-side `dve-database` bug where `version.tag.restore` didn't revert HEAD-path sample counts) fixed and deployed on the test server; `test_restore_to_tag` now asserts the correct reverted count
 
 ### Notes
 
