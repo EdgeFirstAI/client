@@ -1201,6 +1201,24 @@ class Group:
         """
         ...
 
+class UsageSummary:
+    """Billing usage summary for an organization."""
+
+    @property
+    def credits(self) -> float:
+        """The organization's available credits."""
+        ...
+
+    @property
+    def funds(self) -> float:
+        """The organization's available funds."""
+        ...
+
+    @property
+    def total(self) -> float:
+        """Total spendable balance (credits + funds)."""
+        ...
+
 class FileType(Enum):
     """
     File types supported in EdgeFirst Studio datasets.
@@ -5096,6 +5114,25 @@ class Client:
         """
         ...
 
+    def with_url(self, url: str) -> "Client":
+        """
+        Returns a new client pointed at an explicit URL.
+
+        Args:
+            url: Full base URL (e.g. "https://studio.example.com").
+
+        Returns:
+            Client: A new client connected to the specified URL.
+
+        Raises:
+            Error: If the URL is malformed or insecure (plain http:// to a
+                non-loopback host).
+
+        Example:
+            >>> client = Client().with_url("https://studio.example.com")
+        """
+        ...
+
     def with_storage(
         self, storage: Union[FileTokenStorage, MemoryTokenStorage, Any]
     ) -> "Client":
@@ -5261,6 +5298,30 @@ class Client:
 
         Raises:
             Error: If the organization cannot be accessed.
+        """
+        ...
+
+    def usage_summary(self) -> UsageSummary:
+        """
+        Get the billing usage summary for the authenticated organization.
+
+        Returns:
+            UsageSummary: Credits, funds, and total spendable balance.
+        """
+        ...
+
+    def download(self, url: str) -> bytes:
+        """
+        Download raw bytes from an absolute URL.
+
+        Args:
+            url: Absolute URL (must start with "http://" or "https://").
+
+        Returns:
+            bytes: The downloaded content.
+
+        Raises:
+            Error: If the URL is not absolute, or the request fails.
         """
         ...
 

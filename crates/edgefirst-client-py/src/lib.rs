@@ -2776,6 +2776,31 @@ impl Group {
     }
 }
 
+/// Billing usage summary for an organization.
+#[pyclass(module = "edgefirst_client")]
+pub struct UsageSummary(edgefirst_client::UsageSummary);
+
+#[pymethods]
+impl UsageSummary {
+    /// The organization's available credits.
+    #[getter]
+    pub fn credits(&self) -> f64 {
+        self.0.credits()
+    }
+
+    /// The organization's available funds.
+    #[getter]
+    pub fn funds(&self) -> f64 {
+        self.0.funds()
+    }
+
+    /// Total spendable balance (credits + funds).
+    #[getter]
+    pub fn total(&self) -> f64 {
+        self.0.total()
+    }
+}
+
 impl Display for Group {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.name())
@@ -5481,6 +5506,28 @@ impl Client {
         Ok(Client(self.0.with_server(server)?))
     }
 
+    /// Returns a new client pointed at an explicit URL.
+    ///
+    /// Used for self-hosted Studio deployments. The token is preserved so
+    /// callers can chain ``Client().with_url(...).with_token(...)``.
+    ///
+    /// Args:
+    ///     url: Full base URL (e.g. "https://studio.example.com").
+    ///
+    /// Returns:
+    ///     Client: A new client connected to the specified URL.
+    ///
+    /// Raises:
+    ///     Error: If the URL is malformed, or is a plain http:// URL
+    ///         pointing at a non-loopback host (would leak the bearer
+    ///         token in the clear).
+    ///
+    /// Example:
+    ///     >>> client = Client().with_url("https://studio.example.com")
+    pub fn with_url(&self, url: &str) -> Result<Self, Error> {
+        Ok(Client(self.0.with_url(url)?))
+    }
+
     /// Authenticate with a token.
     ///
     /// Args:
@@ -5575,6 +5622,31 @@ impl Client {
     #[tokio_wrap::sync]
     pub fn organization(&self) -> Result<Organization, Error> {
         Ok(Organization(self.0.organization().await?))
+    }
+
+    /// Returns the billing usage summary (credits, funds, total spendable)
+    /// for the authenticated user's organization.
+    ///
+    /// Returns:
+    ///     UsageSummary: Credits, funds, and total spendable balance.
+    #[tokio_wrap::sync]
+    pub fn usage_summary(&self) -> Result<UsageSummary, Error> {
+        Ok(UsageSummary(self.0.usage_summary().await?))
+    }
+
+    /// Downloads raw bytes from an absolute URL.
+    ///
+    /// Args:
+    ///     url: Absolute URL (must start with "http://" or "https://").
+    ///
+    /// Returns:
+    ///     bytes: The downloaded content.
+    ///
+    /// Raises:
+    ///     Error: If the URL is not absolute, or the request fails.
+    #[tokio_wrap::sync]
+    pub fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
+        Ok(self.0.download(url).await?)
     }
 
     #[pyo3(signature = (name = None))]
@@ -9047,6 +9119,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<Group>()?;
+    m.add_class::<UsageSummary>()?;
     m.add_class::<Label>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;
