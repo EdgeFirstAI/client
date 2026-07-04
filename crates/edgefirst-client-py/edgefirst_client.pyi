@@ -5163,22 +5163,6 @@ class Client:
         """
         ...
 
-    def login(self, username: str, password: str):
-        """
-        Login to the server using the specified username and password.  The
-        server will authenticate the user and return a token that can be used
-        to authenticate future requests.  The token is stored in the client and
-        used to authenticate the client with the server.
-
-        Args:
-            username (str): The username to log in to EdgeFirst Studio.
-            password (str): The password to log in to EdgeFirst Studio.
-
-        Raises:
-            Error: If authentication fails.
-        """
-        ...
-
     def logout(self) -> None:
         """
         Logout from the server and clear the stored token.
@@ -6435,35 +6419,6 @@ class Client:
 
         Returns:
             List[Sample]: A list of sample objects.
-        """
-        ...
-
-    def download_sample(
-        self,
-        sample: Sample,
-        file_type: FileType = FileType.Image,
-    ) -> Optional[bytes]:
-        """
-        Download a sample's file data.
-
-        This is the recommended replacement for ``sample.download(client)``.
-        For bulk downloads of many samples, use ``client.download_dataset()``
-        or ``dataset.download()`` which is significantly faster.
-
-        Args:
-            sample: The Sample object to download data from.
-            file_type: Type of file to download. Defaults to FileType.Image.
-
-        Returns:
-            Optional[bytes]: The file data, or None if no file exists.
-
-        Example:
-            >>> samples = client.samples(dataset_id)
-            >>> for sample in samples[:5]:  # Download first 5
-            ...     data = client.download_sample(sample)
-            ...     if data:
-            ...         with open(f"{sample.name}.jpg", "wb") as f:
-            ...             f.write(data)
         """
         ...
 
