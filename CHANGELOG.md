@@ -32,11 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings for `Client.usage_summary`, `Client.with_url`, `Client.download` (new `UsageSummary` type)
 - Python bindings for `Client.dataset_tags` (new `Tag` type) and module-level `collect_labels_from_samples`
 - `Annotation.set_sample_id`/`set_name`/`set_sequence_name`/`set_frame_number`/`set_category_frequency` setters and `frame_number`/`category_frequency` getters on the Python `Annotation` type
+- `Dataset`-level convenience wrappers for all 10 versioning methods (`version_tag_create`/`get`/`list`/`delete`/`restore`, `version_changelog`, `version_changelog_count`, `version_current`, `version_summary`, `version_summary_recalculate`), matching the existing `Client` + `Dataset` symmetry of `labels()`/`samples()`/`annotation_sets()`/`samples_count()`
 
 ### Fixed
 
 - Confirmed [DE-2790](https://au-zone.atlassian.net/browse/DE-2790) (server-side `dve-database` bug where `version.tag.restore` didn't revert HEAD-path sample counts) fixed and deployed on the test server; `test_restore_to_tag` now asserts the correct reverted count
 - Removed two phantom entries from the Python `.pyi` stubs (`Client.login`, `Client.download_sample`) that didn't correspond to any real method
+- `VersionTag`, `ChangelogEntry`, `DatasetSummary`, and `VersionCurrentResponse` now expose `dataset_id` as the `DatasetID` newtype instead of a raw `u64`/`int`, consistent with the rest of the public API across Rust, Python, and FFI (PR #34 review feedback)
+- Python `.pyi` stub for `samples_dataframe()` was missing the `version` parameter present in the actual signature
+- `TESTING.md` no longer documents `source env.sh` as required setup — `env.sh` isn't part of the repository; the guide now documents the three required environment variables directly and clarifies that Python commands should use `venv/bin/python` rather than assuming an activated venv (PR #34 review feedback)
 
 ### Notes
 

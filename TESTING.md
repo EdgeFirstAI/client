@@ -17,14 +17,21 @@ automated Python integration tests, and Rust unit/integration tests.
 
 ## Environment Setup
 
-All commands require the project's shell environment to be sourced first:
+The commands below need three environment variables set with credentials for
+your test server:
 
 ```bash
-source env.sh
+export STUDIO_SERVER=test        # or dev, or a full https:// URL
+export STUDIO_USERNAME=your-username
+export STUDIO_PASSWORD=your-password
 ```
 
-This sets `STUDIO_SERVER`, `STUDIO_USERNAME`, and `STUDIO_PASSWORD` from
-your local configuration and activates the Python venv.
+`env.sh` is not part of this repository (it's gitignored) — it's a local,
+optional convenience script some contributors keep for exporting these three
+variables. If you use one, note that it only sets credentials; it does not
+activate a Python virtual environment. Use `venv/bin/python` directly (or
+activate `venv` yourself) for the Python commands in this guide rather than
+assuming `source env.sh` did that for you.
 
 ---
 
@@ -206,7 +213,8 @@ The Python integration tests in `test/test_versioning.py` cover:
 ### 3.1 Build the Python Bindings
 
 ```bash
-source env.sh
+# Ensure STUDIO_SERVER, STUDIO_USERNAME, STUDIO_PASSWORD are exported
+# (see "Environment Setup" above)
 maturin develop -m crates/edgefirst-client-py/Cargo.toml
 ```
 
@@ -263,7 +271,8 @@ The CI pipeline uses `slipcover` with `xmlrunner`. To replicate the coverage
 report locally:
 
 ```bash
-source env.sh
+# Ensure STUDIO_SERVER, STUDIO_USERNAME, STUDIO_PASSWORD are exported
+# (see "Environment Setup" above)
 maturin develop -m crates/edgefirst-client-py/Cargo.toml
 venv/bin/python -m slipcover --xml --out coverage.xml \
     -m xmlrunner discover -s test -p "test*.py" -o target/python
@@ -278,7 +287,8 @@ venv/bin/python -m slipcover --xml --out coverage.xml \
 Run lib tests for the core client crate:
 
 ```bash
-source env.sh
+# Ensure STUDIO_SERVER, STUDIO_USERNAME, STUDIO_PASSWORD are exported
+# (see "Environment Setup" above)
 cargo test -p edgefirst-client --lib --all-features --locked
 ```
 
@@ -310,7 +320,8 @@ cargo test --doc --locked
 To generate a combined coverage report (matches the CI/CD pipeline):
 
 ```bash
-source env.sh
+# Ensure STUDIO_SERVER, STUDIO_USERNAME, STUDIO_PASSWORD are exported
+# (see "Environment Setup" above)
 
 # Export llvm-cov environment variables
 source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
@@ -358,9 +369,10 @@ or choose a different name.
 and `V1.0` are different).
 
 **Integration tests fail with authentication errors**
-: Confirm `STUDIO_SERVER`, `STUDIO_USERNAME`, and `STUDIO_PASSWORD` are set
-correctly after sourcing `env.sh`. External contributors can rely on GitHub
-Actions CI to run integration tests automatically.
+: Confirm `STUDIO_SERVER`, `STUDIO_USERNAME`, and `STUDIO_PASSWORD` are
+correctly exported in your shell (see "Environment Setup" above). External
+contributors can rely on GitHub Actions CI to run integration tests
+automatically.
 
 **Rust tests time out when running all together**
 : Run lib and CLI tests separately (`-p edgefirst-client --lib` and
