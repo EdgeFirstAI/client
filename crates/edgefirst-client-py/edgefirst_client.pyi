@@ -1201,6 +1201,29 @@ class Group:
         """
         ...
 
+class Tag:
+    """
+    A legacy free-form tag on a dataset (`tags.list_dataset`).
+
+    Unrelated to dataset version tags — see `VersionTag` for the
+    dataset-versioning tag feature.
+    """
+
+    @property
+    def id(self) -> int:
+        """The tag's unique identifier (creation-ordered)."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """The tag name."""
+        ...
+
+    @property
+    def dataset_id(self) -> int:
+        """The dataset this tag belongs to."""
+        ...
+
 class UsageSummary:
     """Billing usage summary for an organization."""
 
@@ -5530,6 +5553,21 @@ class Client:
         """
         ...
 
+    def dataset_tags(self, dataset_id: DatasetUID) -> List[Tag]:
+        """
+        List the legacy free-form tags for a dataset.
+
+        Unrelated to dataset version tags — see `version_tag_list` for the
+        dataset-versioning tag feature.
+
+        Args:
+            dataset_id: The dataset identifier (string, int, or DatasetID).
+
+        Returns:
+            List[Tag]: The dataset's tags, creation-ordered (highest id newest).
+        """
+        ...
+
     def get_or_create_group(self, dataset_id: DatasetUID, name: str) -> int:
         """
         Get an existing group by name or create a new one.
@@ -7335,5 +7373,28 @@ def is_polars_enabled() -> bool:
         ...     df = client.samples_dataframe(dataset_id)
         ... else:
         ...     annotations = client.annotations(annotation_set_id)
+    """
+    ...
+
+def collect_labels_from_samples(
+    samples: List[Sample],
+) -> Tuple[List[str], List[Optional[int]]]:
+    """
+    Collect parallel label name/index arrays from samples, for use with
+    ``Client.add_labels(dataset_id, names, indices)``.
+
+    Args:
+        samples: Samples whose annotations should be scanned for labels.
+
+    Returns:
+        Tuple[List[str], List[Optional[int]]]: Parallel label names and
+            their (possibly absent) source indices.
+
+    Raises:
+        Error: If the same label name maps to conflicting indices.
+
+    Example:
+        >>> names, indices = collect_labels_from_samples(samples)
+        >>> client.add_labels(dataset_id, names, indices)
     """
     ...

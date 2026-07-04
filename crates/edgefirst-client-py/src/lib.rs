@@ -2807,6 +2807,31 @@ impl Display for Group {
     }
 }
 
+/// A legacy free-form tag on a dataset (`tags.list_dataset`).
+///
+/// Unrelated to dataset version tags (see `VersionTag`) — this is the
+/// older, simple string-tagging feature.
+#[pyclass(module = "edgefirst_client")]
+pub struct Tag(edgefirst_client::Tag);
+
+#[pymethods]
+impl Tag {
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    #[getter]
+    pub fn name(&self) -> String {
+        self.0.name.clone()
+    }
+
+    #[getter]
+    pub fn dataset_id(&self) -> u64 {
+        self.0.dataset_id
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct AnnotationSet {
     inner: edgefirst_client::AnnotationSet,
@@ -5822,6 +5847,28 @@ impl Client {
             .map(Group)
             .collect::<Vec<_>>();
         Ok(groups)
+    }
+
+    /// List the legacy free-form tags for a dataset (`tags.list_dataset`).
+    ///
+    /// Unrelated to dataset version tags — see `version_tag_list` for the
+    /// dataset-versioning tag feature.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///
+    /// Returns:
+    ///     List[Tag]: The dataset's tags, creation-ordered (highest id newest).
+    #[tokio_wrap::sync]
+    pub fn dataset_tags<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Vec<Tag>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self
+            .0
+            .dataset_tags(dataset_id.0)
+            .await?
+            .into_iter()
+            .map(Tag)
+            .collect())
     }
 
     /// Get an existing group by name or create a new one.
@@ -9119,6 +9166,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<Group>()?;
+    m.add_class::<Tag>()?;
     m.add_class::<UsageSummary>()?;
     m.add_class::<Label>()?;
     m.add_class::<AnnotationType>()?;
@@ -9151,6 +9199,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_labels_from_samples, m)?)?;
 
     // COCO conversion functions (polars feature only)
     #[cfg(feature = "polars")]
@@ -9177,6 +9226,33 @@ pub fn is_polars_enabled() -> bool {
     {
         false
     }
+}
+
+/// Collect parallel label name/index arrays from samples, for use with
+/// `Client.add_labels(dataset_id, names, indices)`.
+///
+/// Annotations without a label_index contribute None at the matching
+/// position. Raises an error if the same label name maps to conflicting
+/// indices across the samples.
+///
+/// Args:
+///     samples: Samples whose annotations should be scanned for labels.
+///
+/// Returns:
+///     Tuple[List[str], List[Optional[int]]]: Parallel label names and
+///         their (possibly absent) source indices.
+///
+/// Example:
+///     >>> names, indices = collect_labels_from_samples(samples)
+///     >>> client.add_labels(dataset_id, names, indices)
+#[pyfunction]
+pub fn collect_labels_from_samples(
+    samples: Vec<PyRef<Sample>>,
+) -> Result<(Vec<String>, Vec<Option<u64>>), Error> {
+    let inner: Vec<edgefirst_client::Sample> = samples.iter().map(|s| s.inner.clone()).collect();
+    Ok(edgefirst_client::Client::collect_labels_from_samples(
+        &inner,
+    )?)
 }
 
 // =============================================================================
