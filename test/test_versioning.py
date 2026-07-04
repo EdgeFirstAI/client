@@ -899,5 +899,119 @@ class VersionEditAfterTagTest(TestCase):
                 client.delete_dataset(dataset_id)
 
 
+class VersionDatasetIdTypingTest(TestCase):
+    """Verify VersionTag/ChangelogEntry/DatasetSummary/VersionCurrentResponse
+    expose dataset_id as a DatasetID, not a raw int (PR #34 review comment)."""
+
+    def setUp(self):
+        if not _server_supports_versioning(get_client()):
+            self.skipTest("Server does not support versioning APIs")
+
+    def test_dataset_id_is_datasetid_not_int(self):
+        """dataset_id fields should compare equal to the DatasetID used to
+        create the resources, and should not be a plain int."""
+        import edgefirst_client as ec
+
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+        # create_dataset() returns a plain str; wrap it once so we can
+        # compare against the DatasetID objects returned by the versioning
+        # APIs (DatasetID.__eq__ only accepts another DatasetID).
+        expected_id = ec.DatasetID(dataset_id)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+
+            tag = client.version_tag_create(dataset_id, "typed-tag")
+            self.assertIsInstance(tag.dataset_id, ec.DatasetID)
+            self.assertEqual(tag.dataset_id, expected_id)
+
+            changelog = client.version_changelog(dataset_id)
+            self.assertGreater(len(changelog.entries), 0)
+            self.assertIsInstance(changelog.entries[0].dataset_id, ec.DatasetID)
+            self.assertEqual(changelog.entries[0].dataset_id, expected_id)
+
+            summary = client.version_summary(dataset_id)
+            self.assertIsInstance(summary.dataset_id, ec.DatasetID)
+            self.assertEqual(summary.dataset_id, expected_id)
+
+            current = client.version_current(dataset_id)
+            self.assertIsInstance(current.dataset_id, ec.DatasetID)
+            self.assertEqual(current.dataset_id, expected_id)
+
+            print("dataset_id typing verified as DatasetID on all 4 types")
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+
+class VersionDatasetConvenienceMethodsTest(TestCase):
+    """Verify Dataset-level convenience wrappers for the versioning RPCs
+    (previously only exposed on Client), mirroring labels()/samples()/
+    annotation_sets()/samples_count()'s existing Client+Dataset symmetry."""
+
+    def setUp(self):
+        if not _server_supports_versioning(get_client()):
+            self.skipTest("Server does not support versioning APIs")
+
+    def test_dataset_level_version_methods_match_client_level(self):
+        """Dataset.version_*() should behave identically to the equivalent
+        client.version_*(dataset_id) calls."""
+        client = get_client()
+        skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
+        dataset_id, annotation_set_id, _ = _create_test_dataset(client)
+
+        try:
+            _populate_samples(client, dataset_id, annotation_set_id, count=2)
+            dataset = client.dataset(dataset_id)
+
+            tag = dataset.version_tag_create("dataset-level-tag", "via Dataset")
+            self.assertEqual(tag.name, "dataset-level-tag")
+            self.assertEqual(tag.description, "via Dataset")
+
+            fetched = dataset.version_tag_get("dataset-level-tag")
+            self.assertEqual(fetched.serial, tag.serial)
+
+            tags = dataset.version_tag_list()
+            self.assertEqual(len(tags), 1)
+            self.assertEqual(tags[0].name, "dataset-level-tag")
+
+            changelog = dataset.version_changelog()
+            self.assertEqual(
+                len(changelog.entries), client.version_changelog(dataset_id).count
+            )
+
+            count = dataset.version_changelog_count()
+            self.assertEqual(count, client.version_changelog_count(dataset_id))
+
+            current = dataset.version_current()
+            self.assertEqual(
+                current.current_serial,
+                client.version_current(dataset_id).current_serial,
+            )
+
+            summary = dataset.version_summary()
+            self.assertEqual(summary.image_count, 2)
+
+            recalculated = dataset.version_summary_recalculate()
+            self.assertEqual(recalculated.image_count, summary.image_count)
+
+            time.sleep(1)
+            _populate_samples(client, dataset_id, annotation_set_id, count=1)
+            result = dataset.version_tag_restore("dataset-level-tag")
+            self.assertTrue(result.success)
+            self.assertEqual(client.samples_count(dataset_id).total, 2)
+
+            deleted = dataset.version_tag_delete("dataset-level-tag")
+            self.assertIsNotNone(deleted)
+            self.assertEqual(len(dataset.version_tag_list()), 0)
+
+            print("Dataset-level version_*() methods match Client-level equivalents")
+        finally:
+            if not skip_cleanup:
+                client.delete_dataset(dataset_id)
+
+
 if __name__ == "__main__":
     unittest.main()

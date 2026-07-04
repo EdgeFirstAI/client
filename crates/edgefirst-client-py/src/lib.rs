@@ -2652,6 +2652,273 @@ impl Dataset {
                 .await?,
         ))
     }
+
+    // -----------------------------------------------------------------------
+    // Version management methods
+    // -----------------------------------------------------------------------
+
+    /// Create a new version tag for this dataset.
+    ///
+    /// Args:
+    ///     name: The name for the version tag.
+    ///     description: Optional description for the tag.
+    ///
+    /// Returns:
+    ///     VersionTag: The newly created version tag.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_create(dataset.id, ...)` instead.
+    #[pyo3(signature = (name, description = None))]
+    #[tokio_wrap::sync]
+    pub fn version_tag_create(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<VersionTag, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_create(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionTag(
+            client_ref
+                .version_tag_create(self.inner.id(), name, description)
+                .await?,
+        ))
+    }
+
+    /// Get a specific version tag by name.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to retrieve.
+    ///
+    /// Returns:
+    ///     VersionTag: The requested version tag.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_get(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_get(&self, name: &str) -> Result<VersionTag, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_get(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionTag(
+            client_ref.version_tag_get(self.inner.id(), name).await?,
+        ))
+    }
+
+    /// List all version tags for this dataset.
+    ///
+    /// Returns:
+    ///     List[VersionTag]: All version tags for the dataset.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_list(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_list(&self) -> Result<Vec<VersionTag>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_list(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .version_tag_list(self.inner.id())
+            .await?
+            .into_iter()
+            .map(VersionTag)
+            .collect())
+    }
+
+    /// Delete a version tag from this dataset.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to delete.
+    ///
+    /// Returns:
+    ///     str: Confirmation message.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_delete(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_delete(&self, name: &str) -> Result<String, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_delete(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.version_tag_delete(self.inner.id(), name).await?)
+    }
+
+    /// Restore this dataset to a specific version tag.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to restore to.
+    ///
+    /// Returns:
+    ///     RestoreResult: Result of the restore operation.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_restore(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_restore(&self, name: &str) -> Result<RestoreResult, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_restore(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(RestoreResult(
+            client_ref
+                .version_tag_restore(self.inner.id(), name)
+                .await?,
+        ))
+    }
+
+    /// Get the changelog for this dataset between two versions.
+    ///
+    /// Args:
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///     limit: Optional limit on the number of entries.
+    ///     continue_token: Optional continuation token for pagination.
+    ///
+    /// Returns:
+    ///     ChangelogResponse: Paginated changelog entries.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_changelog(dataset.id, ...)` instead.
+    #[pyo3(signature = (from_version = None, to_version = None, entity_types = None, limit = None, continue_token = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog(
+        &self,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+        limit: Option<u64>,
+        continue_token: Option<&str>,
+    ) -> Result<ChangelogResponse, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_changelog(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(ChangelogResponse(
+            client_ref
+                .version_changelog(
+                    self.inner.id(),
+                    from_version,
+                    to_version,
+                    entity_types.as_deref(),
+                    limit,
+                    continue_token,
+                )
+                .await?,
+        ))
+    }
+
+    /// Get the count of changelog entries for this dataset between two versions.
+    ///
+    /// Args:
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///
+    /// Returns:
+    ///     int: The number of changelog entries.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_changelog_count(dataset.id, ...)` instead.
+    #[pyo3(signature = (from_version = None, to_version = None, entity_types = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog_count(
+        &self,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+    ) -> Result<u64, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_changelog_count(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .version_changelog_count(
+                self.inner.id(),
+                from_version,
+                to_version,
+                entity_types.as_deref(),
+            )
+            .await?)
+    }
+
+    /// Get the current version information for this dataset.
+    ///
+    /// Returns:
+    ///     VersionCurrentResponse: Current version state.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_current(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_current(&self) -> Result<VersionCurrentResponse, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_current(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionCurrentResponse(
+            client_ref.version_current(self.inner.id()).await?,
+        ))
+    }
+
+    /// Get the version summary for this dataset.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Summary metrics for the dataset.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_summary(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_summary(&self) -> Result<DatasetSummary, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_summary(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(DatasetSummary(
+            client_ref.version_summary(self.inner.id()).await?,
+        ))
+    }
+
+    /// Recalculate the version summary for this dataset.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Recalculated summary metrics.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_summary_recalculate(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_summary_recalculate(&self) -> Result<DatasetSummary, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_summary_recalculate(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(DatasetSummary(
+            client_ref.version_summary_recalculate(self.inner.id()).await?,
+        ))
+    }
 }
 
 #[pyclass(module = "edgefirst_client", from_py_object)]
@@ -8913,8 +9180,8 @@ impl VersionTag {
     }
 
     #[getter]
-    pub fn dataset_id(&self) -> u64 {
-        self.0.dataset_id()
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
     }
 
     #[getter]
@@ -9010,8 +9277,8 @@ impl ChangelogEntry {
     }
 
     #[getter]
-    pub fn dataset_id(&self) -> u64 {
-        self.0.dataset_id()
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
     }
 
     #[getter]
@@ -9125,8 +9392,8 @@ pub struct DatasetSummary(edgefirst_client::DatasetSummary);
 #[pymethods]
 impl DatasetSummary {
     #[getter]
-    pub fn dataset_id(&self) -> u64 {
-        self.0.dataset_id()
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
     }
 
     #[getter]
@@ -9189,8 +9456,8 @@ pub struct VersionCurrentResponse(edgefirst_client::VersionCurrentResponse);
 #[pymethods]
 impl VersionCurrentResponse {
     #[getter]
-    pub fn dataset_id(&self) -> u64 {
-        self.0.dataset_id
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id)
     }
 
     #[getter]

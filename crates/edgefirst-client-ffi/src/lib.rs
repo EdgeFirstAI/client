@@ -1894,7 +1894,7 @@ impl From<core::VersionTag> for VersionTag {
     fn from(t: core::VersionTag) -> Self {
         Self {
             id: t.id(),
-            dataset_id: t.dataset_id(),
+            dataset_id: t.dataset_id().into(),
             name: t.name().to_string(),
             serial: t.serial(),
             description: t.description().to_string(),
@@ -1932,7 +1932,7 @@ impl From<core::ChangelogEntry> for ChangelogEntry {
     fn from(e: core::ChangelogEntry) -> Self {
         Self {
             id: e.id(),
-            dataset_id: e.dataset_id(),
+            dataset_id: e.dataset_id().into(),
             serial: e.serial(),
             entity_type: e.entity_type().to_string(),
             operation: e.operation().to_string(),
@@ -1989,7 +1989,7 @@ pub struct DatasetSummary {
 impl From<core::DatasetSummary> for DatasetSummary {
     fn from(s: core::DatasetSummary) -> Self {
         Self {
-            dataset_id: s.dataset_id(),
+            dataset_id: s.dataset_id().into(),
             current_serial: s.current_serial(),
             image_count: s.image_count(),
             annotation_counts: s.annotation_counts().clone(),
@@ -2014,7 +2014,7 @@ pub struct VersionCurrentResponse {
 impl From<core::VersionCurrentResponse> for VersionCurrentResponse {
     fn from(r: core::VersionCurrentResponse) -> Self {
         Self {
-            dataset_id: r.dataset_id,
+            dataset_id: r.dataset_id.into(),
             current_serial: r.current_serial,
             latest_tag: r.latest_tag.map(VersionTag::from),
             tags: r.tags.into_iter().map(VersionTag::from).collect(),

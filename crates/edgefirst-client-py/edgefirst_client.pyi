@@ -1750,6 +1750,238 @@ class Dataset:
         """
         ...
 
+    def version_tag_create(
+        self,
+        name: str,
+        description: Optional[str] = None,
+    ) -> VersionTag:
+        """
+        Create a new version tag for this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            name: The name for the version tag.
+            description: Optional description for the tag.
+
+        Returns:
+            VersionTag: The newly created version tag.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_tag_create(dataset.id, ...)`` instead.
+
+        Example:
+            >>> tag = dataset.version_tag_create("v1.0", description="Initial release")
+        """
+        ...
+
+    def version_tag_get(self, name: str) -> VersionTag:
+        """
+        Get a specific version tag by name.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            name: The name of the version tag to retrieve.
+
+        Returns:
+            VersionTag: The requested version tag.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_tag_get(dataset.id, ...)`` instead.
+
+        Example:
+            >>> tag = dataset.version_tag_get("v1.0")
+        """
+        ...
+
+    def version_tag_list(self) -> List[VersionTag]:
+        """
+        List all version tags for this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Returns:
+            List[VersionTag]: All version tags for the dataset.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_tag_list(dataset.id)`` instead.
+
+        Example:
+            >>> for tag in dataset.version_tag_list():
+            ...     print(tag.name, tag.serial)
+        """
+        ...
+
+    def version_tag_delete(self, name: str) -> str:
+        """
+        Delete a version tag from this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            name: The name of the version tag to delete.
+
+        Returns:
+            str: Confirmation message.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_tag_delete(dataset.id, ...)`` instead.
+
+        Example:
+            >>> dataset.version_tag_delete("v1.0")
+        """
+        ...
+
+    def version_tag_restore(self, name: str) -> RestoreResult:
+        """
+        Restore this dataset to a specific version tag.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            name: The name of the version tag to restore to.
+
+        Returns:
+            RestoreResult: Result of the restore operation.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_tag_restore(dataset.id, ...)`` instead.
+
+        Example:
+            >>> result = dataset.version_tag_restore("v1.0")
+        """
+        ...
+
+    def version_changelog(
+        self,
+        from_version: Optional[str] = None,
+        to_version: Optional[str] = None,
+        entity_types: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        continue_token: Optional[str] = None,
+    ) -> ChangelogResponse:
+        """
+        Get the changelog for this dataset between two versions.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            from_version: Optional starting version tag name.
+            to_version: Optional ending version tag name.
+            entity_types: Optional filter for entity types.
+            limit: Optional limit on the number of entries.
+            continue_token: Optional continuation token for pagination.
+
+        Returns:
+            ChangelogResponse: Paginated changelog entries.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_changelog(dataset.id, ...)`` instead.
+
+        Example:
+            >>> changelog = dataset.version_changelog(from_version="v1.0")
+        """
+        ...
+
+    def version_changelog_count(
+        self,
+        from_version: Optional[str] = None,
+        to_version: Optional[str] = None,
+        entity_types: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Get the count of changelog entries for this dataset between two versions.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            from_version: Optional starting version tag name.
+            to_version: Optional ending version tag name.
+            entity_types: Optional filter for entity types.
+
+        Returns:
+            int: The number of changelog entries.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_changelog_count(dataset.id, ...)`` instead.
+
+        Example:
+            >>> count = dataset.version_changelog_count(from_version="v1.0")
+        """
+        ...
+
+    def version_current(self) -> VersionCurrentResponse:
+        """
+        Get the current version information for this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Returns:
+            VersionCurrentResponse: Current version state.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_current(dataset.id)`` instead.
+
+        Example:
+            >>> current = dataset.version_current()
+        """
+        ...
+
+    def version_summary(self) -> DatasetSummary:
+        """
+        Get the version summary for this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Returns:
+            DatasetSummary: Summary metrics for the dataset.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_summary(dataset.id)`` instead.
+
+        Example:
+            >>> summary = dataset.version_summary()
+        """
+        ...
+
+    def version_summary_recalculate(self) -> DatasetSummary:
+        """
+        Recalculate the version summary for this dataset.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Returns:
+            DatasetSummary: Recalculated summary metrics.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.version_summary_recalculate(dataset.id)`` instead.
+
+        Example:
+            >>> summary = dataset.version_summary_recalculate()
+        """
+        ...
+
 class Box2d:
     """
     The Box2d is a representation of a single 2D bounding box annotation
@@ -4703,7 +4935,7 @@ class VersionTag:
         ...
 
     @property
-    def dataset_id(self) -> int:
+    def dataset_id(self) -> DatasetID:
         """The dataset this tag belongs to."""
         ...
 
@@ -4784,7 +5016,7 @@ class ChangelogEntry:
         ...
 
     @property
-    def dataset_id(self) -> int:
+    def dataset_id(self) -> DatasetID:
         """The dataset this entry belongs to."""
         ...
 
@@ -4878,7 +5110,7 @@ class DatasetSummary:
     """
 
     @property
-    def dataset_id(self) -> int:
+    def dataset_id(self) -> DatasetID:
         """The dataset ID."""
         ...
 
@@ -4925,7 +5157,7 @@ class VersionCurrentResponse:
     """
 
     @property
-    def dataset_id(self) -> int:
+    def dataset_id(self) -> DatasetID:
         """The dataset ID."""
         ...
 
@@ -6185,6 +6417,7 @@ class Client:
         groups: List[str] = [],
         annotation_types: List[AnnotationType] = [],
         progress: Optional[Progress] = None,
+        version: Optional[str] = None,
     ) -> DataFrame:
         """
         Get samples as a DataFrame with complete 2025.10 schema.
@@ -6206,6 +6439,8 @@ class Client:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
                   status message (v2.8.0+)
+            version: Optional version tag name to fetch samples at that
+                point in time instead of HEAD.
 
         Progress:
             Reports progress with status=None as samples

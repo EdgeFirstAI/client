@@ -2232,7 +2232,7 @@ impl Artifact {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct VersionTag {
     id: u64,
-    dataset_id: u64,
+    dataset_id: DatasetID,
     name: String,
     serial: u64,
     #[serde(default)]
@@ -2262,7 +2262,7 @@ impl VersionTag {
     }
 
     /// Returns the dataset ID this tag belongs to.
-    pub fn dataset_id(&self) -> u64 {
+    pub fn dataset_id(&self) -> DatasetID {
         self.dataset_id
     }
 
@@ -2338,7 +2338,7 @@ impl Display for VersionTag {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ChangelogEntry {
     id: u64,
-    dataset_id: u64,
+    dataset_id: DatasetID,
     serial: u64,
     entity_type: String,
     operation: String,
@@ -2360,7 +2360,7 @@ impl ChangelogEntry {
         self.id
     }
 
-    pub fn dataset_id(&self) -> u64 {
+    pub fn dataset_id(&self) -> DatasetID {
         self.dataset_id
     }
 
@@ -2425,7 +2425,7 @@ pub struct ChangelogResponse {
 /// Cached metrics summary for a dataset's current state.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DatasetSummary {
-    dataset_id: u64,
+    dataset_id: DatasetID,
     current_serial: u64,
     #[serde(default)]
     image_count: u64,
@@ -2441,7 +2441,7 @@ pub struct DatasetSummary {
 }
 
 impl DatasetSummary {
-    pub fn dataset_id(&self) -> u64 {
+    pub fn dataset_id(&self) -> DatasetID {
         self.dataset_id
     }
 
@@ -2477,7 +2477,7 @@ impl DatasetSummary {
 /// Response from `version.current` with serial, tags, and summary.
 #[derive(Deserialize, Debug, Clone)]
 pub struct VersionCurrentResponse {
-    pub dataset_id: u64,
+    pub dataset_id: DatasetID,
     pub current_serial: u64,
     #[serde(default)]
     pub latest_tag: Option<VersionTag>,
