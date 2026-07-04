@@ -155,7 +155,38 @@ edgefirst-client delete-dataset $DATASET_ID
 
 ---
 
-## 2. Automated Python Integration Tests
+## 2. Dataset Versioning Workflows Covered
+
+The automated suite in `test/test_versioning.py` (18 tests across 5
+classes) proves the following end-to-end workflows against a live
+Studio server:
+
+| Workflow | Test(s) | Class |
+|---|---|---|
+| Create a tag, list/get/delete it | `test_tag_lifecycle` | `VersionTagLifecycleTest` |
+| Reject a duplicate tag name | `test_duplicate_tag_creation` | `VersionTagLifecycleTest` |
+| Reject an invalid tag name | `test_invalid_tag_name` | `VersionTagLifecycleTest` |
+| Reject a lookup for a nonexistent tag | `test_nonexistent_tag_get` | `VersionTagLifecycleTest` |
+| Fetch samples/labels/annotation_sets/annotations at a tag vs. at HEAD | `test_tagged_vs_head_data` | `VersionTaggedDataFetchTest` |
+| Download a full dataset at a tagged version | `test_download_dataset_with_tag` | `VersionTaggedDataFetchTest` |
+| Tag-scoped reads don't crash when the snapshot has real data (regression test for a fixed deserialization bug) | `test_tagged_labels_and_annotation_sets_nonempty` | `VersionTaggedDataFetchTest` |
+| Annotation-triggered label creation completes before a subsequent read | `test_annotation_triggered_label_creation_completes` | `VersionTaggedDataFetchTest` |
+| Changelog entries are recorded per operation, with entity/operation/username fields | `test_changelog_entries` | `VersionChangelogTest` |
+| Changelog count matches the full changelog response | `test_changelog_count` | `VersionChangelogTest` |
+| Changelog filtering by a serial/tag-name version range | `test_changelog_version_range` | `VersionChangelogTest` |
+| Changelog entries continue to be recorded for edits made after a tag exists | `test_changelog_records_edits_after_tag` | `VersionChangelogTest` |
+| Dataset summary and forced summary recalculation | `test_version_summary` | `VersionChangelogTest` |
+| `version_current` with no tags yet (`latest_tag=None`) | `test_version_current_no_tags` | `VersionChangelogTest` |
+| Restore a dataset to a tagged state; labels/annotation sets and sample counts are all correctly reverted | `test_restore_to_tag` | `VersionTagRestoreTest` |
+| Editing an annotation after tagging does not retroactively change the tag's view (tag immutability) | `test_edit_annotation_after_tag_does_not_change_tagged_view` | `VersionEditAfterTagTest` |
+| Fetching an OLDER tag back after NEWER tags have been created (multi-tag history) | `test_fetch_back_multiple_historical_tags` | `VersionEditAfterTagTest` |
+| HEAD reads always reflect the current live state, never "pinned" by a tag | `test_head_reflects_latest_after_tagging_and_editing` | `VersionEditAfterTagTest` |
+
+Run the full suite with `venv/bin/python -m unittest test.test_versioning -v` (see §3.2 below for setup).
+
+---
+
+## 3. Automated Python Integration Tests
 
 The Python integration tests in `test/test_versioning.py` cover:
 
@@ -172,14 +203,16 @@ The Python integration tests in `test/test_versioning.py` cover:
   mutations (post-tag additions), fetching the oldest of several historical
   tags back, and HEAD never being "pinned" by tag creation
 
-### 2.1 Build the Python Bindings
+### 3.1 Build the Python Bindings
 
 ```bash
 source env.sh
 maturin develop -m crates/edgefirst-client-py/Cargo.toml
 ```
 
-### 2.2 Run All Versioning Tests
+### 3.2 Run All Versioning Tests
+
+See §2 above for what each test class proves.
 
 ```bash
 venv/bin/python -m unittest test.test_versioning -v
@@ -209,13 +242,13 @@ Ran 18 tests in X.XXXs
 OK
 ```
 
-### 2.3 Run All Python Tests
+### 3.3 Run All Python Tests
 
 ```bash
 venv/bin/python -m unittest discover -s test -p "test*.py" -v
 ```
 
-### 2.4 Keep Test Datasets for Inspection
+### 3.4 Keep Test Datasets for Inspection
 
 By default, tests delete the datasets they create. Set `SKIP_CLEANUP=1` to
 retain them for manual inspection after a test run:
@@ -224,7 +257,7 @@ retain them for manual inspection after a test run:
 SKIP_CLEANUP=1 venv/bin/python -m unittest test.test_versioning -v
 ```
 
-### 2.5 Python Coverage (CI-equivalent)
+### 3.5 Python Coverage (CI-equivalent)
 
 The CI pipeline uses `slipcover` with `xmlrunner`. To replicate the coverage
 report locally:
@@ -238,9 +271,9 @@ venv/bin/python -m slipcover --xml --out coverage.xml \
 
 ---
 
-## 3. Rust Tests
+## 4. Rust Tests
 
-### 3.1 Unit and Library Tests
+### 4.1 Unit and Library Tests
 
 Run lib tests for the core client crate:
 
@@ -249,13 +282,13 @@ source env.sh
 cargo test -p edgefirst-client --lib --all-features --locked
 ```
 
-### 3.2 CLI Tests
+### 4.2 CLI Tests
 
 ```bash
 cargo test -p edgefirst-cli --all-features --locked
 ```
 
-### 3.3 All Tests (Single-Threaded to Avoid Conflicts)
+### 4.3 All Tests (Single-Threaded to Avoid Conflicts)
 
 Running all crates together can cause test-server conflicts. Use
 `--test-threads=1` when running the full suite:
@@ -264,7 +297,7 @@ Running all crates together can cause test-server conflicts. Use
 cargo test --all-features --locked -- --test-threads=1
 ```
 
-### 3.4 Doc Tests
+### 4.4 Doc Tests
 
 ```bash
 cargo test --doc --locked
@@ -272,7 +305,7 @@ cargo test --doc --locked
 
 ---
 
-## 4. Combined Rust + Python Coverage
+## 5. Combined Rust + Python Coverage
 
 To generate a combined coverage report (matches the CI/CD pipeline):
 
@@ -296,7 +329,7 @@ cargo llvm-cov report --lcov --output-path lcov.info
 
 ---
 
-## 5. Makefile Shortcuts
+## 6. Makefile Shortcuts
 
 The project Makefile provides convenient targets:
 
@@ -310,7 +343,7 @@ make pre-commit  # Format + lint + build (run before committing)
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 **"Cannot create tag: dataset has no changes yet"**
 : The dataset must have at least one changelog entry before a tag can be
