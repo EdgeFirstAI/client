@@ -4,14 +4,16 @@
 use crate::{
     Annotation, Error, Sample, Task,
     api::{
-        AnnotationSetID, Artifact, DatasetID, Experiment, ExperimentID, LoginResult,
-        NewTrainingSession, NewValidationSession, Organization, Project, ProjectID, SampleID,
+        AnnotationSetID, Artifact, ChangelogCountResult, ChangelogResponse, DatasetID,
+        DatasetSummary, Experiment, ExperimentID, LoginResult, NewTrainingSession,
+        NewValidationSession, Organization, Project, ProjectID, RestoreResult, SampleID,
         SamplesCountResult, SamplesListParams, SamplesListResult, SchemaField, Snapshot,
         SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
         SnapshotRestoreResult, Stage, StartTrainingRequest, StartValidationRequest, Tag, TaskID,
         TaskInfo, TaskStages, TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo,
         TrainingSession, TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
-        ValidatorSchema,
+        ValidatorSchema, VersionChangelogParams, VersionCurrentResponse, VersionTag,
+        VersionTagCreateParams, VersionTagNameParams,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -566,6 +568,7 @@ struct FetchContext<'a> {
     groups: &'a [String],
     types: Vec<String>,
     labels: &'a HashMap<String, u64>,
+    tag: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1480,10 +1483,26 @@ impl Client {
     }
 
     /// Lists the labels for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to list labels for
+    /// * `version` - Optional version tag to list labels at a specific version
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
-    pub async fn labels(&self, dataset_id: DatasetID) -> Result<Vec<Label>, Error> {
-        let params = HashMap::from([("dataset_id", dataset_id)]);
-        self.rpc("label.list".to_owned(), Some(params)).await
+    pub async fn labels(
+        &self,
+        dataset_id: DatasetID,
+        version: Option<&str>,
+    ) -> Result<Vec<Label>, Error> {
+        let mut params = serde_json::json!({"dataset_id": dataset_id});
+        if let Some(v) = version {
+            params["tag"] = serde_json::json!(v);
+        }
+        let mut labels: Vec<Label> = self.rpc("label.list".to_owned(), Some(params)).await?;
+        for label in &mut labels {
+            label.backfill_dataset_id(dataset_id);
+        }
+        Ok(labels)
     }
 
     /// Add a new label to the dataset with the specified name.
@@ -1506,7 +1525,7 @@ impl Client {
             return Ok(());
         }
 
-        let existing = self.labels(dataset_id).await?;
+        let existing = self.labels(dataset_id, None).await?;
         let existing_names: std::collections::HashSet<String> =
             existing.iter().map(|l| l.name().to_string()).collect();
 
@@ -1606,7 +1625,7 @@ impl Client {
 
         Self::validate_label_batch(names, Some(indices))?;
 
-        let existing = self.labels(dataset_id).await?;
+        let existing = self.labels(dataset_id, None).await?;
         let existing_names: std::collections::HashSet<String> =
             existing.iter().map(|l| l.name().to_string()).collect();
 
@@ -1698,7 +1717,11 @@ impl Client {
     pub async fn update_label(&self, label: &Label) -> Result<(), Error> {
         #[derive(Serialize)]
         struct Params {
-            dataset_id: DatasetID,
+            // Label IDs are globally unique, so the server does not require
+            // dataset_id; omitted entirely when the label was obtained from
+            // a tag-scoped read that didn't have one to backfill.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            dataset_id: Option<DatasetID>,
             label_id: u64,
             label_name: String,
             label_index: u64,
@@ -1805,7 +1828,7 @@ impl Client {
             return Ok(());
         }
 
-        let current = self.labels(dataset_id).await?;
+        let current = self.labels(dataset_id, None).await?;
         let by_name: HashMap<String, Label> = current
             .iter()
             .map(|l| (l.name().to_string(), l.clone()))
@@ -2113,6 +2136,8 @@ impl Client {
     ///   unavailable) unless the filename already starts with
     ///   `{sequence_name}_`, to avoid conflicts between sequences.
     /// * `progress` - Optional channel for progress updates
+    /// * `version` - Optional version tag name to download files from a
+    ///   specific tagged state instead of HEAD
     ///
     /// # Progress
     ///
@@ -2148,6 +2173,7 @@ impl Client {
     ///         "./data".into(),
     ///         false,
     ///         None,
+    ///         None,
     ///     )
     ///     .await?;
     ///
@@ -2159,6 +2185,7 @@ impl Client {
     ///         &[FileType::Image],
     ///         "./data".into(),
     ///         true,
+    ///         None,
     ///         None,
     ///     )
     ///     .await?;
@@ -2172,11 +2199,13 @@ impl Client {
     ///         "./data".into(),
     ///         false,
     ///         None,
+    ///         None,
     ///     )
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, groups, file_types, progress), fields(dataset_id = %dataset_id, output = %output.display())))]
     pub async fn download_dataset(
         &self,
@@ -2186,10 +2215,19 @@ impl Client {
         output: PathBuf,
         flatten: bool,
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<(), Error> {
         // Phase 1: Fetch sample metadata (pass progress directly, no wrapper)
         let samples = self
-            .samples(dataset_id, None, &[], groups, file_types, progress.clone())
+            .samples(
+                dataset_id,
+                None,
+                &[],
+                groups,
+                file_types,
+                progress.clone(),
+                version,
+            )
             .await?;
         fs::create_dir_all(&output).await?;
 
@@ -2365,13 +2403,27 @@ impl Client {
     }
 
     /// List available annotation sets for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to list annotation sets for
+    /// * `version` - Optional version tag to list annotation sets at a specific
+    ///   version
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
     pub async fn annotation_sets(
         &self,
         dataset_id: DatasetID,
+        version: Option<&str>,
     ) -> Result<Vec<AnnotationSet>, Error> {
-        let params = HashMap::from([("dataset_id", dataset_id)]);
-        self.rpc("annset.list".to_owned(), Some(params)).await
+        let mut params = serde_json::json!({"dataset_id": dataset_id});
+        if let Some(v) = version {
+            params["tag"] = serde_json::json!(v);
+        }
+        let mut sets: Vec<AnnotationSet> = self.rpc("annset.list".to_owned(), Some(params)).await?;
+        for set in &mut sets {
+            set.backfill_dataset_id(dataset_id);
+        }
+        Ok(sets)
     }
 
     /// Create a new annotation set for the specified dataset.
@@ -2463,6 +2515,15 @@ impl Client {
     /// The result is a vector of Annotations objects which contain the
     /// full dataset along with the annotations for the specified types.
     ///
+    /// # Arguments
+    ///
+    /// * `annotation_set_id` - The annotation set to fetch annotations from
+    /// * `groups` - Filter by sample groups (e.g., "train", "val", "test")
+    /// * `annotation_types` - Filter by annotation types (box2d, box3d, mask)
+    /// * `progress` - Optional channel for progress updates
+    /// * `version` - Optional version tag name to fetch annotations at a
+    ///   specific tagged state instead of HEAD
+    ///
     /// # Progress
     ///
     /// Reports progress with `status: None` as samples are fetched and
@@ -2478,10 +2539,18 @@ impl Client {
         groups: &[String],
         annotation_types: &[AnnotationType],
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<Vec<Annotation>, Error> {
-        let dataset_id = self.annotation_set(annotation_set_id).await?.dataset_id();
+        // `annset.get` is a HEAD-scoped lookup by ID, so the server always
+        // returns `dataset_id` here; `None` would indicate a malformed
+        // response rather than a legitimate tag-scoped omission.
+        let dataset_id = self
+            .annotation_set(annotation_set_id)
+            .await?
+            .dataset_id()
+            .ok_or(Error::InvalidResponse)?;
         let labels = self
-            .labels(dataset_id)
+            .labels(dataset_id, version)
             .await?
             .into_iter()
             .map(|label| (label.name().to_string(), label.index()))
@@ -2493,6 +2562,7 @@ impl Client {
                 annotation_types,
                 groups,
                 &[],
+                version,
             )
             .await?
             .total as usize;
@@ -2513,6 +2583,7 @@ impl Client {
                 .map(|t| t.as_server_type().to_string())
                 .collect(),
             labels: &labels,
+            tag: version.map(|v| v.to_string()),
         };
 
         self.fetch_annotations_paginated(context, total, progress)
@@ -2536,6 +2607,7 @@ impl Client {
                 types: context.types.clone(),
                 group_names: context.groups.to_vec(),
                 continue_token,
+                tag: context.tag.clone(),
             };
 
             let result: SamplesListResult =
@@ -2713,6 +2785,21 @@ impl Client {
         }
     }
 
+    /// Count samples in a dataset without fetching full sample data.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to count samples in
+    /// * `annotation_set_id` - Optional annotation set filter
+    /// * `annotation_types` - Filter by annotation types
+    /// * `groups` - Filter by sample groups (e.g., "train", "val", "test")
+    /// * `types` - Filter by file types
+    /// * `version` - Optional version tag name to count samples at a
+    ///   specific tagged state instead of HEAD
+    ///
+    /// # Returns
+    ///
+    /// Returns a [`SamplesCountResult`] with the total count of matching samples.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotation_types, groups, types), fields(dataset_id = %dataset_id, annotation_set_id = ?annotation_set_id)))]
     pub async fn samples_count(
         &self,
@@ -2721,6 +2808,7 @@ impl Client {
         annotation_types: &[AnnotationType],
         groups: &[String],
         types: &[FileType],
+        version: Option<&str>,
     ) -> Result<SamplesCountResult, Error> {
         // Use server-recognized annotation type names (box2d/box3d/mask) for
         // the types filter; the server maps them to its internal DB types.
@@ -2736,6 +2824,7 @@ impl Client {
             group_names: groups.to_vec(),
             types,
             continue_token: None,
+            tag: version.map(|v| v.to_string()),
         };
 
         self.rpc("samples.count".to_owned(), Some(params)).await
@@ -2762,6 +2851,7 @@ impl Client {
     /// # Returns
     ///
     /// Vector of [`Sample`] objects with metadata and optionally annotations.
+    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, annotation_types, groups, types, progress), fields(dataset_id = %dataset_id, annotation_set_id = ?annotation_set_id)))]
     pub async fn samples(
         &self,
@@ -2771,6 +2861,7 @@ impl Client {
         groups: &[String],
         types: &[FileType],
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<Vec<Sample>, Error> {
         // Use server-recognized annotation type names (box2d/box3d/mask) for
         // the types filter; the server maps them to its internal DB types.
@@ -2780,13 +2871,20 @@ impl Client {
             .chain(types.iter().map(|t| t.to_string()))
             .collect::<Vec<_>>();
         let labels = self
-            .labels(dataset_id)
+            .labels(dataset_id, version)
             .await?
             .into_iter()
             .map(|label| (label.name().to_string(), label.index()))
             .collect::<HashMap<_, _>>();
         let total = self
-            .samples_count(dataset_id, annotation_set_id, annotation_types, groups, &[])
+            .samples_count(
+                dataset_id,
+                annotation_set_id,
+                annotation_types,
+                groups,
+                &[],
+                version,
+            )
             .await?
             .total as usize;
 
@@ -2800,6 +2898,7 @@ impl Client {
             groups,
             types: types_vec,
             labels: &labels,
+            tag: version.map(|v| v.to_string()),
         };
 
         self.fetch_samples_paginated(context, total, progress).await
@@ -2831,11 +2930,12 @@ impl Client {
         dataset_id: DatasetID,
         groups: &[String],
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<std::collections::HashSet<String>, Error> {
         use std::collections::HashSet;
 
         let total = self
-            .samples_count(dataset_id, None, &[], groups, &[])
+            .samples_count(dataset_id, None, &[], groups, &[], version)
             .await?
             .total as usize;
 
@@ -2854,6 +2954,7 @@ impl Client {
                 types: vec![], // No type filter - we just want names
                 group_names: groups.to_vec(),
                 continue_token: continue_token.clone(),
+                tag: version.map(|v| v.to_string()),
             };
 
             let result: SamplesListResult =
@@ -2908,6 +3009,7 @@ impl Client {
                 types: context.types.clone(),
                 group_names: context.groups.to_vec(),
                 continue_token: continue_token.clone(),
+                tag: context.tag.clone(),
             };
 
             let result: SamplesListResult =
@@ -3033,7 +3135,7 @@ impl Client {
     /// # let client = Client::new()?.with_login("user", "pass").await?;
     /// # let dataset_id = DatasetID::from(1);
     /// // Query available annotation sets for the dataset
-    /// let annotation_sets = client.annotation_sets(dataset_id).await?;
+    /// let annotation_sets = client.annotation_sets(dataset_id, None).await?;
     /// let annotation_set_id = annotation_sets
     ///     .first()
     ///     .ok_or_else(|| {
@@ -3381,6 +3483,7 @@ impl Client {
     ///         &["train".to_string()],
     ///         &[],
     ///         None,
+    ///         None,
     ///     )
     ///     .await?;
     /// println!("DataFrame shape: {:?}", df.shape());
@@ -3396,11 +3499,20 @@ impl Client {
         groups: &[String],
         types: &[AnnotationType],
         progress: Option<Sender<Progress>>,
+        version: Option<&str>,
     ) -> Result<DataFrame, Error> {
         use crate::dataset::samples_dataframe;
 
         let samples = self
-            .samples(dataset_id, annotation_set_id, types, groups, &[], progress)
+            .samples(
+                dataset_id,
+                annotation_set_id,
+                types,
+                groups,
+                &[],
+                progress,
+                version,
+            )
             .await?;
         samples_dataframe(&samples)
     }
@@ -3471,7 +3583,9 @@ impl Client {
     ) -> Result<u64, Error> {
         // Fetch all samples; listing progress is not forwarded to the caller
         // since it would interleave with the dimension-computing phase.
-        let samples = self.samples(dataset_id, None, &[], &[], &[], None).await?;
+        let samples = self
+            .samples(dataset_id, None, &[], &[], &[], None, None)
+            .await?;
 
         // Filter to samples missing dimensions
         let missing: Vec<&Sample> = samples
@@ -4230,7 +4344,7 @@ impl Client {
             Some(id) => id,
             None => {
                 // Fetch annotation sets and find default ("annotations") or use first
-                let sets = self.annotation_sets(dataset_id).await?;
+                let sets = self.annotation_sets(dataset_id, None).await?;
                 if sets.is_empty() {
                     return Err(Error::InvalidParameters(
                         "No annotation sets available for dataset".to_owned(),
@@ -5743,6 +5857,202 @@ impl Client {
         } else {
             Err(Error::InvalidResponse)
         }
+    }
+
+    // ---- Dataset Versioning ------------------------------------------------
+
+    /// Create a new version tag for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to tag
+    /// * `name` - The name for the version tag
+    /// * `description` - Optional description for the version tag
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_tag_create(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<VersionTag, Error> {
+        let params = VersionTagCreateParams {
+            dataset_id,
+            name: name.to_owned(),
+            description: description.map(|d| d.to_owned()),
+        };
+        self.rpc("version.tag.create".to_owned(), Some(params))
+            .await
+    }
+
+    /// Get a specific version tag by name for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to query
+    /// * `name` - The name of the version tag to retrieve
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_tag_get(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+    ) -> Result<VersionTag, Error> {
+        let params = VersionTagNameParams {
+            dataset_id,
+            name: name.to_owned(),
+        };
+        self.rpc("version.tag.get".to_owned(), Some(params)).await
+    }
+
+    /// List all version tags for the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to list version tags for
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_tag_list(&self, dataset_id: DatasetID) -> Result<Vec<VersionTag>, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("version.tag.list".to_owned(), Some(params)).await
+    }
+
+    /// Delete a version tag from the specified dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset containing the tag
+    /// * `name` - The name of the version tag to delete
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_tag_delete(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+    ) -> Result<String, Error> {
+        let params = VersionTagNameParams {
+            dataset_id,
+            name: name.to_owned(),
+        };
+        self.rpc("version.tag.delete".to_owned(), Some(params))
+            .await
+    }
+
+    /// Restore a dataset to the state at a specific version tag.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to restore
+    /// * `name` - The name of the version tag to restore to
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_tag_restore(
+        &self,
+        dataset_id: DatasetID,
+        name: &str,
+    ) -> Result<RestoreResult, Error> {
+        let params = VersionTagNameParams {
+            dataset_id,
+            name: name.to_owned(),
+        };
+        self.rpc("version.tag.restore".to_owned(), Some(params))
+            .await
+    }
+
+    /// Get the changelog for a dataset between two versions.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to query
+    /// * `from_version` - Optional starting version tag (None = beginning)
+    /// * `to_version` - Optional ending version tag (None = current)
+    /// * `entity_types` - Optional filter for entity types
+    /// * `limit` - Optional limit on the number of results
+    /// * `continue_token` - Optional continuation token for pagination
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_changelog(
+        &self,
+        dataset_id: DatasetID,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<&[String]>,
+        limit: Option<u64>,
+        continue_token: Option<&str>,
+    ) -> Result<ChangelogResponse, Error> {
+        let params = VersionChangelogParams {
+            dataset_id,
+            from_version: from_version.map(|v| v.to_owned()),
+            to_version: to_version.map(|v| v.to_owned()),
+            entity_types: entity_types.map(|e| e.to_vec()),
+            limit,
+            continue_token: continue_token.map(|t| t.to_owned()),
+        };
+        self.rpc("version.changelog".to_owned(), Some(params)).await
+    }
+
+    /// Get the count of changelog entries between two versions.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to query
+    /// * `from_version` - Optional starting version tag (None = beginning)
+    /// * `to_version` - Optional ending version tag (None = current)
+    /// * `entity_types` - Optional filter for entity types
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_changelog_count(
+        &self,
+        dataset_id: DatasetID,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<&[String]>,
+    ) -> Result<u64, Error> {
+        let params = VersionChangelogParams {
+            dataset_id,
+            from_version: from_version.map(|v| v.to_owned()),
+            to_version: to_version.map(|v| v.to_owned()),
+            entity_types: entity_types.map(|e| e.to_vec()),
+            limit: None,
+            continue_token: None,
+        };
+        let result: ChangelogCountResult = self
+            .rpc("version.changelog.count".to_owned(), Some(params))
+            .await?;
+        Ok(result.count)
+    }
+
+    /// Get the current version information for a dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to query
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_current(
+        &self,
+        dataset_id: DatasetID,
+    ) -> Result<VersionCurrentResponse, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("version.current".to_owned(), Some(params)).await
+    }
+
+    /// Get the version summary for a dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to query
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_summary(&self, dataset_id: DatasetID) -> Result<DatasetSummary, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("version.summary".to_owned(), Some(params)).await
+    }
+
+    /// Recalculate the version summary for a dataset.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - The dataset to recalculate the summary for
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn version_summary_recalculate(
+        &self,
+        dataset_id: DatasetID,
+    ) -> Result<DatasetSummary, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("version.summary.recalculate".to_owned(), Some(params))
+            .await
     }
 }
 

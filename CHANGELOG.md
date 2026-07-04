@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Dataset versioning support with tag management and version-aware data fetching
+- New `version` parameter on `samples()`, `samples_count()`, `labels()`, `annotation_sets()`, `annotations()`, `sample_names()`, and `download_dataset()` to fetch data from a specific tagged version instead of HEAD
+- `version_tag_create()`, `version_tag_get()`, `version_tag_list()`, `version_tag_delete()`, `version_tag_restore()` methods for tag lifecycle management
+- `version_changelog()`, `version_changelog_count()`, `version_current()`, `version_summary()`, `version_summary_recalculate()` methods for changelog and version info
+- New types: `VersionTag`, `ChangelogEntry`, `ChangelogResponse`, `VersionCurrentResponse`, `DatasetSummary`, `RestoreResult`
+- CLI `version` subcommand group with `tag create/list/get/delete/restore`, `changelog`, `current`, and `summary` commands
+- CLI `--tag` flag on `download-dataset` and `download-annotations` commands
+- Python bindings and `.pyi` type stubs for all new versioning APIs
+- Swift/Kotlin FFI bindings for versioning types and methods
+- Integration tests for tag lifecycle, tagged data fetch, changelog, and restore workflows
+- `VersionTag.is_current`, `Dataset.tag_id`/`tag`/`tag_description` — previously undocumented server fields, now exposed on the Rust, Python, and FFI surfaces.
 - Training session management: `Client::delete_training_sessions` (`trainer.session.delete`; the server cascades the delete to attached validation sessions) and `Client::update_training_session` for renaming/editing descriptions
 - Validation session management: `Client::update_validation_session` for renaming/editing descriptions; deleting validation sessions never affects the parent training session
 - Training session launch: `Client::start_training_session` (`cloud.server.start`) with `StartTrainingRequest`/`NewTrainingSession` — group-based dataset splits, dataset tag defaulting to the latest tag, and train/val groups defaulting to the dataset's standard split
@@ -17,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: `start-training-session`, `update-training-session`, `delete-training-sessions`, `trainer-schemas`, `trainer-schema`, `update-validation-session`, `delete-validation-sessions`, `validator-schemas`
 - Python bindings and `.pyi` stubs for all new session management and schema APIs (`NewTrainingSession`, `TrainerSchemaInfo`, `SchemaField`, `SchemaOption`, `ValidatorSchema`)
 - Swift/Kotlin FFI bindings (sync + async) for the new APIs, plus previously missing `start_validation_session` and `delete_validation_sessions`
+- `Client.add_annotations_bulk`/`Client.delete_annotations_bulk` exposed to Python, along with a new `ServerAnnotation` pyclass for the server wire format — closes the previous gap where there was no supported way to edit an already-uploaded annotation from the Python client
+- Python bindings for `Client.usage_summary`, `Client.with_url`, `Client.download` (new `UsageSummary` type)
+- Python bindings for `Client.dataset_tags` (new `Tag` type) and module-level `collect_labels_from_samples`
+- `Annotation.set_sample_id`/`set_name`/`set_sequence_name`/`set_frame_number`/`set_category_frequency` setters and `frame_number`/`category_frequency` getters on the Python `Annotation` type
+- `Dataset`-level convenience wrappers for all 10 versioning methods (`version_tag_create`/`get`/`list`/`delete`/`restore`, `version_changelog`, `version_changelog_count`, `version_current`, `version_summary`, `version_summary_recalculate`), matching the existing `Client` + `Dataset` symmetry of `labels()`/`samples()`/`annotation_sets()`/`samples_count()`
+
+### Fixed
+
+- Confirmed [DE-2790](https://au-zone.atlassian.net/browse/DE-2790) (server-side `dve-database` bug where `version.tag.restore` didn't revert HEAD-path sample counts) fixed and deployed on the test server; `test_restore_to_tag` now asserts the correct reverted count
+- Removed two phantom entries from the Python `.pyi` stubs (`Client.login`, `Client.download_sample`) that didn't correspond to any real method
+- `VersionTag`, `ChangelogEntry`, `DatasetSummary`, and `VersionCurrentResponse` now expose `dataset_id` as the `DatasetID` newtype instead of a raw `u64`/`int`, consistent with the rest of the public API across Rust, Python, and FFI (PR #34 review feedback)
+- Python `.pyi` stub for `samples_dataframe()` was missing the `version` parameter present in the actual signature
+- `TESTING.md` no longer documents `source env.sh` as required setup — `env.sh` isn't part of the repository; the guide now documents the three required environment variables directly and clarifies that Python commands should use `venv/bin/python` rather than assuming an activated venv (PR #34 review feedback)
 
 ### Notes
 

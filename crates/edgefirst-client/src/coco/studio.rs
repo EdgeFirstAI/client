@@ -229,7 +229,7 @@ async fn fetch_existing_sample_names(
     }
 
     log::info!("Checking for existing samples in dataset {}...", dataset_id);
-    let names = client.sample_names(*dataset_id, &[], None).await?;
+    let names = client.sample_names(*dataset_id, &[], None, None).await?;
     log::info!("Found {} existing samples in dataset", names.len());
 
     if !names.is_empty() {
@@ -679,6 +679,7 @@ pub async fn export_studio_to_coco(
             &groups,
             &[],
             progress.clone(),
+            None,
         )
         .await?;
 
@@ -930,7 +931,7 @@ async fn ensure_labels_exist(
     use std::collections::{HashMap, HashSet};
 
     // Get existing labels
-    let existing_labels = client.labels(*dataset_id).await?;
+    let existing_labels = client.labels(*dataset_id, None).await?;
     let existing_label_names: HashSet<String> = existing_labels
         .iter()
         .map(|l| l.name().to_string())
@@ -955,7 +956,7 @@ async fn ensure_labels_exist(
     }
 
     // Re-query labels to get their IDs after creation
-    let labels = client.labels(*dataset_id).await?;
+    let labels = client.labels(*dataset_id, None).await?;
     let label_map: HashMap<String, u64> = labels
         .iter()
         .map(|l| (l.name().to_string(), l.id()))
@@ -1211,6 +1212,7 @@ pub async fn update_coco_annotations(
             &[],
             &[],
             progress.clone(),
+            None,
         )
         .await?;
 
@@ -1529,6 +1531,7 @@ pub async fn verify_coco_import(
             &groups,
             &[],
             progress.clone(),
+            None,
         )
         .await?;
 

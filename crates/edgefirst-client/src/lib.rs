@@ -67,15 +67,17 @@ mod storage;
 
 pub use crate::{
     api::{
-        AnnotationSetID, AppId, Artifact, DatasetID, DatasetParams, Experiment, ExperimentID,
-        ImageId, Job, NewTrainingSession, NewValidationSession, Organization, OrganizationID,
-        Parameter, PresignedUrl, Project, ProjectID, SampleDimensionUpdate, SampleID,
+        AnnotationSetID, AppId, Artifact, ChangelogEntry, ChangelogResponse, DatasetID,
+        DatasetParams, DatasetSummary, Experiment, ExperimentID, ImageId, Job, NewTrainingSession,
+        NewValidationSession, Organization, OrganizationID, Parameter, PresignedUrl, Project,
+        ProjectID, RestoreResult, RestoredCounts, RestoredFrom, SampleDimensionUpdate, SampleID,
         SamplesCountResult, SamplesPopulateParams, SamplesPopulateResult,
         SamplesUpdateDimensionsResult, SchemaField, SchemaFieldType, SchemaOption, SequenceId,
-        Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult, Stage,
-        StartTrainingRequest, StartValidationRequest, Tag, Task, TaskDataList, TaskID, TaskInfo,
-        TrainerSchemaInfo, TrainingSession, TrainingSessionID, UsageSummary, ValidationSession,
-        ValidationSessionID, ValidatorSchema,
+        ServerAnnotation, Snapshot, SnapshotFromDatasetResult, SnapshotID, SnapshotRestoreResult,
+        Stage, StartTrainingRequest, StartValidationRequest, Tag, Task, TaskDataList, TaskID,
+        TaskInfo, TrainerSchemaInfo, TrainingSession, TrainingSessionID, UsageSummary,
+        ValidationSession, ValidationSessionID, ValidatorSchema, VersionCurrentResponse,
+        VersionTag,
     },
     client::{Client, Progress},
     dataset::{

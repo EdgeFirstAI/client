@@ -790,6 +790,9 @@ pub struct Dataset {
     pub name: String,
     pub description: String,
     pub created: String,
+    pub tag_id: Option<u64>,
+    pub tag: String,
+    pub tag_description: String,
 }
 
 impl From<core::Dataset> for Dataset {
@@ -800,33 +803,44 @@ impl From<core::Dataset> for Dataset {
             name: d.name().to_string(),
             description: d.description().to_string(),
             created: d.created().to_rfc3339(),
+            tag_id: d.tag_id(),
+            tag: d.tag().to_string(),
+            tag_description: d.tag_description().to_string(),
         }
     }
 }
 
 /// An annotation set in a dataset.
+///
+/// `dataset_id` and `created` are `None` when this annotation set was
+/// fetched via a tag-scoped query: the server's tag snapshot response
+/// omits both `dataset_id` and the creation date.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AnnotationSet {
     pub id: AnnotationSetId,
-    pub dataset_id: DatasetId,
+    pub dataset_id: Option<DatasetId>,
     pub name: String,
     pub description: String,
-    pub created: String,
+    pub created: Option<String>,
 }
 
 impl From<core::AnnotationSet> for AnnotationSet {
     fn from(a: core::AnnotationSet) -> Self {
         Self {
             id: a.id().into(),
-            dataset_id: a.dataset_id().into(),
+            dataset_id: a.dataset_id().map(Into::into),
             name: a.name().to_string(),
             description: a.description().to_string(),
-            created: a.created().to_rfc3339(),
+            created: a.created().map(|dt| dt.to_rfc3339()),
         }
     }
 }
 
 /// A label for annotations.
+// Deliberately omits dataset_id/color (Rust-core-only fields) — no FFI
+// consumer reads them yet; adding either would force every hand-written
+// Swift/Kotlin call site to gain an unused argument. Extend here if a
+// consumer needs them.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct Label {
     pub id: u64,
@@ -1857,6 +1871,214 @@ impl From<core::Snapshot> for Snapshot {
     }
 }
 
+/// A dataset version tag (immutable point-in-time marker).
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct VersionTag {
+    pub id: u64,
+    pub dataset_id: u64,
+    pub name: String,
+    pub serial: u64,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub image_count: u64,
+    pub annotation_counts: HashMap<String, u64>,
+    pub sensor_counts: HashMap<String, u64>,
+    pub label_count: u64,
+    pub annotation_set_count: u64,
+    pub snapshot_id: Option<u64>,
+    pub is_current: bool,
+}
+
+impl From<core::VersionTag> for VersionTag {
+    fn from(t: core::VersionTag) -> Self {
+        Self {
+            id: t.id(),
+            dataset_id: t.dataset_id().into(),
+            name: t.name().to_string(),
+            serial: t.serial(),
+            description: t.description().to_string(),
+            created_by: t.created_by().to_string(),
+            created_at: t.created_at().to_rfc3339(),
+            image_count: t.image_count(),
+            annotation_counts: t.annotation_counts().clone(),
+            sensor_counts: t.sensor_counts().clone(),
+            label_count: t.label_count(),
+            annotation_set_count: t.annotation_set_count(),
+            snapshot_id: t.snapshot_id(),
+            is_current: t.is_current(),
+        }
+    }
+}
+
+/// A single entry in the dataset changelog.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ChangelogEntry {
+    pub id: u64,
+    pub dataset_id: u64,
+    pub serial: u64,
+    pub entity_type: String,
+    pub operation: String,
+    pub entity_id: Option<u64>,
+    pub change_data: String,
+    pub username: String,
+    pub organization_id: u64,
+    pub created_at: String,
+    pub message: String,
+    pub s3_version_ids: Vec<String>,
+}
+
+impl From<core::ChangelogEntry> for ChangelogEntry {
+    fn from(e: core::ChangelogEntry) -> Self {
+        Self {
+            id: e.id(),
+            dataset_id: e.dataset_id().into(),
+            serial: e.serial(),
+            entity_type: e.entity_type().to_string(),
+            operation: e.operation().to_string(),
+            entity_id: e.entity_id(),
+            change_data: serde_json::to_string(e.change_data()).unwrap_or_default(),
+            username: e.username().to_string(),
+            organization_id: e.organization_id(),
+            created_at: e.created_at().to_rfc3339(),
+            message: e.message().to_string(),
+            s3_version_ids: e
+                .s3_version_ids()
+                .iter()
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .collect(),
+        }
+    }
+}
+
+/// Paginated changelog response.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ChangelogResponse {
+    pub entries: Vec<ChangelogEntry>,
+    pub count: u64,
+    pub continue_token: String,
+    pub from_serial: Option<u64>,
+    pub to_serial: Option<u64>,
+}
+
+impl From<core::ChangelogResponse> for ChangelogResponse {
+    fn from(r: core::ChangelogResponse) -> Self {
+        Self {
+            entries: r.entries.into_iter().map(ChangelogEntry::from).collect(),
+            count: r.count,
+            continue_token: r.continue_token,
+            from_serial: r.from_serial,
+            to_serial: r.to_serial,
+        }
+    }
+}
+
+/// Cached metrics summary for a dataset's current state.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DatasetSummary {
+    pub dataset_id: u64,
+    pub current_serial: u64,
+    pub image_count: u64,
+    pub annotation_counts: HashMap<String, u64>,
+    pub sensor_counts: HashMap<String, u64>,
+    pub label_count: u64,
+    pub annotation_set_count: u64,
+    pub last_updated: String,
+}
+
+impl From<core::DatasetSummary> for DatasetSummary {
+    fn from(s: core::DatasetSummary) -> Self {
+        Self {
+            dataset_id: s.dataset_id().into(),
+            current_serial: s.current_serial(),
+            image_count: s.image_count(),
+            annotation_counts: s.annotation_counts().clone(),
+            sensor_counts: s.sensor_counts().clone(),
+            label_count: s.label_count(),
+            annotation_set_count: s.annotation_set_count(),
+            last_updated: s.last_updated().to_rfc3339(),
+        }
+    }
+}
+
+/// Current version information for a dataset.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct VersionCurrentResponse {
+    pub dataset_id: u64,
+    pub current_serial: u64,
+    pub latest_tag: Option<VersionTag>,
+    pub tags: Vec<VersionTag>,
+    pub summary: Option<DatasetSummary>,
+}
+
+impl From<core::VersionCurrentResponse> for VersionCurrentResponse {
+    fn from(r: core::VersionCurrentResponse) -> Self {
+        Self {
+            dataset_id: r.dataset_id.into(),
+            current_serial: r.current_serial,
+            latest_tag: r.latest_tag.map(VersionTag::from),
+            tags: r.tags.into_iter().map(VersionTag::from).collect(),
+            summary: r.summary.map(DatasetSummary::from),
+        }
+    }
+}
+
+/// Source tag information in a restore result.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RestoredFrom {
+    pub tag: String,
+    pub serial: u64,
+}
+
+impl From<core::RestoredFrom> for RestoredFrom {
+    fn from(r: core::RestoredFrom) -> Self {
+        Self {
+            tag: r.tag,
+            serial: r.serial,
+        }
+    }
+}
+
+/// Counts of entities restored.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RestoredCounts {
+    pub images: u64,
+    pub labels: u64,
+    pub annotation_sets: u64,
+}
+
+impl From<core::RestoredCounts> for RestoredCounts {
+    fn from(r: core::RestoredCounts) -> Self {
+        Self {
+            images: r.images,
+            labels: r.labels,
+            annotation_sets: r.annotation_sets,
+        }
+    }
+}
+
+/// Result from restoring a dataset to a version tag.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RestoreResult {
+    pub success: bool,
+    pub new_serial: u64,
+    pub restored_from: RestoredFrom,
+    pub restored_counts: RestoredCounts,
+    pub message: String,
+}
+
+impl From<core::RestoreResult> for RestoreResult {
+    fn from(r: core::RestoreResult) -> Self {
+        Self {
+            success: r.success,
+            new_serial: r.new_serial,
+            restored_from: RestoredFrom::from(r.restored_from),
+            restored_counts: RestoredCounts::from(r.restored_counts),
+            message: r.message,
+        }
+    }
+}
+
 /// A 2D point (x, y coordinates).
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct Point2d {
@@ -2372,22 +2594,28 @@ impl Client {
         Ok(dataset.into())
     }
 
-    /// Get annotation sets for a dataset.
+    /// Get annotation sets for a dataset, optionally at a specific version.
     pub fn annotation_sets(
         &self,
         dataset_id: DatasetId,
+        version: Option<String>,
     ) -> Result<Vec<AnnotationSet>, ClientError> {
-        let sets = self
-            .runtime
-            .block_on(self.inner.annotation_sets(dataset_id.into()))?;
+        let sets = self.runtime.block_on(
+            self.inner
+                .annotation_sets(dataset_id.into(), version.as_deref()),
+        )?;
         Ok(sets.into_iter().map(AnnotationSet::from).collect())
     }
 
-    /// Get labels for a dataset.
-    pub fn labels(&self, dataset_id: DatasetId) -> Result<Vec<Label>, ClientError> {
+    /// Get labels for a dataset, optionally at a specific version.
+    pub fn labels(
+        &self,
+        dataset_id: DatasetId,
+        version: Option<String>,
+    ) -> Result<Vec<Label>, ClientError> {
         let labels = self
             .runtime
-            .block_on(self.inner.labels(dataset_id.into()))?;
+            .block_on(self.inner.labels(dataset_id.into(), version.as_deref()))?;
         Ok(labels.into_iter().map(Label::from).collect())
     }
 
@@ -2697,6 +2925,137 @@ impl Client {
             .block_on(self.inner.start_validation_session(request.into()))?;
         Ok(session.into())
     }
+
+    // =========================================================================
+    // Dataset Versioning
+    // =========================================================================
+
+    /// Create a new version tag for a dataset.
+    pub fn version_tag_create(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+        description: Option<String>,
+    ) -> Result<VersionTag, ClientError> {
+        let tag = self.runtime.block_on(self.inner.version_tag_create(
+            dataset_id.into(),
+            &name,
+            description.as_deref(),
+        ))?;
+        Ok(tag.into())
+    }
+
+    /// Get a specific version tag by name.
+    pub fn version_tag_get(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<VersionTag, ClientError> {
+        let tag = self
+            .runtime
+            .block_on(self.inner.version_tag_get(dataset_id.into(), &name))?;
+        Ok(tag.into())
+    }
+
+    /// List all version tags for a dataset.
+    pub fn version_tag_list(&self, dataset_id: DatasetId) -> Result<Vec<VersionTag>, ClientError> {
+        let tags = self
+            .runtime
+            .block_on(self.inner.version_tag_list(dataset_id.into()))?;
+        Ok(tags.into_iter().map(VersionTag::from).collect())
+    }
+
+    /// Delete a version tag from a dataset.
+    pub fn version_tag_delete(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<String, ClientError> {
+        let result = self
+            .runtime
+            .block_on(self.inner.version_tag_delete(dataset_id.into(), &name))?;
+        Ok(result)
+    }
+
+    /// Restore a dataset to the state at a specific version tag.
+    pub fn version_tag_restore(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<RestoreResult, ClientError> {
+        let result = self
+            .runtime
+            .block_on(self.inner.version_tag_restore(dataset_id.into(), &name))?;
+        Ok(result.into())
+    }
+
+    /// Get the changelog for a dataset between two versions.
+    pub fn version_changelog(
+        &self,
+        dataset_id: DatasetId,
+        from_version: Option<String>,
+        to_version: Option<String>,
+        entity_types: Option<Vec<String>>,
+        limit: Option<u64>,
+        continue_token: Option<String>,
+    ) -> Result<ChangelogResponse, ClientError> {
+        let result = self.runtime.block_on(self.inner.version_changelog(
+            dataset_id.into(),
+            from_version.as_deref(),
+            to_version.as_deref(),
+            entity_types.as_deref(),
+            limit,
+            continue_token.as_deref(),
+        ))?;
+        Ok(result.into())
+    }
+
+    /// Get the count of changelog entries between two versions.
+    pub fn version_changelog_count(
+        &self,
+        dataset_id: DatasetId,
+        from_version: Option<String>,
+        to_version: Option<String>,
+        entity_types: Option<Vec<String>>,
+    ) -> Result<u64, ClientError> {
+        let count = self.runtime.block_on(self.inner.version_changelog_count(
+            dataset_id.into(),
+            from_version.as_deref(),
+            to_version.as_deref(),
+            entity_types.as_deref(),
+        ))?;
+        Ok(count)
+    }
+
+    /// Get the current version information for a dataset.
+    pub fn version_current(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<VersionCurrentResponse, ClientError> {
+        let result = self
+            .runtime
+            .block_on(self.inner.version_current(dataset_id.into()))?;
+        Ok(result.into())
+    }
+
+    /// Get the version summary for a dataset.
+    pub fn version_summary(&self, dataset_id: DatasetId) -> Result<DatasetSummary, ClientError> {
+        let summary = self
+            .runtime
+            .block_on(self.inner.version_summary(dataset_id.into()))?;
+        Ok(summary.into())
+    }
+
+    /// Recalculate the version summary for a dataset.
+    pub fn version_summary_recalculate(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<DatasetSummary, ClientError> {
+        let summary = self
+            .runtime
+            .block_on(self.inner.version_summary_recalculate(dataset_id.into()))?;
+        Ok(summary.into())
+    }
 }
 
 // =============================================================================
@@ -2786,23 +3145,34 @@ impl Client {
         .await
     }
 
-    /// Get annotation sets for a dataset (async).
+    /// Get annotation sets for a dataset, optionally at a specific version (async).
     pub async fn annotation_sets_async(
         &self,
         dataset_id: DatasetId,
+        version: Option<String>,
     ) -> Result<Vec<AnnotationSet>, ClientError> {
         async {
-            let sets = self.inner.annotation_sets(dataset_id.into()).await?;
+            let sets = self
+                .inner
+                .annotation_sets(dataset_id.into(), version.as_deref())
+                .await?;
             Ok(sets.into_iter().map(AnnotationSet::from).collect())
         }
         .compat()
         .await
     }
 
-    /// Get labels for a dataset (async).
-    pub async fn labels_async(&self, dataset_id: DatasetId) -> Result<Vec<Label>, ClientError> {
+    /// Get labels for a dataset, optionally at a specific version (async).
+    pub async fn labels_async(
+        &self,
+        dataset_id: DatasetId,
+        version: Option<String>,
+    ) -> Result<Vec<Label>, ClientError> {
         async {
-            let labels = self.inner.labels(dataset_id.into()).await?;
+            let labels = self
+                .inner
+                .labels(dataset_id.into(), version.as_deref())
+                .await?;
             Ok(labels.into_iter().map(Label::from).collect())
         }
         .compat()
@@ -2989,6 +3359,28 @@ impl Client {
         .await
     }
 
+    // =========================================================================
+    // Dataset Versioning (async)
+    // =========================================================================
+
+    /// Create a new version tag for a dataset (async).
+    pub async fn version_tag_create_async(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+        description: Option<String>,
+    ) -> Result<VersionTag, ClientError> {
+        async {
+            let tag = self
+                .inner
+                .version_tag_create(dataset_id.into(), &name, description.as_deref())
+                .await?;
+            Ok(tag.into())
+        }
+        .compat()
+        .await
+    }
+
     /// Launch an application job (async).
     ///
     /// Returns the full `Job` record (BK_BATCH wrapper) including AWS Batch job
@@ -3097,6 +3489,95 @@ impl Client {
         .await
     }
 
+    /// Get a specific version tag by name (async).
+    pub async fn version_tag_get_async(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<VersionTag, ClientError> {
+        async {
+            let tag = self.inner.version_tag_get(dataset_id.into(), &name).await?;
+            Ok(tag.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// List all version tags for a dataset (async).
+    pub async fn version_tag_list_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<Vec<VersionTag>, ClientError> {
+        async {
+            let tags = self.inner.version_tag_list(dataset_id.into()).await?;
+            Ok(tags.into_iter().map(VersionTag::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Delete a version tag from a dataset (async).
+    pub async fn version_tag_delete_async(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<String, ClientError> {
+        async {
+            let result = self
+                .inner
+                .version_tag_delete(dataset_id.into(), &name)
+                .await?;
+            Ok(result)
+        }
+        .compat()
+        .await
+    }
+
+    /// Restore a dataset to the state at a specific version tag (async).
+    pub async fn version_tag_restore_async(
+        &self,
+        dataset_id: DatasetId,
+        name: String,
+    ) -> Result<RestoreResult, ClientError> {
+        async {
+            let result = self
+                .inner
+                .version_tag_restore(dataset_id.into(), &name)
+                .await?;
+            Ok(result.into())
+        }
+        .compat()
+        .await
+    }
+
+    /// Get the changelog for a dataset between two versions (async).
+    pub async fn version_changelog_async(
+        &self,
+        dataset_id: DatasetId,
+        from_version: Option<String>,
+        to_version: Option<String>,
+        entity_types: Option<Vec<String>>,
+        limit: Option<u64>,
+        continue_token: Option<String>,
+    ) -> Result<ChangelogResponse, ClientError> {
+        async {
+            let result = self
+                .inner
+                .version_changelog(
+                    dataset_id.into(),
+                    from_version.as_deref(),
+                    to_version.as_deref(),
+                    entity_types.as_deref(),
+                    limit,
+                    continue_token.as_deref(),
+                )
+                .await?;
+            Ok(result.into())
+        }
+        .compat()
+        .await
+    }
+
     /// Update the name and/or description of a validation session (async).
     pub async fn update_validation_session_async(
         &self,
@@ -3119,11 +3600,48 @@ impl Client {
         .await
     }
 
+    /// Get the count of changelog entries between two versions (async).
+    pub async fn version_changelog_count_async(
+        &self,
+        dataset_id: DatasetId,
+        from_version: Option<String>,
+        to_version: Option<String>,
+        entity_types: Option<Vec<String>>,
+    ) -> Result<u64, ClientError> {
+        async {
+            let count = self
+                .inner
+                .version_changelog_count(
+                    dataset_id.into(),
+                    from_version.as_deref(),
+                    to_version.as_deref(),
+                    entity_types.as_deref(),
+                )
+                .await?;
+            Ok(count)
+        }
+        .compat()
+        .await
+    }
+
     /// List the trainer types available on the server (async).
     pub async fn trainer_schemas_async(&self) -> Result<Vec<TrainerSchemaInfo>, ClientError> {
         async {
             let schemas = self.inner.trainer_schemas().await?;
             Ok(schemas.into_iter().map(TrainerSchemaInfo::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Get the current version information for a dataset (async).
+    pub async fn version_current_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<VersionCurrentResponse, ClientError> {
+        async {
+            let result = self.inner.version_current(dataset_id.into()).await?;
+            Ok(result.into())
         }
         .compat()
         .await
@@ -3142,11 +3660,40 @@ impl Client {
         .await
     }
 
+    /// Get the version summary for a dataset (async).
+    pub async fn version_summary_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<DatasetSummary, ClientError> {
+        async {
+            let summary = self.inner.version_summary(dataset_id.into()).await?;
+            Ok(summary.into())
+        }
+        .compat()
+        .await
+    }
+
     /// List the validator schemas available on the server (async).
     pub async fn validator_schemas_async(&self) -> Result<Vec<ValidatorSchema>, ClientError> {
         async {
             let schemas = self.inner.validator_schemas().await?;
             Ok(schemas.into_iter().map(ValidatorSchema::from).collect())
+        }
+        .compat()
+        .await
+    }
+
+    /// Recalculate the version summary for a dataset (async).
+    pub async fn version_summary_recalculate_async(
+        &self,
+        dataset_id: DatasetId,
+    ) -> Result<DatasetSummary, ClientError> {
+        async {
+            let summary = self
+                .inner
+                .version_summary_recalculate(dataset_id.into())
+                .await?;
+            Ok(summary.into())
         }
         .compat()
         .await

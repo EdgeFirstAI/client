@@ -82,3 +82,36 @@ class ClientTest(TestCase):
         self.assertEqual(project.id.value, first_project.id.value)
         self.assertEqual(project.name, first_project.name)
         print(f"Retrieved project: {project.name} (ID: {project.id.value})")
+
+    def test_with_url_accepts_https(self):
+        """with_url should accept an https:// URL and preserve chaining."""
+        client = get_client().with_url("https://test.edgefirst.studio")
+        self.assertEqual(client.url, "https://test.edgefirst.studio")
+
+    def test_with_url_rejects_insecure_public_host(self):
+        """with_url should reject a plain http:// URL for a non-loopback host."""
+        with self.assertRaises(Exception):
+            get_client().with_url("http://example.com")
+
+    def test_usage_summary(self):
+        """usage_summary should return credits/funds/total as floats."""
+        client = get_client()
+        summary = client.usage_summary()
+        self.assertIsInstance(summary.credits, float)
+        self.assertIsInstance(summary.funds, float)
+        self.assertIsInstance(summary.total, float)
+
+    def test_download_generic_url(self):
+        """download() should fetch raw bytes from an absolute URL."""
+        client = get_client()
+        # Any small, stable, always-public HTTPS resource served by the
+        # Studio test server itself avoids relying on third-party uptime.
+        data = client.download("https://test.edgefirst.studio/favicon.ico")
+        self.assertIsInstance(data, bytes)
+        self.assertGreater(len(data), 0)
+
+    def test_download_rejects_relative_url(self):
+        """download() should reject a non-absolute URL with a clear error."""
+        client = get_client()
+        with self.assertRaises(Exception):
+            client.download("not-a-url")

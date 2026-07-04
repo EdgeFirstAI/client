@@ -11,6 +11,7 @@ improve test maintainability.
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 from PIL import Image, ImageDraw
 
@@ -19,7 +20,7 @@ from edgefirst_client import Annotation, Box2d, Sample, SampleFile
 
 def get_test_dataset() -> str:
     """Get the test dataset identifier from environment or default to 'Deer'.
-    
+
     Can be a dataset name (exact match) or dataset ID (ds-xxx format).
 
     Returns:
@@ -102,6 +103,7 @@ def create_sample_with_circle_annotation(
     image_path: Path,
     label_name: str = "circle",
     object_id=None,
+    box2d: Optional[Box2d] = None,
 ) -> Sample:
     """Create sample with circle image and bbox annotation.
 
@@ -111,6 +113,16 @@ def create_sample_with_circle_annotation(
         label_name: Label for the annotation (default: "circle").
         object_id: Object ID for the annotation (default:
             "{label_name}-obj-1").
+        box2d: Normalized bounding box for the annotation, typically the
+            second element returned by create_test_image_with_circle().
+            Without this, the annotation carries only a label name and no
+            geometry (box2d/box3d/mask); the server's samples.populate2
+            handler only routes an annotation into the label/annotation
+            pipeline when one of those geometry fields is present, so a
+            geometry-less annotation is silently dropped server-side and
+            never creates or references a label row at all. Pass the
+            bbox whenever the test needs the label/annotation to actually
+            exist and be queryable (e.g. via labels() or annotations()).
 
     Returns:
         Sample with image file and annotation.
@@ -125,6 +137,8 @@ def create_sample_with_circle_annotation(
     annotation = Annotation()
     annotation.set_label(label_name)
     annotation.set_object_id(object_id)
+    if box2d is not None:
+        annotation.set_box2d(box2d)
 
     sample.add_annotation(annotation)
     return sample
@@ -158,3 +172,39 @@ def get_unique_image_filename(
     """
     timestamp = int(time.time())
     return f"{prefix}_{timestamp}{extension}"
+
+
+def wait_for_label(client, dataset_id: str, name: str, timeout: float = 5.0):
+    """Poll client.labels() until a label with the given name appears.
+
+    Label rows created by an annotation reference (rather than an explicit
+    add_label() call) have been observed to resolve synchronously within
+    populate_samples() on the current server, provided the annotation
+    carries real geometry (box2d/box3d/mask) — see
+    create_sample_with_circle_annotation's box2d parameter. The API makes
+    no documented guarantee of synchronous visibility, though, so use this
+    poll instead of a fixed sleep or an immediate check when a test needs
+    to observe label creation triggered by populating annotations.
+
+    Args:
+        client: Authenticated client.
+        dataset_id: Dataset to check.
+        name: Label name to wait for.
+        timeout: Maximum seconds to wait.
+
+    Returns:
+        The matching Label object.
+
+    Raises:
+        TimeoutError: If the label does not appear within timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        labels = client.labels(dataset_id)
+        for label in labels:
+            if label.name == name:
+                return label
+        time.sleep(0.25)
+    raise TimeoutError(
+        f"Label '{name}' did not appear on dataset {dataset_id} within {timeout}s"
+    )

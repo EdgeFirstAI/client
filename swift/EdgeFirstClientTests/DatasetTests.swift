@@ -113,7 +113,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let annotationSets = try await client.annotationSetsAsync(datasetId: dataset.id)
+    let annotationSets = try await client.annotationSetsAsync(datasetId: dataset.id, version: nil)
 
     print("Found \(annotationSets.count) annotation sets (async) in dataset \(dataset.name)")
 
@@ -145,7 +145,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let labels = try await client.labelsAsync(datasetId: dataset.id)
+    let labels = try await client.labelsAsync(datasetId: dataset.id, version: nil)
 
     print("Found \(labels.count) labels (async) in dataset \(dataset.name)")
 
@@ -207,7 +207,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let annotationSets = try client.annotationSets(datasetId: dataset.id)
+    let annotationSets = try client.annotationSets(datasetId: dataset.id, version: nil)
 
     print("Found \(annotationSets.count) annotation sets in dataset \(dataset.name)")
 
@@ -240,7 +240,7 @@ final class DatasetTests: XCTestCase {
       return
     }
 
-    let labels = try client.labels(datasetId: dataset.id)
+    let labels = try client.labels(datasetId: dataset.id, version: nil)
 
     print("Found \(labels.count) labels in dataset \(dataset.name)")
 
@@ -343,7 +343,7 @@ final class DatasetTests: XCTestCase {
   }
 
   /// Test AnnotationSet struct construction.
-  func testAnnotationSetConstruction() {
+  func testAnnotationSetConstruction() throws {
     let annotationSet = AnnotationSet(
       id: AnnotationSetId(value: 500),
       datasetId: DatasetId(value: 100),
@@ -353,10 +353,30 @@ final class DatasetTests: XCTestCase {
     )
 
     XCTAssertEqual(annotationSet.id.value, 500)
-    XCTAssertEqual(annotationSet.datasetId.value, 100)
+    let datasetId = try XCTUnwrap(
+      annotationSet.datasetId, "datasetId should be present for a directly-constructed set")
+    XCTAssertEqual(datasetId.value, 100)
     XCTAssertEqual(annotationSet.name, "Ground Truth")
     XCTAssertEqual(annotationSet.description, "Main annotation set for ground truth labels")
-    XCTAssertEqual(annotationSet.created, "2024-02-01T08:00:00Z")
+    XCTAssertEqual(annotationSet.created, "2024-02-01T08:00:00Z" as String?)
+  }
+
+  /// Test AnnotationSet construction with nil datasetId/created, as returned by
+  /// tag-scoped reads where the backend omits these fields (see Task 3 fix).
+  func testAnnotationSetConstructionWithNilDatasetIdAndCreated() {
+    let annotationSet = AnnotationSet(
+      id: AnnotationSetId(value: 501),
+      datasetId: nil,
+      name: "Tag-Scoped Set",
+      description: "Annotation set read from a tag-scoped snapshot",
+      created: nil
+    )
+
+    XCTAssertEqual(annotationSet.id.value, 501)
+    XCTAssertNil(annotationSet.datasetId)
+    XCTAssertEqual(annotationSet.name, "Tag-Scoped Set")
+    XCTAssertEqual(annotationSet.description, "Annotation set read from a tag-scoped snapshot")
+    XCTAssertNil(annotationSet.created)
   }
 
   /// Test AnnotationSet equality.

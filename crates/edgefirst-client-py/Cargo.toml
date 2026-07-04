@@ -23,6 +23,7 @@ edgefirst-client = { workspace = true }
 env_logger = { workspace = true }
 pyo3 = { workspace = true }
 pyo3-polars = { workspace = true, optional = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-wrap = { workspace = true }
 url = { workspace = true }

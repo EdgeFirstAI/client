@@ -2038,6 +2038,21 @@ impl Dataset {
         Ok(self.inner.created().into_pyobject(py)?.into())
     }
 
+    #[getter]
+    pub fn tag_id(&self) -> Option<u64> {
+        self.inner.tag_id()
+    }
+
+    #[getter]
+    pub fn tag(&self) -> &str {
+        self.inner.tag()
+    }
+
+    #[getter]
+    pub fn tag_description(&self) -> &str {
+        self.inner.tag_description()
+    }
+
     /// Get labels for this dataset.
     ///
     /// New API (v2.6.0+): `dataset.labels()` - uses embedded client reference
@@ -2045,13 +2060,18 @@ impl Dataset {
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.labels(dataset.id)` instead.
-    #[pyo3(signature = (client=None))]
+    #[pyo3(signature = (client=None, version=None))]
     #[tokio_wrap::sync]
-    pub fn labels(&self, py: Python<'_>, client: Option<&Client>) -> Result<Vec<Label>, Error> {
+    pub fn labels(
+        &self,
+        py: Python<'_>,
+        client: Option<&Client>,
+        version: Option<&str>,
+    ) -> Result<Vec<Label>, Error> {
         // If client is passed, emit deprecation warning and use it
         if let Some(c) = client {
             warn_method_deprecated(py, "Dataset", "labels")?;
-            let labels = c.0.labels(self.inner.id()).await?;
+            let labels = c.0.labels(self.inner.id(), version).await?;
             return Ok(labels.into_iter().map(Label).collect());
         }
 
@@ -2062,7 +2082,7 @@ impl Dataset {
                     .to_string(),
             )
         })?;
-        let labels = client_ref.labels(self.inner.id()).await?;
+        let labels = client_ref.labels(self.inner.id(), version).await?;
         Ok(labels.into_iter().map(Label).collect())
     }
 
@@ -2160,7 +2180,7 @@ impl Dataset {
             let label_name = name.ok_or_else(|| {
                 Error::TypeError("remove_label(client, name) requires name parameter".to_string())
             })?;
-            let labels = client.0.labels(self.inner.id()).await?;
+            let labels = client.0.labels(self.inner.id(), None).await?;
             let label = labels
                 .iter()
                 .find(|l| l.name() == label_name)
@@ -2179,7 +2199,7 @@ impl Dataset {
                         .to_string(),
                 )
             })?;
-            let labels = client_ref.labels(self.inner.id()).await?;
+            let labels = client_ref.labels(self.inner.id(), None).await?;
             let label = labels
                 .iter()
                 .find(|l| l.name() == label_name)
@@ -2230,7 +2250,7 @@ impl Dataset {
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.download_dataset(dataset.id, ...)` instead.
-    #[pyo3(signature = (output, groups = vec![], types = vec![FileType::Image], flatten = false, progress = None))]
+    #[pyo3(signature = (output, groups = vec![], types = vec![FileType::Image], flatten = false, progress = None, version = None))]
     pub fn download(
         &self,
         output: PathBuf,
@@ -2238,6 +2258,7 @@ impl Dataset {
         types: Vec<FileType>,
         flatten: bool,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<(), Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
             Error::TypeError(
@@ -2269,6 +2290,7 @@ impl Dataset {
                 let groups_clone = groups.clone();
                 let types_clone = types_converted.clone();
                 let output_clone = output.clone();
+                let version_clone = version.clone();
 
                 let task = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2281,6 +2303,7 @@ impl Dataset {
                                 output_clone,
                                 flatten,
                                 Some(tx),
+                                version_clone.as_deref(),
                             )
                             .await
                     })
@@ -2319,6 +2342,7 @@ impl Dataset {
                             output,
                             flatten,
                             None,
+                            version.as_deref(),
                         )
                         .await
                 })?;
@@ -2354,7 +2378,7 @@ impl Dataset {
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.samples(dataset.id, ...)` instead.
-    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None))]
+    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None, version = None))]
     pub fn samples<'py>(
         &self,
         annotation_set_id: Option<Bound<'py, PyAny>>,
@@ -2362,6 +2386,7 @@ impl Dataset {
         groups: Vec<String>,
         types: Vec<FileType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<Vec<Sample>, Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
             Error::TypeError(
@@ -2408,6 +2433,7 @@ impl Dataset {
                 let groups_clone = groups.clone();
                 let annotation_types_clone = annotation_types_converted.clone();
                 let types_clone = types_converted.clone();
+                let version_clone = version.clone();
 
                 let task = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2420,6 +2446,7 @@ impl Dataset {
                                 &groups_clone,
                                 &types_clone,
                                 Some(tx),
+                                version_clone.as_deref(),
                             )
                             .await
                     })
@@ -2455,6 +2482,7 @@ impl Dataset {
                             &groups,
                             &types_converted,
                             None,
+                            version.as_deref(),
                         )
                         .await
                 })?
@@ -2477,8 +2505,9 @@ impl Dataset {
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.annotation_sets(dataset.id)` instead.
+    #[pyo3(signature = (version = None))]
     #[tokio_wrap::sync]
-    pub fn annotation_sets(&self) -> Result<Vec<AnnotationSet>, Error> {
+    pub fn annotation_sets(&self, version: Option<&str>) -> Result<Vec<AnnotationSet>, Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
             Error::TypeError(
                 "Dataset has no client reference. Use client.annotation_sets(dataset.id) instead."
@@ -2487,7 +2516,7 @@ impl Dataset {
         })?;
 
         let client_arc = Arc::clone(client_ref);
-        let annotation_sets = client_ref.annotation_sets(self.inner.id()).await?;
+        let annotation_sets = client_ref.annotation_sets(self.inner.id(), version).await?;
         Ok(annotation_sets
             .into_iter()
             .map(|a| AnnotationSet::with_client(a, Arc::clone(&client_arc)))
@@ -2564,7 +2593,7 @@ impl Dataset {
     ///
     /// If the Dataset was created without a client reference (legacy code),
     /// use `client.samples_count(dataset.id, ...)` instead.
-    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image]))]
+    #[pyo3(signature = (annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], version = None))]
     #[tokio_wrap::sync]
     pub fn samples_count<'py>(
         &self,
@@ -2572,6 +2601,7 @@ impl Dataset {
         annotation_types: Vec<AnnotationType>,
         groups: Vec<String>,
         types: Vec<FileType>,
+        version: Option<&str>,
     ) -> Result<SamplesCountResult, Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
             Error::TypeError(
@@ -2617,8 +2647,276 @@ impl Dataset {
                     &annotation_types_converted,
                     &groups,
                     &types_converted,
+                    version,
                 )
                 .await?,
+        ))
+    }
+
+    // -----------------------------------------------------------------------
+    // Version management methods
+    // -----------------------------------------------------------------------
+
+    /// Create a new version tag for this dataset.
+    ///
+    /// Args:
+    ///     name: The name for the version tag.
+    ///     description: Optional description for the tag.
+    ///
+    /// Returns:
+    ///     VersionTag: The newly created version tag.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_create(dataset.id, ...)` instead.
+    #[pyo3(signature = (name, description = None))]
+    #[tokio_wrap::sync]
+    pub fn version_tag_create(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<VersionTag, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_create(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionTag(
+            client_ref
+                .version_tag_create(self.inner.id(), name, description)
+                .await?,
+        ))
+    }
+
+    /// Get a specific version tag by name.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to retrieve.
+    ///
+    /// Returns:
+    ///     VersionTag: The requested version tag.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_get(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_get(&self, name: &str) -> Result<VersionTag, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_get(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionTag(
+            client_ref.version_tag_get(self.inner.id(), name).await?,
+        ))
+    }
+
+    /// List all version tags for this dataset.
+    ///
+    /// Returns:
+    ///     List[VersionTag]: All version tags for the dataset.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_list(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_list(&self) -> Result<Vec<VersionTag>, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_list(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .version_tag_list(self.inner.id())
+            .await?
+            .into_iter()
+            .map(VersionTag)
+            .collect())
+    }
+
+    /// Delete a version tag from this dataset.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to delete.
+    ///
+    /// Returns:
+    ///     str: Confirmation message.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_delete(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_delete(&self, name: &str) -> Result<String, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_delete(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref.version_tag_delete(self.inner.id(), name).await?)
+    }
+
+    /// Restore this dataset to a specific version tag.
+    ///
+    /// Args:
+    ///     name: The name of the version tag to restore to.
+    ///
+    /// Returns:
+    ///     RestoreResult: Result of the restore operation.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_tag_restore(dataset.id, ...)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_tag_restore(&self, name: &str) -> Result<RestoreResult, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_tag_restore(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(RestoreResult(
+            client_ref
+                .version_tag_restore(self.inner.id(), name)
+                .await?,
+        ))
+    }
+
+    /// Get the changelog for this dataset between two versions.
+    ///
+    /// Args:
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///     limit: Optional limit on the number of entries.
+    ///     continue_token: Optional continuation token for pagination.
+    ///
+    /// Returns:
+    ///     ChangelogResponse: Paginated changelog entries.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_changelog(dataset.id, ...)` instead.
+    #[pyo3(signature = (from_version = None, to_version = None, entity_types = None, limit = None, continue_token = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog(
+        &self,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+        limit: Option<u64>,
+        continue_token: Option<&str>,
+    ) -> Result<ChangelogResponse, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_changelog(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(ChangelogResponse(
+            client_ref
+                .version_changelog(
+                    self.inner.id(),
+                    from_version,
+                    to_version,
+                    entity_types.as_deref(),
+                    limit,
+                    continue_token,
+                )
+                .await?,
+        ))
+    }
+
+    /// Get the count of changelog entries for this dataset between two versions.
+    ///
+    /// Args:
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///
+    /// Returns:
+    ///     int: The number of changelog entries.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_changelog_count(dataset.id, ...)` instead.
+    #[pyo3(signature = (from_version = None, to_version = None, entity_types = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog_count(
+        &self,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+    ) -> Result<u64, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_changelog_count(dataset.id, ...) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(client_ref
+            .version_changelog_count(
+                self.inner.id(),
+                from_version,
+                to_version,
+                entity_types.as_deref(),
+            )
+            .await?)
+    }
+
+    /// Get the current version information for this dataset.
+    ///
+    /// Returns:
+    ///     VersionCurrentResponse: Current version state.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_current(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_current(&self) -> Result<VersionCurrentResponse, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_current(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(VersionCurrentResponse(
+            client_ref.version_current(self.inner.id()).await?,
+        ))
+    }
+
+    /// Get the version summary for this dataset.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Summary metrics for the dataset.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_summary(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_summary(&self) -> Result<DatasetSummary, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_summary(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(DatasetSummary(
+            client_ref.version_summary(self.inner.id()).await?,
+        ))
+    }
+
+    /// Recalculate the version summary for this dataset.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Recalculated summary metrics.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.version_summary_recalculate(dataset.id)` instead.
+    #[tokio_wrap::sync]
+    pub fn version_summary_recalculate(&self) -> Result<DatasetSummary, Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.version_summary_recalculate(dataset.id) instead."
+                    .to_string(),
+            )
+        })?;
+        Ok(DatasetSummary(
+            client_ref.version_summary_recalculate(self.inner.id()).await?,
         ))
     }
 }
@@ -2644,9 +2942,19 @@ impl Label {
         self.0.index()
     }
 
+    /// Dataset ID this label belongs to. `None` if this label was fetched
+    /// via a tag-scoped query where the server omitted `dataset_id` and no
+    /// backfill was available.
     #[getter]
-    pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.0.dataset_id())
+    pub fn dataset_id(&self) -> Option<DatasetID> {
+        self.0.dataset_id().map(DatasetID)
+    }
+
+    /// The label's display color as a packed RGB integer, if the server
+    /// returned one. Populated on both HEAD and tag-scoped reads.
+    #[getter]
+    pub fn color(&self) -> Option<u64> {
+        self.0.color()
     }
 
     #[allow(deprecated)]
@@ -2735,9 +3043,59 @@ impl Group {
     }
 }
 
+/// Billing usage summary for an organization.
+#[pyclass(module = "edgefirst_client")]
+pub struct UsageSummary(edgefirst_client::UsageSummary);
+
+#[pymethods]
+impl UsageSummary {
+    /// The organization's available credits.
+    #[getter]
+    pub fn credits(&self) -> f64 {
+        self.0.credits()
+    }
+
+    /// The organization's available funds.
+    #[getter]
+    pub fn funds(&self) -> f64 {
+        self.0.funds()
+    }
+
+    /// Total spendable balance (credits + funds).
+    #[getter]
+    pub fn total(&self) -> f64 {
+        self.0.total()
+    }
+}
+
 impl Display for Group {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.name())
+    }
+}
+
+/// A legacy free-form tag on a dataset (`tags.list_dataset`).
+///
+/// Unrelated to dataset version tags (see `VersionTag`) — this is the
+/// older, simple string-tagging feature.
+#[pyclass(module = "edgefirst_client")]
+pub struct Tag(edgefirst_client::Tag);
+
+#[pymethods]
+impl Tag {
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    #[getter]
+    pub fn name(&self) -> String {
+        self.0.name.clone()
+    }
+
+    #[getter]
+    pub fn dataset_id(&self) -> u64 {
+        self.0.dataset_id
     }
 }
 
@@ -2778,9 +3136,12 @@ impl AnnotationSet {
         Ok(self.inner.id().to_string())
     }
 
+    /// Dataset ID this annotation set belongs to. `None` if this
+    /// annotation set was fetched via a tag-scoped query where the server
+    /// omitted `dataset_id` and no backfill was available.
     #[getter]
-    pub fn dataset_id(&self) -> DatasetID {
-        DatasetID(self.inner.dataset_id())
+    pub fn dataset_id(&self) -> Option<DatasetID> {
+        self.inner.dataset_id().map(DatasetID)
     }
 
     #[getter]
@@ -2793,9 +3154,15 @@ impl AnnotationSet {
         self.inner.description()
     }
 
+    /// Creation timestamp, or `None` if this annotation set was fetched
+    /// via a tag-scoped query (the server's tag snapshot does not retain
+    /// a creation timestamp).
     #[getter]
-    pub fn created(&self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
-        Ok(self.inner.created().into_pyobject(py)?.into())
+    pub fn created(&self, py: Python<'_>) -> PyResult<Option<Py<PyDateTime>>> {
+        self.inner
+            .created()
+            .map(|dt| Ok(dt.into_pyobject(py)?.into()))
+            .transpose()
     }
 
     /// Get annotations for this annotation set.
@@ -2817,13 +3184,14 @@ impl AnnotationSet {
     ///
     /// Returns:
     ///     List[Annotation]: Annotations in this set
-    #[pyo3(signature = (groups = vec![], annotation_types = vec![], progress = None))]
+    #[pyo3(signature = (groups = vec![], annotation_types = vec![], progress = None, version = None))]
     #[tokio_wrap::sync]
     pub fn annotations(
         &self,
         groups: Vec<String>,
         annotation_types: Vec<AnnotationType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<Vec<Annotation>, Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
             Error::TypeError(
@@ -2849,6 +3217,7 @@ impl AnnotationSet {
                 let annotation_set_id = self.inner.id();
                 let groups_clone = groups.clone();
                 let annotation_types_clone = annotation_types_converted.clone();
+                let version_clone = version.clone();
 
                 let task = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2859,6 +3228,7 @@ impl AnnotationSet {
                                 &groups_clone,
                                 &annotation_types_clone,
                                 Some(tx),
+                                version_clone.as_deref(),
                             )
                             .await
                     })
@@ -2883,7 +3253,13 @@ impl AnnotationSet {
             }
             None => {
                 let annotations = client_ref
-                    .annotations(self.inner.id(), &groups, &annotation_types_converted, None)
+                    .annotations(
+                        self.inner.id(),
+                        &groups,
+                        &annotation_types_converted,
+                        None,
+                        version.as_deref(),
+                    )
                     .await?;
                 Ok(annotations.into_iter().map(Annotation).collect())
             }
@@ -5422,6 +5798,28 @@ impl Client {
         Ok(Client(self.0.with_server(server)?))
     }
 
+    /// Returns a new client pointed at an explicit URL.
+    ///
+    /// Used for self-hosted Studio deployments. The token is preserved so
+    /// callers can chain ``Client().with_url(...).with_token(...)``.
+    ///
+    /// Args:
+    ///     url: Full base URL (e.g. "https://studio.example.com").
+    ///
+    /// Returns:
+    ///     Client: A new client connected to the specified URL.
+    ///
+    /// Raises:
+    ///     Error: If the URL is malformed, or is a plain http:// URL
+    ///         pointing at a non-loopback host (would leak the bearer
+    ///         token in the clear).
+    ///
+    /// Example:
+    ///     >>> client = Client().with_url("https://studio.example.com")
+    pub fn with_url(&self, url: &str) -> Result<Self, Error> {
+        Ok(Client(self.0.with_url(url)?))
+    }
+
     /// Authenticate with a token.
     ///
     /// Args:
@@ -5518,6 +5916,31 @@ impl Client {
         Ok(Organization(self.0.organization().await?))
     }
 
+    /// Returns the billing usage summary (credits, funds, total spendable)
+    /// for the authenticated user's organization.
+    ///
+    /// Returns:
+    ///     UsageSummary: Credits, funds, and total spendable balance.
+    #[tokio_wrap::sync]
+    pub fn usage_summary(&self) -> Result<UsageSummary, Error> {
+        Ok(UsageSummary(self.0.usage_summary().await?))
+    }
+
+    /// Downloads raw bytes from an absolute URL.
+    ///
+    /// Args:
+    ///     url: Absolute URL (must start with "http://" or "https://").
+    ///
+    /// Returns:
+    ///     bytes: The downloaded content.
+    ///
+    /// Raises:
+    ///     Error: If the URL is not absolute, or the request fails.
+    #[tokio_wrap::sync]
+    pub fn download(&self, url: &str) -> Result<Vec<u8>, Error> {
+        Ok(self.0.download(url).await?)
+    }
+
     #[pyo3(signature = (name = None))]
     #[tokio_wrap::sync]
     pub fn projects(&self, name: Option<&str>) -> Result<Vec<Project>, Error> {
@@ -5563,12 +5986,17 @@ impl Client {
             .collect())
     }
 
+    #[pyo3(signature = (dataset_id, version = None))]
     #[tokio_wrap::sync]
-    pub fn labels<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Vec<Label>, Error> {
+    pub fn labels<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        version: Option<&str>,
+    ) -> Result<Vec<Label>, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let labels = self
             .0
-            .labels(dataset_id.0)
+            .labels(dataset_id.0, version)
             .await?
             .into_iter()
             .map(Label)
@@ -5688,6 +6116,28 @@ impl Client {
         Ok(groups)
     }
 
+    /// List the legacy free-form tags for a dataset (`tags.list_dataset`).
+    ///
+    /// Unrelated to dataset version tags — see `version_tag_list` for the
+    /// dataset-versioning tag feature.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///
+    /// Returns:
+    ///     List[Tag]: The dataset's tags, creation-ordered (highest id newest).
+    #[tokio_wrap::sync]
+    pub fn dataset_tags<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<Vec<Tag>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self
+            .0
+            .dataset_tags(dataset_id.0)
+            .await?
+            .into_iter()
+            .map(Tag)
+            .collect())
+    }
+
     /// Get an existing group by name or create a new one.
     ///
     /// This method is idempotent: calling it multiple times with the same name
@@ -5789,16 +6239,75 @@ impl Client {
         Ok(self.0.delete_annotation_set(annotation_set_id.0).await?)
     }
 
+    /// Add annotations in bulk to an existing annotation set.
+    ///
+    /// Unlike `populate_samples`, this edits already-uploaded samples in
+    /// place via `annotation.add_bulk` — each `ServerAnnotation` must
+    /// reference an existing `image_id`.
+    ///
+    /// Args:
+    ///     annotation_set_id: The annotation set to add annotations to.
+    ///     annotations: Server-format annotations to add.
+    ///
+    /// Returns:
+    ///     List[dict]: The created annotation records from the server.
+    #[tokio_wrap::sync]
+    pub fn add_annotations_bulk<'py>(
+        &self,
+        annotation_set_id: Bound<'py, PyAny>,
+        annotations: Vec<ServerAnnotation>,
+        py: Python<'py>,
+    ) -> Result<Vec<Py<PyAny>>, Error> {
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let inner: Vec<edgefirst_client::ServerAnnotation> =
+            annotations.into_iter().map(|a| a.0).collect();
+        let results = self
+            .0
+            .add_annotations_bulk(annotation_set_id.0, inner)
+            .await?;
+        results
+            .iter()
+            .map(|v| Ok(json_value_to_py(py, v)?))
+            .collect()
+    }
+
+    /// Delete annotations in bulk from an existing annotation set.
+    ///
+    /// Args:
+    ///     annotation_set_id: The annotation set to delete annotations from.
+    ///     annotation_types: Annotation types to delete (e.g. ["box", "seg"]).
+    ///     sample_ids: The samples whose annotations of the given types
+    ///         should be deleted.
+    #[tokio_wrap::sync]
+    pub fn delete_annotations_bulk<'py>(
+        &self,
+        annotation_set_id: Bound<'py, PyAny>,
+        annotation_types: Vec<String>,
+        sample_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let sample_ids: Result<Vec<edgefirst_client::SampleID>, Error> = sample_ids
+            .into_iter()
+            .map(|id| Ok(SampleID::try_from(id)?.0))
+            .collect();
+        Ok(self
+            .0
+            .delete_annotations_bulk(annotation_set_id.0, &annotation_types, &sample_ids?)
+            .await?)
+    }
+
+    #[pyo3(signature = (dataset_id, version = None))]
     #[tokio_wrap::sync]
     pub fn annotation_sets<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
+        version: Option<&str>,
     ) -> Result<Vec<AnnotationSet>, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let client_arc = Arc::new(self.0.clone());
         Ok(self
             .0
-            .annotation_sets(dataset_id.0)
+            .annotation_sets(dataset_id.0, version)
             .await?
             .into_iter()
             .map(|s| AnnotationSet::with_client(s, Arc::clone(&client_arc)))
@@ -5835,13 +6344,14 @@ impl Client {
     ///
     /// Returns:
     ///     List of Annotation objects
-    #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None))]
+    #[pyo3(signature = (annotation_set_id, groups = vec![], annotation_types = vec![], progress = None, version = None))]
     pub fn annotations<'py>(
         &self,
         annotation_set_id: Bound<'py, PyAny>,
         groups: Vec<String>,
         annotation_types: Vec<AnnotationType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<Vec<Annotation>, Error> {
         let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
         let annotation_types = annotation_types
@@ -5859,8 +6369,15 @@ impl Client {
                 let (tx, mut rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
-                    client.annotations_sync(annotation_set_id, &groups, &annotation_types, Some(tx))
+                    client.annotations_sync(
+                        annotation_set_id,
+                        &groups,
+                        &annotation_types,
+                        Some(tx),
+                        version_clone.as_deref(),
+                    )
                 });
 
                 while let Some(status) = rx.blocking_recv() {
@@ -5880,7 +6397,13 @@ impl Client {
 
                 task.join().unwrap()
             }
-            None => self.annotations_sync(annotation_set_id, &groups, &annotation_types, None),
+            None => self.annotations_sync(
+                annotation_set_id,
+                &groups,
+                &annotation_types,
+                None,
+                version.as_deref(),
+            ),
         }?;
 
         Ok(annotations.into_iter().map(Annotation).collect::<Vec<_>>())
@@ -5915,7 +6438,7 @@ impl Client {
     ///     ...     [],
     ///     ...     None
     ///     ... )
-    #[pyo3(signature = (dataset_id, annotation_set_id = None, groups = vec![], annotation_types = vec![], progress = None))]
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, groups = vec![], annotation_types = vec![], progress = None, version = None))]
     pub fn samples_dataframe<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
@@ -5923,6 +6446,7 @@ impl Client {
         groups: Vec<String>,
         annotation_types: Vec<AnnotationType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<PyDataFrame, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let annotation_set_id = match annotation_set_id {
@@ -5944,6 +6468,7 @@ impl Client {
                 let (tx, mut rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
                     client.samples_dataframe_sync(
                         dataset_id,
@@ -5951,6 +6476,7 @@ impl Client {
                         &groups,
                         &annotation_types,
                         Some(tx),
+                        version_clone.as_deref(),
                     )
                 });
 
@@ -5977,6 +6503,7 @@ impl Client {
                 &groups,
                 &annotation_types,
                 None,
+                version.as_deref(),
             ),
         }?;
 
@@ -6064,7 +6591,7 @@ impl Client {
         }
     }
 
-    #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image]))]
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], version = None))]
     #[tokio_wrap::sync]
     pub fn samples_count<'py>(
         &self,
@@ -6073,6 +6600,7 @@ impl Client {
         annotation_types: Vec<AnnotationType>,
         groups: Vec<String>,
         types: Vec<FileType>,
+        version: Option<&str>,
     ) -> Result<SamplesCountResult, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let annotation_set_id = match annotation_set_id {
@@ -6111,6 +6639,7 @@ impl Client {
                     &annotation_types,
                     &groups,
                     &types,
+                    version,
                 )
                 .await?,
         ))
@@ -6126,20 +6655,22 @@ impl Client {
     /// * `dataset_id` - Dataset to query
     /// * `groups` - Optional list of group names to filter by (empty = all groups)
     /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
-    #[pyo3(signature = (dataset_id, groups = vec![], progress = None))]
+    #[pyo3(signature = (dataset_id, groups = vec![], progress = None, version = None))]
     pub fn sample_names<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
         groups: Vec<String>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<std::collections::HashSet<String>, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         match progress {
             Some(progress) => {
                 let (tx, mut rx) = mpsc::channel(1);
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
-                    client.sample_names_sync(dataset_id, groups, Some(tx))
+                    client.sample_names_sync(dataset_id, groups, Some(tx), version_clone.as_deref())
                 });
                 while let Some(status) = rx.blocking_recv() {
                     if let Some(cb_err) = Python::attach(|py| -> Option<pyo3::PyErr> {
@@ -6169,7 +6700,7 @@ impl Client {
                     })
                     .flatten()?)
             }
-            None => Ok(self.sample_names_sync(dataset_id, groups, None)?),
+            None => Ok(self.sample_names_sync(dataset_id, groups, None, version.as_deref())?),
         }
     }
 
@@ -6195,7 +6726,7 @@ impl Client {
     ///
     /// Returns:
     ///     List of Sample objects
-    #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None))]
+    #[pyo3(signature = (dataset_id, annotation_set_id = None, annotation_types = vec![], groups = vec![], types = vec![FileType::Image], progress = None, version = None))]
     pub fn samples<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
@@ -6204,6 +6735,7 @@ impl Client {
         groups: Vec<String>,
         types: Vec<FileType>,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<Vec<Sample>, Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let annotation_set_id = match annotation_set_id {
@@ -6239,6 +6771,7 @@ impl Client {
                 let (tx, mut rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
                     client.samples_sync(
                         dataset_id,
@@ -6247,6 +6780,7 @@ impl Client {
                         &groups,
                         &types,
                         Some(tx),
+                        version_clone.as_deref(),
                     )
                 });
 
@@ -6274,6 +6808,7 @@ impl Client {
                 &groups,
                 &types,
                 None,
+                version.as_deref(),
             ),
         }?;
 
@@ -6474,7 +7009,7 @@ impl Client {
         Ok(results.into_iter().map(SamplesPopulateResult).collect())
     }
 
-    #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), flatten = false, progress = None))]
+    #[pyo3(signature = (dataset_id, groups = vec![], types = vec![FileType::Image], output = ".".into(), flatten = false, progress = None, version = None))]
     pub fn download_dataset<'py>(
         &self,
         dataset_id: Bound<'py, PyAny>,
@@ -6483,6 +7018,7 @@ impl Client {
         output: PathBuf,
         flatten: bool,
         progress: Option<Py<PyAny>>,
+        version: Option<String>,
     ) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         let types: Vec<edgefirst_client::FileType> = types
@@ -6505,6 +7041,7 @@ impl Client {
                 let (tx, mut rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
+                let version_clone = version.clone();
                 let task = std::thread::spawn(move || {
                     client.download_dataset_sync(
                         dataset_id,
@@ -6513,6 +7050,7 @@ impl Client {
                         output,
                         flatten,
                         Some(tx),
+                        version_clone.as_deref(),
                     )
                 });
 
@@ -6536,10 +7074,246 @@ impl Client {
 
                 Ok(task.join().unwrap()?)
             }
-            None => {
-                Ok(self.download_dataset_sync(dataset_id, &groups, &types, output, flatten, None)?)
-            }
+            None => Ok(self.download_dataset_sync(
+                dataset_id,
+                &groups,
+                &types,
+                output,
+                flatten,
+                None,
+                version.as_deref(),
+            )?),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Version management methods
+    // -----------------------------------------------------------------------
+
+    /// Create a new version tag for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     name: The name for the version tag.
+    ///     description: Optional description for the tag.
+    ///
+    /// Returns:
+    ///     VersionTag: The newly created version tag.
+    #[pyo3(signature = (dataset_id, name, description = None))]
+    #[tokio_wrap::sync]
+    pub fn version_tag_create<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<VersionTag, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(VersionTag(
+            self.0
+                .version_tag_create(dataset_id.0, name, description)
+                .await?,
+        ))
+    }
+
+    /// Get a specific version tag by name.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     name: The name of the version tag to retrieve.
+    ///
+    /// Returns:
+    ///     VersionTag: The requested version tag.
+    #[tokio_wrap::sync]
+    pub fn version_tag_get<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+    ) -> Result<VersionTag, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(VersionTag(
+            self.0.version_tag_get(dataset_id.0, name).await?,
+        ))
+    }
+
+    /// List all version tags for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///
+    /// Returns:
+    ///     List[VersionTag]: All version tags for the dataset.
+    #[tokio_wrap::sync]
+    pub fn version_tag_list<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+    ) -> Result<Vec<VersionTag>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self
+            .0
+            .version_tag_list(dataset_id.0)
+            .await?
+            .into_iter()
+            .map(VersionTag)
+            .collect())
+    }
+
+    /// Delete a version tag.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     name: The name of the version tag to delete.
+    ///
+    /// Returns:
+    ///     str: Confirmation message.
+    #[tokio_wrap::sync]
+    pub fn version_tag_delete<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+    ) -> Result<String, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self.0.version_tag_delete(dataset_id.0, name).await?)
+    }
+
+    /// Restore a dataset to a specific version tag.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     name: The name of the version tag to restore to.
+    ///
+    /// Returns:
+    ///     RestoreResult: Result of the restore operation.
+    #[tokio_wrap::sync]
+    pub fn version_tag_restore<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        name: &str,
+    ) -> Result<RestoreResult, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(RestoreResult(
+            self.0.version_tag_restore(dataset_id.0, name).await?,
+        ))
+    }
+
+    /// Get the changelog for a dataset between two versions.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///     limit: Optional limit on the number of entries.
+    ///     continue_token: Optional continuation token for pagination.
+    ///
+    /// Returns:
+    ///     ChangelogResponse: Paginated changelog entries.
+    #[pyo3(signature = (dataset_id, from_version = None, to_version = None, entity_types = None, limit = None, continue_token = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+        limit: Option<u64>,
+        continue_token: Option<&str>,
+    ) -> Result<ChangelogResponse, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(ChangelogResponse(
+            self.0
+                .version_changelog(
+                    dataset_id.0,
+                    from_version,
+                    to_version,
+                    entity_types.as_deref(),
+                    limit,
+                    continue_token,
+                )
+                .await?,
+        ))
+    }
+
+    /// Get the count of changelog entries between two versions.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///     from_version: Optional starting version tag name.
+    ///     to_version: Optional ending version tag name.
+    ///     entity_types: Optional filter for entity types.
+    ///
+    /// Returns:
+    ///     int: The number of changelog entries.
+    #[pyo3(signature = (dataset_id, from_version = None, to_version = None, entity_types = None))]
+    #[tokio_wrap::sync]
+    pub fn version_changelog_count<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        from_version: Option<&str>,
+        to_version: Option<&str>,
+        entity_types: Option<Vec<String>>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(self
+            .0
+            .version_changelog_count(
+                dataset_id.0,
+                from_version,
+                to_version,
+                entity_types.as_deref(),
+            )
+            .await?)
+    }
+
+    /// Get the current version information for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///
+    /// Returns:
+    ///     VersionCurrentResponse: Current version state.
+    #[tokio_wrap::sync]
+    pub fn version_current<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+    ) -> Result<VersionCurrentResponse, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(VersionCurrentResponse(
+            self.0.version_current(dataset_id.0).await?,
+        ))
+    }
+
+    /// Get the version summary for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Summary metrics for the dataset.
+    #[tokio_wrap::sync]
+    pub fn version_summary<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+    ) -> Result<DatasetSummary, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(DatasetSummary(self.0.version_summary(dataset_id.0).await?))
+    }
+
+    /// Recalculate the version summary for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier.
+    ///
+    /// Returns:
+    ///     DatasetSummary: Recalculated summary metrics.
+    #[tokio_wrap::sync]
+    pub fn version_summary_recalculate<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+    ) -> Result<DatasetSummary, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(DatasetSummary(
+            self.0.version_summary_recalculate(dataset_id.0).await?,
+        ))
     }
 
     #[tokio_wrap::sync]
@@ -7487,9 +8261,16 @@ impl Client {
         groups: &[String],
         annotation_types: &[edgefirst_client::AnnotationType],
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<Vec<edgefirst_client::Annotation>, edgefirst_client::Error> {
         self.0
-            .annotations(annotation_set_id.0, groups, annotation_types, progress)
+            .annotations(
+                annotation_set_id.0,
+                groups,
+                annotation_types,
+                progress,
+                version,
+            )
             .await
     }
 
@@ -7535,6 +8316,7 @@ impl Client {
         groups: &[String],
         annotation_types: &[edgefirst_client::AnnotationType],
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<PyDataFrame, edgefirst_client::Error> {
         let df = self
             .0
@@ -7544,6 +8326,7 @@ impl Client {
                 groups,
                 annotation_types,
                 progress,
+                version,
             )
             .await?;
         Ok(PyDataFrame(df))
@@ -7569,6 +8352,7 @@ impl Client {
         groups: &[String],
         types: &[edgefirst_client::FileType],
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<Vec<edgefirst_client::Sample>, edgefirst_client::Error> {
         self.0
             .samples(
@@ -7578,6 +8362,7 @@ impl Client {
                 groups,
                 types,
                 progress,
+                version,
             )
             .await
     }
@@ -7588,8 +8373,11 @@ impl Client {
         dataset_id: DatasetID,
         groups: Vec<String>,
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<std::collections::HashSet<String>, edgefirst_client::Error> {
-        self.0.sample_names(dataset_id.0, &groups, progress).await
+        self.0
+            .sample_names(dataset_id.0, &groups, progress, version)
+            .await
     }
 
     #[tokio_wrap::sync]
@@ -7634,9 +8422,18 @@ impl Client {
         output: PathBuf,
         flatten: bool,
         progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+        version: Option<&str>,
     ) -> Result<(), edgefirst_client::Error> {
         self.0
-            .download_dataset(dataset_id.0, groups, types, output, flatten, progress)
+            .download_dataset(
+                dataset_id.0,
+                groups,
+                types,
+                output,
+                flatten,
+                progress,
+                version,
+            )
             .await
     }
 
@@ -7779,6 +8576,33 @@ impl Annotation {
         self.0.set_object_id(object_id);
     }
 
+    /// Sets the sample this annotation belongs to.
+    pub fn set_sample_id(&mut self, sample_id: Option<SampleID>) {
+        self.0.set_sample_id(sample_id.map(|s| s.0));
+    }
+
+    /// Sets the annotation's name (typically mirrors the parent sample's
+    /// image filename).
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.0.set_name(name);
+    }
+
+    /// Sets the sequence name this annotation's sample belongs to.
+    pub fn set_sequence_name(&mut self, sequence_name: Option<String>) {
+        self.0.set_sequence_name(sequence_name);
+    }
+
+    /// Sets the frame number within the annotation's sequence.
+    pub fn set_frame_number(&mut self, frame_number: Option<u32>) {
+        self.0.set_frame_number(frame_number);
+    }
+
+    /// Sets the category frequency label (e.g. "common", "rare") used by
+    /// some dataset formats for class-balance metadata.
+    pub fn set_category_frequency(&mut self, category_frequency: Option<String>) {
+        self.0.set_category_frequency(category_frequency);
+    }
+
     /// Sets the 2D bounding box for this annotation.
     pub fn set_box2d(&mut self, box2d: Option<&Box2d>) {
         self.0.set_box2d(box2d.map(|b| b.0.clone()));
@@ -7874,6 +8698,16 @@ impl Annotation {
     }
 
     #[getter]
+    pub fn frame_number(&self) -> Option<u32> {
+        self.0.frame_number()
+    }
+
+    #[getter]
+    pub fn category_frequency(&self) -> Option<String> {
+        self.0.category_frequency().cloned()
+    }
+
+    #[getter]
     pub fn box2d(&self) -> Option<Box2d> {
         self.0.box2d().map(|x| Box2d(x.clone()))
     }
@@ -7922,6 +8756,76 @@ impl Annotation {
     #[getter]
     pub fn mask_score(&self) -> Option<f32> {
         self.0.mask_score()
+    }
+}
+
+/// A single annotation in server wire format, for use with
+/// `Client.add_annotations_bulk`.
+///
+/// Unlike the domain `Annotation` type (used with `populate_samples`),
+/// this maps directly to the `annotation.add_bulk` RPC's expected shape
+/// and requires an existing `image_id`/`annotation_set_id` — it edits an
+/// already-uploaded sample rather than creating a new one.
+///
+/// `label_id`, `label_index`, and `label_name` are not interchangeable:
+/// the server's `annotation.add_bulk` RPC only resolves the label from
+/// `label_id`. Set `label_id` to a real label ID (e.g. looked up via
+/// `Client.labels`) if the annotation should carry a label — passing
+/// only `label_name` and/or `label_index` will silently fail to resolve
+/// a label. This mirrors the CLI's `import-coco --update` path
+/// (`edgefirst_client::coco::studio::update_coco_annotations`), which
+/// always sets `label_id` alongside `label_name`.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct ServerAnnotation(edgefirst_client::ServerAnnotation);
+
+#[pymethods]
+impl ServerAnnotation {
+    #[new]
+    #[pyo3(signature = (
+        annotation_type, x, y, w, h, score, image_id, annotation_set_id,
+        label_id=None, label_index=None, label_name=None, polygon=None,
+        object_reference=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    /// # Arguments
+    /// * `label_id` - The label ID that the server resolves the annotation's
+    ///   label from. Set this (e.g. from `Client.labels`) whenever the
+    ///   annotation should carry a label.
+    /// * `label_index` - Optional source-faithful label index to record
+    ///   alongside `label_id`; it does not itself resolve a label.
+    /// * `label_name` - Optional label name to record alongside `label_id`;
+    ///   it does not itself resolve a label.
+    pub fn new(
+        annotation_type: String,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        score: f64,
+        image_id: u64,
+        annotation_set_id: u64,
+        label_id: Option<u64>,
+        label_index: Option<u64>,
+        label_name: Option<String>,
+        polygon: Option<String>,
+        object_reference: Option<String>,
+    ) -> Self {
+        ServerAnnotation(edgefirst_client::ServerAnnotation {
+            label_id,
+            label_index,
+            label_name,
+            annotation_type,
+            x,
+            y,
+            w,
+            h,
+            score,
+            polygon: polygon.unwrap_or_default(),
+            image_id,
+            annotation_set_id,
+            object_reference,
+        })
     }
 }
 
@@ -8226,6 +9130,418 @@ impl Sample {
     }
 }
 
+/// Convert a `serde_json::Value` into a Python object.
+fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
+    match value {
+        serde_json::Value::Null => Ok(py.None()),
+        serde_json::Value::Bool(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into_pyobject(py)?.into_any().unbind())
+            } else if let Some(u) = n.as_u64() {
+                Ok(u.into_pyobject(py)?.into_any().unbind())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into_pyobject(py)?.into_any().unbind())
+            } else {
+                Ok(py.None())
+            }
+        }
+        serde_json::Value::String(s) => Ok(s.as_str().into_pyobject(py)?.into_any().unbind()),
+        serde_json::Value::Array(arr) => {
+            let list = pyo3::types::PyList::empty(py);
+            for item in arr {
+                list.append(json_value_to_py(py, item)?)?;
+            }
+            Ok(list.unbind().into_any())
+        }
+        serde_json::Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (k, v) in map {
+                dict.set_item(k, json_value_to_py(py, v)?)?;
+            }
+            Ok(dict.unbind().into_any())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Version management wrapper types
+// ---------------------------------------------------------------------------
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct VersionTag(edgefirst_client::VersionTag);
+
+#[pymethods]
+impl VersionTag {
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+
+    #[getter]
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
+    }
+
+    #[getter]
+    pub fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    #[getter]
+    pub fn serial(&self) -> u64 {
+        self.0.serial()
+    }
+
+    #[getter]
+    pub fn description(&self) -> &str {
+        self.0.description()
+    }
+
+    #[getter]
+    pub fn created_by(&self) -> &str {
+        self.0.created_by()
+    }
+
+    #[getter]
+    pub fn created_at(&self) -> String {
+        self.0.created_at().to_rfc3339()
+    }
+
+    #[getter]
+    pub fn image_count(&self) -> u64 {
+        self.0.image_count()
+    }
+
+    #[getter]
+    pub fn annotation_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.0.annotation_counts() {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.unbind().into_any())
+    }
+
+    #[getter]
+    pub fn sensor_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.0.sensor_counts() {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.unbind().into_any())
+    }
+
+    #[getter]
+    pub fn label_count(&self) -> u64 {
+        self.0.label_count()
+    }
+
+    #[getter]
+    pub fn annotation_set_count(&self) -> u64 {
+        self.0.annotation_set_count()
+    }
+
+    #[getter]
+    pub fn snapshot_id(&self) -> Option<u64> {
+        self.0.snapshot_id()
+    }
+
+    #[getter]
+    pub fn is_current(&self) -> bool {
+        self.0.is_current()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "VersionTag(name='{}', serial={})",
+            self.0.name(),
+            self.0.serial()
+        )
+    }
+
+    pub fn __str__(&self) -> String {
+        format!("{}", self.0)
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct ChangelogEntry(edgefirst_client::ChangelogEntry);
+
+#[pymethods]
+impl ChangelogEntry {
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+
+    #[getter]
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
+    }
+
+    #[getter]
+    pub fn serial(&self) -> u64 {
+        self.0.serial()
+    }
+
+    #[getter]
+    pub fn entity_type(&self) -> &str {
+        self.0.entity_type()
+    }
+
+    #[getter]
+    pub fn operation(&self) -> &str {
+        self.0.operation()
+    }
+
+    #[getter]
+    pub fn entity_id(&self) -> Option<u64> {
+        self.0.entity_id()
+    }
+
+    #[getter]
+    pub fn change_data(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_value_to_py(py, self.0.change_data())
+    }
+
+    #[getter]
+    pub fn username(&self) -> &str {
+        self.0.username()
+    }
+
+    #[getter]
+    pub fn organization_id(&self) -> u64 {
+        self.0.organization_id()
+    }
+
+    #[getter]
+    pub fn created_at(&self) -> String {
+        self.0.created_at().to_rfc3339()
+    }
+
+    #[getter]
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+
+    #[getter]
+    pub fn s3_version_ids(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = pyo3::types::PyList::empty(py);
+        for item in self.0.s3_version_ids() {
+            list.append(json_value_to_py(py, item)?)?;
+        }
+        Ok(list.unbind().into_any())
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ChangelogEntry(serial={}, entity_type='{}', operation='{}')",
+            self.0.serial(),
+            self.0.entity_type(),
+            self.0.operation()
+        )
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct ChangelogResponse(edgefirst_client::ChangelogResponse);
+
+#[pymethods]
+impl ChangelogResponse {
+    #[getter]
+    pub fn entries(&self) -> Vec<ChangelogEntry> {
+        self.0.entries.iter().cloned().map(ChangelogEntry).collect()
+    }
+
+    #[getter]
+    pub fn count(&self) -> u64 {
+        self.0.count
+    }
+
+    #[getter]
+    pub fn continue_token(&self) -> &str {
+        &self.0.continue_token
+    }
+
+    #[getter]
+    pub fn from_serial(&self) -> Option<u64> {
+        self.0.from_serial
+    }
+
+    #[getter]
+    pub fn to_serial(&self) -> Option<u64> {
+        self.0.to_serial
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "ChangelogResponse(count={}, entries={})",
+            self.0.count,
+            self.0.entries.len()
+        )
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct DatasetSummary(edgefirst_client::DatasetSummary);
+
+#[pymethods]
+impl DatasetSummary {
+    #[getter]
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id())
+    }
+
+    #[getter]
+    pub fn current_serial(&self) -> u64 {
+        self.0.current_serial()
+    }
+
+    #[getter]
+    pub fn image_count(&self) -> u64 {
+        self.0.image_count()
+    }
+
+    #[getter]
+    pub fn annotation_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.0.annotation_counts() {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.unbind().into_any())
+    }
+
+    #[getter]
+    pub fn sensor_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.0.sensor_counts() {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.unbind().into_any())
+    }
+
+    #[getter]
+    pub fn label_count(&self) -> u64 {
+        self.0.label_count()
+    }
+
+    #[getter]
+    pub fn annotation_set_count(&self) -> u64 {
+        self.0.annotation_set_count()
+    }
+
+    #[getter]
+    pub fn last_updated(&self) -> String {
+        self.0.last_updated().to_rfc3339()
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "DatasetSummary(dataset_id={}, current_serial={}, image_count={})",
+            self.0.dataset_id(),
+            self.0.current_serial(),
+            self.0.image_count()
+        )
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct VersionCurrentResponse(edgefirst_client::VersionCurrentResponse);
+
+#[pymethods]
+impl VersionCurrentResponse {
+    #[getter]
+    pub fn dataset_id(&self) -> DatasetID {
+        DatasetID(self.0.dataset_id)
+    }
+
+    #[getter]
+    pub fn current_serial(&self) -> u64 {
+        self.0.current_serial
+    }
+
+    #[getter]
+    pub fn latest_tag(&self) -> Option<VersionTag> {
+        self.0.latest_tag.clone().map(VersionTag)
+    }
+
+    #[getter]
+    pub fn tags(&self) -> Vec<VersionTag> {
+        self.0.tags.iter().cloned().map(VersionTag).collect()
+    }
+
+    #[getter]
+    pub fn summary(&self) -> Option<DatasetSummary> {
+        self.0.summary.clone().map(DatasetSummary)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "VersionCurrentResponse(dataset_id={}, current_serial={})",
+            self.0.dataset_id, self.0.current_serial
+        )
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone, Debug)]
+pub struct RestoreResult(edgefirst_client::RestoreResult);
+
+#[pymethods]
+impl RestoreResult {
+    #[getter]
+    pub fn success(&self) -> bool {
+        self.0.success
+    }
+
+    #[getter]
+    pub fn new_serial(&self) -> u64 {
+        self.0.new_serial
+    }
+
+    #[getter]
+    pub fn restored_from_tag(&self) -> &str {
+        &self.0.restored_from.tag
+    }
+
+    #[getter]
+    pub fn restored_from_serial(&self) -> u64 {
+        self.0.restored_from.serial
+    }
+
+    #[getter]
+    pub fn restored_counts_images(&self) -> u64 {
+        self.0.restored_counts.images
+    }
+
+    #[getter]
+    pub fn restored_counts_labels(&self) -> u64 {
+        self.0.restored_counts.labels
+    }
+
+    #[getter]
+    pub fn restored_counts_annotation_sets(&self) -> u64 {
+        self.0.restored_counts.annotation_sets
+    }
+
+    #[getter]
+    pub fn message(&self) -> &str {
+        &self.0.message
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RestoreResult(success={}, new_serial={}, restored_from='{}')",
+            self.0.success, self.0.new_serial, self.0.restored_from.tag
+        )
+    }
+}
+
 /// EdgeFirst Client Library
 /// This library provides a client for the EdgeFirst API, allowing users to
 /// interact with the EdgeFirst Studio Server and perform various operations
@@ -8281,6 +9597,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<Group>()?;
+    m.add_class::<Tag>()?;
+    m.add_class::<UsageSummary>()?;
     m.add_class::<Label>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;
@@ -8291,6 +9609,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SampleFile>()?;
     m.add_class::<FileType>()?;
     m.add_class::<Annotation>()?;
+    m.add_class::<ServerAnnotation>()?;
     m.add_class::<PresignedUrl>()?;
     m.add_class::<SamplesCountResult>()?;
     m.add_class::<SamplesPopulateResult>()?;
@@ -8302,8 +9621,17 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TaskDataList>()?;
     m.add_class::<Job>()?;
 
+    // Version management types
+    m.add_class::<VersionTag>()?;
+    m.add_class::<ChangelogEntry>()?;
+    m.add_class::<ChangelogResponse>()?;
+    m.add_class::<DatasetSummary>()?;
+    m.add_class::<VersionCurrentResponse>()?;
+    m.add_class::<RestoreResult>()?;
+
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_labels_from_samples, m)?)?;
 
     // COCO conversion functions (polars feature only)
     #[cfg(feature = "polars")]
@@ -8330,6 +9658,33 @@ pub fn is_polars_enabled() -> bool {
     {
         false
     }
+}
+
+/// Collect parallel label name/index arrays from samples, for use with
+/// `Client.add_labels(dataset_id, names, indices)`.
+///
+/// Annotations without a label_index contribute None at the matching
+/// position. Raises an error if the same label name maps to conflicting
+/// indices across the samples.
+///
+/// Args:
+///     samples: Samples whose annotations should be scanned for labels.
+///
+/// Returns:
+///     Tuple[List[str], List[Optional[int]]]: Parallel label names and
+///         their (possibly absent) source indices.
+///
+/// Example:
+///     >>> names, indices = collect_labels_from_samples(samples)
+///     >>> client.add_labels(dataset_id, names, indices)
+#[pyfunction]
+pub fn collect_labels_from_samples(
+    samples: Vec<PyRef<Sample>>,
+) -> Result<(Vec<String>, Vec<Option<u64>>), Error> {
+    let inner: Vec<edgefirst_client::Sample> = samples.iter().map(|s| s.inner.clone()).collect();
+    Ok(edgefirst_client::Client::collect_labels_from_samples(
+        &inner,
+    )?)
 }
 
 // =============================================================================

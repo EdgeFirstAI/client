@@ -1048,6 +1048,63 @@ class DatasetTest(TestCase):
         finally:
             client.delete_dataset(dataset_id)
 
+    def test_dataset_tags(self):
+        """dataset_tags() should return the legacy free-form tags for a dataset."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        project = projects[0]
+        dataset_id = client.create_dataset(
+            str(project.id), "Tag Test Dataset", "Testing dataset_tags"
+        )
+        try:
+            tags = client.dataset_tags(dataset_id)
+            self.assertIsInstance(tags, list)
+            # A freshly created dataset has no tags yet.
+            self.assertEqual(len(tags), 0)
+        finally:
+            client.delete_dataset(dataset_id)
+
+    def test_collect_labels_from_samples(self):
+        """collect_labels_from_samples() should extract unique label/index pairs."""
+        from edgefirst_client import collect_labels_from_samples, Sample, Annotation
+
+        sample = Sample()
+        sample.set_image_name("test.png")
+        ann1 = Annotation()
+        ann1.set_label("circle")
+        ann2 = Annotation()
+        ann2.set_label("square")
+        sample.add_annotation(ann1)
+        sample.add_annotation(ann2)
+
+        names, indices = collect_labels_from_samples([sample])
+        self.assertEqual(set(names), {"circle", "square"})
+        self.assertEqual(len(indices), len(names))
+
+    def test_annotation_full_metadata_setters(self):
+        """Annotation setters for sample_id, name, sequence_name,
+        frame_number, and category_frequency should all work."""
+        from edgefirst_client import Annotation, SampleID
+
+        ann = Annotation()
+        ann.set_sample_id(SampleID(42))
+        ann.set_name("frame_001.png")
+        ann.set_sequence_name("seq-a")
+        ann.set_frame_number(5)
+        ann.set_category_frequency("common")
+
+        self.assertEqual(ann.sample_id.value, 42)
+        self.assertEqual(ann.name, "frame_001.png")
+        self.assertEqual(ann.sequence_name, "seq-a")
+        self.assertEqual(ann.frame_number, 5)
+        self.assertEqual(ann.category_frequency, "common")
+
+        # Clearing back to None must also work (all fields are Optional).
+        ann.set_frame_number(None)
+        ann.set_category_frequency(None)
+        self.assertIsNone(ann.frame_number)
+        self.assertIsNone(ann.category_frequency)
+
 
 class TestLabels(TestCase):
     """Test label management operations."""

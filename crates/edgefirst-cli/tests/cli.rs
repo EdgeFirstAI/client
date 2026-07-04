@@ -963,7 +963,7 @@ fn test_version() -> Result<(), Box<dyn std::error::Error>> {
     println!("STUDIO_PASSWORD: {:?}", env::var("STUDIO_PASSWORD"));
 
     let mut cmd = edgefirst_cmd();
-    cmd.arg("version");
+    cmd.arg("server-version");
     cmd.assert()
         .success()
         .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
@@ -4027,6 +4027,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
         ],
         &[], // All groups
         &[], // No file type filter
+        None,
         None,
     ))?;
 
