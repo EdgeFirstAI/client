@@ -749,26 +749,12 @@ class VersionEditAfterTagTest(TestCase):
             self.skipTest("Server does not support versioning APIs")
 
     def test_edit_annotation_after_tag_does_not_change_tagged_view(self):
-        """A mutation to HEAD made after tagging must not retroactively
-        change what the tag returns — tags are immutable snapshots.
+        """A true in-place annotation edit made after tagging must not
+        retroactively change what the tag returns — tags are immutable
+        snapshots. Uses add_annotations_bulk/delete_annotations_bulk for a
+        real edit, now that both are exposed to Python."""
+        from edgefirst_client import AnnotationSetID, ServerAnnotation
 
-        SCOPE NOTE: this test originally tried to "edit" an existing
-        annotation by re-populating the same image filename with a
-        different label. Live testing showed that's a no-op: dve-database's
-        samples.populate2 handler skips a sample entirely — annotations
-        included — whenever its image filename already exists in the
-        dataset ("check image duplicate" -> continue), which is
-        intentional de-duplication, not a bug. Editing an already-uploaded
-        annotation's label requires annotation.bulk.del / annotation.add_bulk
-        (what the CLI's `import-coco --update` uses under the hood, via
-        edgefirst_client::coco::studio::update_coco_annotations) — neither
-        is exposed through the Python bindings today, so there is currently
-        no supported way to edit an existing annotation from this SDK.
-        Rather than assert a "successful edit" that never actually happened,
-        this test proves the same tag-immutability property using a
-        mutation the SDK does support: adding a new, differently-labeled
-        annotation to the same annotation set after the tag exists.
-        """
         client = get_client()
         skip_cleanup = os.getenv("SKIP_CLEANUP", "0") == "1"
         dataset_id, annotation_set_id, _ = _create_test_dataset(client)
@@ -786,36 +772,47 @@ class VersionEditAfterTagTest(TestCase):
             self.assertEqual(len(tagged_annotations_before), 1)
             self.assertEqual(tagged_annotations_before[0].label, "circle")
 
-            # Mutate HEAD after the tag: add a second, differently-labeled
-            # sample to the same annotation set (a supported stand-in for
-            # "editing", per the scope note above).
+            head_annotations_before = client.annotations(annotation_set_id)
+            sample_id = head_annotations_before[0].sample_id
+            original_box = head_annotations_before[0].box2d
+
+            # True in-place edit: delete the "circle" box annotation for this
+            # sample, then add a "square" one back in its place.
             time.sleep(1)
-            image_path = (
-                get_test_data_dir() / f"version_edit_{int(time.time() * 1000)}.png"
-            )
-            _, bbox = create_test_image_with_circle(image_path)
-            new_sample = create_sample_with_circle_annotation(
-                image_path, label_name="square", box2d=bbox
-            )
-            client.populate_samples(dataset_id, annotation_set_id, [new_sample])
+            client.delete_annotations_bulk(annotation_set_id, ["box"], [sample_id])
 
-            head_annotations = client.annotations(annotation_set_id)
-            self.assertEqual(len(head_annotations), 2)
-            head_labels = {a.label for a in head_annotations}
-            self.assertEqual(head_labels, {"circle", "square"})
+            # The server's annotation.add_bulk RPC resolves the label from
+            # label_id (label_index/label_name alone are not honored, per
+            # live testing and matching the CLI's import-coco --update path
+            # in edgefirst_client::coco::studio::update_coco_annotations).
+            label_ids = {label.name: label.id for label in client.labels(dataset_id)}
+            new_annotation = ServerAnnotation(
+                label_id=label_ids["square"],
+                label_name="square",
+                annotation_type="box",
+                x=original_box.left,
+                y=original_box.top,
+                w=original_box.width,
+                h=original_box.height,
+                score=1.0,
+                image_id=sample_id.value,
+                annotation_set_id=AnnotationSetID(annotation_set_id).value,
+            )
+            client.add_annotations_bulk(annotation_set_id, [new_annotation])
 
-            # The tag must still reflect only the original, single annotation.
+            head_annotations_after = client.annotations(annotation_set_id)
+            self.assertEqual(len(head_annotations_after), 1)
+            self.assertEqual(head_annotations_after[0].label, "square")
+
+            # The tag must still reflect the original label.
             tagged_annotations_after = client.annotations(
                 annotation_set_id, version="pre-edit"
             )
-            self.assertEqual(
-                len(tagged_annotations_after), len(tagged_annotations_before)
-            )
+            self.assertEqual(len(tagged_annotations_after), 1)
             self.assertEqual(tagged_annotations_after[0].label, "circle")
             print(
-                f"HEAD now has {len(head_annotations)} annotations {head_labels}, "
-                f"tag 'pre-edit' still has {len(tagged_annotations_after)} "
-                f"({tagged_annotations_after[0].label})"
+                f"HEAD annotation now '{head_annotations_after[0].label}', "
+                f"tag 'pre-edit' still '{tagged_annotations_after[0].label}'"
             )
         finally:
             if not skip_cleanup:

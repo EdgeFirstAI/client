@@ -5972,6 +5972,63 @@ impl Client {
         Ok(self.0.delete_annotation_set(annotation_set_id.0).await?)
     }
 
+    /// Add annotations in bulk to an existing annotation set.
+    ///
+    /// Unlike `populate_samples`, this edits already-uploaded samples in
+    /// place via `annotation.add_bulk` — each `ServerAnnotation` must
+    /// reference an existing `image_id`.
+    ///
+    /// Args:
+    ///     annotation_set_id: The annotation set to add annotations to.
+    ///     annotations: Server-format annotations to add.
+    ///
+    /// Returns:
+    ///     List[dict]: The created annotation records from the server.
+    #[tokio_wrap::sync]
+    pub fn add_annotations_bulk<'py>(
+        &self,
+        annotation_set_id: Bound<'py, PyAny>,
+        annotations: Vec<ServerAnnotation>,
+        py: Python<'py>,
+    ) -> Result<Vec<Py<PyAny>>, Error> {
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let inner: Vec<edgefirst_client::ServerAnnotation> =
+            annotations.into_iter().map(|a| a.0).collect();
+        let results = self
+            .0
+            .add_annotations_bulk(annotation_set_id.0, inner)
+            .await?;
+        results
+            .iter()
+            .map(|v| Ok(json_value_to_py(py, v)?))
+            .collect()
+    }
+
+    /// Delete annotations in bulk from an existing annotation set.
+    ///
+    /// Args:
+    ///     annotation_set_id: The annotation set to delete annotations from.
+    ///     annotation_types: Annotation types to delete (e.g. ["box", "seg"]).
+    ///     sample_ids: The samples whose annotations of the given types
+    ///         should be deleted.
+    #[tokio_wrap::sync]
+    pub fn delete_annotations_bulk<'py>(
+        &self,
+        annotation_set_id: Bound<'py, PyAny>,
+        annotation_types: Vec<String>,
+        sample_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let annotation_set_id: AnnotationSetID = annotation_set_id.try_into()?;
+        let sample_ids: Result<Vec<edgefirst_client::SampleID>, Error> = sample_ids
+            .into_iter()
+            .map(|id| Ok(SampleID::try_from(id)?.0))
+            .collect();
+        Ok(self
+            .0
+            .delete_annotations_bulk(annotation_set_id.0, &annotation_types, &sample_ids?)
+            .await?)
+    }
+
     #[pyo3(signature = (dataset_id, version = None))]
     #[tokio_wrap::sync]
     pub fn annotation_sets<'py>(
@@ -8435,6 +8492,59 @@ impl Annotation {
     }
 }
 
+/// A single annotation in server wire format, for use with
+/// `Client.add_annotations_bulk`.
+///
+/// Unlike the domain `Annotation` type (used with `populate_samples`),
+/// this maps directly to the `annotation.add_bulk` RPC's expected shape
+/// and requires an existing `image_id`/`annotation_set_id` — it edits an
+/// already-uploaded sample rather than creating a new one.
+#[pyclass(module = "edgefirst_client")]
+#[derive(Clone)]
+pub struct ServerAnnotation(edgefirst_client::ServerAnnotation);
+
+#[pymethods]
+impl ServerAnnotation {
+    #[new]
+    #[pyo3(signature = (
+        annotation_type, x, y, w, h, score, image_id, annotation_set_id,
+        label_id=None, label_index=None, label_name=None, polygon=None,
+        object_reference=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        annotation_type: String,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        score: f64,
+        image_id: u64,
+        annotation_set_id: u64,
+        label_id: Option<u64>,
+        label_index: Option<u64>,
+        label_name: Option<String>,
+        polygon: Option<String>,
+        object_reference: Option<String>,
+    ) -> Self {
+        ServerAnnotation(edgefirst_client::ServerAnnotation {
+            label_id,
+            label_index,
+            label_name,
+            annotation_type,
+            x,
+            y,
+            w,
+            h,
+            score,
+            polygon: polygon.unwrap_or_default(),
+            image_id,
+            annotation_set_id,
+            object_reference,
+        })
+    }
+}
+
 #[pyclass(module = "edgefirst_client")]
 pub struct Sample {
     inner: edgefirst_client::Sample,
@@ -9215,6 +9325,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SampleFile>()?;
     m.add_class::<FileType>()?;
     m.add_class::<Annotation>()?;
+    m.add_class::<ServerAnnotation>()?;
     m.add_class::<PresignedUrl>()?;
     m.add_class::<SamplesCountResult>()?;
     m.add_class::<SamplesPopulateResult>()?;

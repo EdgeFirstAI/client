@@ -28,11 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: `start-training-session`, `update-training-session`, `delete-training-sessions`, `trainer-schemas`, `trainer-schema`, `update-validation-session`, `delete-validation-sessions`, `validator-schemas`
 - Python bindings and `.pyi` stubs for all new session management and schema APIs (`NewTrainingSession`, `TrainerSchemaInfo`, `SchemaField`, `SchemaOption`, `ValidatorSchema`)
 - Swift/Kotlin FFI bindings (sync + async) for the new APIs, plus previously missing `start_validation_session` and `delete_validation_sessions`
+- `Client.add_annotations_bulk`/`Client.delete_annotations_bulk` exposed to Python, along with a new `ServerAnnotation` pyclass for the server wire format — closes the previous gap where there was no supported way to edit an already-uploaded annotation from the Python client
 
 ### Notes
 
 - Removing individual artifacts from a session is deferred: EdgeFirst Studio has no server-side RPC for artifact deletion; artifacts are only removed when their training session is deleted
-- There is no supported way to edit an existing annotation from the Python client yet (`add_annotations_bulk`/`delete_annotations_bulk` exist in Rust core but are not exposed via PyO3); see TESTING.md's Known Limitations for detail
 
 ## [2.11.1] - 2026-06-25
 

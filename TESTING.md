@@ -337,31 +337,6 @@ Actions CI to run integration tests automatically.
 
 ## Known Limitations
 
-### No supported way to edit an existing annotation from Python
-
-`populate_samples()` silently no-ops for a sample whose image filename
-already exists in the dataset: `Samples_Populate2` in `dve-database`
-(`api/bridge_handler_v2.go`, "check image duplicate") skips the entire
-sample — annotations included — via `continue`, before any annotation
-parsing happens. This is intentional server-side de-duplication (it
-protects against accidental re-import), not a bug, but it means
-re-populating the same filename cannot be used to change an annotation's
-label.
-
-The server does support updating existing annotations via
-`annotation.add_bulk` / `annotation.bulk.del` — this is what the CLI's
-`import-coco --update` flag uses under the hood
-(`edgefirst_client::coco::studio::update_coco_annotations`) — but neither
-RPC is exposed through the Python bindings (`add_annotations_bulk` /
-`delete_annotations_bulk` on `Client` are Rust-only). Until one of these
-is exposed to Python, there is no supported way to edit an already-uploaded
-annotation from the Python client.
-
-`test.test_versioning.VersionEditAfterTagTest.test_edit_annotation_after_tag_does_not_change_tagged_view`
-documents this in its docstring and instead proves tag immutability using
-a mutation the SDK does support (adding a new, differently-labeled
-annotation after the tag exists).
-
 ### Changelog `entity_type` for restores is `"tag"`, not `"dataset"`
 
 The server's `VERSIONING.md` documents restore changelog entries as

@@ -2341,6 +2341,51 @@ class Annotation:
         """
         ...
 
+class ServerAnnotation:
+    """
+    A single annotation in server wire format, for use with
+    ``Client.add_annotations_bulk``.
+
+    Unlike ``Annotation`` (used with ``populate_samples``), this maps
+    directly to the ``annotation.add_bulk`` RPC's expected shape and edits
+    an already-uploaded sample in place — it requires an existing
+    ``image_id``, not a new one created via upload.
+    """
+
+    def __init__(
+        self,
+        annotation_type: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        score: float,
+        image_id: int,
+        annotation_set_id: int,
+        label_id: Optional[int] = None,
+        label_index: Optional[int] = None,
+        label_name: Optional[str] = None,
+        polygon: Optional[str] = None,
+        object_reference: Optional[str] = None,
+    ) -> None:
+        """
+        Args:
+            annotation_type: "box" for bounding box, "seg" for segmentation.
+            x: Bounding box X coordinate (normalized 0-1, left/top origin).
+            y: Bounding box Y coordinate (normalized 0-1, left/top origin).
+            w: Bounding box width (normalized 0-1).
+            h: Bounding box height (normalized 0-1).
+            score: Confidence score (0-1).
+            image_id: Image/sample ID in the database.
+            annotation_set_id: Annotation set ID.
+            label_id: Label ID (alternative to label_name/label_index).
+            label_index: Label index (alternative to label_id/label_name).
+            label_name: Label name (alternative to label_id/label_index).
+            polygon: Polygon data as a JSON string (for segmentation).
+            object_reference: Optional object tracking reference.
+        """
+        ...
+
 class Sample:
     """
     Represents a single data sample in the EdgeFirst dataset.
@@ -5742,6 +5787,52 @@ class Client:
         Args:
             annotation_set_id (Union[AnnotationSetID, int, str]): ID of the
                 annotation set to delete.
+        """
+        ...
+
+    def add_annotations_bulk(
+        self,
+        annotation_set_id: AnnotationSetUID,
+        annotations: List[ServerAnnotation],
+    ) -> List[dict]:
+        """
+        Add annotations in bulk to an existing annotation set.
+
+        Unlike ``populate_samples``, this edits already-uploaded samples in
+        place via ``annotation.add_bulk`` — each ``ServerAnnotation`` must
+        reference an existing ``image_id``.
+
+        Args:
+            annotation_set_id: The annotation set to add annotations to.
+            annotations: Server-format annotations to add.
+
+        Returns:
+            List[dict]: The created annotation records from the server.
+
+        Example:
+            >>> ann = ServerAnnotation(
+            ...     annotation_type="box", x=0.1, y=0.1, w=0.2, h=0.2,
+            ...     score=1.0, image_id=sample_id.value,
+            ...     annotation_set_id=annset_id.value, label_name="circle",
+            ... )
+            >>> client.add_annotations_bulk(annset_id, [ann])
+        """
+        ...
+
+    def delete_annotations_bulk(
+        self,
+        annotation_set_id: AnnotationSetUID,
+        annotation_types: List[str],
+        sample_ids: List[SampleUID],
+    ) -> None:
+        """
+        Delete annotations in bulk from an existing annotation set.
+
+        Args:
+            annotation_set_id: The annotation set to delete annotations from.
+            annotation_types: Annotation types to delete (e.g. ["box", "seg"]).
+            sample_ids: The samples whose annotations of the given types
+                should be deleted.
         """
         ...
 
