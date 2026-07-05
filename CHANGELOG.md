@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-07-05
+
+### Fixed
+
+- `download-annotations --types` now rejects unknown annotation types with an error listing the accepted types, instead of silently treating them as `box2d`. The CLI relied on `AnnotationType`'s infallible `From<String>` conversion (which defaults invalid input to `Box2d`); it now uses a fallible value parser, matching how `download-dataset --types` already validates `FileType` values
+- `download-annotations --types` was documented with a `box2d` default; with no `--types` the command downloads all annotation types (the type filter is omitted). CLI help and `CLI.md` now say so
+
+### Documentation
+
+- Corrected `CLI.md` and Rust doc comments to match behavior that shipped in 2.12.0 (no functional change to those areas):
+  - `version` command was renamed to `server-version`, and the `version` name is now the dataset-versioning subcommand group (`tag`, `changelog`, `current`, `summary`) — see the retroactive 2.12.0 note below
+  - Token storage paths corrected to what the `directories` crate actually produces: Linux `~/.config/edgefirststudio/token`, macOS `~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token`, Windows `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
+  - `upload-dataset` batching documented accurately (50 samples per batch, batch concurrency defaults to 4 via `EDGEFIRST_UPLOAD_BATCHES`); added `EDGEFIRST_UPLOAD_BATCHES` and `MAX_TASKS` to the ENVIRONMENT section
+  - `create-snapshot` folder pre-validation and paired `.arrow`/`.zip` source handling documented; `validate-snapshot` verbosity documented as the global `-v/--verbose` flag
+  - `generate-arrow` documented as emitting 2026.04 `name`/`frame` columns (was incorrectly documented as the 2025.10 schema)
+  - Python examples in `edgefirst_client.pyi` use the builder pattern (`with_login`, `with_memory_storage`); removed a phantom `Client.login` example
+  - `Tag`/`Client::dataset_tags` documented as the legacy free-form training-tag mechanism, distinct from the `VersionTag`/dataset-versioning API (`Client::version_tag_*`)
+  - `DATASET_FORMAT.md`: added implementation-status notes clarifying that Parquet export and the configurable box-format/mask-interpretation metadata are specification-only (not implemented); only `schema_version`, `category_metadata`, and `labels` file-level metadata are read/written, and box2d is unconditionally `cxcywh` in Arrow / `ltwh` in JSON
+
 ## [2.12.0] - 2026-07-04
 
 ### Added
@@ -35,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings for `Client.dataset_tags` (new `Tag` type) and module-level `collect_labels_from_samples`
 - `Annotation.set_sample_id`/`set_name`/`set_sequence_name`/`set_frame_number`/`set_category_frequency` setters and `frame_number`/`category_frequency` getters on the Python `Annotation` type
 - `Dataset`-level convenience wrappers for all 10 versioning methods (`version_tag_create`/`get`/`list`/`delete`/`restore`, `version_changelog`, `version_changelog_count`, `version_current`, `version_summary`, `version_summary_recalculate`), matching the existing `Client` + `Dataset` symmetry of `labels()`/`samples()`/`annotation_sets()`/`samples_count()`
+
+### Changed
+
+- **BREAKING (CLI)**: The `version` command that reported the EdgeFirst Studio server version was renamed to `server-version`. The `version` name now introduces the dataset-versioning subcommand group (`tag`, `changelog`, `current`, `summary`). Scripts that ran `edgefirst-client version` to read the server version must switch to `edgefirst-client server-version`. (This rename shipped in 2.12.0 but was not recorded at the time; documented retroactively in 2.12.1.)
 
 ### Fixed
 

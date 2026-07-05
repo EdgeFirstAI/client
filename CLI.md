@@ -2,8 +2,8 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.12.0
-date: 2026-07-04
+footer: edgefirst-client 2.12.1
+date: 2026-07-05
 ---
 
 # NAME
@@ -67,11 +67,17 @@ The client supports various authentication methods including environment variabl
 
 ## AUTHENTICATION
 
-### version
+### server-version
 
-Returns the EdgeFirst Studio server version.
+Returns the EdgeFirst Studio server version and the client version. Does not require
+authentication.
 
-**edgefirst-client version**
+**edgefirst-client server-version**
+
+Note: this command was named **version** prior to 2.12.0. That name now refers to the
+dataset-versioning subcommand group (**tag**, **changelog**, **current**, **summary**;
+**restore** lives under **version tag restore**) — see
+[DATASET VERSIONING](#dataset-versioning).
 
 ### login
 
@@ -88,11 +94,18 @@ environment variables for scripts instead.
 
 Token storage locations:
 
-- Linux: `~/.config/EdgeFirst Studio/token`
-- macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst Studio/token`
+- Linux: `~/.config/edgefirststudio/token`
+- macOS: `~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token`
 - Windows: `%APPDATA%\EdgeFirst\EdgeFirst Studio\config\token`
 
-After CLI login, Python examples can reuse the cached token with `Client()` (default `use_token_file=True`). See [examples/01_authentication.py](examples/01_authentication.py).
+After CLI login, Python code can reuse the cached token with a bare `Client()` call
+(it loads the same `FileTokenStorage`-backed token automatically). See
+[examples/01_authentication.py](examples/01_authentication.py). Passing credentials or
+storage options as constructor keywords (`Client(username=..., password=...)`,
+`Client(token=...)`, `Client(use_token_file=False)`) is the deprecated pre-2.6.0 style
+and now emits a `DeprecationWarning`; prefer the builder pattern
+(`Client().with_login(...)`, `Client().with_token(...)`,
+`Client().with_memory_storage()`) for new code.
 
 ### logout
 
@@ -390,8 +403,11 @@ Download dataset annotations to a local file. This command accompanies **downloa
 :   Only fetch samples belonging to the provided dataset groups (comma-separated list).
 
 **\--types** *TYPES*
-:   Annotation types to download (comma-separated list). Default: **box2d**.
-    Supported types: box2d, box3d, mask, polygon, polyline, keypoint.
+:   Annotation types to download (comma-separated list). If omitted, all annotation
+    types are downloaded. Supported types: box2d, box3d, mask, polygon (`mask` and
+    `seg` are accepted as aliases for `polygon`, and `raster` for the raster pixel-mask
+    type, for backward compatibility). There is no `polyline` or `keypoint` annotation
+    type; an unrecognized value is rejected with an error listing the accepted types.
 
 **\--tag** *TAG*
 :   Download annotations from the specified tagged version instead of the current HEAD state.
@@ -469,7 +485,10 @@ edgefirst-client upload-dataset 12345 \
     --annotation-set-id 54321
 ```
 
-**Note:** Uploads are batched (500 samples per batch) with progress tracking. Arrow files must conform to the EdgeFirst Dataset Format.
+**Note:** Uploads are batched (50 samples per batch, so a failed batch only requires
+retrying 50 samples) with progress tracking. Batch concurrency defaults to 4 and is
+configurable via **EDGEFIRST_UPLOAD_BATCHES**. Arrow files must conform to the
+EdgeFirst Dataset Format.
 
 ### update-dimensions
 
@@ -710,8 +729,12 @@ Create a new snapshot from a local file/directory or from an existing server-sid
     - **ds-xxx**: Dataset ID (creates snapshot from server dataset)
     - **as-xxx**: Annotation Set ID (creates snapshot from parent dataset)
     - **path/to/file.mcap**: Local MCAP file upload
-    - **path/to/folder/**: Local directory upload
-    - **path/to/file.zip**: Local ZIP file upload
+    - **path/to/folder/**: Local directory upload (pre-validated against the EdgeFirst
+      Dataset Format; structural errors abort with a hint to run **generate-arrow**,
+      lesser issues only warn)
+    - **path/to/file.arrow** with a same-basename **path/to/file.zip** sibling in the
+      same directory: uploaded together as a paired EdgeFirst Dataset Format source
+    - **path/to/file.zip** (no matching **.arrow** sibling): Local ZIP file upload
 
 **Options:**
 
@@ -918,8 +941,10 @@ The command checks that the directory follows the EdgeFirst Dataset Format:
 
 **Options:**
 
-**-v, \--verbose**
-:   Show detailed validation issues including warnings and informational messages.
+**validate-snapshot** takes no options of its own. Detailed output (warnings and
+informational messages beyond the first 5 of each kind) is controlled by the
+**global** **-v**, **\--verbose** flag documented under GLOBAL OPTIONS, not a
+command-local flag — pass it anywhere on the command line.
 
 **Example:**
 
@@ -927,8 +952,8 @@ The command checks that the directory follows the EdgeFirst Dataset Format:
 # Validate a snapshot directory
 edgefirst-client validate-snapshot ./my_dataset
 
-# Validate with detailed output
-edgefirst-client validate-snapshot ./my_dataset --verbose
+# Validate with detailed output (global -v flag)
+edgefirst-client -v validate-snapshot ./my_dataset
 
 # Validate before uploading
 edgefirst-client validate-snapshot ./sensor_data && edgefirst-client create-snapshot ./sensor_data
@@ -1575,12 +1600,20 @@ List the validator schemas available on the server. Each schema describes the pa
 **RUST_LOG**
 :   Logging level (error, warn, info, debug, trace). Default: info.
 
+**EDGEFIRST_UPLOAD_BATCHES**
+:   Number of concurrent batch-upload tasks used by **upload-dataset**. Default: 4.
+
+**MAX_TASKS**
+:   General upload/download task concurrency (e.g. **download-snapshot**). Default:
+    half the available CPU cores, clamped to the 2-8 range. Distinct from
+    **EDGEFIRST_UPLOAD_BATCHES**.
+
 # FILES
 
-**~/.config/EdgeFirst Studio/token** (Linux)
+**~/.config/edgefirststudio/token** (Linux)
 :   Cached authentication token for persistent sessions.
 
-**~/Library/Application Support/ai.EdgeFirst.EdgeFirst Studio/token** (macOS)
+**~/Library/Application Support/ai.EdgeFirst.EdgeFirst-Studio/token** (macOS)
 :   Cached authentication token for persistent sessions.
 
 **%APPDATA%\\EdgeFirst\\EdgeFirst Studio\\config\\token** (Windows)

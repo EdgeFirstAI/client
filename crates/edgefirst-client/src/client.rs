@@ -4991,11 +4991,16 @@ impl Client {
             .await
     }
 
-    /// List the version tags of a dataset via `tags.list_dataset`.
+    /// List the legacy free-form tags for a dataset via `tags.list_dataset`.
     ///
-    /// Tags are creation-ordered; the highest [`Tag::id`] is the most
-    /// recent version. Used by [`Client::start_training_session`] to
-    /// resolve the latest tag when the request does not name one.
+    /// This is a separate, older tagging mechanism and is **not** the
+    /// dataset-versioning feature — see [`Client::version_tag_list`] for
+    /// named, immutable version tags with full snapshot/restore support.
+    /// [`Tag`] here is creation-ordered; the highest [`Tag::id`] is treated
+    /// as the most recent one. [`Client::start_training_session`] uses this
+    /// method internally to resolve the latest tag when the request does not
+    /// name one, which is currently the only place this legacy list is
+    /// consulted for versioning-adjacent behavior.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
     pub async fn dataset_tags(&self, dataset_id: DatasetID) -> Result<Vec<Tag>, Error> {
         let params = HashMap::from([("dataset_id", dataset_id)]);

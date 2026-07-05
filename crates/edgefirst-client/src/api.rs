@@ -1468,7 +1468,9 @@ pub struct StartTrainingRequest {
     pub dataset_id: DatasetID,
     /// Annotation set providing the ground-truth labels.
     pub annotation_set_id: AnnotationSetID,
-    /// Dataset tag to train against; `None` selects the latest tag.
+    /// Dataset tag to train against; `None` selects the latest tag (resolved
+    /// via the legacy [`Tag`]/`Client::dataset_tags` list, not
+    /// [`VersionTag`]/`Client::version_tag_list`).
     pub tag_name: Option<String>,
     /// Training split group name; `None` uses the default `"train"`.
     pub train_group: Option<String>,
@@ -1518,10 +1520,13 @@ impl Display for NewTrainingSession {
     }
 }
 
-/// A dataset version tag, as returned by `Client::dataset_tags`.
+/// A legacy free-form dataset tag, as returned by `Client::dataset_tags`.
 ///
-/// Tags mark dataset versions for reproducible training. The most
-/// recently created tag (highest `id`) is treated as the latest.
+/// This is a separate, older tagging mechanism, **not** the dataset-versioning
+/// feature — see [`VersionTag`] for named, immutable version tags with full
+/// snapshot/restore support. This type is used to mark a name as the
+/// "latest" reference for reproducible training; the most recently created
+/// tag (highest `id`) is treated as the latest.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Tag {
     /// Tag identifier; creation-ordered, so the highest id is newest.
