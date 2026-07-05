@@ -2357,7 +2357,9 @@ class Annotation:
         """Set the frame number within the annotation's sequence."""
         ...
 
-    def set_category_frequency(self, category_frequency: Optional[str]) -> None:
+    def set_category_frequency(
+        self, category_frequency: Optional[str]
+    ) -> None:
         """Set the category frequency label (e.g. "common", "rare")."""
         ...
 
