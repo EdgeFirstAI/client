@@ -13,8 +13,8 @@ import PackageDescription
 // post-release automation PR (`automation: update Swift package for vX.Y.Z
 // [skip ci]`) refreshes the checksum once the artifact is published.
 // =============================================================================
-let version = "2.11.1"
-let checksum = "abdb5d5208193bf4c41a3455aab10ba2964f0c5328a3ad5e3dcd7758b46cf926"
+let version = "2.12.0"
+let checksum = "a269938ba959e71abf8064a7f09017cbd8fc0725f1e30171eabcf8015167ba3d"
 
 // Toggle for local development vs release distribution
 // Set USE_LOCAL_FRAMEWORK=true environment variable for local XCFramework

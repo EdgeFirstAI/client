@@ -615,14 +615,14 @@ private struct FfiConverterData: FfiConverterRustBuffer {
 public protocol ClientProtocol: AnyObject, Sendable {
 
   /**
-   * Get annotation sets for a dataset.
+   * Get annotation sets for a dataset, optionally at a specific version.
    */
-  func annotationSets(datasetId: DatasetId) throws -> [AnnotationSet]
+  func annotationSets(datasetId: DatasetId, version: String?) throws -> [AnnotationSet]
 
   /**
-   * Get annotation sets for a dataset (async).
+   * Get annotation sets for a dataset, optionally at a specific version (async).
    */
-  func annotationSetsAsync(datasetId: DatasetId) async throws -> [AnnotationSet]
+  func annotationSetsAsync(datasetId: DatasetId, version: String?) async throws -> [AnnotationSet]
 
   /**
    * Get artifacts for a training session.
@@ -671,6 +671,40 @@ public protocol ClientProtocol: AnyObject, Sendable {
    * List datasets in a project (async).
    */
   func datasetsAsync(projectId: ProjectId, name: String?) async throws -> [Dataset]
+
+  /**
+   * Delete one or more training sessions.
+   *
+   * The server cascades this delete: validation sessions attached to
+   * the deleted training sessions are removed as well, along with
+   * artifacts and checkpoints.
+   */
+  func deleteTrainingSessions(sessionIds: [TrainingSessionId]) throws
+
+  /**
+   * Delete one or more training sessions (async).
+   *
+   * The server cascades this delete: validation sessions attached to
+   * the deleted training sessions are removed as well, along with
+   * artifacts and checkpoints.
+   */
+  func deleteTrainingSessionsAsync(sessionIds: [TrainingSessionId]) async throws
+
+  /**
+   * Delete one or more validation sessions.
+   *
+   * Only the validation sessions are removed; the parent training
+   * session is never affected.
+   */
+  func deleteValidationSessions(sessionIds: [ValidationSessionId]) throws
+
+  /**
+   * Delete one or more validation sessions (async).
+   *
+   * Only the validation sessions are removed; the parent training
+   * session is never affected.
+   */
+  func deleteValidationSessionsAsync(sessionIds: [ValidationSessionId]) async throws
 
   /**
    * Get an experiment by ID.
@@ -734,14 +768,14 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func jobsAsync(name: String?) async throws -> [Job]
 
   /**
-   * Get labels for a dataset.
+   * Get labels for a dataset, optionally at a specific version.
    */
-  func labels(datasetId: DatasetId) throws -> [Label]
+  func labels(datasetId: DatasetId, version: String?) throws -> [Label]
 
   /**
-   * Get labels for a dataset (async).
+   * Get labels for a dataset, optionally at a specific version (async).
    */
-  func labelsAsync(datasetId: DatasetId) async throws -> [Label]
+  func labelsAsync(datasetId: DatasetId, version: String?) async throws -> [Label]
 
   /**
    * Clear authentication token and log out.
@@ -804,6 +838,33 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func snapshotsAsync(name: String?) async throws -> [Snapshot]
 
   /**
+   * Launch a new training session (Studio `cloud.server.start`).
+   *
+   * See `StartTrainingRequest` for the defaulting rules (latest tag,
+   * standard train/val groups).
+   */
+  func startTrainingSession(request: StartTrainingRequest) throws -> NewTrainingSession
+
+  /**
+   * Launch a new training session (async).
+   *
+   * See `StartTrainingRequest` for the defaulting rules (latest tag,
+   * standard train/val groups).
+   */
+  func startTrainingSessionAsync(request: StartTrainingRequest) async throws -> NewTrainingSession
+
+  /**
+   * Create a new validation session (Studio `cloud.server.start`).
+   */
+  func startValidationSession(request: StartValidationRequest) throws -> NewValidationSession
+
+  /**
+   * Create a new validation session (async).
+   */
+  func startValidationSessionAsync(request: StartValidationRequest) async throws
+    -> NewValidationSession
+
+  /**
    * Get task information and methods by ID.
    *
    * Returns a `TaskInfo` handle with field getters and data/chart methods.
@@ -816,6 +877,26 @@ public protocol ClientProtocol: AnyObject, Sendable {
    * Returns a `TaskInfo` handle with field getters and data/chart methods.
    */
   func taskInfoAsync(id: TaskId) async throws -> TaskInfo
+
+  /**
+   * Fetch the parameter schema for a specific trainer type.
+   */
+  func trainerSchema(schemaType: String) throws -> [SchemaField]
+
+  /**
+   * Fetch the parameter schema for a specific trainer type (async).
+   */
+  func trainerSchemaAsync(schemaType: String) async throws -> [SchemaField]
+
+  /**
+   * List the trainer types available on the server.
+   */
+  func trainerSchemas() throws -> [TrainerSchemaInfo]
+
+  /**
+   * List the trainer types available on the server (async).
+   */
+  func trainerSchemasAsync() async throws -> [TrainerSchemaInfo]
 
   /**
    * Get a training session by ID.
@@ -854,6 +935,35 @@ public protocol ClientProtocol: AnyObject, Sendable {
     async throws -> UInt64
 
   /**
+   * Update the name and/or description of a training session,
+   * returning the refreshed session. Fields left as `None` are not
+   * modified.
+   */
+  func updateTrainingSession(sessionId: TrainingSessionId, name: String?, description: String?)
+    throws -> TrainingSession
+
+  /**
+   * Update the name and/or description of a training session (async).
+   */
+  func updateTrainingSessionAsync(sessionId: TrainingSessionId, name: String?, description: String?)
+    async throws -> TrainingSession
+
+  /**
+   * Update the name and/or description of a validation session,
+   * returning the refreshed session. Fields left as `None` are not
+   * modified.
+   */
+  func updateValidationSession(sessionId: ValidationSessionId, name: String?, description: String?)
+    throws -> ValidationSession
+
+  /**
+   * Update the name and/or description of a validation session (async).
+   */
+  func updateValidationSessionAsync(
+    sessionId: ValidationSessionId, name: String?, description: String?
+  ) async throws -> ValidationSession
+
+  /**
    * Get the current server URL.
    */
   func url() -> String
@@ -879,6 +989,16 @@ public protocol ClientProtocol: AnyObject, Sendable {
   func validationSessionsAsync(projectId: ProjectId) async throws -> [ValidationSession]
 
   /**
+   * List the validator schemas available on the server.
+   */
+  func validatorSchemas() throws -> [ValidatorSchema]
+
+  /**
+   * List the validator schemas available on the server (async).
+   */
+  func validatorSchemasAsync() async throws -> [ValidatorSchema]
+
+  /**
    * Verify that the current token is valid.
    */
   func verifyToken() throws
@@ -887,6 +1007,118 @@ public protocol ClientProtocol: AnyObject, Sendable {
    * Verify that the current token is valid (async).
    */
   func verifyTokenAsync() async throws
+
+  /**
+   * Get the changelog for a dataset between two versions.
+   */
+  func versionChangelog(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?,
+    limit: UInt64?, continueToken: String?
+  ) throws -> ChangelogResponse
+
+  /**
+   * Get the changelog for a dataset between two versions (async).
+   */
+  func versionChangelogAsync(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?,
+    limit: UInt64?, continueToken: String?
+  ) async throws -> ChangelogResponse
+
+  /**
+   * Get the count of changelog entries between two versions.
+   */
+  func versionChangelogCount(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?
+  ) throws -> UInt64
+
+  /**
+   * Get the count of changelog entries between two versions (async).
+   */
+  func versionChangelogCountAsync(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?
+  ) async throws -> UInt64
+
+  /**
+   * Get the current version information for a dataset.
+   */
+  func versionCurrent(datasetId: DatasetId) throws -> VersionCurrentResponse
+
+  /**
+   * Get the current version information for a dataset (async).
+   */
+  func versionCurrentAsync(datasetId: DatasetId) async throws -> VersionCurrentResponse
+
+  /**
+   * Get the version summary for a dataset.
+   */
+  func versionSummary(datasetId: DatasetId) throws -> DatasetSummary
+
+  /**
+   * Get the version summary for a dataset (async).
+   */
+  func versionSummaryAsync(datasetId: DatasetId) async throws -> DatasetSummary
+
+  /**
+   * Recalculate the version summary for a dataset.
+   */
+  func versionSummaryRecalculate(datasetId: DatasetId) throws -> DatasetSummary
+
+  /**
+   * Recalculate the version summary for a dataset (async).
+   */
+  func versionSummaryRecalculateAsync(datasetId: DatasetId) async throws -> DatasetSummary
+
+  /**
+   * Create a new version tag for a dataset.
+   */
+  func versionTagCreate(datasetId: DatasetId, name: String, description: String?) throws
+    -> VersionTag
+
+  /**
+   * Create a new version tag for a dataset (async).
+   */
+  func versionTagCreateAsync(datasetId: DatasetId, name: String, description: String?) async throws
+    -> VersionTag
+
+  /**
+   * Delete a version tag from a dataset.
+   */
+  func versionTagDelete(datasetId: DatasetId, name: String) throws -> String
+
+  /**
+   * Delete a version tag from a dataset (async).
+   */
+  func versionTagDeleteAsync(datasetId: DatasetId, name: String) async throws -> String
+
+  /**
+   * Get a specific version tag by name.
+   */
+  func versionTagGet(datasetId: DatasetId, name: String) throws -> VersionTag
+
+  /**
+   * Get a specific version tag by name (async).
+   */
+  func versionTagGetAsync(datasetId: DatasetId, name: String) async throws -> VersionTag
+
+  /**
+   * List all version tags for a dataset.
+   */
+  func versionTagList(datasetId: DatasetId) throws -> [VersionTag]
+
+  /**
+   * List all version tags for a dataset (async).
+   */
+  func versionTagListAsync(datasetId: DatasetId) async throws -> [VersionTag]
+
+  /**
+   * Restore a dataset to the state at a specific version tag.
+   */
+  func versionTagRestore(datasetId: DatasetId, name: String) throws -> RestoreResult
+
+  /**
+   * Restore a dataset to the state at a specific version tag (async).
+   */
+  func versionTagRestoreAsync(datasetId: DatasetId, name: String) async throws -> RestoreResult
 
   /**
    * Authenticate with username and password (blocking).
@@ -990,28 +1222,31 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
-   * Get annotation sets for a dataset.
+   * Get annotation sets for a dataset, optionally at a specific version.
    */
-  open func annotationSets(datasetId: DatasetId) throws -> [AnnotationSet] {
+  open func annotationSets(datasetId: DatasetId, version: String?) throws -> [AnnotationSet] {
     return try FfiConverterSequenceTypeAnnotationSet.lift(
       try rustCallWithError(FfiConverterTypeClientError_lift) {
         uniffi_edgefirst_client_fn_method_client_annotation_sets(
           self.uniffiCloneHandle(),
-          FfiConverterTypeDatasetId_lower(datasetId), $0
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterOptionString.lower(version), $0
         )
       })
   }
 
   /**
-   * Get annotation sets for a dataset (async).
+   * Get annotation sets for a dataset, optionally at a specific version (async).
    */
-  open func annotationSetsAsync(datasetId: DatasetId) async throws -> [AnnotationSet] {
+  open func annotationSetsAsync(datasetId: DatasetId, version: String?) async throws
+    -> [AnnotationSet]
+  {
     return
       try await uniffiRustCallAsync(
         rustFutureFunc: {
           uniffi_edgefirst_client_fn_method_client_annotation_sets_async(
             self.uniffiCloneHandle(),
-            FfiConverterTypeDatasetId_lower(datasetId)
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterOptionString.lower(version)
           )
         },
         pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
@@ -1159,6 +1394,84 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
         freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
         liftFunc: FfiConverterSequenceTypeDataset.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Delete one or more training sessions.
+   *
+   * The server cascades this delete: validation sessions attached to
+   * the deleted training sessions are removed as well, along with
+   * artifacts and checkpoints.
+   */
+  open func deleteTrainingSessions(sessionIds: [TrainingSessionId]) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_client_delete_training_sessions(
+        self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeTrainingSessionId.lower(sessionIds), $0
+      )
+    }
+  }
+
+  /**
+   * Delete one or more training sessions (async).
+   *
+   * The server cascades this delete: validation sessions attached to
+   * the deleted training sessions are removed as well, along with
+   * artifacts and checkpoints.
+   */
+  open func deleteTrainingSessionsAsync(sessionIds: [TrainingSessionId]) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_delete_training_sessions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterSequenceTypeTrainingSessionId.lower(sessionIds)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Delete one or more validation sessions.
+   *
+   * Only the validation sessions are removed; the parent training
+   * session is never affected.
+   */
+  open func deleteValidationSessions(sessionIds: [ValidationSessionId]) throws {
+    try rustCallWithError(FfiConverterTypeClientError_lift) {
+      uniffi_edgefirst_client_fn_method_client_delete_validation_sessions(
+        self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeValidationSessionId.lower(sessionIds), $0
+      )
+    }
+  }
+
+  /**
+   * Delete one or more validation sessions (async).
+   *
+   * Only the validation sessions are removed; the parent training
+   * session is never affected.
+   */
+  open func deleteValidationSessionsAsync(sessionIds: [ValidationSessionId]) async throws {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_delete_validation_sessions_async(
+            self.uniffiCloneHandle(),
+            FfiConverterSequenceTypeValidationSessionId.lower(sessionIds)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_void,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_void,
+        freeFunc: ffi_edgefirst_client_rust_future_free_void,
+        liftFunc: { $0 },
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -1346,28 +1659,29 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
-   * Get labels for a dataset.
+   * Get labels for a dataset, optionally at a specific version.
    */
-  open func labels(datasetId: DatasetId) throws -> [Label] {
+  open func labels(datasetId: DatasetId, version: String?) throws -> [Label] {
     return try FfiConverterSequenceTypeLabel.lift(
       try rustCallWithError(FfiConverterTypeClientError_lift) {
         uniffi_edgefirst_client_fn_method_client_labels(
           self.uniffiCloneHandle(),
-          FfiConverterTypeDatasetId_lower(datasetId), $0
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterOptionString.lower(version), $0
         )
       })
   }
 
   /**
-   * Get labels for a dataset (async).
+   * Get labels for a dataset, optionally at a specific version (async).
    */
-  open func labelsAsync(datasetId: DatasetId) async throws -> [Label] {
+  open func labelsAsync(datasetId: DatasetId, version: String?) async throws -> [Label] {
     return
       try await uniffiRustCallAsync(
         rustFutureFunc: {
           uniffi_edgefirst_client_fn_method_client_labels_async(
             self.uniffiCloneHandle(),
-            FfiConverterTypeDatasetId_lower(datasetId)
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterOptionString.lower(version)
           )
         },
         pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
@@ -1574,6 +1888,82 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
+   * Launch a new training session (Studio `cloud.server.start`).
+   *
+   * See `StartTrainingRequest` for the defaulting rules (latest tag,
+   * standard train/val groups).
+   */
+  open func startTrainingSession(request: StartTrainingRequest) throws -> NewTrainingSession {
+    return try FfiConverterTypeNewTrainingSession_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_start_training_session(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeStartTrainingRequest_lower(request), $0
+        )
+      })
+  }
+
+  /**
+   * Launch a new training session (async).
+   *
+   * See `StartTrainingRequest` for the defaulting rules (latest tag,
+   * standard train/val groups).
+   */
+  open func startTrainingSessionAsync(request: StartTrainingRequest) async throws
+    -> NewTrainingSession
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_start_training_session_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeStartTrainingRequest_lower(request)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeNewTrainingSession_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Create a new validation session (Studio `cloud.server.start`).
+   */
+  open func startValidationSession(request: StartValidationRequest) throws -> NewValidationSession {
+    return try FfiConverterTypeNewValidationSession_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_start_validation_session(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeStartValidationRequest_lower(request), $0
+        )
+      })
+  }
+
+  /**
+   * Create a new validation session (async).
+   */
+  open func startValidationSessionAsync(request: StartValidationRequest) async throws
+    -> NewValidationSession
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_start_validation_session_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeStartValidationRequest_lower(request)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeNewValidationSession_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
    * Get task information and methods by ID.
    *
    * Returns a `TaskInfo` handle with field getters and data/chart methods.
@@ -1606,6 +1996,71 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
         freeFunc: ffi_edgefirst_client_rust_future_free_u64,
         liftFunc: FfiConverterTypeTaskInfo_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Fetch the parameter schema for a specific trainer type.
+   */
+  open func trainerSchema(schemaType: String) throws -> [SchemaField] {
+    return try FfiConverterSequenceTypeSchemaField.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_trainer_schema(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(schemaType), $0
+        )
+      })
+  }
+
+  /**
+   * Fetch the parameter schema for a specific trainer type (async).
+   */
+  open func trainerSchemaAsync(schemaType: String) async throws -> [SchemaField] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_trainer_schema_async(
+            self.uniffiCloneHandle(),
+            FfiConverterString.lower(schemaType)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceTypeSchemaField.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * List the trainer types available on the server.
+   */
+  open func trainerSchemas() throws -> [TrainerSchemaInfo] {
+    return try FfiConverterSequenceTypeTrainerSchemaInfo.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_trainer_schemas(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * List the trainer types available on the server (async).
+   */
+  open func trainerSchemasAsync() async throws -> [TrainerSchemaInfo] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_trainer_schemas_async(
+            self.uniffiCloneHandle()
+
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceTypeTrainerSchemaInfo.lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -1723,6 +2178,90 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
+   * Update the name and/or description of a training session,
+   * returning the refreshed session. Fields left as `None` are not
+   * modified.
+   */
+  open func updateTrainingSession(sessionId: TrainingSessionId, name: String?, description: String?)
+    throws -> TrainingSession
+  {
+    return try FfiConverterTypeTrainingSession_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_update_training_session(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeTrainingSessionId_lower(sessionId),
+          FfiConverterOptionString.lower(name),
+          FfiConverterOptionString.lower(description), $0
+        )
+      })
+  }
+
+  /**
+   * Update the name and/or description of a training session (async).
+   */
+  open func updateTrainingSessionAsync(
+    sessionId: TrainingSessionId, name: String?, description: String?
+  ) async throws -> TrainingSession {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_update_training_session_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeTrainingSessionId_lower(sessionId),
+            FfiConverterOptionString.lower(name), FfiConverterOptionString.lower(description)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeTrainingSession_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Update the name and/or description of a validation session,
+   * returning the refreshed session. Fields left as `None` are not
+   * modified.
+   */
+  open func updateValidationSession(
+    sessionId: ValidationSessionId, name: String?, description: String?
+  ) throws -> ValidationSession {
+    return try FfiConverterTypeValidationSession_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_update_validation_session(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeValidationSessionId_lower(sessionId),
+          FfiConverterOptionString.lower(name),
+          FfiConverterOptionString.lower(description), $0
+        )
+      })
+  }
+
+  /**
+   * Update the name and/or description of a validation session (async).
+   */
+  open func updateValidationSessionAsync(
+    sessionId: ValidationSessionId, name: String?, description: String?
+  ) async throws -> ValidationSession {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_update_validation_session_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeValidationSessionId_lower(sessionId),
+            FfiConverterOptionString.lower(name), FfiConverterOptionString.lower(description)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterTypeValidationSession_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
    * Get the current server URL.
    */
   open func url() -> String {
@@ -1801,6 +2340,38 @@ open class Client: ClientProtocol, @unchecked Sendable {
   }
 
   /**
+   * List the validator schemas available on the server.
+   */
+  open func validatorSchemas() throws -> [ValidatorSchema] {
+    return try FfiConverterSequenceTypeValidatorSchema.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_validator_schemas(
+          self.uniffiCloneHandle(), $0
+        )
+      })
+  }
+
+  /**
+   * List the validator schemas available on the server (async).
+   */
+  open func validatorSchemasAsync() async throws -> [ValidatorSchema] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_validator_schemas_async(
+            self.uniffiCloneHandle()
+
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceTypeValidatorSchema.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
    * Verify that the current token is valid.
    */
   open func verifyToken() throws {
@@ -1827,6 +2398,370 @@ open class Client: ClientProtocol, @unchecked Sendable {
         completeFunc: ffi_edgefirst_client_rust_future_complete_void,
         freeFunc: ffi_edgefirst_client_rust_future_free_void,
         liftFunc: { $0 },
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Get the changelog for a dataset between two versions.
+   */
+  open func versionChangelog(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?,
+    limit: UInt64?, continueToken: String?
+  ) throws -> ChangelogResponse {
+    return try FfiConverterTypeChangelogResponse_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_changelog(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterOptionString.lower(fromVersion),
+          FfiConverterOptionString.lower(toVersion),
+          FfiConverterOptionSequenceString.lower(entityTypes),
+          FfiConverterOptionUInt64.lower(limit),
+          FfiConverterOptionString.lower(continueToken), $0
+        )
+      })
+  }
+
+  /**
+   * Get the changelog for a dataset between two versions (async).
+   */
+  open func versionChangelogAsync(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?,
+    limit: UInt64?, continueToken: String?
+  ) async throws -> ChangelogResponse {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_changelog_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterOptionString.lower(fromVersion),
+            FfiConverterOptionString.lower(toVersion),
+            FfiConverterOptionSequenceString.lower(entityTypes),
+            FfiConverterOptionUInt64.lower(limit), FfiConverterOptionString.lower(continueToken)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeChangelogResponse_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Get the count of changelog entries between two versions.
+   */
+  open func versionChangelogCount(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?
+  ) throws -> UInt64 {
+    return try FfiConverterUInt64.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_changelog_count(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterOptionString.lower(fromVersion),
+          FfiConverterOptionString.lower(toVersion),
+          FfiConverterOptionSequenceString.lower(entityTypes), $0
+        )
+      })
+  }
+
+  /**
+   * Get the count of changelog entries between two versions (async).
+   */
+  open func versionChangelogCountAsync(
+    datasetId: DatasetId, fromVersion: String?, toVersion: String?, entityTypes: [String]?
+  ) async throws -> UInt64 {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_changelog_count_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterOptionString.lower(fromVersion),
+            FfiConverterOptionString.lower(toVersion),
+            FfiConverterOptionSequenceString.lower(entityTypes)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_u64,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_u64,
+        freeFunc: ffi_edgefirst_client_rust_future_free_u64,
+        liftFunc: FfiConverterUInt64.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Get the current version information for a dataset.
+   */
+  open func versionCurrent(datasetId: DatasetId) throws -> VersionCurrentResponse {
+    return try FfiConverterTypeVersionCurrentResponse_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_current(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * Get the current version information for a dataset (async).
+   */
+  open func versionCurrentAsync(datasetId: DatasetId) async throws -> VersionCurrentResponse {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_current_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeVersionCurrentResponse_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Get the version summary for a dataset.
+   */
+  open func versionSummary(datasetId: DatasetId) throws -> DatasetSummary {
+    return try FfiConverterTypeDatasetSummary_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_summary(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * Get the version summary for a dataset (async).
+   */
+  open func versionSummaryAsync(datasetId: DatasetId) async throws -> DatasetSummary {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_summary_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeDatasetSummary_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Recalculate the version summary for a dataset.
+   */
+  open func versionSummaryRecalculate(datasetId: DatasetId) throws -> DatasetSummary {
+    return try FfiConverterTypeDatasetSummary_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_summary_recalculate(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * Recalculate the version summary for a dataset (async).
+   */
+  open func versionSummaryRecalculateAsync(datasetId: DatasetId) async throws -> DatasetSummary {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_summary_recalculate_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeDatasetSummary_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Create a new version tag for a dataset.
+   */
+  open func versionTagCreate(datasetId: DatasetId, name: String, description: String?) throws
+    -> VersionTag
+  {
+    return try FfiConverterTypeVersionTag_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_tag_create(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterString.lower(name),
+          FfiConverterOptionString.lower(description), $0
+        )
+      })
+  }
+
+  /**
+   * Create a new version tag for a dataset (async).
+   */
+  open func versionTagCreateAsync(datasetId: DatasetId, name: String, description: String?)
+    async throws -> VersionTag
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_tag_create_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterString.lower(name),
+            FfiConverterOptionString.lower(description)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeVersionTag_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Delete a version tag from a dataset.
+   */
+  open func versionTagDelete(datasetId: DatasetId, name: String) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_tag_delete(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterString.lower(name), $0
+        )
+      })
+  }
+
+  /**
+   * Delete a version tag from a dataset (async).
+   */
+  open func versionTagDeleteAsync(datasetId: DatasetId, name: String) async throws -> String {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_tag_delete_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterString.lower(name)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterString.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Get a specific version tag by name.
+   */
+  open func versionTagGet(datasetId: DatasetId, name: String) throws -> VersionTag {
+    return try FfiConverterTypeVersionTag_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_tag_get(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterString.lower(name), $0
+        )
+      })
+  }
+
+  /**
+   * Get a specific version tag by name (async).
+   */
+  open func versionTagGetAsync(datasetId: DatasetId, name: String) async throws -> VersionTag {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_tag_get_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterString.lower(name)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeVersionTag_lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * List all version tags for a dataset.
+   */
+  open func versionTagList(datasetId: DatasetId) throws -> [VersionTag] {
+    return try FfiConverterSequenceTypeVersionTag.lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_tag_list(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId), $0
+        )
+      })
+  }
+
+  /**
+   * List all version tags for a dataset (async).
+   */
+  open func versionTagListAsync(datasetId: DatasetId) async throws -> [VersionTag] {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_tag_list_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterSequenceTypeVersionTag.lift,
+        errorHandler: FfiConverterTypeClientError_lift
+      )
+  }
+
+  /**
+   * Restore a dataset to the state at a specific version tag.
+   */
+  open func versionTagRestore(datasetId: DatasetId, name: String) throws -> RestoreResult {
+    return try FfiConverterTypeRestoreResult_lift(
+      try rustCallWithError(FfiConverterTypeClientError_lift) {
+        uniffi_edgefirst_client_fn_method_client_version_tag_restore(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeDatasetId_lower(datasetId),
+          FfiConverterString.lower(name), $0
+        )
+      })
+  }
+
+  /**
+   * Restore a dataset to the state at a specific version tag (async).
+   */
+  open func versionTagRestoreAsync(datasetId: DatasetId, name: String) async throws -> RestoreResult
+  {
+    return
+      try await uniffiRustCallAsync(
+        rustFutureFunc: {
+          uniffi_edgefirst_client_fn_method_client_version_tag_restore_async(
+            self.uniffiCloneHandle(),
+            FfiConverterTypeDatasetId_lower(datasetId), FfiConverterString.lower(name)
+          )
+        },
+        pollFunc: ffi_edgefirst_client_rust_future_poll_rust_buffer,
+        completeFunc: ffi_edgefirst_client_rust_future_complete_rust_buffer,
+        freeFunc: ffi_edgefirst_client_rust_future_free_rust_buffer,
+        liftFunc: FfiConverterTypeRestoreResult_lift,
         errorHandler: FfiConverterTypeClientError_lift
       )
   }
@@ -3118,17 +4053,21 @@ public func FfiConverterTypeAnnotation_lower(_ value: Annotation) -> RustBuffer 
 }
 
 /// An annotation set in a dataset.
+///
+/// `dataset_id` and `created` are `None` when this annotation set was
+/// fetched via a tag-scoped query: the server's tag snapshot response
+/// omits both `dataset_id` and the creation date.
 public struct AnnotationSet: Equatable, Hashable {
   public let id: AnnotationSetId
-  public let datasetId: DatasetId
+  public let datasetId: DatasetId?
   public let name: String
   public let description: String
-  public let created: String
+  public let created: String?
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    id: AnnotationSetId, datasetId: DatasetId, name: String, description: String, created: String
+    id: AnnotationSetId, datasetId: DatasetId?, name: String, description: String, created: String?
   ) {
     self.id = id
     self.datasetId = datasetId
@@ -3152,19 +4091,19 @@ public struct FfiConverterTypeAnnotationSet: FfiConverterRustBuffer {
     return
       try AnnotationSet(
         id: FfiConverterTypeAnnotationSetId.read(from: &buf),
-        datasetId: FfiConverterTypeDatasetId.read(from: &buf),
+        datasetId: FfiConverterOptionTypeDatasetId.read(from: &buf),
         name: FfiConverterString.read(from: &buf),
         description: FfiConverterString.read(from: &buf),
-        created: FfiConverterString.read(from: &buf)
+        created: FfiConverterOptionString.read(from: &buf)
       )
   }
 
   public static func write(_ value: AnnotationSet, into buf: inout [UInt8]) {
     FfiConverterTypeAnnotationSetId.write(value.id, into: &buf)
-    FfiConverterTypeDatasetId.write(value.datasetId, into: &buf)
+    FfiConverterOptionTypeDatasetId.write(value.datasetId, into: &buf)
     FfiConverterString.write(value.name, into: &buf)
     FfiConverterString.write(value.description, into: &buf)
-    FfiConverterString.write(value.created, into: &buf)
+    FfiConverterOptionString.write(value.created, into: &buf)
   }
 }
 
@@ -3450,6 +4389,168 @@ public func FfiConverterTypeBox3d_lower(_ value: Box3d) -> RustBuffer {
   return FfiConverterTypeBox3d.lower(value)
 }
 
+/// A single entry in the dataset changelog.
+public struct ChangelogEntry: Equatable, Hashable {
+  public let id: UInt64
+  public let datasetId: UInt64
+  public let serial: UInt64
+  public let entityType: String
+  public let operation: String
+  public let entityId: UInt64?
+  public let changeData: String
+  public let username: String
+  public let organizationId: UInt64
+  public let createdAt: String
+  public let message: String
+  public let s3VersionIds: [String]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    id: UInt64, datasetId: UInt64, serial: UInt64, entityType: String, operation: String,
+    entityId: UInt64?, changeData: String, username: String, organizationId: UInt64,
+    createdAt: String, message: String, s3VersionIds: [String]
+  ) {
+    self.id = id
+    self.datasetId = datasetId
+    self.serial = serial
+    self.entityType = entityType
+    self.operation = operation
+    self.entityId = entityId
+    self.changeData = changeData
+    self.username = username
+    self.organizationId = organizationId
+    self.createdAt = createdAt
+    self.message = message
+    self.s3VersionIds = s3VersionIds
+  }
+
+}
+
+#if compiler(>=6)
+  extension ChangelogEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChangelogEntry: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChangelogEntry
+  {
+    return
+      try ChangelogEntry(
+        id: FfiConverterUInt64.read(from: &buf),
+        datasetId: FfiConverterUInt64.read(from: &buf),
+        serial: FfiConverterUInt64.read(from: &buf),
+        entityType: FfiConverterString.read(from: &buf),
+        operation: FfiConverterString.read(from: &buf),
+        entityId: FfiConverterOptionUInt64.read(from: &buf),
+        changeData: FfiConverterString.read(from: &buf),
+        username: FfiConverterString.read(from: &buf),
+        organizationId: FfiConverterUInt64.read(from: &buf),
+        createdAt: FfiConverterString.read(from: &buf),
+        message: FfiConverterString.read(from: &buf),
+        s3VersionIds: FfiConverterSequenceString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: ChangelogEntry, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.id, into: &buf)
+    FfiConverterUInt64.write(value.datasetId, into: &buf)
+    FfiConverterUInt64.write(value.serial, into: &buf)
+    FfiConverterString.write(value.entityType, into: &buf)
+    FfiConverterString.write(value.operation, into: &buf)
+    FfiConverterOptionUInt64.write(value.entityId, into: &buf)
+    FfiConverterString.write(value.changeData, into: &buf)
+    FfiConverterString.write(value.username, into: &buf)
+    FfiConverterUInt64.write(value.organizationId, into: &buf)
+    FfiConverterString.write(value.createdAt, into: &buf)
+    FfiConverterString.write(value.message, into: &buf)
+    FfiConverterSequenceString.write(value.s3VersionIds, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChangelogEntry_lift(_ buf: RustBuffer) throws -> ChangelogEntry {
+  return try FfiConverterTypeChangelogEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChangelogEntry_lower(_ value: ChangelogEntry) -> RustBuffer {
+  return FfiConverterTypeChangelogEntry.lower(value)
+}
+
+/// Paginated changelog response.
+public struct ChangelogResponse: Equatable, Hashable {
+  public let entries: [ChangelogEntry]
+  public let count: UInt64
+  public let continueToken: String
+  public let fromSerial: UInt64?
+  public let toSerial: UInt64?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    entries: [ChangelogEntry], count: UInt64, continueToken: String, fromSerial: UInt64?,
+    toSerial: UInt64?
+  ) {
+    self.entries = entries
+    self.count = count
+    self.continueToken = continueToken
+    self.fromSerial = fromSerial
+    self.toSerial = toSerial
+  }
+
+}
+
+#if compiler(>=6)
+  extension ChangelogResponse: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChangelogResponse: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> ChangelogResponse
+  {
+    return
+      try ChangelogResponse(
+        entries: FfiConverterSequenceTypeChangelogEntry.read(from: &buf),
+        count: FfiConverterUInt64.read(from: &buf),
+        continueToken: FfiConverterString.read(from: &buf),
+        fromSerial: FfiConverterOptionUInt64.read(from: &buf),
+        toSerial: FfiConverterOptionUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: ChangelogResponse, into buf: inout [UInt8]) {
+    FfiConverterSequenceTypeChangelogEntry.write(value.entries, into: &buf)
+    FfiConverterUInt64.write(value.count, into: &buf)
+    FfiConverterString.write(value.continueToken, into: &buf)
+    FfiConverterOptionUInt64.write(value.fromSerial, into: &buf)
+    FfiConverterOptionUInt64.write(value.toSerial, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChangelogResponse_lift(_ buf: RustBuffer) throws -> ChangelogResponse {
+  return try FfiConverterTypeChangelogResponse.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChangelogResponse_lower(_ value: ChangelogResponse) -> RustBuffer {
+  return FfiConverterTypeChangelogResponse.lower(value)
+}
+
 /// A dataset in EdgeFirst Studio.
 public struct Dataset: Equatable, Hashable {
   public let id: DatasetId
@@ -3457,17 +4558,24 @@ public struct Dataset: Equatable, Hashable {
   public let name: String
   public let description: String
   public let created: String
+  public let tagId: UInt64?
+  public let tag: String
+  public let tagDescription: String
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    id: DatasetId, projectId: ProjectId, name: String, description: String, created: String
+    id: DatasetId, projectId: ProjectId, name: String, description: String, created: String,
+    tagId: UInt64?, tag: String, tagDescription: String
   ) {
     self.id = id
     self.projectId = projectId
     self.name = name
     self.description = description
     self.created = created
+    self.tagId = tagId
+    self.tag = tag
+    self.tagDescription = tagDescription
   }
 
 }
@@ -3487,7 +4595,10 @@ public struct FfiConverterTypeDataset: FfiConverterRustBuffer {
         projectId: FfiConverterTypeProjectId.read(from: &buf),
         name: FfiConverterString.read(from: &buf),
         description: FfiConverterString.read(from: &buf),
-        created: FfiConverterString.read(from: &buf)
+        created: FfiConverterString.read(from: &buf),
+        tagId: FfiConverterOptionUInt64.read(from: &buf),
+        tag: FfiConverterString.read(from: &buf),
+        tagDescription: FfiConverterString.read(from: &buf)
       )
   }
 
@@ -3497,6 +4608,9 @@ public struct FfiConverterTypeDataset: FfiConverterRustBuffer {
     FfiConverterString.write(value.name, into: &buf)
     FfiConverterString.write(value.description, into: &buf)
     FfiConverterString.write(value.created, into: &buf)
+    FfiConverterOptionUInt64.write(value.tagId, into: &buf)
+    FfiConverterString.write(value.tag, into: &buf)
+    FfiConverterString.write(value.tagDescription, into: &buf)
   }
 }
 
@@ -3558,6 +4672,85 @@ public func FfiConverterTypeDatasetId_lift(_ buf: RustBuffer) throws -> DatasetI
 #endif
 public func FfiConverterTypeDatasetId_lower(_ value: DatasetId) -> RustBuffer {
   return FfiConverterTypeDatasetId.lower(value)
+}
+
+/// Cached metrics summary for a dataset's current state.
+public struct DatasetSummary: Equatable, Hashable {
+  public let datasetId: UInt64
+  public let currentSerial: UInt64
+  public let imageCount: UInt64
+  public let annotationCounts: [String: UInt64]
+  public let sensorCounts: [String: UInt64]
+  public let labelCount: UInt64
+  public let annotationSetCount: UInt64
+  public let lastUpdated: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    datasetId: UInt64, currentSerial: UInt64, imageCount: UInt64,
+    annotationCounts: [String: UInt64], sensorCounts: [String: UInt64], labelCount: UInt64,
+    annotationSetCount: UInt64, lastUpdated: String
+  ) {
+    self.datasetId = datasetId
+    self.currentSerial = currentSerial
+    self.imageCount = imageCount
+    self.annotationCounts = annotationCounts
+    self.sensorCounts = sensorCounts
+    self.labelCount = labelCount
+    self.annotationSetCount = annotationSetCount
+    self.lastUpdated = lastUpdated
+  }
+
+}
+
+#if compiler(>=6)
+  extension DatasetSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDatasetSummary: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DatasetSummary
+  {
+    return
+      try DatasetSummary(
+        datasetId: FfiConverterUInt64.read(from: &buf),
+        currentSerial: FfiConverterUInt64.read(from: &buf),
+        imageCount: FfiConverterUInt64.read(from: &buf),
+        annotationCounts: FfiConverterDictionaryStringUInt64.read(from: &buf),
+        sensorCounts: FfiConverterDictionaryStringUInt64.read(from: &buf),
+        labelCount: FfiConverterUInt64.read(from: &buf),
+        annotationSetCount: FfiConverterUInt64.read(from: &buf),
+        lastUpdated: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: DatasetSummary, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.datasetId, into: &buf)
+    FfiConverterUInt64.write(value.currentSerial, into: &buf)
+    FfiConverterUInt64.write(value.imageCount, into: &buf)
+    FfiConverterDictionaryStringUInt64.write(value.annotationCounts, into: &buf)
+    FfiConverterDictionaryStringUInt64.write(value.sensorCounts, into: &buf)
+    FfiConverterUInt64.write(value.labelCount, into: &buf)
+    FfiConverterUInt64.write(value.annotationSetCount, into: &buf)
+    FfiConverterString.write(value.lastUpdated, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDatasetSummary_lift(_ buf: RustBuffer) throws -> DatasetSummary {
+  return try FfiConverterTypeDatasetSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDatasetSummary_lower(_ value: DatasetSummary) -> RustBuffer {
+  return FfiConverterTypeDatasetSummary.lower(value)
 }
 
 /// An experiment in EdgeFirst Studio.
@@ -4130,6 +5323,116 @@ public func FfiConverterTypeLocation_lower(_ value: Location) -> RustBuffer {
   return FfiConverterTypeLocation.lower(value)
 }
 
+/// Result of `Client::start_training_session`: the launch task id and
+/// the freshly-created training session id.
+public struct NewTrainingSession: Equatable, Hashable {
+  public let taskId: TaskId
+  public let sessionId: TrainingSessionId?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(taskId: TaskId, sessionId: TrainingSessionId?) {
+    self.taskId = taskId
+    self.sessionId = sessionId
+  }
+
+}
+
+#if compiler(>=6)
+  extension NewTrainingSession: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNewTrainingSession: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NewTrainingSession
+  {
+    return
+      try NewTrainingSession(
+        taskId: FfiConverterTypeTaskId.read(from: &buf),
+        sessionId: FfiConverterOptionTypeTrainingSessionId.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NewTrainingSession, into buf: inout [UInt8]) {
+    FfiConverterTypeTaskId.write(value.taskId, into: &buf)
+    FfiConverterOptionTypeTrainingSessionId.write(value.sessionId, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewTrainingSession_lift(_ buf: RustBuffer) throws -> NewTrainingSession
+{
+  return try FfiConverterTypeNewTrainingSession.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewTrainingSession_lower(_ value: NewTrainingSession) -> RustBuffer {
+  return FfiConverterTypeNewTrainingSession.lower(value)
+}
+
+/// Result of `Client::start_validation_session`: the launch task id
+/// and the freshly-created validation session id.
+public struct NewValidationSession: Equatable, Hashable {
+  public let taskId: TaskId
+  public let sessionId: ValidationSessionId?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(taskId: TaskId, sessionId: ValidationSessionId?) {
+    self.taskId = taskId
+    self.sessionId = sessionId
+  }
+
+}
+
+#if compiler(>=6)
+  extension NewValidationSession: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNewValidationSession: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NewValidationSession
+  {
+    return
+      try NewValidationSession(
+        taskId: FfiConverterTypeTaskId.read(from: &buf),
+        sessionId: FfiConverterOptionTypeValidationSessionId.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NewValidationSession, into buf: inout [UInt8]) {
+    FfiConverterTypeTaskId.write(value.taskId, into: &buf)
+    FfiConverterOptionTypeValidationSessionId.write(value.sessionId, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewValidationSession_lift(_ buf: RustBuffer) throws
+  -> NewValidationSession
+{
+  return try FfiConverterTypeNewValidationSession.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNewValidationSession_lower(_ value: NewValidationSession) -> RustBuffer
+{
+  return FfiConverterTypeNewValidationSession.lower(value)
+}
+
 /// Organization information and metadata.
 public struct Organization: Equatable, Hashable {
   public let id: OrganizationId
@@ -4474,6 +5777,177 @@ public func FfiConverterTypeProjectId_lift(_ buf: RustBuffer) throws -> ProjectI
 #endif
 public func FfiConverterTypeProjectId_lower(_ value: ProjectId) -> RustBuffer {
   return FfiConverterTypeProjectId.lower(value)
+}
+
+/// Result from restoring a dataset to a version tag.
+public struct RestoreResult: Equatable, Hashable {
+  public let success: Bool
+  public let newSerial: UInt64
+  public let restoredFrom: RestoredFrom
+  public let restoredCounts: RestoredCounts
+  public let message: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    success: Bool, newSerial: UInt64, restoredFrom: RestoredFrom, restoredCounts: RestoredCounts,
+    message: String
+  ) {
+    self.success = success
+    self.newSerial = newSerial
+    self.restoredFrom = restoredFrom
+    self.restoredCounts = restoredCounts
+    self.message = message
+  }
+
+}
+
+#if compiler(>=6)
+  extension RestoreResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRestoreResult: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RestoreResult
+  {
+    return
+      try RestoreResult(
+        success: FfiConverterBool.read(from: &buf),
+        newSerial: FfiConverterUInt64.read(from: &buf),
+        restoredFrom: FfiConverterTypeRestoredFrom.read(from: &buf),
+        restoredCounts: FfiConverterTypeRestoredCounts.read(from: &buf),
+        message: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: RestoreResult, into buf: inout [UInt8]) {
+    FfiConverterBool.write(value.success, into: &buf)
+    FfiConverterUInt64.write(value.newSerial, into: &buf)
+    FfiConverterTypeRestoredFrom.write(value.restoredFrom, into: &buf)
+    FfiConverterTypeRestoredCounts.write(value.restoredCounts, into: &buf)
+    FfiConverterString.write(value.message, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoreResult_lift(_ buf: RustBuffer) throws -> RestoreResult {
+  return try FfiConverterTypeRestoreResult.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoreResult_lower(_ value: RestoreResult) -> RustBuffer {
+  return FfiConverterTypeRestoreResult.lower(value)
+}
+
+/// Counts of entities restored.
+public struct RestoredCounts: Equatable, Hashable {
+  public let images: UInt64
+  public let labels: UInt64
+  public let annotationSets: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(images: UInt64, labels: UInt64, annotationSets: UInt64) {
+    self.images = images
+    self.labels = labels
+    self.annotationSets = annotationSets
+  }
+
+}
+
+#if compiler(>=6)
+  extension RestoredCounts: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRestoredCounts: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RestoredCounts
+  {
+    return
+      try RestoredCounts(
+        images: FfiConverterUInt64.read(from: &buf),
+        labels: FfiConverterUInt64.read(from: &buf),
+        annotationSets: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: RestoredCounts, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.images, into: &buf)
+    FfiConverterUInt64.write(value.labels, into: &buf)
+    FfiConverterUInt64.write(value.annotationSets, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoredCounts_lift(_ buf: RustBuffer) throws -> RestoredCounts {
+  return try FfiConverterTypeRestoredCounts.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoredCounts_lower(_ value: RestoredCounts) -> RustBuffer {
+  return FfiConverterTypeRestoredCounts.lower(value)
+}
+
+/// Source tag information in a restore result.
+public struct RestoredFrom: Equatable, Hashable {
+  public let tag: String
+  public let serial: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(tag: String, serial: UInt64) {
+    self.tag = tag
+    self.serial = serial
+  }
+
+}
+
+#if compiler(>=6)
+  extension RestoredFrom: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRestoredFrom: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RestoredFrom {
+    return
+      try RestoredFrom(
+        tag: FfiConverterString.read(from: &buf),
+        serial: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: RestoredFrom, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.tag, into: &buf)
+    FfiConverterUInt64.write(value.serial, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoredFrom_lift(_ buf: RustBuffer) throws -> RestoredFrom {
+  return try FfiConverterTypeRestoredFrom.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRestoredFrom_lower(_ value: RestoredFrom) -> RustBuffer {
+  return FfiConverterTypeRestoredFrom.lower(value)
 }
 
 /// A sample in a dataset (image with metadata and annotations).
@@ -4921,6 +6395,207 @@ public func FfiConverterTypeSampleId_lower(_ value: SampleId) -> RustBuffer {
   return FfiConverterTypeSampleId.lower(value)
 }
 
+/// A single field descriptor from a trainer or validator parameter
+/// schema. Describes one hyperparameter: its name, type, default and
+/// constraints. Nested parameter groups are exposed via `children`.
+public struct SchemaField: Equatable, Hashable {
+  /**
+   * Parameter name — the key to use in the launch params map.
+   */
+  public let name: String?
+  public let label: String?
+  public let description: String?
+  public let required: Bool
+  public let `default`: Parameter?
+  public let fieldType: SchemaFieldType?
+  public let min: Double?
+  public let max: Double?
+  public let step: Double?
+  public let options: [SchemaOption]
+  public let children: [SchemaField]
+  public let isDropdown: Bool
+  public let multiSelect: Bool
+  public let isMultiLine: Bool
+  public let hidden: Bool
+  public let numericOnly: Bool
+  public let enableTagsSelection: Bool
+  public let enableAnnotationSetSelection: Bool
+  public let values: [Parameter]?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Parameter name — the key to use in the launch params map.
+     */
+    name: String?, label: String?, description: String?, required: Bool, `default`: Parameter?,
+    fieldType: SchemaFieldType?, min: Double?, max: Double?, step: Double?, options: [SchemaOption],
+    children: [SchemaField], isDropdown: Bool, multiSelect: Bool, isMultiLine: Bool, hidden: Bool,
+    numericOnly: Bool, enableTagsSelection: Bool, enableAnnotationSetSelection: Bool,
+    values: [Parameter]?
+  ) {
+    self.name = name
+    self.label = label
+    self.description = description
+    self.required = required
+    self.`default` = `default`
+    self.fieldType = fieldType
+    self.min = min
+    self.max = max
+    self.step = step
+    self.options = options
+    self.children = children
+    self.isDropdown = isDropdown
+    self.multiSelect = multiSelect
+    self.isMultiLine = isMultiLine
+    self.hidden = hidden
+    self.numericOnly = numericOnly
+    self.enableTagsSelection = enableTagsSelection
+    self.enableAnnotationSetSelection = enableAnnotationSetSelection
+    self.values = values
+  }
+
+}
+
+#if compiler(>=6)
+  extension SchemaField: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSchemaField: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SchemaField {
+    return
+      try SchemaField(
+        name: FfiConverterOptionString.read(from: &buf),
+        label: FfiConverterOptionString.read(from: &buf),
+        description: FfiConverterOptionString.read(from: &buf),
+        required: FfiConverterBool.read(from: &buf),
+        default: FfiConverterOptionTypeParameter.read(from: &buf),
+        fieldType: FfiConverterOptionTypeSchemaFieldType.read(from: &buf),
+        min: FfiConverterOptionDouble.read(from: &buf),
+        max: FfiConverterOptionDouble.read(from: &buf),
+        step: FfiConverterOptionDouble.read(from: &buf),
+        options: FfiConverterSequenceTypeSchemaOption.read(from: &buf),
+        children: FfiConverterSequenceTypeSchemaField.read(from: &buf),
+        isDropdown: FfiConverterBool.read(from: &buf),
+        multiSelect: FfiConverterBool.read(from: &buf),
+        isMultiLine: FfiConverterBool.read(from: &buf),
+        hidden: FfiConverterBool.read(from: &buf),
+        numericOnly: FfiConverterBool.read(from: &buf),
+        enableTagsSelection: FfiConverterBool.read(from: &buf),
+        enableAnnotationSetSelection: FfiConverterBool.read(from: &buf),
+        values: FfiConverterOptionSequenceTypeParameter.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: SchemaField, into buf: inout [UInt8]) {
+    FfiConverterOptionString.write(value.name, into: &buf)
+    FfiConverterOptionString.write(value.label, into: &buf)
+    FfiConverterOptionString.write(value.description, into: &buf)
+    FfiConverterBool.write(value.required, into: &buf)
+    FfiConverterOptionTypeParameter.write(value.`default`, into: &buf)
+    FfiConverterOptionTypeSchemaFieldType.write(value.fieldType, into: &buf)
+    FfiConverterOptionDouble.write(value.min, into: &buf)
+    FfiConverterOptionDouble.write(value.max, into: &buf)
+    FfiConverterOptionDouble.write(value.step, into: &buf)
+    FfiConverterSequenceTypeSchemaOption.write(value.options, into: &buf)
+    FfiConverterSequenceTypeSchemaField.write(value.children, into: &buf)
+    FfiConverterBool.write(value.isDropdown, into: &buf)
+    FfiConverterBool.write(value.multiSelect, into: &buf)
+    FfiConverterBool.write(value.isMultiLine, into: &buf)
+    FfiConverterBool.write(value.hidden, into: &buf)
+    FfiConverterBool.write(value.numericOnly, into: &buf)
+    FfiConverterBool.write(value.enableTagsSelection, into: &buf)
+    FfiConverterBool.write(value.enableAnnotationSetSelection, into: &buf)
+    FfiConverterOptionSequenceTypeParameter.write(value.values, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaField_lift(_ buf: RustBuffer) throws -> SchemaField {
+  return try FfiConverterTypeSchemaField.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaField_lower(_ value: SchemaField) -> RustBuffer {
+  return FfiConverterTypeSchemaField.lower(value)
+}
+
+/// One selectable option of a `select` schema field.
+public struct SchemaOption: Equatable, Hashable {
+  /**
+   * Option value; may be any JSON scalar (string, number, …).
+   */
+  public let name: Parameter?
+  public let label: String?
+  /**
+   * Nested fields revealed when this option is selected.
+   */
+  public let children: [SchemaField]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    /**
+     * Option value; may be any JSON scalar (string, number, …).
+     */
+    name: Parameter?, label: String?,
+    /**
+     * Nested fields revealed when this option is selected.
+     */
+    children: [SchemaField]
+  ) {
+    self.name = name
+    self.label = label
+    self.children = children
+  }
+
+}
+
+#if compiler(>=6)
+  extension SchemaOption: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSchemaOption: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SchemaOption {
+    return
+      try SchemaOption(
+        name: FfiConverterOptionTypeParameter.read(from: &buf),
+        label: FfiConverterOptionString.read(from: &buf),
+        children: FfiConverterSequenceTypeSchemaField.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: SchemaOption, into buf: inout [UInt8]) {
+    FfiConverterOptionTypeParameter.write(value.name, into: &buf)
+    FfiConverterOptionString.write(value.label, into: &buf)
+    FfiConverterSequenceTypeSchemaField.write(value.children, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaOption_lift(_ buf: RustBuffer) throws -> SchemaOption {
+  return try FfiConverterTypeSchemaOption.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaOption_lower(_ value: SchemaOption) -> RustBuffer {
+  return FfiConverterTypeSchemaOption.lower(value)
+}
+
 /// Unique identifier for a sequence.
 public struct SequenceId: Equatable, Hashable {
   public let value: UInt64
@@ -5131,6 +6806,229 @@ public func FfiConverterTypeStage_lift(_ buf: RustBuffer) throws -> Stage {
 #endif
 public func FfiConverterTypeStage_lower(_ value: Stage) -> RustBuffer {
   return FfiConverterTypeStage.lower(value)
+}
+
+/// Request payload for `Client::start_training_session`.
+///
+/// Launches a new training session against a single dataset using
+/// group-based train/validation splits. `tag_name: None` selects the
+/// dataset's latest tag; `train_group` / `val_group: None` use the
+/// dataset's default `train` / `val` split groups.
+public struct StartTrainingRequest: Equatable, Hashable {
+  public let projectId: ProjectId
+  public let name: String
+  public let experimentId: ExperimentId
+  public let trainerType: String
+  public let datasetId: DatasetId
+  public let annotationSetId: AnnotationSetId
+  public let tagName: String?
+  public let trainGroup: String?
+  public let valGroup: String?
+  public let sessionName: String?
+  public let sessionDescription: String?
+  public let weightsSession: TrainingSessionId?
+  public let params: [String: Parameter]
+  public let isLocal: Bool
+  public let isKubernetes: Bool
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    projectId: ProjectId, name: String, experimentId: ExperimentId, trainerType: String,
+    datasetId: DatasetId, annotationSetId: AnnotationSetId, tagName: String?, trainGroup: String?,
+    valGroup: String?, sessionName: String?, sessionDescription: String?,
+    weightsSession: TrainingSessionId?, params: [String: Parameter], isLocal: Bool,
+    isKubernetes: Bool
+  ) {
+    self.projectId = projectId
+    self.name = name
+    self.experimentId = experimentId
+    self.trainerType = trainerType
+    self.datasetId = datasetId
+    self.annotationSetId = annotationSetId
+    self.tagName = tagName
+    self.trainGroup = trainGroup
+    self.valGroup = valGroup
+    self.sessionName = sessionName
+    self.sessionDescription = sessionDescription
+    self.weightsSession = weightsSession
+    self.params = params
+    self.isLocal = isLocal
+    self.isKubernetes = isKubernetes
+  }
+
+}
+
+#if compiler(>=6)
+  extension StartTrainingRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStartTrainingRequest: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> StartTrainingRequest
+  {
+    return
+      try StartTrainingRequest(
+        projectId: FfiConverterTypeProjectId.read(from: &buf),
+        name: FfiConverterString.read(from: &buf),
+        experimentId: FfiConverterTypeExperimentId.read(from: &buf),
+        trainerType: FfiConverterString.read(from: &buf),
+        datasetId: FfiConverterTypeDatasetId.read(from: &buf),
+        annotationSetId: FfiConverterTypeAnnotationSetId.read(from: &buf),
+        tagName: FfiConverterOptionString.read(from: &buf),
+        trainGroup: FfiConverterOptionString.read(from: &buf),
+        valGroup: FfiConverterOptionString.read(from: &buf),
+        sessionName: FfiConverterOptionString.read(from: &buf),
+        sessionDescription: FfiConverterOptionString.read(from: &buf),
+        weightsSession: FfiConverterOptionTypeTrainingSessionId.read(from: &buf),
+        params: FfiConverterDictionaryStringTypeParameter.read(from: &buf),
+        isLocal: FfiConverterBool.read(from: &buf),
+        isKubernetes: FfiConverterBool.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: StartTrainingRequest, into buf: inout [UInt8]) {
+    FfiConverterTypeProjectId.write(value.projectId, into: &buf)
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterTypeExperimentId.write(value.experimentId, into: &buf)
+    FfiConverterString.write(value.trainerType, into: &buf)
+    FfiConverterTypeDatasetId.write(value.datasetId, into: &buf)
+    FfiConverterTypeAnnotationSetId.write(value.annotationSetId, into: &buf)
+    FfiConverterOptionString.write(value.tagName, into: &buf)
+    FfiConverterOptionString.write(value.trainGroup, into: &buf)
+    FfiConverterOptionString.write(value.valGroup, into: &buf)
+    FfiConverterOptionString.write(value.sessionName, into: &buf)
+    FfiConverterOptionString.write(value.sessionDescription, into: &buf)
+    FfiConverterOptionTypeTrainingSessionId.write(value.weightsSession, into: &buf)
+    FfiConverterDictionaryStringTypeParameter.write(value.params, into: &buf)
+    FfiConverterBool.write(value.isLocal, into: &buf)
+    FfiConverterBool.write(value.isKubernetes, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStartTrainingRequest_lift(_ buf: RustBuffer) throws
+  -> StartTrainingRequest
+{
+  return try FfiConverterTypeStartTrainingRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStartTrainingRequest_lower(_ value: StartTrainingRequest) -> RustBuffer
+{
+  return FfiConverterTypeStartTrainingRequest.lower(value)
+}
+
+/// Request payload for `Client::start_validation_session`.
+///
+/// Set `is_local: true` for a user-managed session (no cloud instance
+/// is provisioned). One of `dataset_id` + `annotation_set_id` or
+/// `snapshot_id` selects the validation data source.
+public struct StartValidationRequest: Equatable, Hashable {
+  public let projectId: ProjectId
+  public let name: String
+  public let trainingSessionId: TrainingSessionId
+  public let modelFile: String
+  public let valType: String
+  public let params: [String: Parameter]
+  public let isLocal: Bool
+  public let isKubernetes: Bool
+  public let description: String?
+  public let datasetId: DatasetId?
+  public let annotationSetId: AnnotationSetId?
+  public let snapshotId: SnapshotId?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    projectId: ProjectId, name: String, trainingSessionId: TrainingSessionId, modelFile: String,
+    valType: String, params: [String: Parameter], isLocal: Bool, isKubernetes: Bool,
+    description: String?, datasetId: DatasetId?, annotationSetId: AnnotationSetId?,
+    snapshotId: SnapshotId?
+  ) {
+    self.projectId = projectId
+    self.name = name
+    self.trainingSessionId = trainingSessionId
+    self.modelFile = modelFile
+    self.valType = valType
+    self.params = params
+    self.isLocal = isLocal
+    self.isKubernetes = isKubernetes
+    self.description = description
+    self.datasetId = datasetId
+    self.annotationSetId = annotationSetId
+    self.snapshotId = snapshotId
+  }
+
+}
+
+#if compiler(>=6)
+  extension StartValidationRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStartValidationRequest: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> StartValidationRequest
+  {
+    return
+      try StartValidationRequest(
+        projectId: FfiConverterTypeProjectId.read(from: &buf),
+        name: FfiConverterString.read(from: &buf),
+        trainingSessionId: FfiConverterTypeTrainingSessionId.read(from: &buf),
+        modelFile: FfiConverterString.read(from: &buf),
+        valType: FfiConverterString.read(from: &buf),
+        params: FfiConverterDictionaryStringTypeParameter.read(from: &buf),
+        isLocal: FfiConverterBool.read(from: &buf),
+        isKubernetes: FfiConverterBool.read(from: &buf),
+        description: FfiConverterOptionString.read(from: &buf),
+        datasetId: FfiConverterOptionTypeDatasetId.read(from: &buf),
+        annotationSetId: FfiConverterOptionTypeAnnotationSetId.read(from: &buf),
+        snapshotId: FfiConverterOptionTypeSnapshotId.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: StartValidationRequest, into buf: inout [UInt8]) {
+    FfiConverterTypeProjectId.write(value.projectId, into: &buf)
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterTypeTrainingSessionId.write(value.trainingSessionId, into: &buf)
+    FfiConverterString.write(value.modelFile, into: &buf)
+    FfiConverterString.write(value.valType, into: &buf)
+    FfiConverterDictionaryStringTypeParameter.write(value.params, into: &buf)
+    FfiConverterBool.write(value.isLocal, into: &buf)
+    FfiConverterBool.write(value.isKubernetes, into: &buf)
+    FfiConverterOptionString.write(value.description, into: &buf)
+    FfiConverterOptionTypeDatasetId.write(value.datasetId, into: &buf)
+    FfiConverterOptionTypeAnnotationSetId.write(value.annotationSetId, into: &buf)
+    FfiConverterOptionTypeSnapshotId.write(value.snapshotId, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStartValidationRequest_lift(_ buf: RustBuffer) throws
+  -> StartValidationRequest
+{
+  return try FfiConverterTypeStartValidationRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStartValidationRequest_lower(_ value: StartValidationRequest)
+  -> RustBuffer
+{
+  return FfiConverterTypeStartValidationRequest.lower(value)
 }
 
 /// A task in EdgeFirst Studio.
@@ -5402,6 +7300,66 @@ public func FfiConverterTypeTiming_lower(_ value: Timing) -> RustBuffer {
   return FfiConverterTypeTiming.lower(value)
 }
 
+/// Catalog entry describing an available trainer type.
+///
+/// Returned by `Client::trainer_schemas`. The `schema_type` value is
+/// what gets passed to `Client::trainer_schema` and to
+/// `StartTrainingRequest::trainer_type`.
+public struct TrainerSchemaInfo: Equatable, Hashable {
+  public let name: String
+  public let label: String
+  public let schemaType: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(name: String, label: String, schemaType: String) {
+    self.name = name
+    self.label = label
+    self.schemaType = schemaType
+  }
+
+}
+
+#if compiler(>=6)
+  extension TrainerSchemaInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrainerSchemaInfo: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> TrainerSchemaInfo
+  {
+    return
+      try TrainerSchemaInfo(
+        name: FfiConverterString.read(from: &buf),
+        label: FfiConverterString.read(from: &buf),
+        schemaType: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: TrainerSchemaInfo, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterString.write(value.label, into: &buf)
+    FfiConverterString.write(value.schemaType, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrainerSchemaInfo_lift(_ buf: RustBuffer) throws -> TrainerSchemaInfo {
+  return try FfiConverterTypeTrainerSchemaInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrainerSchemaInfo_lower(_ value: TrainerSchemaInfo) -> RustBuffer {
+  return FfiConverterTypeTrainerSchemaInfo.lower(value)
+}
+
 /// A training session in an experiment.
 public struct TrainingSession: Equatable, Hashable {
   public let id: TrainingSessionId
@@ -5565,6 +7523,237 @@ public func FfiConverterTypeValidationSessionId_lift(_ buf: RustBuffer) throws
 #endif
 public func FfiConverterTypeValidationSessionId_lower(_ value: ValidationSessionId) -> RustBuffer {
   return FfiConverterTypeValidationSessionId.lower(value)
+}
+
+/// A validator parameter schema, as returned by
+/// `Client::validator_schemas`.
+public struct ValidatorSchema: Equatable, Hashable {
+  public let schemaType: String
+  public let name: String
+  public let schema: [SchemaField]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(schemaType: String, name: String, schema: [SchemaField]) {
+    self.schemaType = schemaType
+    self.name = name
+    self.schema = schema
+  }
+
+}
+
+#if compiler(>=6)
+  extension ValidatorSchema: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeValidatorSchema: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> ValidatorSchema
+  {
+    return
+      try ValidatorSchema(
+        schemaType: FfiConverterString.read(from: &buf),
+        name: FfiConverterString.read(from: &buf),
+        schema: FfiConverterSequenceTypeSchemaField.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: ValidatorSchema, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.schemaType, into: &buf)
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterSequenceTypeSchemaField.write(value.schema, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidatorSchema_lift(_ buf: RustBuffer) throws -> ValidatorSchema {
+  return try FfiConverterTypeValidatorSchema.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidatorSchema_lower(_ value: ValidatorSchema) -> RustBuffer {
+  return FfiConverterTypeValidatorSchema.lower(value)
+}
+
+/// Current version information for a dataset.
+public struct VersionCurrentResponse: Equatable, Hashable {
+  public let datasetId: UInt64
+  public let currentSerial: UInt64
+  public let latestTag: VersionTag?
+  public let tags: [VersionTag]
+  public let summary: DatasetSummary?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    datasetId: UInt64, currentSerial: UInt64, latestTag: VersionTag?, tags: [VersionTag],
+    summary: DatasetSummary?
+  ) {
+    self.datasetId = datasetId
+    self.currentSerial = currentSerial
+    self.latestTag = latestTag
+    self.tags = tags
+    self.summary = summary
+  }
+
+}
+
+#if compiler(>=6)
+  extension VersionCurrentResponse: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVersionCurrentResponse: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> VersionCurrentResponse
+  {
+    return
+      try VersionCurrentResponse(
+        datasetId: FfiConverterUInt64.read(from: &buf),
+        currentSerial: FfiConverterUInt64.read(from: &buf),
+        latestTag: FfiConverterOptionTypeVersionTag.read(from: &buf),
+        tags: FfiConverterSequenceTypeVersionTag.read(from: &buf),
+        summary: FfiConverterOptionTypeDatasetSummary.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: VersionCurrentResponse, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.datasetId, into: &buf)
+    FfiConverterUInt64.write(value.currentSerial, into: &buf)
+    FfiConverterOptionTypeVersionTag.write(value.latestTag, into: &buf)
+    FfiConverterSequenceTypeVersionTag.write(value.tags, into: &buf)
+    FfiConverterOptionTypeDatasetSummary.write(value.summary, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVersionCurrentResponse_lift(_ buf: RustBuffer) throws
+  -> VersionCurrentResponse
+{
+  return try FfiConverterTypeVersionCurrentResponse.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVersionCurrentResponse_lower(_ value: VersionCurrentResponse)
+  -> RustBuffer
+{
+  return FfiConverterTypeVersionCurrentResponse.lower(value)
+}
+
+/// A dataset version tag (immutable point-in-time marker).
+public struct VersionTag: Equatable, Hashable {
+  public let id: UInt64
+  public let datasetId: UInt64
+  public let name: String
+  public let serial: UInt64
+  public let description: String
+  public let createdBy: String
+  public let createdAt: String
+  public let imageCount: UInt64
+  public let annotationCounts: [String: UInt64]
+  public let sensorCounts: [String: UInt64]
+  public let labelCount: UInt64
+  public let annotationSetCount: UInt64
+  public let snapshotId: UInt64?
+  public let isCurrent: Bool
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    id: UInt64, datasetId: UInt64, name: String, serial: UInt64, description: String,
+    createdBy: String, createdAt: String, imageCount: UInt64, annotationCounts: [String: UInt64],
+    sensorCounts: [String: UInt64], labelCount: UInt64, annotationSetCount: UInt64,
+    snapshotId: UInt64?, isCurrent: Bool
+  ) {
+    self.id = id
+    self.datasetId = datasetId
+    self.name = name
+    self.serial = serial
+    self.description = description
+    self.createdBy = createdBy
+    self.createdAt = createdAt
+    self.imageCount = imageCount
+    self.annotationCounts = annotationCounts
+    self.sensorCounts = sensorCounts
+    self.labelCount = labelCount
+    self.annotationSetCount = annotationSetCount
+    self.snapshotId = snapshotId
+    self.isCurrent = isCurrent
+  }
+
+}
+
+#if compiler(>=6)
+  extension VersionTag: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVersionTag: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VersionTag {
+    return
+      try VersionTag(
+        id: FfiConverterUInt64.read(from: &buf),
+        datasetId: FfiConverterUInt64.read(from: &buf),
+        name: FfiConverterString.read(from: &buf),
+        serial: FfiConverterUInt64.read(from: &buf),
+        description: FfiConverterString.read(from: &buf),
+        createdBy: FfiConverterString.read(from: &buf),
+        createdAt: FfiConverterString.read(from: &buf),
+        imageCount: FfiConverterUInt64.read(from: &buf),
+        annotationCounts: FfiConverterDictionaryStringUInt64.read(from: &buf),
+        sensorCounts: FfiConverterDictionaryStringUInt64.read(from: &buf),
+        labelCount: FfiConverterUInt64.read(from: &buf),
+        annotationSetCount: FfiConverterUInt64.read(from: &buf),
+        snapshotId: FfiConverterOptionUInt64.read(from: &buf),
+        isCurrent: FfiConverterBool.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: VersionTag, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.id, into: &buf)
+    FfiConverterUInt64.write(value.datasetId, into: &buf)
+    FfiConverterString.write(value.name, into: &buf)
+    FfiConverterUInt64.write(value.serial, into: &buf)
+    FfiConverterString.write(value.description, into: &buf)
+    FfiConverterString.write(value.createdBy, into: &buf)
+    FfiConverterString.write(value.createdAt, into: &buf)
+    FfiConverterUInt64.write(value.imageCount, into: &buf)
+    FfiConverterDictionaryStringUInt64.write(value.annotationCounts, into: &buf)
+    FfiConverterDictionaryStringUInt64.write(value.sensorCounts, into: &buf)
+    FfiConverterUInt64.write(value.labelCount, into: &buf)
+    FfiConverterUInt64.write(value.annotationSetCount, into: &buf)
+    FfiConverterOptionUInt64.write(value.snapshotId, into: &buf)
+    FfiConverterBool.write(value.isCurrent, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVersionTag_lift(_ buf: RustBuffer) throws -> VersionTag {
+  return try FfiConverterTypeVersionTag.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVersionTag_lower(_ value: VersionTag) -> RustBuffer {
+  return FfiConverterTypeVersionTag.lower(value)
 }
 
 // Note that we don't yet support `indirect` for enums.
@@ -6081,6 +8270,149 @@ public func FfiConverterTypeParameter_lift(_ buf: RustBuffer) throws -> Paramete
 #endif
 public func FfiConverterTypeParameter_lower(_ value: Parameter) -> RustBuffer {
   return FfiConverterTypeParameter.lower(value)
+}
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The kind of input a `SchemaField` describes.
+ */
+
+public enum SchemaFieldType: Equatable, Hashable {
+
+  case group
+  case slider
+  case select
+  case bool
+  case int
+  case float
+  case text
+  case date
+  case project
+  case dataset
+  case trainer
+  case upload
+  /**
+   * Server-side metadata entry (machine image, entrypoint); not a
+   * user-facing parameter.
+   */
+  case info
+  /**
+   * Any type this client version does not recognize.
+   */
+  case unknown
+
+}
+
+#if compiler(>=6)
+  extension SchemaFieldType: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSchemaFieldType: FfiConverterRustBuffer {
+  typealias SwiftType = SchemaFieldType
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> SchemaFieldType
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .group
+
+    case 2: return .slider
+
+    case 3: return .select
+
+    case 4: return .bool
+
+    case 5: return .int
+
+    case 6: return .float
+
+    case 7: return .text
+
+    case 8: return .date
+
+    case 9: return .project
+
+    case 10: return .dataset
+
+    case 11: return .trainer
+
+    case 12: return .upload
+
+    case 13: return .info
+
+    case 14: return .unknown
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: SchemaFieldType, into buf: inout [UInt8]) {
+    switch value {
+
+    case .group:
+      writeInt(&buf, Int32(1))
+
+    case .slider:
+      writeInt(&buf, Int32(2))
+
+    case .select:
+      writeInt(&buf, Int32(3))
+
+    case .bool:
+      writeInt(&buf, Int32(4))
+
+    case .int:
+      writeInt(&buf, Int32(5))
+
+    case .float:
+      writeInt(&buf, Int32(6))
+
+    case .text:
+      writeInt(&buf, Int32(7))
+
+    case .date:
+      writeInt(&buf, Int32(8))
+
+    case .project:
+      writeInt(&buf, Int32(9))
+
+    case .dataset:
+      writeInt(&buf, Int32(10))
+
+    case .trainer:
+      writeInt(&buf, Int32(11))
+
+    case .upload:
+      writeInt(&buf, Int32(12))
+
+    case .info:
+      writeInt(&buf, Int32(13))
+
+    case .unknown:
+      writeInt(&buf, Int32(14))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaFieldType_lift(_ buf: RustBuffer) throws -> SchemaFieldType {
+  return try FfiConverterTypeSchemaFieldType.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSchemaFieldType_lower(_ value: SchemaFieldType) -> RustBuffer {
+  return FfiConverterTypeSchemaFieldType.lower(value)
 }
 
 /// Error type for token storage operations.
@@ -6659,6 +8991,30 @@ private struct FfiConverterOptionFloat: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionDouble: FfiConverterRustBuffer {
+  typealias SwiftType = Double?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterDouble.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterDouble.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionBool: FfiConverterRustBuffer {
   typealias SwiftType = Bool?
 
@@ -6731,6 +9087,30 @@ private struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeAnnotationSetId: FfiConverterRustBuffer {
+  typealias SwiftType = AnnotationSetId?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeAnnotationSetId.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeAnnotationSetId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionTypeBox2d: FfiConverterRustBuffer {
   typealias SwiftType = Box2d?
 
@@ -6771,6 +9151,54 @@ private struct FfiConverterOptionTypeBox3d: FfiConverterRustBuffer {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeBox3d.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeDatasetId: FfiConverterRustBuffer {
+  typealias SwiftType = DatasetId?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeDatasetId.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeDatasetId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeDatasetSummary: FfiConverterRustBuffer {
+  typealias SwiftType = DatasetSummary?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeDatasetSummary.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeDatasetSummary.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -6923,6 +9351,30 @@ private struct FfiConverterOptionTypeSampleId: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeSnapshotId: FfiConverterRustBuffer {
+  typealias SwiftType = SnapshotId?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeSnapshotId.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeSnapshotId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionTypeTiming: FfiConverterRustBuffer {
   typealias SwiftType = Timing?
 
@@ -6939,6 +9391,78 @@ private struct FfiConverterOptionTypeTiming: FfiConverterRustBuffer {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeTiming.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeTrainingSessionId: FfiConverterRustBuffer {
+  typealias SwiftType = TrainingSessionId?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeTrainingSessionId.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeTrainingSessionId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeValidationSessionId: FfiConverterRustBuffer {
+  typealias SwiftType = ValidationSessionId?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeValidationSessionId.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeValidationSessionId.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeVersionTag: FfiConverterRustBuffer {
+  typealias SwiftType = VersionTag?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeVersionTag.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeVersionTag.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -6971,6 +9495,30 @@ private struct FfiConverterOptionTypeParameter: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeSchemaFieldType: FfiConverterRustBuffer {
+  typealias SwiftType = SchemaFieldType?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeSchemaFieldType.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeSchemaFieldType.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionCallbackInterfaceProgressCallback: FfiConverterRustBuffer {
   typealias SwiftType = ProgressCallback?
 
@@ -6987,6 +9535,54 @@ private struct FfiConverterOptionCallbackInterfaceProgressCallback: FfiConverter
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterCallbackInterfaceProgressCallback.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionSequenceString: FfiConverterRustBuffer {
+  typealias SwiftType = [String]?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterSequenceString.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterSequenceString.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionSequenceTypeParameter: FfiConverterRustBuffer {
+  typealias SwiftType = [Parameter]?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterSequenceTypeParameter.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterSequenceTypeParameter.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -7116,6 +9712,33 @@ private struct FfiConverterSequenceTypeArtifact: FfiConverterRustBuffer {
     seq.reserveCapacity(Int(len))
     for _ in 0..<len {
       seq.append(try FfiConverterTypeArtifact.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeChangelogEntry: FfiConverterRustBuffer {
+  typealias SwiftType = [ChangelogEntry]
+
+  public static func write(_ value: [ChangelogEntry], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeChangelogEntry.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [ChangelogEntry]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [ChangelogEntry]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeChangelogEntry.read(from: &buf))
     }
     return seq
   }
@@ -7377,6 +10000,58 @@ private struct FfiConverterSequenceTypeSampleFile: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeSchemaField: FfiConverterRustBuffer {
+  typealias SwiftType = [SchemaField]
+
+  public static func write(_ value: [SchemaField], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeSchemaField.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SchemaField]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [SchemaField]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeSchemaField.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeSchemaOption: FfiConverterRustBuffer {
+  typealias SwiftType = [SchemaOption]
+
+  public static func write(_ value: [SchemaOption], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeSchemaOption.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SchemaOption]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [SchemaOption]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeSchemaOption.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeSnapshot: FfiConverterRustBuffer {
   typealias SwiftType = [Snapshot]
 
@@ -7394,6 +10069,33 @@ private struct FfiConverterSequenceTypeSnapshot: FfiConverterRustBuffer {
     seq.reserveCapacity(Int(len))
     for _ in 0..<len {
       seq.append(try FfiConverterTypeSnapshot.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeTrainerSchemaInfo: FfiConverterRustBuffer {
+  typealias SwiftType = [TrainerSchemaInfo]
+
+  public static func write(_ value: [TrainerSchemaInfo], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeTrainerSchemaInfo.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [TrainerSchemaInfo]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [TrainerSchemaInfo]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeTrainerSchemaInfo.read(from: &buf))
     }
     return seq
   }
@@ -7429,6 +10131,112 @@ private struct FfiConverterSequenceTypeTrainingSession: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeTrainingSessionId: FfiConverterRustBuffer {
+  typealias SwiftType = [TrainingSessionId]
+
+  public static func write(_ value: [TrainingSessionId], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeTrainingSessionId.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [TrainingSessionId]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [TrainingSessionId]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeTrainingSessionId.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeValidationSessionId: FfiConverterRustBuffer {
+  typealias SwiftType = [ValidationSessionId]
+
+  public static func write(_ value: [ValidationSessionId], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeValidationSessionId.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [ValidationSessionId]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [ValidationSessionId]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeValidationSessionId.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeValidatorSchema: FfiConverterRustBuffer {
+  typealias SwiftType = [ValidatorSchema]
+
+  public static func write(_ value: [ValidatorSchema], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeValidatorSchema.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [ValidatorSchema]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [ValidatorSchema]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeValidatorSchema.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeVersionTag: FfiConverterRustBuffer {
+  typealias SwiftType = [VersionTag]
+
+  public static func write(_ value: [VersionTag], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeVersionTag.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VersionTag] {
+    let len: Int32 = try readInt(&buf)
+    var seq = [VersionTag]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeVersionTag.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeParameter: FfiConverterRustBuffer {
   typealias SwiftType = [Parameter]
 
@@ -7448,6 +10256,34 @@ private struct FfiConverterSequenceTypeParameter: FfiConverterRustBuffer {
       seq.append(try FfiConverterTypeParameter.read(from: &buf))
     }
     return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterDictionaryStringUInt64: FfiConverterRustBuffer {
+  public static func write(_ value: [String: UInt64], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for (key, value) in value {
+      FfiConverterString.write(key, into: &buf)
+      FfiConverterUInt64.write(value, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String:
+    UInt64]
+  {
+    let len: Int32 = try readInt(&buf)
+    var dict = [String: UInt64]()
+    dict.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      let key = try FfiConverterString.read(from: &buf)
+      let value = try FfiConverterUInt64.read(from: &buf)
+      dict[key] = value
+    }
+    return dict
   }
 }
 
@@ -7925,10 +10761,10 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_func_validate_annotation() != 60922 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_annotation_sets() != 52667 {
+  if uniffi_edgefirst_client_checksum_method_client_annotation_sets() != 64310 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_annotation_sets_async() != 58035 {
+  if uniffi_edgefirst_client_checksum_method_client_annotation_sets_async() != 34147 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_artifacts() != 47017 {
@@ -7953,6 +10789,18 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_datasets_async() != 31737 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_delete_training_sessions() != 53443 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_delete_training_sessions_async() != 56933 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_delete_validation_sessions() != 30705 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_delete_validation_sessions_async() != 58191 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_experiment() != 51030 {
@@ -7985,10 +10833,10 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_jobs_async() != 33017 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_labels() != 53854 {
+  if uniffi_edgefirst_client_checksum_method_client_labels() != 26768 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_edgefirst_client_checksum_method_client_labels_async() != 3030 {
+  if uniffi_edgefirst_client_checksum_method_client_labels_async() != 58979 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_logout() != 56266 {
@@ -8027,10 +10875,34 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_snapshots_async() != 36918 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_start_training_session() != 46639 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_start_training_session_async() != 22971 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_start_validation_session() != 50632 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_start_validation_session_async() != 55297 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_task_info() != 1177 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_task_info_async() != 28895 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_trainer_schema() != 35308 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_trainer_schema_async() != 49185 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_trainer_schemas() != 14033 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_trainer_schemas_async() != 401 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_training_session() != 61626 {
@@ -8051,6 +10923,18 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_update_sample_dimensions_async() != 56639 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_update_training_session() != 3723 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_training_session_async() != 13074 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_validation_session() != 49808 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_update_validation_session_async() != 57069 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_url() != 10365 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -8066,10 +10950,76 @@ private let initializationResult: InitializationResult = {
   if uniffi_edgefirst_client_checksum_method_client_validation_sessions_async() != 56608 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_edgefirst_client_checksum_method_client_validator_schemas() != 60658 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_validator_schemas_async() != 49166 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_edgefirst_client_checksum_method_client_verify_token() != 32558 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_verify_token_async() != 9022 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_changelog() != 29631 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_changelog_async() != 62394 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_changelog_count() != 48275 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_changelog_count_async() != 60425 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_current() != 21119 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_current_async() != 59154 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_summary() != 23485 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_summary_async() != 47212 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_summary_recalculate() != 50984 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_summary_recalculate_async() != 42622 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_create() != 45999 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_create_async() != 21997 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_delete() != 4663 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_delete_async() != 10786 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_get() != 1145 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_get_async() != 13128 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_list() != 16768 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_list_async() != 6117 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_restore() != 14337 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_edgefirst_client_checksum_method_client_version_tag_restore_async() != 2125 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_edgefirst_client_checksum_method_client_with_login() != 31228 {
