@@ -211,8 +211,10 @@ enum Command {
         #[clap(long, value_delimiter = ',')]
         groups: Vec<String>,
 
-        /// Annotation types to download (box2d, box3d, mask, polygon).
-        /// Downloads all types if not specified.
+        /// Annotation types to download: box2d, box3d, polygon, raster.
+        /// `mask` and `seg` are accepted as aliases for `polygon` (so
+        /// `--types mask` selects vector polygons, not raster masks — use
+        /// `raster` for those). Downloads all types if not specified.
         #[clap(long, value_delimiter = ',', value_parser = parse_annotation_type)]
         types: Vec<AnnotationType>,
 
@@ -1285,11 +1287,14 @@ async fn handle_download_dataset(
 /// typo like `--types keypiont` into `box2d`. Parsing through the fallible
 /// `TryFrom<&str>` here rejects unknown values instead, matching how
 /// `download-dataset`'s `FileType` types are validated.
+///
+/// Note the token mapping: `polygon` (aliases `mask`, `seg`) selects vector
+/// polygons, while `raster` selects the distinct raster pixel-mask type.
 fn parse_annotation_type(value: &str) -> Result<AnnotationType, String> {
     AnnotationType::try_from(value).map_err(|_| {
         format!(
             "invalid annotation type '{value}': valid types are box2d, box3d, \
-             mask, polygon (seg and raster are also accepted)"
+             polygon, raster (mask and seg are aliases for polygon)"
         )
     })
 }
@@ -6441,7 +6446,11 @@ mod tests {
         // (the library's infallible `From<String>` behaviour).
         let err = parse_annotation_type("keypoint").unwrap_err();
         assert!(err.contains("keypoint"));
-        assert!(err.contains("box2d, box3d, mask, polygon"));
+        // The message surfaces the canonical types, including the distinct
+        // `raster` option; assert on key substrings rather than exact
+        // wording/order so message tweaks don't break the test.
+        assert!(err.contains("polygon"));
+        assert!(err.contains("raster"));
         assert!(parse_annotation_type("polyline").is_err());
         assert!(parse_annotation_type("").is_err());
     }

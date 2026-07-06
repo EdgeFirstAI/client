@@ -404,10 +404,11 @@ Download dataset annotations to a local file. This command accompanies **downloa
 
 **\--types** *TYPES*
 :   Annotation types to download (comma-separated list). If omitted, all annotation
-    types are downloaded. Supported types: box2d, box3d, mask, polygon (`mask` and
-    `seg` are accepted as aliases for `polygon`, and `raster` for the raster pixel-mask
-    type, for backward compatibility). There is no `polyline` or `keypoint` annotation
-    type; an unrecognized value is rejected with an error listing the accepted types.
+    types are downloaded. Supported types: box2d, box3d, polygon, raster. For backward
+    compatibility `mask` and `seg` are accepted as aliases for `polygon` — note that
+    `mask` therefore selects vector polygons, **not** raster masks; use `raster` for
+    raster pixel masks. There is no `polyline` or `keypoint` annotation type; an
+    unrecognized value is rejected with an error listing the accepted types.
 
 **\--tag** *TAG*
 :   Download annotations from the specified tagged version instead of the current HEAD state.
