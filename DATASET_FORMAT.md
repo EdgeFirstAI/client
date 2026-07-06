@@ -1,8 +1,20 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.04
-**Last Updated**: 25 March, 2026
+**Last Updated**: 5 July, 2026
 **Status**: DRAFT (pending review)
+
+> **Implementation status (as of client v2.12.1):** the SDK has implemented the
+> 2026.04 Arrow schema since v2.9.0 — it is the current format, not a future one.
+> However, several items in this specification are design targets, not yet shipped:
+> **Parquet export is not implemented** (Arrow IPC is the only DataFrame format the
+> SDK reads/writes); and the **configurable box-format/mask-interpretation file-level
+> metadata** (`box2d_format`, `box2d_normalized`, `box3d_format`, `box3d_normalized`,
+> `mask_interpretation`) described below is not read or written anywhere in the
+> codebase — box2d is unconditionally `cxcywh` in Arrow and `ltwh` in JSON. Only
+> `schema_version`, `category_metadata`, and `labels` file-level metadata keys are
+> actually implemented. Treat any Parquet or configurable-box-format example in this
+> document as the intended future design, not current behavior.
 
 ---
 
@@ -390,7 +402,7 @@ EdgeFirst supports three annotation storage formats optimized for different use 
 
 Both formats share the same logical schema. Arrow IPC is optimized for local performance; Parquet is optimized for transfer and interoperability. Use Arrow for training pipelines, Parquet for distribution.
 
-> **Note**: This schema is defined for the 2026.04 release. The current SDK (2.x) implements the 2025.10 schema. See the [Version History](#version-history) section for the 2025.10 schema.
+> **Note**: This schema is defined for the 2026.04 release, and the SDK (since v2.9.0) implements it — 2026.04 is current, not upcoming. Older 2025.10 files are still read transparently; see the [Version History](#version-history) section for that schema and the [Migration from 2025.10](#migration-from-202510) section to upgrade a file. **Parquet is not implemented** — see the implementation-status note at the top of this document.
 
 **Schema (2026.04)**:
 
@@ -565,15 +577,21 @@ Both Arrow IPC and Parquet support key-value metadata at the schema/file level. 
 
 All metadata values are strings.
 
-| Key | Values | Default (absent) | Description |
-|-----|--------|-------------------|-------------|
-| `schema_version` | `"2026.04"` | `"2025.10"` | Format version. Absent = legacy file. |
-| `box2d_format` | `"cxcywh"`, `"xyxy"`, `"ltwh"` | `"cxcywh"` | Box2D array layout descriptor |
-| `box2d_normalized` | `"true"`, `"false"` | `"true"` | Box2D coordinate system |
-| `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor |
-| `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system |
-| `mask_interpretation` | `"binary"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks |
-| `category_metadata` | JSON string | absent | Per-label metadata (synset, synonyms, definition) |
+> **Implementation status:** only `schema_version`, `category_metadata`, and `labels`
+> (below) are currently read/written by the SDK. `box2d_format`, `box2d_normalized`,
+> `box3d_format`, `box3d_normalized`, and `mask_interpretation` are part of this
+> specification's design but are not implemented anywhere in the client — the SDK
+> always uses `cxcywh` (Arrow) / `ltwh` (JSON) for box2d, unconditionally.
+
+| Key | Values | Default (absent) | Description | Implemented? |
+|-----|--------|-------------------|-------------|--------------|
+| `schema_version` | `"2026.04"` | `"2025.10"` | Format version. Absent = legacy file. | Yes |
+| `box2d_format` | `"cxcywh"`, `"xyxy"`, `"ltwh"` | `"cxcywh"` | Box2D array layout descriptor | No — design only |
+| `box2d_normalized` | `"true"`, `"false"` | `"true"` | Box2D coordinate system | No — design only |
+| `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor | No — design only |
+| `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system | No — design only |
+| `mask_interpretation` | `"binary"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks | No — design only |
+| `category_metadata` | JSON string | absent | Per-label metadata (synset, synonyms, definition) | Yes |
 | `labels` | JSON array `["person", "car", ...]` | absent | Ordered class names for semantic segmentation masks. `labels[i]` = class name for argmax pixel value `i`. |
 
 ### Category Metadata
@@ -1596,7 +1614,8 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 - `.radar.png` - Radar data cube
 - `.lidar.pcd` - LiDAR point cloud
 
-**Use Parquet when**:
+**Use Parquet when** (design target — not yet implemented in the SDK; see the
+implementation-status note at the top of this document):
 
 - Distributing datasets to collaborators or cloud storage
 - Querying with DuckDB, Spark, or pandas (Parquet is the standard interchange format)
@@ -1613,18 +1632,24 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 
 This version introduces significant changes to the annotation schema including new geometry types, configurable box formats, file-level metadata, and Parquet support. Several changes are **breaking** — see [Migration from 2025.10](#migration-from-202510).
 
+> **Implementation status:** the geometry changes, score columns, and COCO/LVIS
+> extensions below shipped in client SDK v2.9.0 and are what the SDK actually does
+> today. **Parquet support and configurable box format are specification-only** — not
+> implemented in the SDK as of v2.12.1. See the implementation-status note at the top
+> of this document.
+
 #### New Features
 
-**Storage Formats**:
+**Storage Formats** (design target, not yet implemented — see note above):
 
 - **Parquet support**: ZSTD-compressed columnar format for transfer/interop with DuckDB, Spark, pandas
-- **File-level metadata**: Schema version, box format descriptors, mask interpretation in Arrow/Parquet metadata
+- **File-level metadata**: Schema version, box format descriptors, mask interpretation in Arrow/Parquet metadata (only `schema_version`/`category_metadata`/`labels` are actually implemented; box format descriptors and mask interpretation are not)
 
-**Geometry Changes**:
+**Geometry Changes** (implemented in v2.9.0+):
 
 - **`polygon` column** (`List(List(Float32))`): Replaces NaN-separated `mask` column for vector polygon data
 - **`mask` column** (`Binary`): PNG-encoded raster masks for dense per-pixel data (semantic segmentation, instance masks). Self-describing dimensions from PNG header; supports 1-bit (binary), 8-bit, and 16-bit grayscale.
-- **Configurable box format**: `box2d_format` metadata (`cxcywh`, `xyxy`, `ltwh`) + `box2d_normalized` flag
+- **Configurable box format** (design target, not implemented): `box2d_format` metadata (`cxcywh`, `xyxy`, `ltwh`) + `box2d_normalized` flag — the SDK always uses `cxcywh` (Arrow) / `ltwh` (JSON)
 - **Score columns**: `box2d_score`, `box3d_score`, `polygon_score`, `mask_score` per-geometry confidence (0..1)
 
 **COCO/LVIS Extensions**:

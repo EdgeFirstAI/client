@@ -5258,12 +5258,11 @@ class Client:
     Examples:
         Basic client setup and authentication:
 
-        >>> # Create a new client and authenticate
-        >>> client = Client()
-        >>> client.login("your-email@example.com", "password")
+        >>> # Create a new client and authenticate (builder pattern)
+        >>> client = Client().with_login("your-email@example.com", "password")
 
         >>> # Or use an existing token
-        >>> client = Client(token="your-token-here")
+        >>> client = Client().with_token("your-token-here")
 
         >>> # Get organization and list projects
         >>> org = client.organization()
@@ -5516,8 +5515,7 @@ class Client:
             A new Client with memory-only token storage.
 
         Examples:
-            >>> client = Client().with_memory_storage()
-            >>> client.login("user@example.com", "password")
+            >>> client = Client().with_memory_storage().with_login("user@example.com", "password")
             >>> # Token is stored in memory only, not persisted to disk
         """
         ...

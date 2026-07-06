@@ -122,7 +122,7 @@ pub trait TokenStorage: Send + Sync {
 ///
 /// Stores the authentication token in a file on the local filesystem. By
 /// default, uses the platform-specific config directory
-/// (e.g., `~/.config/EdgeFirst Studio/token` on Linux).
+/// (e.g., `~/.config/edgefirststudio/token` on Linux).
 ///
 /// # Examples
 ///
@@ -145,12 +145,16 @@ impl FileTokenStorage {
     /// Create a new `FileTokenStorage` using the default platform config
     /// directory.
     ///
-    /// The default path is determined by the `directories` crate:
-    /// - Linux: `~/.config/EdgeFirst Studio/token`
+    /// The default path is determined by the `directories` crate. Note that
+    /// `directories` derives the Linux path from the application name alone
+    /// (lowercased, spaces stripped) and always appends a `config`
+    /// subdirectory on Windows — this is not simply "server/organization/app"
+    /// concatenated the same way on every platform:
+    /// - Linux: `~/.config/edgefirststudio/token`
     /// - macOS: `~/Library/Application
     ///   Support/ai.EdgeFirst.EdgeFirst-Studio/token`
     /// - Windows: `C:\Users\<User>\AppData\Roaming\EdgeFirst\EdgeFirst
-    ///   Studio\token`
+    ///   Studio\config\token`
     pub fn new() -> Result<Self, StorageError> {
         let path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
             .ok_or_else(|| {

@@ -211,9 +211,11 @@ enum Command {
         #[clap(long, value_delimiter = ',')]
         groups: Vec<String>,
 
-        /// Annotation types to download (box2d, box3d, mask). Downloads all
-        /// types if not specified.
-        #[clap(long, value_delimiter = ',')]
+        /// Annotation types to download: box2d, box3d, polygon, raster.
+        /// `mask` and `seg` are accepted as aliases for `polygon` (so
+        /// `--types mask` selects vector polygons, not raster masks — use
+        /// `raster` for those). Downloads all types if not specified.
+        #[clap(long, value_delimiter = ',', value_parser = parse_annotation_type)]
         types: Vec<AnnotationType>,
 
         /// Output File Path
@@ -604,7 +606,12 @@ enum Command {
     /// The command will:
     /// 1. Scan the folder recursively for image files (JPEG, PNG)
     /// 2. Optionally detect sequence patterns (name_frame.ext)
-    /// 3. Create an Arrow file with the 2025.10 schema
+    /// 3. Create an Arrow file with `name`/`frame` columns only (2026.04
+    ///    column-presence conventions — no null geometry columns are
+    ///    emitted). No `schema_version` file metadata is written, since
+    ///    there's no annotation data to version; run `upload-dataset` or
+    ///    `coco-to-arrow` to add annotations before relying on schema
+    ///    detection downstream
     ///
     /// Examples:
     ///   edgefirst generate-arrow ./images --output dataset.arrow
@@ -1270,6 +1277,26 @@ async fn handle_download_dataset(
         )
         .await?;
     Ok(())
+}
+
+/// clap value parser for the `download-annotations --types` flag.
+///
+/// The library's `AnnotationType: From<String>` impl is intentionally
+/// infallible — it defaults unknown input to `Box2d` for backward
+/// compatibility — and clap would otherwise select it, silently turning a
+/// typo like `--types keypiont` into `box2d`. Parsing through the fallible
+/// `TryFrom<&str>` here rejects unknown values instead, matching how
+/// `download-dataset`'s `FileType` types are validated.
+///
+/// Note the token mapping: `polygon` (aliases `mask`, `seg`) selects vector
+/// polygons, while `raster` selects the distinct raster pixel-mask type.
+fn parse_annotation_type(value: &str) -> Result<AnnotationType, String> {
+    AnnotationType::try_from(value).map_err(|_| {
+        format!(
+            "invalid annotation type '{value}': valid types are box2d, box3d, \
+             polygon, raster (mask and seg are aliases for polygon)"
+        )
+    })
 }
 
 async fn handle_download_annotations(
@@ -6382,6 +6409,50 @@ mod tests {
     fn test_parse_param_invalid() {
         assert!(parse_param("no-separator").is_err());
         assert!(parse_param("=value").is_err());
+    }
+
+    #[test]
+    fn test_parse_annotation_type_valid() {
+        // Canonical names and documented aliases all resolve.
+        assert_eq!(
+            parse_annotation_type("box2d").unwrap(),
+            AnnotationType::Box2d
+        );
+        assert_eq!(
+            parse_annotation_type("box3d").unwrap(),
+            AnnotationType::Box3d
+        );
+        assert_eq!(
+            parse_annotation_type("polygon").unwrap(),
+            AnnotationType::Polygon
+        );
+        assert_eq!(
+            parse_annotation_type("seg").unwrap(),
+            AnnotationType::Polygon
+        );
+        assert_eq!(
+            parse_annotation_type("mask").unwrap(),
+            AnnotationType::Polygon
+        );
+        assert_eq!(
+            parse_annotation_type("raster").unwrap(),
+            AnnotationType::Mask
+        );
+    }
+
+    #[test]
+    fn test_parse_annotation_type_invalid_is_rejected() {
+        // Unknown values must error rather than silently defaulting to box2d
+        // (the library's infallible `From<String>` behaviour).
+        let err = parse_annotation_type("keypoint").unwrap_err();
+        assert!(err.contains("keypoint"));
+        // The message surfaces the canonical types, including the distinct
+        // `raster` option; assert on key substrings rather than exact
+        // wording/order so message tweaks don't break the test.
+        assert!(err.contains("polygon"));
+        assert!(err.contains("raster"));
+        assert!(parse_annotation_type("polyline").is_err());
+        assert!(parse_annotation_type("").is_err());
     }
 
     #[test]
