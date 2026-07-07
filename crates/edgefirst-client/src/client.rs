@@ -2724,6 +2724,67 @@ impl Client {
         Ok(())
     }
 
+    /// Delete one or more samples (images) from a dataset via
+    /// `image.delete_from_dataset`.
+    ///
+    /// **Annotations belonging to the deleted samples cascade-delete
+    /// automatically server-side** — there is no separate step needed to
+    /// clean up their annotations.
+    ///
+    /// This method is intentionally scoped to specific sample ids only: it
+    /// never exposes the server's whole-sequence (`sequence_ids`) or
+    /// whole-dataset (`delete_all`) deletion modes — those delete a whole
+    /// sequence or dataset and are already covered by other calls.
+    ///
+    /// # Asynchronous deletion
+    ///
+    /// **The underlying RPC is fire-and-forget on the server**: it returns
+    /// once the request is accepted, before the delete has actually
+    /// completed. Callers needing to observe the effect (e.g. confirming a
+    /// sample is gone) must poll [`Client::samples`] or
+    /// [`Client::samples_count`] until the expected state is reached.
+    ///
+    /// # Arguments
+    /// * `dataset_id` - The dataset the samples belong to
+    /// * `sample_ids` - Sample IDs (image IDs) to delete
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `image.delete_from_dataset`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use edgefirst_client::{Client, DatasetID, SampleID};
+    /// # async fn example() -> Result<(), edgefirst_client::Error> {
+    /// # let client = Client::new()?.with_login("user", "pass").await?;
+    /// let dataset_id = DatasetID::from(123);
+    /// let sample_ids = vec![SampleID::from(1), SampleID::from(2)];
+    ///
+    /// client.delete_samples(dataset_id, &sample_ids).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, sample_ids), fields(dataset_id = %dataset_id)))]
+    pub async fn delete_samples(
+        &self,
+        dataset_id: DatasetID,
+        sample_ids: &[SampleID],
+    ) -> Result<(), Error> {
+        use crate::api::SampleDeleteParams;
+
+        let params = SampleDeleteParams {
+            dataset_id: dataset_id.into(),
+            image_ids: sample_ids.iter().map(|id| (*id).into()).collect(),
+            sequence_ids: Vec::new(),
+            delete_all: false,
+        };
+
+        let _: String = self
+            .rpc("image.delete_from_dataset".to_owned(), Some(params))
+            .await?;
+        Ok(())
+    }
+
     /// Add annotations in bulk.
     ///
     /// This method calls the `annotation.add_bulk` API to efficiently add

@@ -144,6 +144,29 @@ def create_sample_with_circle_annotation(
     return sample
 
 
+def create_sample_without_annotation(image_path: Path) -> Sample:
+    """Create a sample with an image file and no annotation at all.
+
+    Distinct from calling create_sample_with_circle_annotation(box2d=None):
+    that still attaches a geometry-less Annotation (silently dropped
+    server-side, per that function's docstring). This helper attaches no
+    Annotation whatsoever, for tests that specifically need a genuinely
+    unannotated sample (e.g. covering the "delete an unannotated sample"
+    path, distinct from "delete an annotated sample").
+
+    Args:
+        image_path: Path to an image file, e.g. from
+            create_test_image_with_circle().
+
+    Returns:
+        Sample with only an image file, no annotations.
+    """
+    sample = Sample()
+    sample.set_image_name(image_path.name)
+    sample.add_file(SampleFile("image", str(image_path)))
+    return sample
+
+
 def get_unique_test_name(prefix: str = "test") -> str:
     """Generate a unique test name using timestamp.
 

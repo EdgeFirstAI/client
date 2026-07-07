@@ -138,6 +138,18 @@ enum Command {
         /// Dataset ID
         dataset_id: String,
     },
+    /// Delete one or more samples (images) from a dataset. Annotations belonging to the
+    /// deleted samples are removed automatically by the server (cascade delete). NOTE:
+    /// deletion happens asynchronously on the server; samples may not disappear from
+    /// subsequent queries immediately.
+    DeleteSamples {
+        /// Dataset ID
+        dataset_id: String,
+
+        /// Sample IDs to delete
+        #[clap(required = true)]
+        sample_ids: Vec<String>,
+    },
     /// Create a new annotation set for the specified dataset.
     CreateAnnotationSet {
         /// Dataset ID
@@ -1201,6 +1213,26 @@ async fn handle_delete_dataset(client: &Client, dataset_id: String) -> Result<()
     let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
     client.delete_dataset(dataset_id).await?;
     println!("Dataset {} marked as deleted", dataset_id);
+    Ok(())
+}
+
+async fn handle_delete_samples(
+    client: &Client,
+    dataset_id: String,
+    sample_ids: Vec<String>,
+) -> Result<(), Error> {
+    let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
+    let sample_ids: Vec<edgefirst_client::SampleID> = sample_ids
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+    client.delete_samples(dataset_id, &sample_ids).await?;
+    for id in &sample_ids {
+        println!(
+            "Deleting sample {} (server processes this asynchronously)",
+            id
+        );
+    }
     Ok(())
 }
 
@@ -6028,6 +6060,10 @@ async fn main() -> Result<(), Error> {
             description,
         } => handle_create_dataset(&client, project_id, name, description).await,
         Command::DeleteDataset { dataset_id } => handle_delete_dataset(&client, dataset_id).await,
+        Command::DeleteSamples {
+            dataset_id,
+            sample_ids,
+        } => handle_delete_samples(&client, dataset_id, sample_ids).await,
         Command::CreateAnnotationSet {
             dataset_id,
             name,
