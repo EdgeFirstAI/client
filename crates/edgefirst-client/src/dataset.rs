@@ -456,6 +456,14 @@ impl Dataset {
             .ok_or_else(|| Error::MissingLabel(name.to_string()))?;
         client.remove_label(label.id()).await
     }
+
+    pub async fn delete_samples(
+        &self,
+        client: &Client,
+        sample_ids: &[SampleID],
+    ) -> Result<(), Error> {
+        client.delete_samples(self.id, sample_ids).await
+    }
 }
 
 /// The AnnotationSet class represents a collection of annotations in a dataset.

@@ -543,6 +543,28 @@ edgefirst-client update-dimensions ds-12345
   - **Python:** `client.backfill_sample_dimensions(dataset_id, progress=cb)`.
   - **Swift/Kotlin (UniFFI):** `client.backfillSampleDimensions(datasetId)` — blocking, **no progress callback** in the FFI layer; for progress reporting on mobile, call the underlying `samples.update_dimensions` RPC directly or use the Python/Rust API on the server side.
 
+### delete-samples
+
+Delete one or more samples (images) from a dataset.
+
+**edgefirst-client delete-samples** *DATASET_ID* *SAMPLE_IDS*...
+
+**Arguments:**
+
+*DATASET_ID*
+:   The unique identifier of the dataset the samples belong to.
+
+*SAMPLE_IDS*
+:   One or more sample (image) IDs to delete.
+
+**Example:**
+
+```bash
+edgefirst-client delete-samples 12345 1001 1002
+```
+
+**Note:** Annotations belonging to the deleted samples are removed automatically by the server (cascade delete) — no separate step is needed. Deletion is asynchronous on the server: the command returns once the request is accepted, before the delete has actually completed, so samples may not disappear from subsequent queries immediately.
+
 ## DATASET VERSIONING
 
 The `version` subcommand group manages dataset version tags, changelog inspection, and dataset restore. Every dataset modification is recorded with a monotonic serial number. Named tags capture the complete dataset state at a point in time, enabling reproducible training runs and controlled rollbacks.

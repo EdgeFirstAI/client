@@ -679,6 +679,21 @@ pub struct AnnotationBulkDeleteParams {
     pub delete_all: Option<bool>,
 }
 
+/// Parameters for the `image.delete_from_dataset` API.
+///
+/// Unlike most other params structs, all four fields are always serialized —
+/// none use `skip_serializing_if`. The server's Go struct
+/// (`DeleteImageFromDataset`) has no `omitempty` tags, and this is a
+/// destructive call, so we don't rely on implicit zero-value behavior for an
+/// omitted field.
+#[derive(Serialize, Debug)]
+pub struct SampleDeleteParams {
+    pub dataset_id: u64,
+    pub image_ids: Vec<u64>,
+    pub sequence_ids: Vec<i64>,
+    pub delete_all: bool,
+}
+
 #[derive(Deserialize)]
 pub struct Snapshot {
     id: SnapshotID,
@@ -3742,6 +3757,28 @@ mod tests {
         assert_eq!(result.restored_from.tag, "v1.0");
         assert_eq!(result.restored_from.serial, 42);
         assert_eq!(result.restored_counts.images, 5000);
+    }
+
+    #[test]
+    fn test_sample_delete_params_serializes_all_fields() {
+        // SampleDeleteParams deliberately serializes every field, even
+        // empty/default ones (no skip_serializing_if), to exactly mirror
+        // the server's Go request struct, which has no `omitempty` tags on
+        // a destructive call. Pin that down so a future edit can't silently
+        // reintroduce skip_serializing_if here.
+        let params = SampleDeleteParams {
+            dataset_id: 42,
+            image_ids: vec![1, 2, 3],
+            sequence_ids: Vec::new(),
+            delete_all: false,
+        };
+        let value = serde_json::to_value(&params).unwrap();
+        let obj = value.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert_eq!(obj["dataset_id"], serde_json::json!(42));
+        assert_eq!(obj["image_ids"], serde_json::json!([1, 2, 3]));
+        assert_eq!(obj["sequence_ids"], serde_json::json!([]));
+        assert_eq!(obj["delete_all"], serde_json::json!(false));
     }
 }
 

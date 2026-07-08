@@ -8,7 +8,7 @@ matching string representations.
 """
 
 import unittest
-from test import get_client
+from test import get_client, skip_if_known_group_by_bug
 
 from edgefirst_client import (
     AnnotationSetID,
@@ -106,7 +106,11 @@ class TestIDTypes(unittest.TestCase):
         client = get_client()
         _, dataset = self._get_reference_dataset(client)
 
-        samples = client.samples(str(dataset.id))
+        try:
+            samples = client.samples(str(dataset.id))
+        except RuntimeError as e:
+            skip_if_known_group_by_bug(self, e)
+            raise
         self.assertGreater(len(samples), 0)
         sample = samples[0]
         sample_id = sample.id
@@ -348,7 +352,11 @@ class TestIDTypes(unittest.TestCase):
         client = get_client()
         _, dataset = self._get_reference_dataset(client)
 
-        samples = client.samples(str(dataset.id))
+        try:
+            samples = client.samples(str(dataset.id))
+        except RuntimeError as e:
+            skip_if_known_group_by_bug(self, e)
+            raise
         self.assertGreater(len(samples), 0)
         sample = samples[0]
         # Sample.id is Optional

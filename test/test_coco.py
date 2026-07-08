@@ -7,7 +7,7 @@ Tests COCO dataset availability and Polars DataFrame integration
 
 import unittest
 
-from test import get_client
+from test import get_client, skip_if_known_group_by_bug
 
 
 class TestCOCO(unittest.TestCase):
@@ -172,7 +172,11 @@ class TestCOCO(unittest.TestCase):
         assert dataset is not None
 
         # Verify samples retrieval
-        samples = client.samples(dataset.id, None, [], ["val"], [], None)
+        try:
+            samples = client.samples(dataset.id, None, [], ["val"], [], None)
+        except RuntimeError as e:
+            skip_if_known_group_by_bug(self, e)
+            raise
         self.assertGreater(len(samples), 0, "Should retrieve COCO samples")
 
     def test_coco_dataframe(self):

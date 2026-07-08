@@ -2577,6 +2577,37 @@ impl Dataset {
         Ok(client_ref.delete_dataset(self.inner.id()).await?)
     }
 
+    /// Delete one or more samples (images) from this dataset.
+    ///
+    /// Annotations belonging to the deleted samples are removed
+    /// automatically by the server (cascade delete) — no separate step is
+    /// needed. The underlying RPC is asynchronous on the server: it returns
+    /// once the request is accepted, before the delete has actually
+    /// completed. Callers needing to observe the effect must poll
+    /// `samples()`/`samples_count()`.
+    ///
+    /// Args:
+    ///     sample_ids: Sample IDs (image IDs) to delete.
+    ///
+    /// If the Dataset was created without a client reference (legacy code),
+    /// use `client.delete_samples(dataset.id, sample_ids)` instead.
+    #[tokio_wrap::sync]
+    pub fn delete_samples<'py>(&self, sample_ids: Vec<Bound<'py, PyAny>>) -> Result<(), Error> {
+        let client_ref = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError(
+                "Dataset has no client reference. Use client.delete_samples(dataset.id, sample_ids) instead."
+                    .to_string(),
+            )
+        })?;
+        let sample_ids: Result<Vec<edgefirst_client::SampleID>, Error> = sample_ids
+            .into_iter()
+            .map(|id| Ok(SampleID::try_from(id)?.0))
+            .collect();
+        Ok(client_ref
+            .delete_samples(self.inner.id(), &sample_ids?)
+            .await?)
+    }
+
     /// Get the count of samples in this dataset.
     ///
     /// New API (v2.6.0+): `dataset.samples_count()` - uses embedded client
@@ -6296,6 +6327,32 @@ impl Client {
             .0
             .delete_annotations_bulk(annotation_set_id.0, &annotation_types, &sample_ids?)
             .await?)
+    }
+
+    /// Delete one or more samples (images) from a dataset.
+    ///
+    /// Annotations belonging to the deleted samples are removed
+    /// automatically by the server (cascade delete) — no separate step is
+    /// needed. The underlying RPC is asynchronous on the server: it returns
+    /// once the request is accepted, before the delete has actually
+    /// completed. Callers needing to observe the effect must poll
+    /// `samples()`/`samples_count()`.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset the samples belong to.
+    ///     sample_ids: Sample IDs (image IDs) to delete.
+    #[tokio_wrap::sync]
+    pub fn delete_samples<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        sample_ids: Vec<Bound<'py, PyAny>>,
+    ) -> Result<(), Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let sample_ids: Result<Vec<edgefirst_client::SampleID>, Error> = sample_ids
+            .into_iter()
+            .map(|id| Ok(SampleID::try_from(id)?.0))
+            .collect();
+        Ok(self.0.delete_samples(dataset_id.0, &sample_ids?).await?)
     }
 
     #[pyo3(signature = (dataset_id, version = None))]

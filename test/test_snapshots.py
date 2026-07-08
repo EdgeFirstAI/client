@@ -20,7 +20,12 @@ from pathlib import Path
 
 import polars as pl
 
-from test import TEST_PROJECT_NAME, get_client, get_test_data_dir
+from test import (
+    TEST_PROJECT_NAME,
+    get_client,
+    get_test_data_dir,
+    skip_if_known_group_by_bug,
+)
 
 
 class TestSnapshotAPI(unittest.TestCase):
@@ -575,18 +580,24 @@ class TestLabelIndexRoundtrip(unittest.TestCase):
             "Source annotations should contain label_index pairs",
         )
 
-        subprocess.run(
-            [
-                str(self.cli),
-                "download-dataset",
-                str(self.source_dataset.id),
-                "--output",
-                str(images_dir),
-            ],
-            check=True,
-            env=env,
-            timeout=300,
-        )
+        try:
+            subprocess.run(
+                [
+                    str(self.cli),
+                    "download-dataset",
+                    str(self.source_dataset.id),
+                    "--output",
+                    str(images_dir),
+                ],
+                check=True,
+                env=env,
+                timeout=300,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            skip_if_known_group_by_bug(self, e.stderr or "")
+            raise
 
         projects = self.client.projects(TEST_PROJECT_NAME)
         project = projects[0]

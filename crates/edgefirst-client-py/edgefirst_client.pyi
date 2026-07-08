@@ -1750,6 +1750,32 @@ class Dataset:
         """
         ...
 
+    def delete_samples(self, sample_ids: List[SampleUID]) -> None:
+        """
+        Delete one or more samples (images) from this dataset.
+
+        Annotations belonging to the deleted samples are removed
+        automatically by the server (cascade delete) — no separate step is
+        needed. The underlying RPC is asynchronous on the server: it returns
+        once the request is accepted, before the delete has actually
+        completed. Callers needing to observe the effect must poll
+        ``samples()``/``samples_count()``.
+
+        Requires an embedded client reference (datasets returned by the
+        client methods automatically have one).
+
+        Args:
+            sample_ids: Sample IDs (image IDs) to delete.
+
+        Raises:
+            TypeError: If dataset has no client reference.
+                Use ``client.delete_samples(dataset.id, sample_ids)`` instead.
+
+        Example:
+            >>> dataset.delete_samples([sample.id for sample in samples[:2]])
+        """
+        ...
+
     def version_tag_create(
         self,
         name: str,
@@ -6068,6 +6094,27 @@ class Client:
             annotation_types: Annotation types to delete (e.g. ["box", "seg"]).
             sample_ids: The samples whose annotations of the given types
                 should be deleted.
+        """
+        ...
+
+    def delete_samples(
+        self,
+        dataset_id: DatasetUID,
+        sample_ids: List[SampleUID],
+    ) -> None:
+        """
+        Delete one or more samples (images) from a dataset.
+
+        Annotations belonging to the deleted samples are removed
+        automatically by the server (cascade delete) — no separate step is
+        needed. The underlying RPC is asynchronous on the server: it returns
+        once the request is accepted, before the delete has actually
+        completed. Callers needing to observe the effect must poll
+        ``samples()``/``samples_count()``.
+
+        Args:
+            dataset_id: The dataset the samples belong to.
+            sample_ids: Sample IDs (image IDs) to delete.
         """
         ...
 
