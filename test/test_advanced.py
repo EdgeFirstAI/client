@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 
 from edgefirst_client import Sample, SampleFile
 
-from test import get_client
+from test import get_client, skip_if_known_group_by_bug
 
 
 def generate_sequence_uuid(dataset_id_str, sequence_name):
@@ -283,7 +283,11 @@ class TestSequences(unittest.TestCase):
                 client.populate_samples(dataset_id, annset_id, [question_sample], None)
 
                 # ===== Verification =====
-                all_samples = client.samples(dataset_id, None, [], [], [], None)
+                try:
+                    all_samples = client.samples(dataset_id, None, [], [], [], None)
+                except RuntimeError as e:
+                    skip_if_known_group_by_bug(self, e)
+                    raise
                 self.assertEqual(len(all_samples), 22, "Should have 22 total samples")
 
                 # Verify sequence 1

@@ -53,6 +53,18 @@ def get_client():
         )
 
 
+_GROUP_BY_BUG_SIGNATURE = "must appear in the group by clause"
+
+
+def skip_if_known_group_by_bug(test_case, exc_or_text):
+    """Skip (not fail) a test that hit a known, internally-tracked
+    server-side error. Not a client bug. Pass either an exception or raw
+    text (e.g. subprocess stderr) to check; re-raises/no-ops otherwise.
+    """
+    if _GROUP_BY_BUG_SIGNATURE in str(exc_or_text).lower():
+        test_case.skipTest("Known server-side issue, tracked internally. Not a client bug.")
+
+
 def get_test_data_dir():
     """
     Get the test data directory (target/testdata).

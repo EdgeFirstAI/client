@@ -30,7 +30,7 @@ from edgefirst_client import (
     SampleFile,
 )
 from PIL import Image, ImageDraw
-from test import get_client, get_test_data_dir
+from test import get_client, get_test_data_dir, skip_if_known_group_by_bug
 from test.fixtures import get_test_dataset, get_test_dataset_types
 
 
@@ -1396,6 +1396,9 @@ class TestLabels(TestCase):
 
             print("\n✅ Flatten option test passed")
 
+        except RuntimeError as e:
+            skip_if_known_group_by_bug(self, e)
+            raise
         finally:
             # Cleanup
             import shutil

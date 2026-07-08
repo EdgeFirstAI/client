@@ -21,7 +21,7 @@ import time
 import unittest
 from unittest import TestCase
 
-from test import get_client, get_test_data_dir
+from test import get_client, get_test_data_dir, skip_if_known_group_by_bug
 from test.fixtures import (
     create_sample_with_circle_annotation,
     create_sample_without_annotation,
@@ -325,7 +325,11 @@ class VersionTaggedDataFetchTest(TestCase):
             self.assertEqual(len(tagged_samples), len(initial_names))
 
             # Fetch HEAD samples
-            head_samples = client.samples(dataset_id)
+            try:
+                head_samples = client.samples(dataset_id)
+            except RuntimeError as e:
+                skip_if_known_group_by_bug(self, e)
+                raise
             self.assertEqual(
                 len(head_samples),
                 len(initial_names) + len(additional_names),
@@ -992,11 +996,7 @@ class VersionDeleteSampleTest(TestCase):
         try:
             return self.client.samples(*args, **kwargs)
         except Exception as e:
-            if "must appear in the group by clause" in str(e).lower():
-                self.skipTest(
-                    "Known server-side issue, tracked internally. Not a "
-                    "client bug."
-                )
+            skip_if_known_group_by_bug(self, e)
             raise
 
     def _assert_visible_in_tag_or_skip(self, target_id, tagged_ids):
