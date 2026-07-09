@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.2] - 2026-07-09
+
+### Added
+
+- `Client::delete_samples` / `Dataset::delete_samples` (Rust) and `Client.delete_samples` / `Dataset.delete_samples` (Python) wrapping the `image.delete_from_dataset` RPC to delete specific samples by ID; annotations belonging to deleted samples cascade-delete automatically server-side
+- CLI `delete-samples` command
+- Python `.pyi` stubs for the new delete APIs
+- Versioning integration tests covering delete-at-HEAD with tag preservation, tag restore round-trips (annotated and unannotated samples), idempotent restore, and bulk multi-sample delete
+
+### Fixed
+
+- Bumped `crossbeam-epoch` to 0.9.20 to clear RUSTSEC-2026-0204
+
+### Notes
+
+- The delete RPC is fire-and-forget server-side: the command/API returns once the request is accepted, before deletion completes — poll `samples` / `samples_count` to confirm the expected state
+- Restore-focused tests skip on known server-side symptoms ([DE-2439](https://au-zone.atlassian.net/browse/DE-2439) foreign-key violation, [DE-2813](https://au-zone.atlassian.net/browse/DE-2813)/[DE-2814](https://au-zone.atlassian.net/browse/DE-2814) `GROUP BY` regression) until the companion dve-database fixes deploy to the test server
+
 ## [2.12.1] - 2026-07-05
 
 ### Fixed
