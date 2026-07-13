@@ -544,6 +544,11 @@ pub struct SamplesListParams {
     pub group_names: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// Page size for `samples.list`. When omitted, the server default (1000) is used.
+    /// Mask/seg fetches use a smaller default (see `EDGEFIRST_SAMPLES_PAGE_SIZE`)
+    /// to keep pre-response work under the bulk idle timeout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Deserialize, Debug)]

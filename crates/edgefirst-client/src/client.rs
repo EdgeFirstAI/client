@@ -538,9 +538,11 @@ struct ImagesFilter {
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
-    /// HTTP client for long-running bulk transfers (uploads/downloads, no total-request
-    /// timeout). An idle read timeout is still configured on the underlying client, and
-    /// some operations (such as uploads) may apply additional per-request timeouts.
+    /// HTTP client for long-running bulk transfers: file uploads/downloads, paginated
+    /// sample fetches, and other large JSON-RPC payloads. Uses
+    /// [`EDGEFIRST_READ_TIMEOUT`](crate::retry) (idle per-chunk, resets while bytes
+    /// arrive) instead of the fast API's total-request [`EDGEFIRST_TIMEOUT`](crate::retry).
+    /// Some operations (such as uploads) may apply additional per-request timeouts.
     bulk_http: reqwest::Client,
     url: String,
     token: Arc<RwLock<String>>,
@@ -569,6 +571,34 @@ struct FetchContext<'a> {
     types: Vec<String>,
     labels: &'a HashMap<String, u64>,
     tag: Option<String>,
+}
+
+/// Default `samples.list` page size when fetching mask/seg annotations.
+/// Smaller than the server default (1000) so pre-response work stays under
+/// [`EDGEFIRST_READ_TIMEOUT`](crate::retry) on the bulk HTTP client.
+const DEFAULT_MASK_SAMPLES_PAGE_SIZE: u32 = 100;
+
+/// Maximum `samples.list` page size accepted by the server.
+const MAX_SAMPLES_LIST_PAGE_SIZE: u32 = 1000;
+
+/// Resolve the `limit` for a `samples.list` request.
+///
+/// Returns `Some(n)` when `types` includes `"mask"` (server wire name for
+/// polygon/seg annotations), using `EDGEFIRST_SAMPLES_PAGE_SIZE` when set
+/// (clamped to 1..=1000), otherwise [`DEFAULT_MASK_SAMPLES_PAGE_SIZE`].
+/// Returns `None` for non-mask fetches so the server default (1000) applies.
+pub(crate) fn samples_list_page_limit(types: &[String]) -> Option<u32> {
+    if !types.iter().any(|t| t == "mask") {
+        return None;
+    }
+
+    let size = std::env::var("EDGEFIRST_SAMPLES_PAGE_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_MASK_SAMPLES_PAGE_SIZE)
+        .clamp(1, MAX_SAMPLES_LIST_PAGE_SIZE);
+
+    Some(size)
 }
 
 #[derive(Debug, Serialize)]
@@ -755,11 +785,13 @@ impl Client {
             .retry(create_retry_policy())
             .build()?;
 
-        // Separate HTTP client for bulk transfers (uploads and downloads).
-        // No total-request timeout (EDGEFIRST_TIMEOUT does not apply here).
-        // Uses read_timeout instead: resets after every received chunk, so a
-        // healthy large transfer is never interrupted, but a truly stalled
-        // connection (no bytes for EDGEFIRST_READ_TIMEOUT seconds) is aborted.
+        // Separate HTTP client for bulk transfers (file uploads/downloads,
+        // paginated sample fetches, and other large JSON-RPC payloads via
+        // `rpc_bulk`). No total-request timeout (EDGEFIRST_TIMEOUT does not
+        // apply here). Uses read_timeout instead: resets after every received
+        // chunk, so a healthy large transfer is never interrupted, but a truly
+        // stalled connection (no bytes for EDGEFIRST_READ_TIMEOUT seconds) is
+        // aborted.
         let bulk_http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(read_timeout_secs))
@@ -2608,10 +2640,12 @@ impl Client {
                 group_names: context.groups.to_vec(),
                 continue_token,
                 tag: context.tag.clone(),
+                limit: samples_list_page_limit(&context.types),
             };
 
-            let result: SamplesListResult =
-                self.rpc("samples.list".to_owned(), Some(params)).await?;
+            let result: SamplesListResult = self
+                .rpc_bulk("samples.list".to_owned(), Some(params))
+                .await?;
             current += result.samples.len();
             continue_token = result.continue_token;
 
@@ -2719,7 +2753,7 @@ impl Client {
         };
 
         let _: String = self
-            .rpc("annotation.bulk.del".to_owned(), Some(params))
+            .rpc_bulk("annotation.bulk.del".to_owned(), Some(params))
             .await?;
         Ok(())
     }
@@ -2810,7 +2844,7 @@ impl Client {
             annotations,
         };
 
-        self.rpc("annotation.add_bulk".to_owned(), Some(params))
+        self.rpc_bulk("annotation.add_bulk".to_owned(), Some(params))
             .await
     }
 
@@ -2886,6 +2920,8 @@ impl Client {
             types,
             continue_token: None,
             tag: version.map(|v| v.to_string()),
+            // Count does not page; omit limit so the server uses its default.
+            limit: None,
         };
 
         self.rpc("samples.count".to_owned(), Some(params)).await
@@ -3016,10 +3052,12 @@ impl Client {
                 group_names: groups.to_vec(),
                 continue_token: continue_token.clone(),
                 tag: version.map(|v| v.to_string()),
+                limit: None,
             };
 
-            let result: SamplesListResult =
-                self.rpc("samples.list".to_owned(), Some(params)).await?;
+            let result: SamplesListResult = self
+                .rpc_bulk("samples.list".to_owned(), Some(params))
+                .await?;
             current += result.samples.len();
             continue_token = result.continue_token;
 
@@ -3071,10 +3109,12 @@ impl Client {
                 group_names: context.groups.to_vec(),
                 continue_token: continue_token.clone(),
                 tag: context.tag.clone(),
+                limit: samples_list_page_limit(&context.types),
             };
 
-            let result: SamplesListResult =
-                self.rpc("samples.list".to_owned(), Some(params)).await?;
+            let result: SamplesListResult = self
+                .rpc_bulk("samples.list".to_owned(), Some(params))
+                .await?;
             current += result.samples.len();
             continue_token = result.continue_token;
 
@@ -3293,7 +3333,7 @@ impl Client {
         #[cfg(feature = "profiling")]
         let rpc_start = std::time::Instant::now();
         let results: Vec<crate::SamplesPopulateResult> = self
-            .rpc("samples.populate2".to_owned(), Some(params))
+            .rpc_bulk("samples.populate2".to_owned(), Some(params))
             .await?;
         #[cfg(feature = "profiling")]
         upload_stats::add_rpc_nanos(rpc_start.elapsed().as_nanos() as u64);
@@ -3612,7 +3652,7 @@ impl Client {
                 samples: chunk.to_vec(),
             };
             let result: crate::SamplesUpdateDimensionsResult = self
-                .rpc("samples.update_dimensions".to_owned(), Some(params))
+                .rpc_bulk("samples.update_dimensions".to_owned(), Some(params))
                 .await?;
             total_updated += result.updated;
         }
@@ -5511,6 +5551,10 @@ impl Client {
     /// upload and download APIs which do not use JSON-RPC but instead transfer
     /// files using multipart/form-data.
     ///
+    /// Uses the bulk HTTP client ([`EDGEFIRST_READ_TIMEOUT`](crate::retry)) with a
+    /// per-request [`EDGEFIRST_UPLOAD_TIMEOUT`](crate::retry) override covering the
+    /// send phase where the idle read timeout does not apply.
+    ///
     /// The result field is deserialized as `serde_json::Value` rather than
     /// `String` because different server endpoints return different shapes —
     /// `val.data.upload` returns a plain string while `task.data.upload`
@@ -5528,7 +5572,7 @@ impl Client {
             .unwrap_or(600u64);
 
         let req = self
-            .http
+            .bulk_http
             .post(format!("{}/api?method={}", self.url, method))
             .header("Accept", "application/json")
             .header("User-Agent", "EdgeFirst Client")
@@ -5698,11 +5742,12 @@ impl Client {
         stream_response_to_file(resp, output_path, progress).await
     }
 
-    /// Send a JSON-RPC request to the server.  The method is the name of the
-    /// method to call on the server.  The params are the parameters to pass to
-    /// the method.  The method and params are serialized into a JSON-RPC
-    /// request and sent to the server.  The response is deserialized into
-    /// the specified type and returned to the caller.
+    /// Send a JSON-RPC request to the server using the fast API HTTP client
+    /// ([`EDGEFIRST_TIMEOUT`](crate::retry) total-request deadline).
+    ///
+    /// For paginated sample fetches and other large JSON-RPC payloads, use
+    /// [`Self::rpc_bulk`] instead so the idle [`EDGEFIRST_READ_TIMEOUT`](crate::retry)
+    /// applies.
     ///
     /// NOTE: This API would generally not be called directly and instead users
     /// should use the higher-level methods provided by the client.
@@ -5721,12 +5766,51 @@ impl Client {
             self.renew_token().await?;
         }
 
-        self.rpc_without_auth(method, params).await
+        self.rpc_with_http(&self.http, method, params).await
     }
 
+    /// Send a JSON-RPC request using the bulk HTTP client
+    /// ([`EDGEFIRST_READ_TIMEOUT`](crate::retry) idle per-chunk timeout).
+    ///
+    /// Use for paginated sample/annotation fetches and other large JSON-RPC
+    /// request or response bodies. File byte transfers still use dedicated
+    /// `bulk_http` helpers (`download`, `rpc_download`, etc.).
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method)))]
+    pub async fn rpc_bulk<Params, RpcResult>(
+        &self,
+        method: String,
+        params: Option<Params>,
+    ) -> Result<RpcResult, Error>
+    where
+        Params: Serialize,
+        RpcResult: DeserializeOwned,
+    {
+        let auth_expires = self.token_expiration().await?;
+        if auth_expires <= Utc::now() + Duration::from_secs(3600) {
+            self.renew_token().await?;
+        }
+
+        self.rpc_with_http(&self.bulk_http, method, params).await
+    }
+
+    /// JSON-RPC without auth renewal (used during login). Uses the fast API client.
     #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, params), fields(method = %method, request = tracing::field::Empty, response = tracing::field::Empty)))]
     async fn rpc_without_auth<Params, RpcResult>(
         &self,
+        method: String,
+        params: Option<Params>,
+    ) -> Result<RpcResult, Error>
+    where
+        Params: Serialize,
+        RpcResult: DeserializeOwned,
+    {
+        self.rpc_with_http(&self.http, method, params).await
+    }
+
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, http, params), fields(method = %method, request = tracing::field::Empty, response = tracing::field::Empty)))]
+    async fn rpc_with_http<Params, RpcResult>(
+        &self,
+        http: &reqwest::Client,
         method: String,
         params: Option<Params>,
     ) -> Result<RpcResult, Error>
@@ -5789,8 +5873,7 @@ impl Client {
                 tokio::time::sleep(delay).await;
             }
 
-            let result = self
-                .http
+            let result = http
                 .post(&url)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
@@ -6849,6 +6932,11 @@ async fn upload_bytes_to_presigned_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate `EDGEFIRST_SAMPLES_PAGE_SIZE`.
+    static SAMPLES_PAGE_SIZE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_filter_and_sort_by_name_exact_match_first() {
@@ -6920,6 +7008,92 @@ mod tests {
         let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
         assert_eq!(names, vec!["ace".to_string()]);
         assert_eq!(indices, vec![Some(12)]);
+    }
+
+    #[test]
+    fn test_samples_list_page_limit_non_mask_omits_limit() {
+        assert_eq!(samples_list_page_limit(&[]), None);
+        assert_eq!(
+            samples_list_page_limit(&["box2d".to_string(), "box3d".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_samples_list_page_limit_mask_default() {
+        // Isolate from developer/CI env overrides for this assertion.
+        let _guard = SAMPLES_PAGE_SIZE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: single-threaded under the mutex/serial for this env var.
+        unsafe {
+            std::env::remove_var("EDGEFIRST_SAMPLES_PAGE_SIZE");
+        }
+        assert_eq!(
+            samples_list_page_limit(&["mask".to_string()]),
+            Some(DEFAULT_MASK_SAMPLES_PAGE_SIZE)
+        );
+        assert_eq!(
+            samples_list_page_limit(&["box2d".to_string(), "mask".to_string()]),
+            Some(DEFAULT_MASK_SAMPLES_PAGE_SIZE)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_samples_list_page_limit_env_override_and_clamp() {
+        let _guard = SAMPLES_PAGE_SIZE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "50");
+        }
+        assert_eq!(samples_list_page_limit(&["mask".to_string()]), Some(50));
+        unsafe {
+            std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "9999");
+        }
+        assert_eq!(
+            samples_list_page_limit(&["mask".to_string()]),
+            Some(MAX_SAMPLES_LIST_PAGE_SIZE)
+        );
+        unsafe {
+            std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "0");
+        }
+        assert_eq!(samples_list_page_limit(&["mask".to_string()]), Some(1));
+        unsafe {
+            std::env::remove_var("EDGEFIRST_SAMPLES_PAGE_SIZE");
+        }
+    }
+
+    #[test]
+    fn test_samples_list_params_skips_none_limit() {
+        let params = SamplesListParams {
+            dataset_id: DatasetID::from(1),
+            annotation_set_id: None,
+            continue_token: None,
+            types: vec![],
+            group_names: vec![],
+            tag: None,
+            limit: None,
+        };
+        let json = serde_json::to_value(&params).unwrap();
+        assert!(json.get("limit").is_none());
+    }
+
+    #[test]
+    fn test_samples_list_params_includes_limit() {
+        let params = SamplesListParams {
+            dataset_id: DatasetID::from(1),
+            annotation_set_id: None,
+            continue_token: None,
+            types: vec!["mask".to_string()],
+            group_names: vec![],
+            tag: None,
+            limit: Some(100),
+        };
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(json.get("limit").and_then(|v| v.as_u64()), Some(100));
     }
 
     #[test]

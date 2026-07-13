@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Paginated sample/annotation fetches (`samples.list`), bulk annotation
+  populate/update APIs, and Studio multipart uploads now use the bulk HTTP
+  client (`EDGEFIRST_READ_TIMEOUT` idle timeout) via `Client::rpc_bulk` /
+  `post_multipart`, instead of the fast API client's 30s total
+  `EDGEFIRST_TIMEOUT`. This prevents timeouts when downloading dense mask
+  annotation pages (e.g. `samples_dataframe` / `download-annotations`).
+- Mask/seg `samples.list` requests use a smaller default page size (100,
+  overridable via `EDGEFIRST_SAMPLES_PAGE_SIZE`) so server pre-response work
+  stays under the bulk idle timeout.
+
+### Documentation
+
+- Clarified that `EDGEFIRST_TIMEOUT` is for fast metadata RPCs only; bulk
+  JSON-RPC and file transfers use `EDGEFIRST_READ_TIMEOUT`.
+- Corrected Python stubs that incorrectly recommended raising
+  `EDGEFIRST_TIMEOUT` for snapshot downloads.
+
 ## [2.12.2] - 2026-07-09
 
 ### Added
