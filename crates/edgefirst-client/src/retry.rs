@@ -74,13 +74,19 @@
 //! # Configuration
 //!
 //! - `EDGEFIRST_MAX_RETRIES`: Maximum retry attempts per request (default: 5)
-//! - `EDGEFIRST_TIMEOUT`: Total-request deadline for API calls in seconds
-//!   (default: 30). Applies to the `http` client only. **Do not** increase this
-//!   for large file transfers — use `EDGEFIRST_READ_TIMEOUT` instead.
-//! - `EDGEFIRST_READ_TIMEOUT`: Per-chunk idle timeout for bulk downloads in
-//!   seconds (default: 120). Applies to the `bulk_http` client. Resets after
-//!   every received chunk, so healthy large downloads are never interrupted.
-//!   Only fires when no bytes arrive for the configured duration.
+//! - `EDGEFIRST_TIMEOUT`: Total-request deadline for **fast** Studio API calls
+//!   in seconds (default: 30). Applies to the `http` client / [`crate::Client::rpc`]
+//!   only. **Do not** increase this for large file transfers or paginated
+//!   sample fetches — use `EDGEFIRST_READ_TIMEOUT` / [`crate::Client::rpc_bulk`] instead.
+//! - `EDGEFIRST_READ_TIMEOUT`: Per-chunk idle timeout for bulk operations in
+//!   seconds (default: 120). Applies to the `bulk_http` client used by file
+//!   downloads/uploads, [`crate::Client::rpc_bulk`] (paginated `samples.list`, bulk
+//!   annotation APIs, etc.), and related helpers. Resets after every received
+//!   chunk, so healthy large transfers are never interrupted. Only fires when
+//!   no bytes arrive for the configured duration.
+//! - `EDGEFIRST_SAMPLES_PAGE_SIZE`: Optional page size for `samples.list` when
+//!   fetching mask/seg annotations (default: 100, clamped to 1..=1000). Smaller
+//!   pages keep server pre-response work under the bulk idle timeout.
 //! - `EDGEFIRST_UPLOAD_TIMEOUT`: Per-operation total timeout for bulk uploads
 //!   in seconds (default: 600). Applied per-request via `RequestBuilder::timeout`
 //!   on each upload attempt (per part for multipart, per file for single uploads).
@@ -88,7 +94,7 @@
 //!   Sized for PART_SIZE (100 MB) at ~170 KB/s minimum; increase for very slow
 //!   uplinks or larger single-file uploads.
 //!
-//! **For bulk file operations**, increase retry count for better resilience:
+//! **For bulk file operations and sample fetches**, increase retry count for better resilience:
 //! ```bash
 //! export EDGEFIRST_MAX_RETRIES=10     # More retries for S3 operations
 //! export EDGEFIRST_READ_TIMEOUT=300   # 5-minute idle timeout for very slow downlinks
@@ -242,6 +248,9 @@ pub fn classify_url(url: &str) -> RetryScope {
 ///
 /// - **Max retries**: Configurable via `EDGEFIRST_MAX_RETRIES` (default: 5)
 /// - **Timeout**: Configurable via `EDGEFIRST_TIMEOUT` (default: 30 seconds)
+///   for fast API calls; bulk transfers and paginated sample fetches use
+///   `EDGEFIRST_READ_TIMEOUT` (default: 120 seconds idle) via `bulk_http` /
+///   [`crate::Client::rpc_bulk`].
 ///
 /// # Error Classification by Scope
 ///

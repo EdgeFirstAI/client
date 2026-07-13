@@ -4583,10 +4583,12 @@ class Snapshot:
                 Units are bytes. ``status`` is always ``None`` for this
                 operation (single-phase byte-level progress).
 
-                **Timeout note:** Downloads use a 30-second request timeout
-                by default. For large snapshots set the ``EDGEFIRST_TIMEOUT``
-                environment variable (seconds) before creating the client, e.g.
-                ``EDGEFIRST_TIMEOUT=600`` for 10 minutes. The progress
+                **Timeout note:** Snapshot downloads use the bulk HTTP client
+                with an idle per-chunk ``EDGEFIRST_READ_TIMEOUT`` (default 120
+                seconds). Bytes arriving reset the timer, so healthy large
+                downloads are not interrupted. Raise ``EDGEFIRST_READ_TIMEOUT``
+                before creating the client if the link can stall longer than
+                that, e.g. ``EDGEFIRST_READ_TIMEOUT=600``. The progress
                 callback does not affect timeout configuration.
 
         Raises:
@@ -7335,12 +7337,14 @@ class Client:
                 operation (single-phase byte-level progress). Providing a
                 progress callback does **not** affect timeout configuration.
 
-        **Timeout:** Downloads use a 30-second request timeout by default
-        (including response-body streaming). For large snapshots this may
-        cause ``HttpError(TimedOut)`` before the download completes. Set the
-        ``EDGEFIRST_TIMEOUT`` environment variable (integer seconds) before
-        creating the client to raise the limit, e.g.
-        ``EDGEFIRST_TIMEOUT=600`` for a 10-minute budget.
+        **Timeout:** Snapshot downloads use the bulk HTTP client with an idle
+        per-chunk ``EDGEFIRST_READ_TIMEOUT`` (default 120 seconds). Bytes
+        arriving reset the timer, so healthy large downloads are not
+        interrupted. If the connection can stall longer than that idle window,
+        set ``EDGEFIRST_READ_TIMEOUT`` (integer seconds) before creating the
+        client, e.g. ``EDGEFIRST_READ_TIMEOUT=600``. Do **not** raise
+        ``EDGEFIRST_TIMEOUT`` for snapshot downloads — that env var only
+        applies to fast metadata API calls.
 
         Raises:
             Error: If the snapshot does not exist, the download fails, or the
