@@ -6938,6 +6938,40 @@ mod tests {
     /// Serializes tests that mutate `EDGEFIRST_SAMPLES_PAGE_SIZE`.
     static SAMPLES_PAGE_SIZE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Saves and restores a process env var on drop (including after panics).
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        /// Capture the current value of `key`, then apply `next`.
+        /// Pass `None` to unset the variable for the duration of the guard.
+        fn set(key: &'static str, next: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: callers hold `SAMPLES_PAGE_SIZE_ENV_LOCK` / `#[serial]`.
+            unsafe {
+                match next {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: same serialization guarantees as `EnvVarGuard::set`.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_filter_and_sort_by_name_exact_match_first() {
         // Test that exact matches come first
@@ -7023,13 +7057,10 @@ mod tests {
     #[serial]
     fn test_samples_list_page_limit_mask_default() {
         // Isolate from developer/CI env overrides for this assertion.
-        let _guard = SAMPLES_PAGE_SIZE_ENV_LOCK
+        let _lock = SAMPLES_PAGE_SIZE_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: single-threaded under the mutex/serial for this env var.
-        unsafe {
-            std::env::remove_var("EDGEFIRST_SAMPLES_PAGE_SIZE");
-        }
+        let _env = EnvVarGuard::set("EDGEFIRST_SAMPLES_PAGE_SIZE", None);
         assert_eq!(
             samples_list_page_limit(&["mask".to_string()]),
             Some(DEFAULT_MASK_SAMPLES_PAGE_SIZE)
@@ -7043,13 +7074,13 @@ mod tests {
     #[test]
     #[serial]
     fn test_samples_list_page_limit_env_override_and_clamp() {
-        let _guard = SAMPLES_PAGE_SIZE_ENV_LOCK
+        let _lock = SAMPLES_PAGE_SIZE_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        unsafe {
-            std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "50");
-        }
+        let _env = EnvVarGuard::set("EDGEFIRST_SAMPLES_PAGE_SIZE", Some("50"));
         assert_eq!(samples_list_page_limit(&["mask".to_string()]), Some(50));
+        // Further mutations stay under the same restore-on-drop guard.
+        // SAFETY: serialized with `SAMPLES_PAGE_SIZE_ENV_LOCK` / `#[serial]`.
         unsafe {
             std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "9999");
         }
@@ -7061,9 +7092,6 @@ mod tests {
             std::env::set_var("EDGEFIRST_SAMPLES_PAGE_SIZE", "0");
         }
         assert_eq!(samples_list_page_limit(&["mask".to_string()]), Some(1));
-        unsafe {
-            std::env::remove_var("EDGEFIRST_SAMPLES_PAGE_SIZE");
-        }
     }
 
     #[test]
