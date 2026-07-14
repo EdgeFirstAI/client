@@ -7,7 +7,6 @@
 use assert_cmd::Command;
 use base64::Engine as _;
 use chrono::Utc;
-use directories::ProjectDirs;
 use serial_test::file_serial;
 use std::{
     collections::{BTreeSet, HashMap},
@@ -1057,22 +1056,12 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     let _password =
         env::var("STUDIO_PASSWORD").expect("STUDIO_PASSWORD must be set for authentication tests");
 
-    // Get the token path - must match what the CLI uses (no fallback)
-    let token_path = ProjectDirs::from("ai", "EdgeFirst", "EdgeFirst Studio")
-        .map(|d| d.config_dir().join("token"))
-        .ok_or("ProjectDirs::from returned None - cannot determine token path")?;
+    // Use an isolated token path so parallel nextest workers (and other crates
+    // that call Client::new() / login against the default config dir) cannot
+    // recreate the token file between logout and our assertion.
+    let temp_dir = tempfile::tempdir()?;
+    let token_path = temp_dir.path().join("token");
 
-    // Clean up any existing token file to ensure a clean test state
-    // This prevents interference from other tests or previous runs
-    if token_path.exists() {
-        println!(
-            "Removing existing token file ({} bytes) to ensure clean state",
-            fs::metadata(&token_path).map(|m| m.len()).unwrap_or(0)
-        );
-        fs::remove_file(&token_path)?;
-    }
-
-    // Debug: Show environment info to help diagnose path issues
     println!("HOME: {:?}", env::var("HOME"));
     println!("XDG_CONFIG_HOME: {:?}", env::var("XDG_CONFIG_HOME"));
     println!("Token path: {:?}", token_path);
@@ -1082,6 +1071,8 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
+    cmd.env_remove("STUDIO_TOKEN");
 
     let output = cmd.output()?;
     let stdout_str = String::from_utf8_lossy(&output.stdout);
@@ -1179,6 +1170,8 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== STEP 2: Logout ===");
     let mut cmd = edgefirst_cmd();
     cmd.arg("logout");
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
+    cmd.env_remove("STUDIO_TOKEN");
 
     let output = cmd.ok()?.stdout;
     let output_str = String::from_utf8(output)?;
@@ -1196,6 +1189,8 @@ fn test_auth_workflow() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cmd = edgefirst_cmd();
     cmd.arg("login");
+    cmd.env("STUDIO_TOKEN_PATH", &token_path);
+    cmd.env_remove("STUDIO_TOKEN");
     cmd.ok()?;
 
     let second_token = fs::read_to_string(&token_path)?;
