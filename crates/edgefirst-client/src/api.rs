@@ -82,7 +82,7 @@ pub struct LoginResult {
 macro_rules! typeid {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
-        #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
         pub struct $name(u64);
 
         impl Display for $name {
@@ -1558,7 +1558,18 @@ pub struct Tag {
     pub dataset_id: u64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+/// Dataset/annotation-set binding for a training session.
+///
+/// Populated once a session's dataset is configured. A session that was
+/// created but never fully configured (e.g. the launch flow was
+/// interrupted before it finished writing session parameters) reports
+/// this as [`DatasetParams::default`]: a zero [`DatasetID`] /
+/// [`AnnotationSetID`] and empty group names. [`TrainingSession::dataset`]
+/// and [`TrainingSession::annotation_set`] treat a zero ID as "not
+/// configured" and return [`Error::InvalidParameters`] rather than
+/// querying the server for an ID that can never exist.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct DatasetParams {
     dataset_id: DatasetID,
     annotation_set_id: AnnotationSetID,
@@ -3198,6 +3209,20 @@ mod tests {
         let id = DatasetID::from(111111);
         let value: u64 = id.into();
         assert_eq!(value, 111111);
+    }
+
+    #[test]
+    fn dataset_id_default_is_zero() {
+        assert_eq!(DatasetID::default().value(), 0);
+    }
+
+    #[test]
+    fn dataset_params_default_is_all_zero_and_empty() {
+        let params = DatasetParams::default();
+        assert_eq!(params.dataset_id().value(), 0);
+        assert_eq!(params.annotation_set_id().value(), 0);
+        assert_eq!(params.train_group(), "");
+        assert_eq!(params.val_group(), "");
     }
 
     // ========== AnnotationSetID Tests ==========
