@@ -856,7 +856,9 @@ pub struct PublishMetrics {
 
 #[derive(Deserialize)]
 struct TrainingSessionParams {
+    #[serde(default)]
     model_params: HashMap<String, Parameter>,
+    #[serde(default)]
     dataset_params: DatasetParams,
 }
 
@@ -925,10 +927,20 @@ impl TrainingSession {
     }
 
     pub async fn dataset(&self, client: &client::Client) -> Result<Dataset, Error> {
+        if self.params.dataset_params.dataset_id.value() == 0 {
+            return Err(Error::InvalidParameters(
+                "training session has no dataset configured".into(),
+            ));
+        }
         client.dataset(self.params.dataset_params.dataset_id).await
     }
 
     pub async fn annotation_set(&self, client: &client::Client) -> Result<AnnotationSet, Error> {
+        if self.params.dataset_params.annotation_set_id.value() == 0 {
+            return Err(Error::InvalidParameters(
+                "training session has no annotation set configured".into(),
+            ));
+        }
         client
             .annotation_set(self.params.dataset_params.annotation_set_id)
             .await
