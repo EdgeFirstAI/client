@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 EdgeFirst Studio Python client stubs.
 
@@ -9,6 +7,8 @@ CLI).
 Tutorials: ``examples/README.md`` in the GitHub repository.
 CLI reference: ``CLI.md``.
 """
+
+from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
@@ -1799,7 +1799,9 @@ class Dataset:
                 Use ``client.version_tag_create(dataset.id, ...)`` instead.
 
         Example:
-            >>> tag = dataset.version_tag_create("v1.0", description="Initial release")
+            >>> tag = dataset.version_tag_create(
+            ...     "v1.0", description="Initial release"
+            ... )
         """
         ...
 
@@ -1929,7 +1931,8 @@ class Dataset:
         entity_types: Optional[List[str]] = None,
     ) -> int:
         """
-        Get the count of changelog entries for this dataset between two versions.
+        Get the count of changelog entries for this dataset between two
+        versions.
 
         Requires an embedded client reference (datasets returned by the
         client methods automatically have one).
@@ -1944,7 +1947,8 @@ class Dataset:
 
         Raises:
             TypeError: If dataset has no client reference.
-                Use ``client.version_changelog_count(dataset.id, ...)`` instead.
+                Use ``client.version_changelog_count(dataset.id, ...)``
+                instead.
 
         Example:
             >>> count = dataset.version_changelog_count(from_version="v1.0")
@@ -2372,7 +2376,7 @@ class Annotation:
         ...
 
     def set_name(self, name: Optional[str]) -> None:
-        """Set the annotation's name (typically the sample's image filename)."""
+        """Set the annotation's name (usually the sample's image filename)."""
         ...
 
     def set_sequence_name(self, sequence_name: Optional[str]) -> None:
@@ -5543,7 +5547,11 @@ class Client:
             A new Client with memory-only token storage.
 
         Examples:
-            >>> client = Client().with_memory_storage().with_login("user@example.com", "password")
+            >>> client = (
+            ...     Client()
+            ...     .with_memory_storage()
+            ...     .with_login("user@example.com", "password")
+            ... )
             >>> # Token is stored in memory only, not persisted to disk
         """
         ...
@@ -5898,7 +5906,8 @@ class Client:
             dataset_id: The dataset identifier (string, int, or DatasetID).
 
         Returns:
-            List[Tag]: The dataset's tags, creation-ordered (highest id newest).
+            List[Tag]: The dataset's tags, creation-ordered (highest id
+            newest).
         """
         ...
 
@@ -6071,7 +6080,10 @@ class Client:
         Example:
             >>> # label_id is required for the server to resolve the label;
             >>> # label_name/label_index alone are not honored.
-            >>> label_ids = {label.name: label.id for label in client.labels(dataset_id)}
+            >>> label_ids = {
+            ...     label.name: label.id
+            ...     for label in client.labels(dataset_id)
+            ... }
             >>> ann = ServerAnnotation(
             ...     annotation_type="box", x=0.1, y=0.1, w=0.2, h=0.2,
             ...     score=1.0, image_id=sample_id.value,
