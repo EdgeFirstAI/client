@@ -73,7 +73,7 @@ pub struct LoginResult {
 
 /// Generates a TypeID newtype struct with full conversion support.
 ///
-/// Each invocation creates a `Copy + Clone + Debug + PartialEq + Eq + Hash`
+/// Each invocation creates a `Copy + Clone + Debug + PartialEq + Eq + Hash + Default`
 /// newtype wrapping `u64`, with `Display`, `FromStr`, `TryFrom<&str>`,
 /// `TryFrom<String>`, `From<u64>`, and `From<T> for u64` implementations.
 ///
