@@ -474,7 +474,7 @@ impl Dataset {
 /// shape that omits `dataset_id` and the creation date — [`AnnotationSet::dataset_id`] is
 /// backfilled by the client from the query context in that case, and
 /// [`AnnotationSet::created`] returns `None`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct AnnotationSet {
     id: AnnotationSetID,
     #[serde(default)]

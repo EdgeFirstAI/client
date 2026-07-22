@@ -82,7 +82,7 @@ pub struct LoginResult {
 macro_rules! typeid {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
-        #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
         pub struct $name(u64);
 
         impl Display for $name {
@@ -856,7 +856,9 @@ pub struct PublishMetrics {
 
 #[derive(Deserialize)]
 struct TrainingSessionParams {
+    #[serde(default)]
     model_params: HashMap<String, Parameter>,
+    #[serde(default)]
     dataset_params: DatasetParams,
 }
 
@@ -925,10 +927,20 @@ impl TrainingSession {
     }
 
     pub async fn dataset(&self, client: &client::Client) -> Result<Dataset, Error> {
+        if self.params.dataset_params.dataset_id.value() == 0 {
+            return Err(Error::InvalidParameters(
+                "training session has no dataset configured".into(),
+            ));
+        }
         client.dataset(self.params.dataset_params.dataset_id).await
     }
 
     pub async fn annotation_set(&self, client: &client::Client) -> Result<AnnotationSet, Error> {
+        if self.params.dataset_params.annotation_set_id.value() == 0 {
+            return Err(Error::InvalidParameters(
+                "training session has no annotation set configured".into(),
+            ));
+        }
         client
             .annotation_set(self.params.dataset_params.annotation_set_id)
             .await
@@ -1558,7 +1570,18 @@ pub struct Tag {
     pub dataset_id: u64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+/// Dataset/annotation-set binding for a training session.
+///
+/// Populated once a session's dataset is configured. A session that was
+/// created but never fully configured (e.g. the launch flow was
+/// interrupted before it finished writing session parameters) reports
+/// this as [`DatasetParams::default`]: a zero [`DatasetID`] /
+/// [`AnnotationSetID`] and empty group names. [`TrainingSession::dataset`]
+/// and [`TrainingSession::annotation_set`] treat a zero ID as "not
+/// configured" and return [`Error::InvalidParameters`] rather than
+/// querying the server for an ID that can never exist.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct DatasetParams {
     dataset_id: DatasetID,
     annotation_set_id: AnnotationSetID,
@@ -3198,6 +3221,20 @@ mod tests {
         let id = DatasetID::from(111111);
         let value: u64 = id.into();
         assert_eq!(value, 111111);
+    }
+
+    #[test]
+    fn dataset_id_default_is_zero() {
+        assert_eq!(DatasetID::default().value(), 0);
+    }
+
+    #[test]
+    fn dataset_params_default_is_all_zero_and_empty() {
+        let params = DatasetParams::default();
+        assert_eq!(params.dataset_id().value(), 0);
+        assert_eq!(params.annotation_set_id().value(), 0);
+        assert_eq!(params.train_group(), "");
+        assert_eq!(params.val_group(), "");
     }
 
     // ========== AnnotationSetID Tests ==========

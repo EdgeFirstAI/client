@@ -33,7 +33,7 @@
 
 use base64::Engine as _;
 use edgefirst_client::{
-    Client, DatasetID, Error, Parameter, SampleDimensionUpdate, SampleID, TaskID,
+    Client, DatasetID, Error, ExperimentID, Parameter, SampleDimensionUpdate, SampleID, TaskID,
     TrainingSessionID, ValidationSessionID,
 };
 use serde_json::json;
@@ -954,9 +954,11 @@ async fn delete_validation_sessions_maps_permission_denied() {
 // `Client::update_validation_session`
 // ---------------------------------------------------------------------------
 
-/// Full `trainer.session.get` row: the client's TrainingSession
-/// deserializer requires `params.{model_params,dataset_params}` and the
-/// embedded `docker_task`.
+/// Full `trainer.session.get` row with `model_params`/`dataset_params`
+/// populated. The client's TrainingSession deserializer still requires
+/// the embedded `docker_task`; see `training_session_json_without_params`
+/// below for the row shape of a session that was created but never fully
+/// configured, which the deserializer must tolerate.
 fn training_session_json(id: u64, name: &str, description: &str) -> serde_json::Value {
     json!({
         "id": id,
@@ -1080,6 +1082,94 @@ async fn update_training_session_updates_then_refetches() {
         .expect("trainer.session.update via mock");
     assert_eq!(session.name(), "renamed");
     assert_eq!(session.description(), "old description");
+}
+
+/// A `trainer.session.list` row for a session that was created but never
+/// fully configured — reproduces the production shape that triggered a
+/// "missing field `model_params`" deserialization failure before
+/// TrainingSessionParams/DatasetParams were made tolerant of omission.
+fn training_session_json_without_params(id: u64, name: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "trainer_id": 7,
+        "model": "modelpack",
+        "name": name,
+        "description": "",
+        "params": {},
+        "docker_task": {
+            "id": id,
+            "name": name,
+            "type": "trainer",
+            "status": "pending",
+            "manage_type": null,
+            "instance_type": "wiremock",
+            "date": "2026-05-15T00:00:00Z"
+        }
+    })
+}
+
+#[tokio::test]
+async fn training_sessions_tolerate_missing_model_and_dataset_params() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            training_session_json_without_params(0x222, "unconfigured"),
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let sessions = client
+        .training_sessions(ExperimentID::from(7u64), None)
+        .await
+        .expect("trainer.session.list must tolerate a session with no params configured");
+
+    assert_eq!(sessions.len(), 1);
+    let session = &sessions[0];
+    assert!(session.model_params().is_empty());
+    assert_eq!(session.dataset_params().dataset_id(), DatasetID::from(0));
+    assert_eq!(session.train_group(), "");
+    assert_eq!(session.val_group(), "");
+}
+
+#[tokio::test]
+async fn training_session_dataset_rejects_unconfigured_session_without_an_rpc() {
+    let server = MockServer::start().await;
+
+    // Only trainer.session.list is mocked. If dataset()/annotation_set()
+    // tried to round-trip to the server for dataset/annotation-set ID 0,
+    // wiremock would reject the unexpected request and this test would
+    // fail — proving the guard is client-side, not just error-mapped.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("trainer.session.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            training_session_json_without_params(0x222, "unconfigured"),
+        ]))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let sessions = client
+        .training_sessions(ExperimentID::from(7u64), None)
+        .await
+        .expect("mock trainer.session.list");
+    let session = &sessions[0];
+
+    let err = session
+        .dataset(&client)
+        .await
+        .expect_err("unconfigured session must not resolve a dataset");
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
+
+    let err = session
+        .annotation_set(&client)
+        .await
+        .expect_err("unconfigured session must not resolve an annotation set");
+    assert!(matches!(err, Error::InvalidParameters(_)), "got {err:?}");
 }
 
 #[tokio::test]
