@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.4] - 2026-07-23
+
 ### Fixed
 
 - `TrainingSession` deserialization (`trainer.session.list` / `trainer.session.get`) no longer fails with `missing field 'model_params'` when a session's `model_params`/`dataset_params` were never populated server-side; these now default to an empty map / zeroed `DatasetParams` respectively. `TrainingSession::dataset()`/`annotation_set()` return `Error::InvalidParameters` for a session with no dataset configured instead of querying the server for an ID that can't exist.
+
+### Documentation
+
+- Corrected the `typeid!` macro's doc comment to mention it now derives `Default`
 
 ## [2.12.3] - 2026-07-13
 
