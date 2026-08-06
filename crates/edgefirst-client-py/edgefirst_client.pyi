@@ -2306,6 +2306,45 @@ class Polygon:
         """
         ...
 
+class GpsData:
+    """GPS location data for a sample."""
+
+    def __init__(self, lat: float, lon: float) -> None:
+        """Create GPS metadata from latitude and longitude."""
+        ...
+
+    @property
+    def lat(self) -> float:
+        """Latitude in decimal degrees."""
+        ...
+
+    @property
+    def lon(self) -> float:
+        """Longitude in decimal degrees."""
+        ...
+
+class ImuData:
+    """IMU orientation data for a sample."""
+
+    def __init__(self, roll: float, pitch: float, yaw: float) -> None:
+        """Create IMU metadata from roll, pitch, and yaw angles."""
+        ...
+
+    @property
+    def roll(self) -> float:
+        """Roll angle in degrees."""
+        ...
+
+    @property
+    def pitch(self) -> float:
+        """Pitch angle in degrees."""
+        ...
+
+    @property
+    def yaw(self) -> float:
+        """Yaw angle in degrees."""
+        ...
+
 class SampleFile:
     """
     Represents a file associated with a sample (e.g., LiDAR, radar, depth map).
@@ -2411,6 +2450,10 @@ class Annotation:
 
     def set_object_id(self, object_id: Optional[str]) -> None:
         """Set the object identifier for this annotation."""
+        ...
+
+    def set_label_index(self, label_index: Optional[int]) -> None:
+        """Set the source-faithful label index for this annotation."""
         ...
 
     def set_sample_id(self, sample_id: Optional[SampleID]) -> None:
@@ -2744,6 +2787,24 @@ class Sample:
         """Set the frame number for this sample."""
         ...
 
+    def set_location(self, location: Optional[GpsData]) -> None:
+        """
+        Set GPS location metadata for this sample.
+
+        This metadata is uploaded with the sample itself, not stored on
+        individual annotations.
+        """
+        ...
+
+    def set_pose(self, pose: Optional[ImuData]) -> None:
+        """
+        Set IMU pose metadata for this sample.
+
+        This metadata is uploaded with the sample itself, not stored on
+        individual annotations.
+        """
+        ...
+
     def add_file(self, file: SampleFile) -> None:
         """Add a file (image, LiDAR, etc.) to this sample."""
         ...
@@ -2904,6 +2965,26 @@ class Sample:
 
         Returns:
             Optional[str]: The source identifier or None.
+        """
+        ...
+
+    @property
+    def location(self) -> Optional[GpsData]:
+        """
+        Returns GPS location metadata for this sample, if available.
+
+        Returns:
+            Optional[GpsData]: Sample GPS metadata or None.
+        """
+        ...
+
+    @property
+    def pose(self) -> Optional[ImuData]:
+        """
+        Returns IMU pose metadata for this sample, if available.
+
+        Returns:
+            Optional[ImuData]: Sample IMU metadata or None.
         """
         ...
 

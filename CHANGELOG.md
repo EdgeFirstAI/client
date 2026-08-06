@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Python bindings and `.pyi` stubs for sample GPS/IMU metadata via new `GpsData` and `ImuData` types
+- Python `Sample.set_location()` / `Sample.location` for GPS coordinates and `Sample.set_pose()` / `Sample.pose` for IMU orientation when using `populate_samples()`
+- Python `Annotation.set_label_index()` setter for source-faithful label indices during sample population
 - Tests: wiremock coverage for the core read surface — `org.get`,
   `project.list`, `project.get`, `dataset.list`, `dataset.get` and
   `auth.verify_token`. These are among the most-called methods in the client and
