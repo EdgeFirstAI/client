@@ -25,6 +25,8 @@ from edgefirst_client import (
     Box2d,
     Box3d,
     FileType,
+    GpsData,
+    ImuData,
     Polygon,
     Sample,
     SampleFile,
@@ -1104,6 +1106,67 @@ class DatasetTest(TestCase):
         ann.set_category_frequency(None)
         self.assertIsNone(ann.frame_number)
         self.assertIsNone(ann.category_frequency)
+
+    def test_populate_samples_location_pose_label_index_roundtrip(self):
+        """populate_samples() should round-trip sample GPS/IMU metadata and
+        annotation label_index."""
+        client = get_client()
+        projects = client.projects("Unit Testing")
+        self.assertGreater(len(projects), 0)
+        project = projects[0]
+
+        random_suffix = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+        dataset_name = f"Test Pose Location {random_suffix}"
+        dataset_id = client.create_dataset(str(project.id), dataset_name, "Test")
+        annotation_set_id = client.create_annotation_set(
+            dataset_id, "Default", "Default"
+        )
+
+        timestamp = int(time.time())
+        sample_name = f"pose_location_{timestamp}.png"
+        image_path = Path(get_test_data_dir()) / sample_name
+        Image.new("RGB", (100, 100), color="magenta").save(str(image_path))
+
+        sample = Sample()
+        sample.set_image_name(sample_name)
+        sample.set_location(GpsData(37.7749, -122.4194))
+        sample.set_pose(ImuData(10.0, -5.0, 90.0))
+        sample.add_file(SampleFile("image", str(image_path)))
+
+        ann = Annotation()
+        ann.set_label(f"pose_loc_label_{random_suffix.lower()}")
+        ann.set_label_index(4242)
+        ann.set_object_id("pose-loc-obj-1")
+        ann.set_box2d(Box2d(0.1, 0.1, 0.3, 0.3))
+        sample.add_annotation(ann)
+
+        try:
+            results = client.populate_samples(dataset_id, annotation_set_id, [sample])
+            self.assertEqual(len(results), 1)
+
+            fetched = client.samples(dataset_id, annotation_set_id)
+            sample_key = sample_name.rsplit(".", 1)[0]
+            created_sample = next((s for s in fetched if s.name == sample_key), None)
+            self.assertIsNotNone(created_sample)
+            assert created_sample is not None  # Pylance type narrowing
+
+            self.assertIsNotNone(created_sample.location)
+            self.assertIsNotNone(created_sample.pose)
+            assert created_sample.location is not None
+            assert created_sample.pose is not None
+            self.assertAlmostEqual(created_sample.location.lat, 37.7749, places=4)
+            self.assertAlmostEqual(created_sample.location.lon, -122.4194, places=4)
+            self.assertAlmostEqual(created_sample.pose.roll, 10.0, places=4)
+            self.assertAlmostEqual(created_sample.pose.pitch, -5.0, places=4)
+            self.assertAlmostEqual(created_sample.pose.yaw, 90.0, places=4)
+
+            self.assertGreater(len(created_sample.annotations), 0)
+            returned_ann = created_sample.annotations[0]
+            self.assertEqual(returned_ann.label_index, 4242)
+        finally:
+            client.delete_dataset(dataset_id)
 
 
 class TestLabels(TestCase):

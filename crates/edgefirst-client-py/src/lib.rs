@@ -1855,8 +1855,11 @@ pub struct GpsData(edgefirst_client::GpsData);
 #[pymethods]
 impl GpsData {
     #[new]
-    pub fn new(lat: f64, lon: f64) -> Self {
-        GpsData(edgefirst_client::GpsData { lat, lon })
+    pub fn new(lat: f64, lon: f64) -> PyResult<Self> {
+        let gps = edgefirst_client::GpsData { lat, lon };
+        gps.validate()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(GpsData(gps))
     }
 
     #[getter]
@@ -1876,8 +1879,11 @@ pub struct ImuData(edgefirst_client::ImuData);
 #[pymethods]
 impl ImuData {
     #[new]
-    pub fn new(roll: f64, pitch: f64, yaw: f64) -> Self {
-        ImuData(edgefirst_client::ImuData { roll, pitch, yaw })
+    pub fn new(roll: f64, pitch: f64, yaw: f64) -> PyResult<Self> {
+        let imu = edgefirst_client::ImuData { roll, pitch, yaw };
+        imu.validate()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(ImuData(imu))
     }
 
     #[getter]
