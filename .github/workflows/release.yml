@@ -24,9 +24,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 env:
   CARGO_TERM_COLOR: always
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
@@ -336,6 +333,8 @@ jobs:
     needs: [create-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

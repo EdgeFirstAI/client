@@ -14,10 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Least privilege by default; jobs opt into more where they genuinely need it.
-permissions:
-  contents: read
-
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -33,6 +29,8 @@ jobs:
     name: Lint and format
     runs-on: ubuntu-24.04-xlarge
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

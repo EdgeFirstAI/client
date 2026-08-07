@@ -10,7 +10,12 @@ jobs:
     if: >
       github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.head.ref, 'release/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Empty, not `contents: read`: this job never checks out the repository,
+    # and it creates the tag with RELEASE_TAG_TOKEN rather than GITHUB_TOKEN.
+    # Nothing here needs the workflow token, so it is granted nothing.
+    permissions: {}
     steps:
       # HEAD_REF is passed through `env:`, never interpolated into the script.
       #

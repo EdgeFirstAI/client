@@ -14,9 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
-
 env:
   CARGO_TERM_COLOR: always
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
@@ -27,6 +24,8 @@ jobs:
   build-cli:
     name: Build CLI - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -90,7 +89,16 @@ jobs:
       # `zig`, which the ziglang wheel supplies, so both are needed.
       - name: Install zig (Linux)
         if: matrix.platform == 'linux'
-        run: pip install ziglang
+        # `--only-binary=:all:` blocks an sdist fallback that could run setup
+        # scripts (S8541); the pin locks the resolved version so a build is
+        # reproducible and cannot silently drift (S8544). 0.16.0 is what the
+        # previously unpinned install already resolved to, so this changes
+        # nothing about what gets built.
+        #
+        # Block scalar (`|`) is required, not stylistic: as a flow scalar the
+        # `: ` inside `=:all:` makes YAML parse the value as a mapping.
+        run: |
+          pip install --only-binary=:all: ziglang==0.16.0
 
       # Prebuilt binary rather than `cargo install`, which compiled
       # cargo-zigbuild from source on every Linux matrix job.
@@ -147,6 +155,8 @@ jobs:
   build-wheels:
     name: Build Python Wheel - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     timeout-minutes: 45
     needs: [build-cli]  # Run after CLI builds to bundle CLI binary in wheel
     strategy:
@@ -243,7 +253,9 @@ jobs:
           ls -la crates/edgefirst-client-py/edgefirst_client.data/scripts/
 
       - name: Install maturin
-        run: pip install maturin[zig]
+        # Same hardening as the zig install above.
+        run: |
+          pip install --only-binary=:all: "maturin[zig]==1.14.1"
 
       # Install cross-compilation tools for Linux aarch64
       - name: Install cross-compilation tools (Linux aarch64)
@@ -371,6 +383,8 @@ jobs:
   verify:
     name: Verify Builds
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     timeout-minutes: 10
     needs: [build-cli, build-wheels]
     steps:

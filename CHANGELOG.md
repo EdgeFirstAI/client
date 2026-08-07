@@ -39,11 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: `release.yml` resolves the `build.yml` and `sbom.yml` run ids for the
   released commit and downloads their artifacts natively, replacing two
   third-party actions that matched on human-readable check names.
-- CI: workflows now declare concurrency groups, per-job timeouts, and
-  least-privilege permissions. Runner labels are pinned rather than floating,
-  and build steps branch on an explicit `platform` matrix field instead of the
-  runner label, so repinning a runner cannot silently skip the
+- CI: workflows now declare concurrency groups, per-job timeouts, and explicit
+  per-job least-privilege permissions. Runner labels are pinned rather than
+  floating, and build steps branch on an explicit `platform` matrix field
+  instead of the runner label, so repinning a runner cannot silently skip the
   `cargo-zigbuild` cross-compilation step or the manylinux2014 glibc gate.
+- CI: SonarCloud analysis is no longer gated on the test job succeeding. The
+  coverage and clippy reports it consumes are uploaded regardless of test
+  outcome, so requiring success meant one red integration test also took down
+  all static analysis and the quality gate.
+- CI: `pip` installs in `build.yml` pin their resolved versions and pass
+  `--only-binary=:all:`, matching the hardening already applied elsewhere, so
+  no build step can fall back to an sdist that executes setup scripts.
 
 ## [2.12.4] - 2026-07-23
 

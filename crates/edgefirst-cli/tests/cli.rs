@@ -1789,9 +1789,11 @@ fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error
     if snapshot_arrow.exists() {
         compare_label_index_pairs(&annotations_path, &snapshot_arrow)?;
     } else {
-        eprintln!(
-            "SKIP: snapshot downloaded without dataset.arrow at {} -- a known \
-             server-side issue, tracked internally. Not a client bug.",
+        println!(
+            "::warning title=Snapshot assertion skipped::\
+             test_label_index_upload_snapshot_roundtrip: snapshot downloaded \
+             without dataset.arrow at {} -- a known server-side issue, tracked \
+             internally. Not a client bug.",
             snapshot_download_dir.display()
         );
     }
@@ -4525,9 +4527,11 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
     // Deliberately narrow. Once the server includes the file again this branch
     // is not taken and STEP 6 runs unchanged, with no edit here.
     if !snapshot_arrow.exists() {
-        eprintln!(
-            "SKIP: snapshot downloaded without dataset.arrow -- a known \
-             server-side issue, tracked internally. Not a client bug."
+        println!(
+            "::warning title=Snapshot assertion skipped::\
+             test_create_snapshot_from_dataset: snapshot downloaded without \
+             dataset.arrow -- a known server-side issue, tracked internally. \
+             Not a client bug."
         );
         cleanup();
         return Ok(());
