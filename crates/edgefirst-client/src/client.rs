@@ -265,6 +265,71 @@ fn sanitize_path_component(name: &str) -> String {
     }
 }
 
+/// JSON field names whose values must never reach a log.
+///
+/// `auth.login` and `auth.refresh` return a bearer token valid for days. Trace
+/// logging is enabled wholesale in CI (`RUST_LOG=edgefirst_client=trace`) and
+/// those logs are uploaded as build artifacts, so an unredacted response body
+/// leaves a live credential somewhere that long outlives the run producing it.
+///
+/// Matching is on the field name rather than the calling method, so a new
+/// endpoint that happens to return a token is covered without anyone
+/// remembering to add it here.
+const SENSITIVE_JSON_KEYS: &[&str] = &[
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret",
+];
+
+/// Replaces the value of any sensitive field, at any depth, with a placeholder.
+fn redact_sensitive_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if SENSITIVE_JSON_KEYS
+                    .iter()
+                    .any(|sensitive| key.eq_ignore_ascii_case(sensitive))
+                {
+                    *val = serde_json::Value::String("[REDACTED]".to_owned());
+                } else {
+                    redact_sensitive_json(val);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_sensitive_json),
+        _ => {}
+    }
+}
+
+/// Prepares a JSON-RPC body for logging with any credentials removed.
+///
+/// A body that fails to parse is the case where the raw text is most valuable
+/// for debugging, so it is preserved -- unless it mentions a sensitive field
+/// name, in which case there is no structure to redact against and the whole
+/// thing is withheld. Erring towards withholding: a lost debugging aid is
+/// recoverable, a leaked token is not.
+pub(crate) fn redact_body_for_log(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(mut value) => {
+            redact_sensitive_json(&mut value);
+            value.to_string()
+        }
+        Err(_) => {
+            let lowered = body.to_ascii_lowercase();
+            if SENSITIVE_JSON_KEYS
+                .iter()
+                .any(|sensitive| lowered.contains(sensitive))
+            {
+                "[unparseable body withheld: mentions a sensitive field]".to_owned()
+            } else {
+                body.to_owned()
+            }
+        }
+    }
+}
+
 /// Progress information for long-running operations.
 ///
 /// This struct tracks the current progress of operations like file uploads,
@@ -5594,7 +5659,10 @@ impl Client {
             let response: RpcResponse<serde_json::Value> = match serde_json::from_slice(&body) {
                 Ok(response) => response,
                 Err(err) => {
-                    error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
+                    error!(
+                        "Invalid JSON Response: {}",
+                        redact_body_for_log(&String::from_utf8_lossy(&body))
+                    );
                     return Err(err.into());
                 }
             };
@@ -5834,7 +5902,10 @@ impl Client {
 
         // Log request for debugging (log crate) and profiling (tracing crate)
         let request_json = if method == "auth.login" {
-            // Redact auth.login params (contains password)
+            // Redact auth.login params wholesale. Kept as a blanket rather than
+            // relying on the field-name pass below, because this is the one
+            // request known to carry a password and blanking the entire params
+            // object cannot be defeated by an unexpected field name.
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": &method,
@@ -5843,7 +5914,10 @@ impl Client {
             })
             .to_string()
         } else {
-            serde_json::to_string(&request)?
+            // Every other request goes through the same field-name redaction as
+            // responses. Nothing here is known to carry a credential today; this
+            // is so that a future one does not have to be noticed first.
+            redact_body_for_log(&serde_json::to_string(&request)?)
         };
 
         if log_enabled!(Level::Trace) {
@@ -5963,8 +6037,20 @@ impl Client {
         let body = res.bytes().await?;
         let response_str = String::from_utf8_lossy(&body);
 
+        // Redacted before it reaches any sink. The auth responses carry a live
+        // bearer token, and both sinks below outlive the process: trace logs get
+        // uploaded as CI artifacts, and Perfetto traces get shared around.
+        //
+        // Redaction happens once here rather than at each sink, so a future
+        // third sink cannot reintroduce the leak by forgetting to call it.
+        let logged_response = if log_enabled!(Level::Trace) || cfg!(feature = "profiling") {
+            redact_body_for_log(&response_str)
+        } else {
+            String::new()
+        };
+
         if log_enabled!(Level::Trace) {
-            trace!("RPC Response: {}", response_str);
+            trace!("RPC Response: {}", logged_response);
         }
 
         // Record response on current span for Perfetto when profiling is enabled
@@ -5972,16 +6058,16 @@ impl Client {
         #[cfg(feature = "profiling")]
         {
             const MAX_RESPONSE_LEN: usize = 4096;
-            let truncated = if response_str.len() > MAX_RESPONSE_LEN {
+            let truncated = if logged_response.len() > MAX_RESPONSE_LEN {
                 // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 chars
-                let safe_end = response_str.floor_char_boundary(MAX_RESPONSE_LEN);
+                let safe_end = logged_response.floor_char_boundary(MAX_RESPONSE_LEN);
                 format!(
                     "{}...[truncated {} bytes]",
-                    &response_str[..safe_end],
-                    response_str.len() - safe_end
+                    &logged_response[..safe_end],
+                    logged_response.len() - safe_end
                 )
             } else {
-                response_str.to_string()
+                logged_response.clone()
             };
             tracing::Span::current().record("response", &truncated);
         }
@@ -5989,7 +6075,10 @@ impl Client {
         let response: RpcResponse<RpcResult> = match serde_json::from_slice(&body) {
             Ok(response) => response,
             Err(err) => {
-                error!("Invalid JSON Response: {}", String::from_utf8_lossy(&body));
+                error!(
+                    "Invalid JSON Response: {}",
+                    redact_body_for_log(&String::from_utf8_lossy(&body))
+                );
                 return Err(err.into());
             }
         };
@@ -7516,6 +7605,87 @@ mod tests {
         // can use for RPC and we don't want to silently accept it.
         let err = client.with_url("file:///etc/passwd").unwrap_err();
         assert!(matches!(err, Error::InsecureUrl(_)));
+    }
+}
+
+#[cfg(test)]
+mod tests_redact_body_for_log {
+    use super::*;
+
+    /// The exact shape that leaked: an auth.login response, as captured from a
+    /// CI artifact. The token is a structurally valid but fabricated JWT.
+    const AUTH_LOGIN_RESPONSE: &str = concat!(
+        r#"{"id":"999","jsonrpc":"2.0","result":{"username":"testing","#,
+        r#""firstname":"Automated","lastname":"Testing","code":"","#,
+        r#""token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl","#,
+        r#""roles":"admin","changepassword":false,"require2fa":false}}"#
+    );
+
+    #[test]
+    fn auth_login_response_no_longer_leaks_its_token() {
+        let redacted = redact_body_for_log(AUTH_LOGIN_RESPONSE);
+        assert!(
+            !redacted.contains("eyJhbGciOiJIUzI1NiJ9"),
+            "token survived redaction: {redacted}"
+        );
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redaction_keeps_the_rest_of_the_response_useful() {
+        // The point is to keep these logs worth reading. Only the credential
+        // goes; the fields you would actually debug with stay.
+        let redacted = redact_body_for_log(AUTH_LOGIN_RESPONSE);
+        for kept in ["testing", "Automated", "admin", "require2fa"] {
+            assert!(redacted.contains(kept), "lost {kept} from: {redacted}");
+        }
+    }
+
+    #[test]
+    fn redacts_nested_and_arrayed_tokens() {
+        let body = r#"{"result":{"sessions":[{"token":"aaa"},{"token":"bbb"}],
+                       "nested":{"deep":{"access_token":"ccc"}}}}"#;
+        let redacted = redact_body_for_log(body);
+        for secret in ["aaa", "bbb", "ccc"] {
+            assert!(
+                !redacted.contains(&format!("\"{secret}\"")),
+                "{secret} survived: {redacted}"
+            );
+        }
+    }
+
+    #[test]
+    fn field_matching_is_case_insensitive() {
+        let redacted = redact_body_for_log(r#"{"Token":"aaa","PASSWORD":"bbb"}"#);
+        assert!(!redacted.contains("aaa"));
+        assert!(!redacted.contains("bbb"));
+    }
+
+    #[test]
+    fn unparseable_body_is_kept_when_it_holds_no_secret() {
+        // A malformed body is when the raw text is most worth seeing, so it is
+        // preserved rather than blanked.
+        let body = "<html><body>502 Bad Gateway</body></html>";
+        assert_eq!(redact_body_for_log(body), body);
+    }
+
+    #[test]
+    fn unparseable_body_is_withheld_when_it_mentions_a_secret() {
+        // Truncated JSON cannot be redacted structurally, so it is dropped
+        // whole rather than guessed at.
+        let body = r#"{"result":{"token":"eyJhbGciOiJIUzI1NiJ9.trunca"#;
+        let redacted = redact_body_for_log(body);
+        assert!(!redacted.contains("eyJhbGciOiJIUzI1NiJ9"));
+        assert!(redacted.contains("withheld"));
+    }
+
+    #[test]
+    fn non_sensitive_json_is_passed_through_intact() {
+        let body = r#"{"result":{"datasets":[{"id":42,"name":"deer"}]}}"#;
+        let redacted = redact_body_for_log(body);
+        assert!(redacted.contains("deer"));
+        assert!(redacted.contains("42"));
+        assert!(!redacted.contains("REDACTED"));
     }
 }
 
