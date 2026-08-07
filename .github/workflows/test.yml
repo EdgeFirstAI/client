@@ -81,22 +81,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Rust and Python tests share one job on purpose. `cargo llvm-cov show-env` is
-  # exported into the environment before the maturin build, so the Python
-  # extension module is compiled instrumented and the profraw it emits during
-  # pytest feeds the same lcov.info as the Rust unit tests. Splitting the two
-  # would mean a second instrumented build of the whole workspace for no gain.
+  # PR feedback lane. Deliberately contains NO Studio integration tests.
+  #
+  # Those tests are 68 of 788 but were 99.4% of the runtime: measured on one
+  # run, the `cli` binary summed to 116.3 minutes while every other binary
+  # summed to 0.7. They also hit a shared server, so they brought contention,
+  # flakiness from server-side issues, and a hard dependency on secrets that
+  # fork PRs cannot read.
+  #
+  # They are not lost -- studio.yml exists precisely to run them, on demand
+  # against a chosen server and nightly across test/stage/saas. This lane had
+  # simply been duplicating that work on every push.
+  #
+  # What remains needs no credentials at all: 720 nextest tests in 6.2s, 62 doc
+  # tests in 2.3s, and the Python files that do not construct a Client. Wall
+  # clock here is compilation, not testing.
   test:
     name: Tests and coverage
+    # Still xlarge: what is left is dominated by compiling, which is genuinely
+    # CPU-bound. It was only test *execution* that had to stop being parallel
+    # against a shared server.
     runs-on: ubuntu-24.04-xlarge
-    # Generous on purpose. Runtime here is dominated by live Studio integration
-    # tests, which swing widely -- the Python suite alone has gone from 868s to
-    # 1100s between consecutive runs. An observed-good run is ~36 minutes, and
-    # an earlier 45 was tripped by a merely slow one. A timed-out job is
-    # reported as `cancelled`, not `failed`, so that failure mode is also
-    # genuinely hard to read. This is a hang detector, not a performance
-    # budget; it only has to beat GitHub's 6-hour default.
-    timeout-minutes: 90
+    # No Studio calls left, so runtime is predictable. The 90 minutes this
+    # needed before was entirely the integration suite.
+    timeout-minutes: 30
     permissions:
       contents: read
       checks: write        # publish-unit-test-result-action creates a check run
@@ -136,14 +144,10 @@ jobs:
       # from being polluted by an uninstrumented build.
       - name: Run Rust doc tests (before coverage instrumentation)
         run: cargo test --doc --locked
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
 
       # Exported into GITHUB_ENV so every later cargo/maturin invocation in this
-      # job inherits the instrumentation flags.
+      # job inherits the instrumentation flags. This is why the Python bindings
+      # below contribute to the same lcov as the Rust tests.
       - name: Set up coverage environment
         if: success() || failure()
         run: |
@@ -153,14 +157,11 @@ jobs:
         if: success() || failure()
         run: cargo build --locked
 
+      # `not binary(cli)` is the whole split. Everything excluded here runs in
+      # studio.yml against a real server.
       - name: Run Rust unit tests
         if: success() || failure()
-        run: cargo nextest run --locked --no-fail-fast --profile ci
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
+        run: cargo nextest run --locked --no-fail-fast --profile ci -E 'not binary(cli)'
 
       - name: Install Python dependencies
         if: success() || failure()
@@ -190,8 +191,6 @@ jobs:
         # pip from re-resolving transitive deps (already installed
         # from the hashed requirements.txt above) and
         # `--only-binary=:all:` blocks any sdist fallback (S8541).
-        # Block scalar (`|`) is used so YAML doesn't parse the
-        # `:all:` token as a mapping separator.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -208,18 +207,23 @@ jobs:
           printf 'edgefirst-client @ file://%s %s\n' "$WHEEL" "$HASH" > /tmp/wheel-constraint.txt
           pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/wheel-constraint.txt
 
-      - name: Run Python tests
+      # Catches a broken PyO3 signature or a stale .pyi in seconds, which is
+      # the failure mode that most wants fast feedback on a PR.
+      - name: Smoke-test the wheel
         if: success() || failure()
-        run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
+        run: |
+          set -euo pipefail
+          python3 -c "import edgefirst_client; print('edgefirst_client', edgefirst_client.__version__)"
 
-      # One lcov for both languages: the Rust unit tests and the instrumented
-      # extension module exercised by the Python suite write into the same
-      # profraw set.
+      # Only the Python tests that construct no Client. The Studio-backed
+      # Python suite runs in studio.yml.
+      - name: Run Python tests (no Studio)
+        if: success() || failure()
+        run: |
+          python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
+            test.test_coco_roundtrip test.test_storage test.test_parameter \
+            -o target/python
+
       - name: Generate coverage report
         if: success() || failure()
         run: cargo llvm-cov report --lcov --output-path lcov.info
@@ -235,10 +239,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # `action_fail: true` makes this step the single authority on test
-      # outcome for both languages -- it fails the job on any failure recorded
-      # in either JUnit report, so the earlier steps need no separate
-      # outcome-checking shims.
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@c950f6fb443cb5af20a377fd0dfaa78838901040 # v2.23.0
         if: success() || failure()

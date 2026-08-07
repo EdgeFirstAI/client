@@ -48,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage and clippy reports it consumes are uploaded regardless of test
   outcome, so requiring success meant one red integration test also took down
   all static analysis and the quality gate.
+- CI: pull-request validation no longer runs Studio integration tests. Those
+  68 tests were 99.4% of the suite's runtime (116 minutes against 0.7 for
+  every other test binary) and required credentials a fork cannot read. The
+  PR lane now runs 720 unit tests, 62 doc tests, and the Python files that
+  construct no client — around 8 seconds of test execution, with no Studio
+  access at all. The integration suite continues to run in `studio.yml`, on
+  demand against any environment and nightly across `test`, `stage` and
+  `saas`.
 - Tests: nextest now runs with `test-threads = 4` on both the `ci` and
   `default` profiles. The suite is dominated by Studio integration tests bound
   by a shared remote server, so nextest's default of one thread per core added
