@@ -3724,7 +3724,16 @@ fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Erro
 
 #[test]
 #[file_serial]
-#[ignore = "Backend S3 path format bug: restore uploading stage generates 's3:' instead of 's3://' causing 'Invalid S3 path format' error. See task.get response for task-40ae."]
+// Disabled 2026-03 on a server-side snapshot-restore failure, tracked internally.
+//
+// Treat this marker as stale rather than as a current diagnosis. Since it was
+// written the restore worker image has been replaced twice and the restore
+// subsystem is being migrated to a Studio app, so the original failure may well
+// be gone -- and if it is not, the cause is unlikely to be what was recorded at
+// the time. Re-validate against a current server before either re-enabling this
+// test or reasoning from this note.
+#[ignore = "Blocked on a server-side snapshot-restore failure tracked internally; \
+            diagnosis predates two restore-worker updates, so re-validate first"]
 fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // SNAPSHOT RESTORE TEST
