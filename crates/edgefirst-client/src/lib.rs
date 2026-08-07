@@ -99,6 +99,20 @@ pub use crate::dataset::samples_dataframe;
 #[cfg(feature = "polars")]
 pub use crate::dataset::unflatten_polygon_coordinates;
 
+/// Tests for the client library.
+///
+/// Every test here that talks to a real Studio instance is marked `#[ignore]`.
+/// That is not a "this test is broken" marker -- it is how the two CI lanes are
+/// partitioned. The pull-request lane (`test.yml`) runs without any `STUDIO_*`
+/// credentials and skips ignored tests, so it stays credential-free and fast;
+/// the nightly `studio.yml` supplies credentials and passes `--run-ignored all`
+/// to run them against test, stage, and saas.
+///
+/// So: a new test that calls `get_client()` MUST carry the `#[ignore]`
+/// attribute. Without it the test lands in the PR lane, where it has no token
+/// and fails with `Error::EmptyToken`. The pure unit tests below it (see
+/// `retry_url_classification`) touch no network and are deliberately not
+/// ignored.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +220,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_training_session() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -270,6 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_validate() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -305,6 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_download_artifact_success() -> Result<(), Error> {
         let trainer = get_training_session_for_artifacts().await?;
         let client = get_client().await?;
@@ -333,6 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_download_artifact_not_found() -> Result<(), Error> {
         let trainer = get_training_session_for_artifacts().await?;
         let client = get_client().await?;
@@ -355,6 +373,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_artifacts() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -407,6 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_download_checkpoint_success() -> Result<(), Error> {
         let trainer = get_training_session_for_checkpoints().await?;
         let client = get_client().await?;
@@ -456,6 +476,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_download_checkpoint_not_found() -> Result<(), Error> {
         let trainer = get_training_session_for_checkpoints().await?;
         let client = get_client().await?;
@@ -478,6 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_checkpoints() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -551,6 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_task_retrieval() -> Result<(), Error> {
         let client = get_client().await?;
 
@@ -567,6 +590,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_task_filtering_by_name() -> Result<(), Error> {
         let client = get_client().await?;
         let project = client.projects(Some("Unit Testing")).await?;
@@ -602,6 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_task_status_and_stages() -> Result<(), Error> {
         let client = get_client().await?;
 
@@ -639,6 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
     async fn test_tasks() -> Result<(), Error> {
         let client = get_client().await?;
         let tasks = client.tasks(None, None, None, None).await?;

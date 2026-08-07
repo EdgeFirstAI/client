@@ -1472,7 +1472,13 @@ pub async fn verify_coco_import(
     options: &CocoVerifyOptions,
     progress: Option<Sender<Progress>>,
 ) -> Result<super::verify::VerificationResult, Error> {
-    use super::{verify::*, writer::CocoDatasetBuilder};
+    use super::{
+        verify::{
+            MaskValidationResult, VerificationResult, validate_bboxes, validate_categories,
+            validate_masks,
+        },
+        writer::CocoDatasetBuilder,
+    };
 
     let coco_path = coco_path.as_ref();
 

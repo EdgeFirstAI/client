@@ -541,7 +541,6 @@ edgefirst-client update-dimensions ds-12345
 - Equivalent programmatic APIs:
   - **Rust:** `Client::backfill_sample_dimensions(dataset_id, progress)` (and `Client::update_sample_dimensions` for already-known dimensions).
   - **Python:** `client.backfill_sample_dimensions(dataset_id, progress=cb)`.
-  - **Swift/Kotlin (UniFFI):** `client.backfillSampleDimensions(datasetId)` — blocking, **no progress callback** in the FFI layer; for progress reporting on mobile, call the underlying `samples.update_dimensions` RPC directly or use the Python/Rust API on the server side.
 
 ### delete-samples
 

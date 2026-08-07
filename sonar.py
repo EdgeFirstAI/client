@@ -18,6 +18,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
@@ -660,6 +661,30 @@ def print_summary(summary: Dict[str, Any]) -> None:
             print(f"    {sev}: {count}", file=sys.stderr)
 
 
+
+def resolve_output_path(raw: str) -> Path:
+    """Resolve ``raw`` to an absolute path, refusing anything outside the
+    current working directory.
+
+    This script writes a report into the working tree; the default and the
+    ``REPORT_PATH`` used by ``env.sh`` are both plain relative filenames. A
+    path that escapes the tree -- ``../../..``, an absolute path elsewhere, or
+    a symlink pointing out -- is a mistake or an injected argument rather than
+    a use case, so it is rejected instead of written.
+
+    ``resolve()`` runs first so ``..`` segments and symlinks are collapsed
+    before the containment check; comparing the raw string instead would be
+    trivially bypassed by either.
+    """
+    root = Path.cwd().resolve()
+    candidate = (root / raw).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise SystemExit(
+            f"--output must stay within {root}, refusing to write {candidate}"
+        )
+    return candidate
+
+
 def main():
     """Main entry point for the script."""
     parser = create_argument_parser()
@@ -704,11 +729,12 @@ def main():
         )
 
         # Write output
-        with open(args.output, "w") as f:
+        output_path = resolve_output_path(args.output)
+        with open(output_path, "w") as f:
             json.dump(output, f, indent=2)
 
         if args.verbose:
-            print(f"✅ Report written to: {args.output}", file=sys.stderr)
+            print(f"✅ Report written to: {output_path}", file=sys.stderr)
 
         # Print summary
         if args.format == "copilot" and summary is not None:

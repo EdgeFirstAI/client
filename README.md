@@ -2,16 +2,13 @@
 
 [![Test](https://github.com/EdgeFirstAI/client/workflows/CI/badge.svg)](https://github.com/EdgeFirstAI/client/actions/workflows/test.yml)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=EdgeFirstAI_client&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=EdgeFirstAI_client)
-[![codecov](https://codecov.io/gh/EdgeFirstAI/client/branch/main/graph/badge.svg)](https://codecov.io/gh/EdgeFirstAI/client)
 [![Crates.io](https://img.shields.io/crates/v/edgefirst-client.svg)](https://crates.io/crates/edgefirst-client)
 [![PyPI](https://img.shields.io/pypi/v/edgefirst-client.svg)](https://pypi.org/project/edgefirst-client/)
-[![Android SDK](https://img.shields.io/badge/Android-SDK-3DDC84?logo=android&logoColor=white)](ANDROID.md)
-[![iOS/macOS SDK](https://img.shields.io/badge/iOS%2FmacOS-SDK-000000?logo=apple&logoColor=white)](APPLE.md)
 [![Documentation](https://docs.rs/edgefirst-client/badge.svg)](https://docs.rs/edgefirst-client)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![EdgeFirst Studio](https://img.shields.io/badge/EdgeFirst-Studio-green)](https://edgefirst.studio)
 
-**EdgeFirst Studio Client** is the official command-line application and library for [EdgeFirst Studio](https://edgefirst.studio) - the MLOps platform for 3D visual and 4D spatial perception AI. Available for **Rust**, **Python**, **Android (Kotlin)**, and **iOS/macOS (Swift)**. Automate dataset management, annotation workflows, model training, validation, and deployment for off-road vehicles, robotics, construction equipment, and industrial applications.
+**EdgeFirst Studio Client** is the official command-line application and library for [EdgeFirst Studio](https://edgefirst.studio) - the MLOps platform for 3D visual and 4D spatial perception AI. Available for **Rust** and **Python**. Automate dataset management, annotation workflows, model training, validation, and deployment for off-road vehicles, robotics, construction equipment, and industrial applications.
 
 ## Overview
 
@@ -99,16 +96,9 @@ cargo install edgefirst-cli
 pip install edgefirst-client
 ```
 
-### Mobile SDKs (Android & iOS/macOS)
+### Mobile
 
-Download the SDK packages from [GitHub Releases](https://github.com/EdgeFirstAI/client/releases):
-
-- **Android**: `edgefirst-client-android-{version}.zip` - Kotlin bindings with JNI libraries
-- **iOS/macOS**: `edgefirst-client-swift-{version}.zip` - Swift bindings with XCFramework
-
-See platform-specific documentation for integration instructions:
-- [Android SDK Documentation](ANDROID.md)
-- [iOS/macOS SDK Documentation](APPLE.md)
+The EdgeFirst Studio API for iOS and Android is provided by the [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk), which packages this client alongside the rest of the EdgeFirst on-device libraries.
 
 ### From Source
 
@@ -530,8 +520,7 @@ EdgeFirst Client is a REST API client built with:
 - **EdgeFirst Studio Docs**: [doc.edgefirst.ai](https://doc.edgefirst.ai)
 - **Rust API Documentation**: [docs.rs/edgefirst-client](https://docs.rs/edgefirst-client)
 - **Python API Documentation**: Available on [PyPI](https://pypi.org/project/edgefirst-client/)
-- **Android SDK Documentation**: See [ANDROID.md](ANDROID.md)
-- **iOS/macOS SDK Documentation**: See [APPLE.md](APPLE.md)
+- **Mobile (iOS/Android)**: [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk)
 - **Python Examples**: [examples/README.md](examples/README.md)
 - **CLI Man Page**: See [CLI.md](CLI.md)
 - **Dataset Format Specification**: [EdgeFirst Dataset Format](https://doc.edgefirst.ai/latest/datasets/format/)

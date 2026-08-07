@@ -6,22 +6,36 @@ on:
   pull_request:
     branches: [main]
 
+# Supersede an in-flight run when a PR is pushed again, but never on main:
+# release.yml resolves this workflow's run for a specific SHA, and a blanket
+# cancel would destroy the run a release depends on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   sbom-compliance:
     name: Generate SBOM & Check License Compliance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: 1.94
 
+      # Prebuilt binary rather than `cargo install`, which compiled
+      # cargo-cyclonedx from source on every push and pull request.
       - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
+        with:
+          tool: cargo-cyclonedx
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -42,7 +56,7 @@ jobs:
           # Verify SHA-256 checksum (from CycloneDX v0.27.1 release)
           echo "b36a12d5103c1fd799005e02ee8d5a546c8db5b67f770bb28786f15238ceac16  $HOME/.local/bin/cyclonedx" | sha256sum -c -
           chmod +x ~/.local/bin/cyclonedx
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Generate Complete SBOM
         run: .github/scripts/generate_sbom.sh

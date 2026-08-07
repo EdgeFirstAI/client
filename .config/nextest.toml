@@ -1,4 +1,30 @@
 # Nextest configuration file
+#
+# ## Why test-threads is pinned
+#
+# Most of this suite is Studio integration tests: they are bound by a shared
+# remote server, not by local CPU. nextest's default is one thread per core,
+# which is the right default for CPU-bound unit tests and the wrong one here --
+# extra threads do not add throughput, they just add concurrent load to a
+# server every other test is already waiting on.
+#
+# Measured, same tests, same commit range:
+#
+#   2 threads  (2-vCPU runner)   sum of test durations   57.3 min
+#   ~16 threads (xlarge runner)  sum of test durations  227.2 min
+#
+# Four times the aggregate time for the same work, with individual tests
+# stretching past 800s. That is contention, not workload.
+#
+# 4 is chosen to overlap network waits without approaching that level. It is
+# set on BOTH profiles deliberately: nextest does not read RUST_TEST_THREADS
+# (that is libtest's variable, and only affects `cargo test --doc`), so
+# without this a local run is unbounded by the developer's core count and
+# points all of it at the same shared server.
+#
+# This is independent of runner size. The xlarge runner is still correct for
+# compiling -- cargo build and clippy are genuinely CPU-bound. Only test
+# execution needs capping.
 
 # Test groups for serializing tests that cannot run concurrently
 # Auth tests manipulate the same token file and must run one at a time
@@ -7,6 +33,8 @@ max-threads = 1
 
 # CI profile - used in GitHub Actions and other CI environments
 [profile.ci]
+# See the note at the top of this file.
+test-threads = 4
 # Number of retries for failing tests
 retries = 0
 # Generate JUnit XML report for test results
@@ -20,6 +48,9 @@ test-group = "auth-tests"
 
 # Default profile inherits auth test serialization
 [profile.default]
+# Same cap as the CI profile: a local run hits the same shared Studio server,
+# and RUST_TEST_THREADS in env.sh does not reach nextest.
+test-threads = 4
 
 [[profile.default.overrides]]
 filter = "test(test_auth_workflow) | test(test_corrupted_token_handling)"

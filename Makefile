@@ -1,18 +1,8 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
-# Platform detection: library extension and sed -i variant differ between macOS and Linux
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-    LIB_EXT := dylib
-    SED_INPLACE := sed -i ''
-else
-    LIB_EXT := so
-    SED_INPLACE := sed -i
-endif
-
 .PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check \
-        security-audit swift swift-format swift-test kotlin xcframework
+        security-audit
 
 # Default target
 help:
@@ -40,16 +30,9 @@ help:
 	@echo "  make py-format   - Format Python code only"
 	@echo "  make py-test     - Run Python tests only"
 	@echo "  make py-dev      - Install Python bindings in development mode"
-	@echo ""
-	@echo "Mobile SDK development:"
-	@echo "  make swift        - Generate Swift bindings to swift/"
-	@echo "  make swift-format - Format Swift code (requires Swift 6+ / Xcode 16+)"
-	@echo "  make swift-test   - Run Swift SDK tests (requires XCFramework + credentials)"
-	@echo "  make kotlin       - Generate Kotlin bindings to artifacts/kotlin/"
-	@echo "  make xcframework  - Build XCFramework for local Swift development"
 
 # Format all code
-format: rust-format py-format swift-format
+format: rust-format py-format
 	@echo "✅ All code formatted"
 
 # Format Rust code
@@ -66,43 +49,6 @@ py-format:
 	else \
 		ruff format *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi; \
 		ruff check --fix --exit-zero *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.pyi; \
-	fi
-
-# Format Swift code (requires Swift 6+ / Xcode 16+)
-swift-format:
-	@echo "Formatting Swift code..."
-	@swift format --in-place --recursive swift/ Package.swift 2>/dev/null || \
-		echo "⚠️  swift format not available (requires Swift 6+ / Xcode 16+)"
-
-# Run Swift SDK tests with coverage (requires local XCFramework and credentials)
-# Credentials: STUDIO_TOKEN or STUDIO_USERNAME/STUDIO_PASSWORD
-# Server: STUDIO_SERVER (default: "test")
-swift-test: xcframework
-	@echo "Running Swift SDK tests..."
-	@export USE_LOCAL_FRAMEWORK=true && swift test --enable-code-coverage
-	@echo ""
-	@echo "Swift Coverage Summary"
-	@echo "======================"
-	@PROFDATA=$$(find .build -name 'default.profdata' -type f 2>/dev/null | head -1); \
-	if [ -n "$$PROFDATA" ]; then \
-		BINARY=$$(find .build -name 'EdgeFirstClientPackageTests' -type f -perm +111 2>/dev/null | head -1); \
-		if [ -n "$$BINARY" ]; then \
-			REPORT=$$(xcrun llvm-cov report "$$BINARY" -instr-profile="$$PROFDATA" \
-				-ignore-filename-regex='\.build|Tests' 2>/dev/null); \
-			if [ -n "$$REPORT" ]; then \
-				TOTAL=$$(echo "$$REPORT" | grep "^TOTAL"); \
-				LINES_COV=$$(echo "$$TOTAL" | awk '{print $$(NF-3)}'); \
-				FUNCS_COV=$$(echo "$$TOTAL" | awk '{print $$(NF-6)}'); \
-				echo "Lines:     $$LINES_COV"; \
-				echo "Functions: $$FUNCS_COV"; \
-			else \
-				echo "Coverage report generation failed"; \
-			fi; \
-		else \
-			echo "Test binary not found for coverage report"; \
-		fi; \
-	else \
-		echo "Coverage data not found"; \
 	fi
 
 # Lint all code
@@ -170,9 +116,11 @@ py-dev:
 
 # Scan Cargo.lock for known advisories.
 #
-# Mirrors the .github/workflows Security Audit job so the same failure
-# shows up locally before it blocks a PR. cargo-audit is auto-installed
-# via cargo if missing so this step is safe to run in a fresh clone.
+# CI no longer runs a dedicated cargo-audit job — SonarCloud covers dependency
+# advisories there. This target stays as the local pre-commit check, so a new
+# advisory surfaces before the push rather than in the Sonar quality gate.
+# cargo-audit is auto-installed via cargo if missing, so it is safe to run in
+# a fresh clone.
 security-audit:
 	@echo "Running cargo audit..."
 	@if ! command -v cargo-audit >/dev/null 2>&1; then \
@@ -292,114 +240,6 @@ check-license:
 	@echo "✅ All dependencies pass license policy"
 
 # =============================================================================
-# Mobile SDK Development
-# =============================================================================
-
-# Generate Swift bindings to swift/ directory
-# Note: The swift/ directory is managed by CI in production, but can be
-# regenerated locally for development and testing
-swift:
-	@echo "Generating Swift bindings..."
-	@echo "Building uniffi-bindgen..."
-	@cargo build --release -p uniffi-bindgen
-	@echo "Building FFI library..."
-	@cargo build --release -p edgefirst-client-ffi
-	@echo "Generating Swift code..."
-	@mkdir -p swift
-	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.$(LIB_EXT) \
-		--language swift \
-		--config crates/edgefirst-client-ffi/uniffi.toml \
-		--out-dir swift
-	@# Add 'framework' qualifier since this is packaged in a .framework bundle
-	@$(SED_INPLACE) 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' swift/EdgeFirstClientFFI.modulemap
-	@echo "✅ Swift bindings generated in swift/"
-	@echo "   - EdgeFirstClient.swift (user-facing Swift API)"
-	@echo "   - EdgeFirstClientFFI.h (internal FFI header)"
-	@echo "   - EdgeFirstClientFFI.modulemap (internal FFI module)"
-
-# Generate Kotlin bindings to artifacts/kotlin/ directory
-kotlin:
-	@echo "Generating Kotlin bindings..."
-	@echo "Building uniffi-bindgen..."
-	@cargo build --release -p uniffi-bindgen
-	@echo "Building FFI library..."
-	@cargo build --release -p edgefirst-client-ffi
-	@echo "Generating Kotlin code..."
-	@mkdir -p artifacts/kotlin
-	@./target/release/uniffi-bindgen generate \
-		--library target/release/libedgefirst_client.$(LIB_EXT) \
-		--language kotlin \
-		--out-dir artifacts/kotlin
-	@echo "✅ Kotlin bindings generated: artifacts/kotlin/"
-
-# Build XCFramework for local Swift development (macOS only)
-# This builds for: iOS device, iOS simulator (ARM64 + x86_64), macOS (ARM64 + x86_64)
-xcframework: swift
-	@echo "Building XCFramework for local development..."
-	@echo ""
-	@echo "Installing Rust targets (if needed)..."
-	@rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
-		aarch64-apple-darwin x86_64-apple-darwin 2>/dev/null || true
-	@echo ""
-	@# Set deployment targets to match Package.swift: iOS 13, macOS 10.15
-	@echo "Building for iOS device (arm64)..."
-	@IPHONEOS_DEPLOYMENT_TARGET=13.0 cargo build --release -p edgefirst-client-ffi --target aarch64-apple-ios
-	@echo "Building for iOS simulator (arm64)..."
-	@IPHONEOS_DEPLOYMENT_TARGET=13.0 cargo build --release -p edgefirst-client-ffi --target aarch64-apple-ios-sim
-	@echo "Building for iOS simulator (x86_64)..."
-	@IPHONEOS_DEPLOYMENT_TARGET=13.0 cargo build --release -p edgefirst-client-ffi --target x86_64-apple-ios
-	@echo "Building for macOS (arm64)..."
-	@MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --release -p edgefirst-client-ffi --target aarch64-apple-darwin
-	@echo "Building for macOS (x86_64)..."
-	@MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --release -p edgefirst-client-ffi --target x86_64-apple-darwin
-	@echo ""
-	@echo "Creating fat libraries..."
-	@mkdir -p target/universal-ios-sim/release target/universal-macos/release
-	@lipo -create \
-		target/aarch64-apple-ios-sim/release/libedgefirst_client.a \
-		target/x86_64-apple-ios/release/libedgefirst_client.a \
-		-output target/universal-ios-sim/release/libedgefirst_client.a
-	@lipo -create \
-		target/aarch64-apple-darwin/release/libedgefirst_client.a \
-		target/x86_64-apple-darwin/release/libedgefirst_client.a \
-		-output target/universal-macos/release/libedgefirst_client.a
-	@echo ""
-	@echo "Creating framework bundles..."
-	@# Framework name must match internal FFI module name (EdgeFirstClientFFI)
-	@for platform in ios ios-simulator macos; do \
-		mkdir -p "target/frameworks/$${platform}/EdgeFirstClientFFI.framework/Headers"; \
-		mkdir -p "target/frameworks/$${platform}/EdgeFirstClientFFI.framework/Modules"; \
-		cp swift/EdgeFirstClientFFI.h \
-			"target/frameworks/$${platform}/EdgeFirstClientFFI.framework/Headers/EdgeFirstClientFFI.h"; \
-		cp swift/EdgeFirstClientFFI.modulemap \
-			"target/frameworks/$${platform}/EdgeFirstClientFFI.framework/Modules/module.modulemap"; \
-	done
-	@cp target/aarch64-apple-ios/release/libedgefirst_client.a \
-		target/frameworks/ios/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-	@cp target/universal-ios-sim/release/libedgefirst_client.a \
-		target/frameworks/ios-simulator/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-	@cp target/universal-macos/release/libedgefirst_client.a \
-		target/frameworks/macos/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-	@echo ""
-	@echo "Creating XCFramework..."
-	@rm -rf EdgeFirstClient.xcframework
-	@xcodebuild -create-xcframework \
-		-framework target/frameworks/ios/EdgeFirstClientFFI.framework \
-		-framework target/frameworks/ios-simulator/EdgeFirstClientFFI.framework \
-		-framework target/frameworks/macos/EdgeFirstClientFFI.framework \
-		-output EdgeFirstClient.xcframework
-	@echo ""
-	@echo "✅ XCFramework created: EdgeFirstClient.xcframework"
-	@echo ""
-	@echo "To test locally:"
-	@echo "  make swift-test              # Run tests with local XCFramework"
-	@echo ""
-	@echo "  # Or manually with environment variable:"
-	@echo "  USE_LOCAL_FRAMEWORK=true swift test"
-	@echo "  USE_LOCAL_FRAMEWORK=true swift build"
-
-# =============================================================================
 # Version Management
 # =============================================================================
 
@@ -411,7 +251,6 @@ version-check:
 	cli_md_version=$$(grep '^footer:' CLI.md | sed 's/footer: edgefirst-client //'); \
 	lock_cli=$$(grep -A1 'name = "edgefirst-cli"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
 	lock_client=$$(grep -A1 'name = "edgefirst-client"' Cargo.lock | grep version | head -1 | sed 's/version = "\(.*\)"/\1/'); \
-	lock_ffi=$$(grep -A1 'name = "edgefirst-client-ffi"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
 	lock_py=$$(grep -A1 'name = "edgefirst-client-py"' Cargo.lock | grep version | sed 's/version = "\(.*\)"/\1/'); \
 	changelog_version=$$(grep -m 1 '## \[' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/'); \
 	errors=0; \
@@ -420,7 +259,6 @@ version-check:
 	echo "  CLI.md:                    $$cli_md_version"; \
 	echo "  Cargo.lock (cli):          $$lock_cli"; \
 	echo "  Cargo.lock (client):       $$lock_client"; \
-	echo "  Cargo.lock (client-ffi):   $$lock_ffi"; \
 	echo "  Cargo.lock (client-py):    $$lock_py"; \
 	echo "  CHANGELOG.md (latest):     $$changelog_version"; \
 	echo ""; \
@@ -434,10 +272,6 @@ version-check:
 	fi; \
 	if [ "$$cargo_version" != "$$lock_client" ]; then \
 		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-client ($$lock_client)"; \
-		errors=1; \
-	fi; \
-	if [ "$$cargo_version" != "$$lock_ffi" ]; then \
-		echo "❌ Mismatch: Cargo.toml ($$cargo_version) != Cargo.lock edgefirst-client-ffi ($$lock_ffi)"; \
 		errors=1; \
 	fi; \
 	if [ "$$cargo_version" != "$$lock_py" ]; then \

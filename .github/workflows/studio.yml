@@ -4,6 +4,21 @@ name: Studio Integration Tests
 # Triggered from GitHub Actions UI with configurable options
 
 on:
+  # Nightly across every environment. The PR lane deliberately runs no Studio
+  # tests at all (see test.yml), so this is what keeps the integration paths
+  # honest -- a failure here points at a commit range rather than blocking
+  # somebody's pull request.
+  # Deliberately off the hour: scheduled runs are best-effort, and the top of
+  # the hour is the most contended slot, so :00 crons are the likeliest to be
+  # delayed or dropped.
+  #
+  # No failure notification is wired up yet. Be aware of what that means: for
+  # a `schedule` event GitHub notifies only the user who last modified this
+  # cron line -- not the repository owner and not the team. Editing the line
+  # below silently transfers the alerts to whoever made the edit.
+  schedule:
+    - cron: '17 7 * * *'   # 07:17 UTC daily
+
   workflow_dispatch:
     inputs:
       studio_server:
@@ -23,7 +38,7 @@ on:
         type: boolean
         default: false
 
-run-name: Studio Tests - ${{ inputs.studio_server }}${{ inputs.include_ignored && ' (all tests)' || '' }}
+run-name: Studio Tests - ${{ inputs.studio_server || 'nightly (test, stage, saas)' }}${{ inputs.include_ignored && ' (all tests)' || '' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,8 +47,38 @@ env:
   RUST_LOG: "edgefirst_client=trace"
 
 jobs:
+  # A scheduled run has no `inputs`, so the server list cannot come from them.
+  # This resolves it once for both trigger types and hands it to every job's
+  # matrix: all three environments nightly, or just the chosen one on dispatch.
+  prepare:
+    name: Resolve target servers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      servers: ${{ steps.pick.outputs.servers }}
+    steps:
+      - name: Pick servers
+        id: pick
+        env:
+          DISPATCH_SERVER: ${{ inputs.studio_server }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DISPATCH_SERVER" ]; then
+            printf 'servers=["%s"]\n' "$DISPATCH_SERVER" >> "$GITHUB_OUTPUT"
+          else
+            echo 'servers=["test","stage","saas"]' >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   rust-client-lib:
-    name: Rust Client Library (${{ inputs.studio_server }})
+    name: Rust Client Library (${{ matrix.server }})
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.prepare.outputs.servers) }}
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.set_result.outputs.result }}
@@ -74,6 +119,15 @@ jobs:
       - name: Create output directories
         run: mkdir -p test-results test-logs
 
+      # `--run-ignored all` is unconditional here, NOT gated on include_ignored.
+      # In this crate `#[ignore]` means "needs a live Studio server" (see the
+      # module docs on `mod tests` in edgefirst-client/src/lib.rs), and this
+      # workflow is the thing that supplies one. Gating it would mean the
+      # nightly silently ran zero of the twelve Studio tests -- passing green
+      # while checking nothing, which is worse than failing.
+      #
+      # Trade-off, stated plainly: there is now no way to disable an individual
+      # test in this crate via `#[ignore]`. Use a nextest filter if that comes up.
       - name: Run edgefirst-client lib tests
         id: tests
         run: |
@@ -84,13 +138,13 @@ jobs:
             --profile ci \
             -p edgefirst-client \
             --lib \
-            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
+            --run-ignored all \
             2>&1 | tee test-logs/rust-client-lib.log
           TEST_EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
           exit $TEST_EXIT_CODE
         env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_SERVER: ${{ matrix.server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
@@ -161,7 +215,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rust-client-lib-results-${{ inputs.studio_server }}
+          name: rust-client-lib-results-${{ matrix.server }}
           path: |
             test-results/
             test-logs/
@@ -187,7 +241,7 @@ jobs:
           echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
           echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> �� Download \`rust-client-lib-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "> �� Download \`rust-client-lib-results-${{ matrix.server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail job if tests failed
         if: always() && steps.tests.outputs.exit_code != '0'
@@ -196,7 +250,12 @@ jobs:
           exit 1
 
   rust-cli:
-    name: Rust CLI (${{ inputs.studio_server }})
+    name: Rust CLI (${{ matrix.server }})
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.prepare.outputs.servers) }}
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.set_result.outputs.result }}
@@ -252,7 +311,7 @@ jobs:
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
           exit $TEST_EXIT_CODE
         env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_SERVER: ${{ matrix.server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
@@ -322,7 +381,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rust-cli-results-${{ inputs.studio_server }}
+          name: rust-cli-results-${{ matrix.server }}
           path: |
             test-results/
             test-logs/
@@ -348,7 +407,7 @@ jobs:
           echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
           echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> �� Download \`rust-cli-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "> �� Download \`rust-cli-results-${{ matrix.server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail job if tests failed
         if: always() && steps.tests.outputs.exit_code != '0'
@@ -357,7 +416,12 @@ jobs:
           exit 1
 
   rust-doc:
-    name: Rust Doc Tests (${{ inputs.studio_server }})
+    name: Rust Doc Tests (${{ matrix.server }})
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.prepare.outputs.servers) }}
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.set_result.outputs.result }}
@@ -402,7 +466,7 @@ jobs:
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
           exit $TEST_EXIT_CODE
         env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_SERVER: ${{ matrix.server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
@@ -472,7 +536,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rust-doc-results-${{ inputs.studio_server }}
+          name: rust-doc-results-${{ matrix.server }}
           path: |
             test-results/
             test-logs/
@@ -498,7 +562,7 @@ jobs:
           echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
           echo "| ⏭️ Ignored | $IGNORED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📥 Download \`rust-doc-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "> 📥 Download \`rust-doc-results-${{ matrix.server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail job if tests failed
         if: always() && steps.tests.outputs.exit_code != '0'
@@ -507,7 +571,12 @@ jobs:
           exit 1
 
   python-lib:
-    name: Python Library (${{ inputs.studio_server }})
+    name: Python Library (${{ matrix.server }})
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.prepare.outputs.servers) }}
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.set_result.outputs.result }}
@@ -565,7 +634,7 @@ jobs:
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
           exit $TEST_EXIT_CODE
         env:
-          STUDIO_SERVER: ${{ inputs.studio_server }}
+          STUDIO_SERVER: ${{ matrix.server }}
           STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
@@ -623,7 +692,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: python-lib-results-${{ inputs.studio_server }}
+          name: python-lib-results-${{ matrix.server }}
           path: |
             test-results/
             test-logs/
@@ -649,7 +718,7 @@ jobs:
           echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
           echo "| ⏭️ Skipped | $IGNORED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> 📥 Download \`python-lib-results-${{ inputs.studio_server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
+          echo "> 📥 Download \`python-lib-results-${{ matrix.server }}\` for JUnit XML and detailed logs" >> $GITHUB_STEP_SUMMARY
 
       - name: Fail job if tests failed
         if: always() && steps.tests.outputs.exit_code != '0'
@@ -660,7 +729,7 @@ jobs:
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [rust-client-lib, rust-cli, rust-doc, python-lib]
+    needs: [prepare, rust-client-lib, rust-cli, rust-doc, python-lib]
     if: always()
     steps:
       - name: Generate workflow summary
@@ -716,7 +785,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Server** | \`${{ inputs.studio_server }}.edgefirst.studio\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Servers** | \`${{ needs.prepare.outputs.servers }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Include Ignored Tests** | \`${{ inputs.include_ignored }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Triggered By** | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${GITHUB_SHA:0:7}\` |" >> $GITHUB_STEP_SUMMARY
@@ -768,10 +837,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Artifact | Contents |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| \`rust-client-lib-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust client library |" >> $GITHUB_STEP_SUMMARY
-          echo "| \`rust-cli-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust CLI |" >> $GITHUB_STEP_SUMMARY
-          echo "| \`rust-doc-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Rust doc tests |" >> $GITHUB_STEP_SUMMARY
-          echo "| \`python-lib-results-${{ inputs.studio_server }}\` | JUnit XML + logs for Python library |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-client-lib-results-<server>\` | JUnit XML + logs for Rust client library, one per server |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-cli-results-<server>\` | JUnit XML + logs for Rust CLI, one per server |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`rust-doc-results-<server>\` | JUnit XML + logs for Rust doc tests, one per server |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`python-lib-results-<server>\` | JUnit XML + logs for Python library, one per server |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "> 💡 All logs include \`RUST_LOG=edgefirst_client=trace\` for detailed debugging" >> $GITHUB_STEP_SUMMARY

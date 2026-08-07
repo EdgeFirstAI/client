@@ -7,6 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Supersede an in-flight run when a PR is pushed again, but never on main.
+# release.yml waits for a build.yml run on a specific SHA, and a blanket
+# cancel would let a follow-up push kill the very run a release depends on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -15,42 +22,107 @@ env:
   RUST_STABLE_VERSION: "1.94"
 
 jobs:
-  # Code quality checks and tests (stable Rust only)
-  lint-and-test:
-    name: Lint, Test, and Coverage
-    runs-on: ubuntu-latest
+  # Formatting and clippy. Split from `test` so a lint failure reports in about
+  # a minute instead of behind the full test suite, and so the clippy report can
+  # be handed to SonarCloud (see the sonarcloud job).
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-24.04-xlarge
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - name: Remove Junk from Host
-        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          remove-large-packages: 'true'
-          remove-cached-tools: 'true'
-          remove-swapfile: 'true'
-          verbose: 'true'
-          
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Cheap and needs no toolchain, so it runs before anything is installed.
+      # The script has been in the repo since 7056a9a but was never invoked by
+      # a workflow, so no push has ever actually been audited.
+      - name: Audit workflows for script injection
+        run: ./.github/scripts/audit-injection.sh .
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
-          components: clippy, llvm-tools-preview
+          components: clippy, rustfmt
 
-      # Cache for stable rust builds and tests
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # First, because it needs no build: a formatting slip fails in seconds
+      # rather than after clippy has compiled the workspace.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # `--message-format=json` so the run can be handed to SonarCloud, which
+      # would otherwise compile the workspace with clippy a second time and
+      # report a different set of lints than CI enforces.
+      #
+      # jq renders the human-readable form back into the log, which the JSON
+      # format otherwise suppresses -- a clippy failure that prints only raw
+      # JSON is unreadable. `pipefail` keeps cargo's exit status from being
+      # masked by tee/jq.
+      - name: Clippy
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features --locked --message-format=json \
+            | tee clippy-report.json \
+            | jq -r 'select(.reason == "compiler-message") | .message.rendered // empty'
+
+      - name: Upload clippy report for SonarCloud
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: always()
+        with:
+          name: clippy-report-linux
+          path: clippy-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # PR feedback lane. Deliberately contains NO Studio integration tests.
+  #
+  # Those tests are 68 of 788 but were 99.4% of the runtime: measured on one
+  # run, the `cli` binary summed to 116.3 minutes while every other binary
+  # summed to 0.7. They also hit a shared server, so they brought contention,
+  # flakiness from server-side issues, and a hard dependency on secrets that
+  # fork PRs cannot read.
+  #
+  # They are not lost -- studio.yml exists precisely to run them, on demand
+  # against a chosen server and nightly across test/stage/saas. This lane had
+  # simply been duplicating that work on every push.
+  #
+  # What remains needs no credentials at all: 720 nextest tests in 6.2s, 62 doc
+  # tests in 2.3s, and the Python files that do not construct a Client. Wall
+  # clock here is compilation, not testing.
+  test:
+    name: Tests and coverage
+    # Still xlarge: what is left is dominated by compiling, which is genuinely
+    # CPU-bound. It was only test *execution* that had to stop being parallel
+    # against a shared server.
+    runs-on: ubuntu-24.04-xlarge
+    # No Studio calls left, so runtime is predictable. The 90 minutes this
+    # needed before was entirely the integration suite.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: write        # publish-unit-test-result-action creates a check run
+      pull-requests: write # ...and comments the summary on PRs
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VERSION }}
+          components: llvm-tools-preview
+
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          key: stable-lint-test
-          shared-key: "stable"
+          key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features --locked
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
@@ -67,47 +139,29 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Before instrumentation: doc tests and llvm-cov's build settings do not
+      # coexist, and running them first keeps the instrumented target directory
+      # from being polluted by an uninstrumented build.
       - name: Run Rust doc tests (before coverage instrumentation)
         run: cargo test --doc --locked
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
 
+      # Exported into GITHUB_ENV so every later cargo/maturin invocation in this
+      # job inherits the instrumentation flags. This is why the Python bindings
+      # below contribute to the same lcov as the Rust tests.
       - name: Set up coverage environment
         if: success() || failure()
         run: |
-          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> $GITHUB_ENV
+          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
 
       - name: Build with coverage
         if: success() || failure()
         run: cargo build --locked
 
+      # `not binary(cli)` is the whole split. Everything excluded here runs in
+      # studio.yml against a real server.
       - name: Run Rust unit tests
-        id: rust_tests
         if: success() || failure()
-        run: cargo nextest run --locked --no-fail-fast --profile ci
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
-
-      - name: Verify nextest output
-        if: always()
-        run: |
-          echo "Checking for nextest output files..."
-          find target/nextest -name "*.xml" -o -name "junit.xml" || echo "No XML files found in target/nextest"
-          ls -la target/nextest/ci/ || echo "target/nextest/ci directory not found"
-          echo "Contents of target/nextest/ci/:"
-          find target/nextest/ci/ -type f || true
-
-      - name: Check Rust test failure
-        if: failure() || steps.rust_tests.outcome == 'failure'
-        run: |
-          echo "::error::Rust unit tests failed"
-          exit 1
+        run: cargo nextest run --locked --no-fail-fast --profile ci -E 'not binary(cli)'
 
       - name: Install Python dependencies
         if: success() || failure()
@@ -137,42 +191,69 @@ jobs:
         # pip from re-resolving transitive deps (already installed
         # from the hashed requirements.txt above) and
         # `--only-binary=:all:` blocks any sdist fallback (S8541).
-        # Block scalar (`|`) is used so YAML doesn't parse the
-        # `:all:` token as a mapping separator.
         run: |
-          WHEEL=$(ls "$PWD"/target/wheels/edgefirst_client-*.whl | head -1)
+          set -euo pipefail
+          shopt -s nullglob
+          # Glob into an array rather than `ls | head -1`: an empty result is
+          # then an explicit failure instead of an empty $WHEEL that silently
+          # produces a malformed constraints file.
+          wheels=("$PWD"/target/wheels/edgefirst_client-*.whl)
+          if [ ${#wheels[@]} -eq 0 ]; then
+            echo "::error::maturin produced no wheel in target/wheels"
+            exit 1
+          fi
+          WHEEL="${wheels[0]}"
           HASH=$(pip hash --algorithm sha256 "$WHEEL" | grep -E '^--hash=' | head -1)
           printf 'edgefirst-client @ file://%s %s\n' "$WHEEL" "$HASH" > /tmp/wheel-constraint.txt
           pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/wheel-constraint.txt
 
-      - name: Run Python tests
-        id: python_tests
+      # Catches a wheel that builds but cannot load -- an ABI mismatch, a missing
+      # symbol, or a class dropped from the #[pymodule] export table -- in
+      # seconds, which is the failure mode that most wants fast feedback on a PR.
+      #
+      # There is deliberately no __version__ check: the extension module does not
+      # export one. Asserting on the exported classes tests something that
+      # actually exists.
+      - name: Smoke-test the wheel
         if: success() || failure()
-        run: python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s . -p "test*.py" -o target/python
-        env:
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          TEST_DATASET_TYPES: box2d,box3d,mask
-
-      - name: Verify Python test output
-        if: always()
         run: |
-          echo "Checking for Python test output files..."
-          ls -la target/python/ || echo "target/python directory not found"
-          echo "Python test XML files:"
-          find target/python -name "TEST-*.xml" || echo "No TEST-*.xml files found"
-          echo "Python coverage file:"
-          ls -lh coverage.xml || echo "coverage.xml not found"
+          set -euo pipefail
+          python3 - <<'PY'
+          import edgefirst_client
 
-      - name: Check Python test failure
-        if: failure() || steps.python_tests.outcome == 'failure'
+          expected = ["Client", "Project", "Dataset", "Experiment", "Snapshot"]
+          missing = [name for name in expected if not hasattr(edgefirst_client, name)]
+          if missing:
+              raise SystemExit(f"edgefirst_client is missing exports: {missing}")
+
+          print("edgefirst_client imported OK, exports present:", ", ".join(expected))
+          PY
+
+      # Only the Python tests that construct no Client. The Studio-backed
+      # Python suite runs in studio.yml.
+      - name: Run Python tests (no Studio)
+        if: success() || failure()
         run: |
-          echo "::error::Python tests failed"
-          exit 1
+          python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
+            test.test_coco_roundtrip test.test_storage test.test_parameter \
+            -o target/python
+
+      - name: Generate coverage report
+        if: success() || failure()
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+
+      - name: Upload coverage for SonarCloud
+        if: success() || failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverage-reports
+          path: |
+            lcov.info
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Publish test results
-        id: publish_results
         uses: EnricoMi/publish-unit-test-result-action@c950f6fb443cb5af20a377fd0dfaa78838901040 # v2.23.0
         if: success() || failure()
         with:
@@ -189,138 +270,51 @@ jobs:
           compare_to_earlier_commit: true
           check_run_annotations: all tests, skipped tests
 
-      - name: Check test results action outcome
-        if: always()
-        run: |
-          # Check if publish-unit-test-result-action reported test failures
-          if [ "${{ steps.publish_results.outcome }}" = "failure" ]; then
-            echo "::error::Tests failed - action detected test failures"
-            exit 1
-          fi
-          
-          # Also check for specific Rust test failures by looking at exit code
-          # The rust_tests step should have failed if tests failed
-          if [ "${{ steps.rust_tests.outcome }}" = "failure" ]; then
-            echo "::error::Rust tests failed"
-            exit 1
-          fi
-          
-          # Check for Python test failures
-          if [ "${{ steps.python_tests.outcome }}" = "failure" ]; then
-            echo "::error::Python tests failed"
-            exit 1
-          fi
-
-      - name: Generate coverage report
-        if: success() || failure()
-        run: cargo llvm-cov report --lcov --output-path lcov.info
-
-      - name: Upload Rust coverage to Codecov
-        if: success() || failure()
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
-        with:
-          files: lcov.info
-          flags: rust
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-      - name: Upload Python coverage to Codecov
-        if: success() || failure()
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
-        with:
-          files: coverage.xml
-          flags: python
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-      - name: Upload coverage to GitHub
-        if: success() || failure()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: coverage-reports
-          path: |
-            lcov.info
-            coverage.xml
-
-      - name: Generate workflow summary
-        if: always()
-        run: |
-          echo "## 📊 Test & Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Coverage (Rust + Python + Swift)" >> $GITHUB_STEP_SUMMARY
-          echo "[![Codecov](https://codecov.io/gh/${{ github.repository }}/graph/badge.svg)](https://app.codecov.io/gh/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Code Quality (SonarCloud)" >> $GITHUB_STEP_SUMMARY
-          echo "[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=coverage)](https://sonarcloud.io/component_measures?metric=coverage&id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-          echo "[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=bugs)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=BUG)" >> $GITHUB_STEP_SUMMARY
-          echo "[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=vulnerabilities)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=VULNERABILITY)" >> $GITHUB_STEP_SUMMARY
-          echo "[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=code_smells)](https://sonarcloud.io/project/issues?id=${{ github.repository_owner }}_${{ github.event.repository.name }}&types=CODE_SMELL)" >> $GITHUB_STEP_SUMMARY
-          echo "[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=${{ github.repository_owner }}_${{ github.event.repository.name }}&metric=sqale_index)](https://sonarcloud.io/component_measures?metric=sqale_index&id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-
-  # Security audit (uses stable rust to match distributed binaries)
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Remove Junk from Host
-        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          remove-large-packages: 'true'
-          remove-cached-tools: 'true'
-          remove-swapfile: 'true'
-          verbose: 'true'
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Run cargo audit
-        run: cargo audit
-
-      - name: Generate security audit summary
-        if: always()
-        run: |
-          echo "## 🔒 Security Audit" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ No known vulnerabilities found in dependencies" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "_Scanned with [cargo-audit](https://rustsec.org/) on stable Rust_" >> $GITHUB_STEP_SUMMARY
-
-  # SonarCloud analysis
   sonarcloud:
     name: SonarCloud Analysis
-    runs-on: ubuntu-latest
-    # Wait for lint-and-test and optionally swift-test (swift-test may be skipped on PRs)
-    needs: [lint-and-test, swift-test]
-    # Run even if swift-test was skipped (PRs) or failed
-    if: always() && needs.lint-and-test.result == 'success'
+    runs-on: ubuntu-24.04
+    needs: [lint, test]
+    timeout-minutes: 20
+    # Forks cannot read SONAR_TOKEN, so the scan is skipped rather than failed.
+    #
+    # Deliberately NOT gated on `test` succeeding. The `test` job uploads both
+    # coverage-reports and its clippy counterpart under `success() || failure()`,
+    # so a failing test still leaves Sonar everything it needs. Requiring success
+    # meant a single red integration test took all static analysis and the
+    # quality gate down with it -- which is exactly when that analysis is most
+    # worth having. `lint` must still succeed, because its clippy report is a
+    # hard input and the scan below fails loudly without it.
+    #
+    # `success` or `failure` only -- never `cancelled` or `skipped`. Those two
+    # are the cases where `test` produced no artifacts at all, and running the
+    # scan then just fails on the download, turning one confusing red X into
+    # two. It happens more than it sounds: `cancel-in-progress` cancels every
+    # superseded PR push, and a job killed by `timeout-minutes` is also
+    # reported as `cancelled` rather than `failed`.
+    #
+    # `!cancelled()` alone does NOT express that: it reports whether THIS job is
+    # being cancelled and says nothing about a dependency's state, so a cancelled
+    # `test` still satisfied it. The explicit `needs.test.result` checks below are
+    # what actually discriminate.
+    #
+    # It still has to be here though, for a completely different reason. GitHub
+    # wraps every `if:` in an implicit `success()` unless the expression already
+    # contains a status check function (`always()`, `cancelled()`, `failure()`,
+    # `success()`). Without one, the implicit gate skips this job the moment
+    # `test` goes red -- before the `needs.test.result == 'failure'` branch is
+    # ever consulted, so that branch can never fire. `!cancelled()` supplies the
+    # status function; the `needs.*.result` checks supply the logic. Dropping
+    # either half silently takes SonarCloud offline exactly when a test fails.
+    if: >
+      !cancelled() &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      needs.lint.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'failure')
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Remove Junk from Host
-        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793 # v5
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          remove-large-packages: 'true'
-          remove-cached-tools: 'true'
-          remove-swapfile: 'true'
-          verbose: 'true'
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0  # Shallow clones should be disabled for better analysis
 
@@ -329,59 +323,42 @@ jobs:
         with:
           name: coverage-reports
 
-      - name: Download Swift coverage (if available)
+      # Globbed rather than named so adding a second lint platform later needs
+      # no edit here. Downloaded without merge-multiple because every report is
+      # called clippy-report.json and they would otherwise overwrite each other.
+      - name: Download clippy reports
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
         with:
-          name: swift-coverage
+          pattern: clippy-report-*
+          path: clippy/
+
+      - name: Collect clippy reports
+        # Fail loudly on an empty list. Passing no report would make the scan
+        # silently fall back to reporting no clippy issues at all, which is
+        # exactly the green-but-wrong outcome this import exists to prevent.
+        run: |
+          set -euo pipefail
+          find clippy/ -type f -name '*.json'
+
+          CLIPPY_REPORTS=$(find clippy/ -name '*.json' -type f | sort | tr '\n' ',' | sed 's/,$//')
+          if [ -z "$CLIPPY_REPORTS" ]; then
+            echo "::error::No clippy reports found — expected at least one clippy-report-* artifact"
+            exit 1
+          fi
+
+          echo "Clippy: $CLIPPY_REPORTS"
+          echo "CLIPPY_REPORT_PATHS=$CLIPPY_REPORTS" >> "$GITHUB_ENV"
 
       - name: Verify coverage files
         run: |
-          echo "=== Coverage files available ==="
-          ls -la -- *.info *.xml *.lcov 2>/dev/null || echo "No coverage files found"
-
-          echo ""
-          echo "=== Rust coverage (from lint-and-test) ==="
-          if [ -f lcov.info ]; then
-            echo "Rust coverage: $(wc -l < lcov.info) lines"
-          else
-            echo "Rust coverage: NOT FOUND"
-          fi
-
-          echo ""
-          echo "=== Python coverage (from lint-and-test) ==="
-          if [ -f coverage.xml ]; then
-            echo "Python coverage: available"
-          else
-            echo "Python coverage: NOT FOUND"
-          fi
-
-          echo ""
-          echo "=== Swift/FFI coverage (from swift-test) ==="
-          if [ -f rust-ffi-coverage.lcov ]; then
-            echo "Rust FFI coverage: $(wc -l < rust-ffi-coverage.lcov) lines"
-          else
-            echo "Rust FFI coverage: not available"
-          fi
-          if [ -f swift-coverage.lcov ]; then
-            echo "Swift coverage (lcov): $(wc -l < swift-coverage.lcov) lines"
-          else
-            echo "Swift coverage (lcov): not available"
-          fi
-          if [ -f swift-coverage.xml ]; then
-            echo "Swift coverage (generic XML): $(wc -l < swift-coverage.xml) lines"
-            echo "  Sample: $(head -5 swift-coverage.xml | tail -3)"
-          else
-            echo "Swift coverage (generic XML): not available"
-          fi
-
-          echo ""
-          echo "=== Swift source files ==="
-          if [ -d swift ] && [ -f swift/EdgeFirstClient.swift ]; then
-            echo "Swift sources: available ($(wc -l < swift/EdgeFirstClient.swift) lines)"
-          else
-            echo "Swift sources: not available"
-          fi
+          set -euo pipefail
+          for f in lcov.info coverage.xml; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f missing or empty — coverage would be reported as zero"
+              exit 1
+            fi
+            echo "$f: $(wc -l < "$f") lines"
+          done
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
@@ -389,6 +366,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.rust.clippy.reportPaths=${{ env.CLIPPY_REPORT_PATHS }}
 
       - name: SonarCloud Quality Gate check
         if: github.event_name == 'pull_request'
@@ -402,425 +382,8 @@ jobs:
       - name: Generate SonarCloud summary
         if: always()
         run: |
-          echo "## 🔍 SonarCloud Analysis" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View Full Report →](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})" >> $GITHUB_STEP_SUMMARY
-
-  # ============================================================================
-  # Generate Swift Bindings (Ubuntu - fast, no credentials needed)
-  # This runs on all events and produces artifacts for mobile.yml and swift-test
-  # ============================================================================
-  generate-swift-bindings:
-    name: Generate Swift Bindings
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: generate-swift-bindings
-          shared-key: "ubuntu"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Build uniffi-bindgen
-        # --locked refuses to update Cargo.lock during the build; the
-        # lock file is the single source of truth for resolved versions
-        # so CI is reproducible and a tampered lockfile can't auto-fix
-        # itself silently. Satisfies SonarCloud githubactions:S8549.
-        run: cargo build --locked --release -p uniffi-bindgen
-
-      - name: Build FFI Library (for binding generation only)
-        run: cargo build --locked --release -p edgefirst-client-ffi
-
-      - name: Generate Swift bindings
-        run: |
-          mkdir -p swift-bindings
-          ./target/release/uniffi-bindgen generate \
-            --library target/release/libedgefirst_client.so \
-            --language swift \
-            --config crates/edgefirst-client-ffi/uniffi.toml \
-            --out-dir swift-bindings
-
-          # Add 'framework' qualifier for .framework bundle
-          sed -i 's/^module EdgeFirstClientFFI/framework module EdgeFirstClientFFI/' \
-            swift-bindings/EdgeFirstClientFFI.modulemap
-
-          echo "=== Generated Swift bindings ==="
-          ls -la swift-bindings/
-
-      - name: Upload Swift bindings artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: swift-bindings
-          path: swift-bindings/
-          retention-days: 7
-
-  # ============================================================================
-  # Swift SDK Tests with Coverage (macOS)
-  # Collects both Swift code coverage AND Rust FFI coverage (like Python pattern)
-  # ============================================================================
-  swift-test:
-    name: Swift SDK Tests
-    runs-on: macos-14
-    needs: [generate-swift-bindings]
-    # Runs on all events (same as other jobs). Tests skip gracefully without credentials.
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Download Swift bindings
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: swift-bindings
-          path: swift/
-
-      - name: Verify Swift bindings
-        run: |
-          echo "=== Downloaded Swift bindings ==="
-          ls -la swift/
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-          components: llvm-tools-preview
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: swift-test-macos
-          shared-key: "macos"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
-        with:
-          tool: cargo-llvm-cov
-
-      - name: Set up Rust FFI coverage environment
-        run: |
-          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> $GITHUB_ENV
-
-      - name: Build FFI Library with coverage instrumentation
-        run: |
-          # Build with coverage instrumentation for Rust FFI coverage.
-          # --locked keeps Cargo.lock authoritative (satisfies
-          # SonarCloud githubactions:S8549).
-          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --locked -p edgefirst-client-ffi
-
-      - name: Create macOS framework for testing
-        run: |
-          # Create framework structure
-          mkdir -p EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Headers
-          mkdir -p EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Modules
-
-          # Copy headers and modulemap
-          cp swift/EdgeFirstClientFFI.h \
-             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Headers/
-          cp swift/EdgeFirstClientFFI.modulemap \
-             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/Modules/module.modulemap
-
-          # Copy coverage-instrumented library
-          cp target/debug/libedgefirst_client.a \
-             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-
-          # Create Info.plist for XCFramework
-          cat > EdgeFirstClient.xcframework/Info.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>AvailableLibraries</key>
-            <array>
-              <dict>
-                <key>LibraryIdentifier</key>
-                <string>macos-arm64_x86_64</string>
-                <key>LibraryPath</key>
-                <string>EdgeFirstClientFFI.framework</string>
-                <key>SupportedArchitectures</key>
-                <array>
-                  <string>arm64</string>
-                  <string>x86_64</string>
-                </array>
-                <key>SupportedPlatform</key>
-                <string>macos</string>
-              </dict>
-            </array>
-            <key>CFBundlePackageType</key>
-            <string>XFWK</string>
-            <key>XCFrameworkFormatVersion</key>
-            <string>1.0</string>
-          </dict>
-          </plist>
-          EOF
-
-      - name: Run Swift tests (for Rust FFI coverage)
-        env:
-          USE_LOCAL_FRAMEWORK: "true"
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-        run: |
-          # Run Swift tests to exercise Rust FFI code (generates Rust profiling data)
-          # Don't enable Swift coverage here - we'll do that in a separate run
-          swift test --parallel 2>&1 | tee swift-test-output.txt
-          echo "Swift tests completed (Rust FFI coverage)"
-
-      - name: Generate Rust FFI coverage report (lcov format)
-        run: |
-          # Generate Rust FFI coverage from Swift test execution. This
-          # captures coverage of the Rust code exercised via Swift FFI calls.
-          #
-          # The Swift xctest bundle is a separate binary from the
-          # coverage-instrumented FFI library and the Swift test suite skips
-          # network-bound tests when STUDIO credentials are unavailable
-          # (e.g. on fork PRs). In that case no .profraw files are emitted
-          # and `cargo llvm-cov report` errors out. Treat that specific case
-          # as a soft failure — emit an empty-but-valid lcov so downstream
-          # steps and codecov uploads do not break.
-          if ! find target -name '*.profraw' -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::No .profraw files emitted by Swift tests; emitting empty Rust FFI lcov"
-            : > rust-ffi-coverage.lcov
-            exit 0
-          fi
-          cargo llvm-cov report --lcov --output-path rust-ffi-coverage.lcov
-          echo "Rust FFI coverage report generated:"
-          wc -l rust-ffi-coverage.lcov
-          head -30 rust-ffi-coverage.lcov
-
-      - name: Rebuild FFI Library without coverage for Swift coverage
-        run: |
-          # Rebuild without Rust coverage instrumentation to avoid conflicts with Swift coverage
-          # Unset coverage environment variables
-          unset RUSTFLAGS LLVM_PROFILE_FILE CARGO_LLVM_COV CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER __CARGO_LLVM_COV_RUSTC_WRAPPER_RUSTFLAGS __CARGO_LLVM_COV_RUSTC_WRAPPER_CRATE_NAMES
-
-          # Clean and rebuild. --locked keeps Cargo.lock authoritative
-          # (satisfies SonarCloud githubactions:S8549).
-          cargo clean -p edgefirst-client-ffi
-          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --locked -p edgefirst-client-ffi
-
-          # Update framework with non-instrumented library
-          cp target/debug/libedgefirst_client.a \
-             EdgeFirstClient.xcframework/macos-arm64_x86_64/EdgeFirstClientFFI.framework/EdgeFirstClientFFI
-
-          echo "Rebuilt FFI library without coverage instrumentation"
-
-      - name: Run Swift tests with Swift coverage
-        env:
-          USE_LOCAL_FRAMEWORK: "true"
-          STUDIO_SERVER: test
-          STUDIO_USERNAME: ${{ secrets.STUDIO_USERNAME }}
-          STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
-          # Explicitly unset Rust coverage variables to prevent interference
-          RUSTFLAGS: ""
-          LLVM_PROFILE_FILE: ""
-          RUSTC_WRAPPER: ""
-          __CARGO_LLVM_COV_RUSTC_WRAPPER: ""
-        run: |
-          # Clean Swift build to ensure fresh compilation with coverage
-          rm -rf .build
-
-          # Run Swift tests with Swift coverage enabled
-          swift test --enable-code-coverage --parallel 2>&1 | tee swift-test-coverage.txt
-          echo "Swift tests completed (Swift coverage)"
-
-      - name: Generate Swift coverage report (lcov format)
-        run: |
-          # Find profraw files and xctest bundle
-          echo "=== Searching for coverage data ==="
-          PROFRAW_DIR=$(find .build -type d -name "codecov" 2>/dev/null | head -1)
-          XCTEST=$(find .build -name "EdgeFirstClientPackageTests.xctest" -type d 2>/dev/null | head -1)
-
-          echo "PROFRAW_DIR: $PROFRAW_DIR"
-          echo "XCTEST: $XCTEST"
-
-          if [ -z "$PROFRAW_DIR" ] || [ -z "$XCTEST" ]; then
-            echo "Swift coverage files not found"
-            touch swift-coverage.lcov
-            exit 0
-          fi
-
-          # List profraw files
-          echo "=== Profraw files ==="
-          ls -la "$PROFRAW_DIR"/*.profraw 2>/dev/null || echo "No profraw files"
-
-          # Merge profraw files into profdata
-          echo "=== Merging profraw into profdata ==="
-          xcrun llvm-profdata merge \
-            -sparse \
-            "$PROFRAW_DIR"/*.profraw \
-            -o "$PROFRAW_DIR/merged.profdata"
-
-          PROFDATA="$PROFRAW_DIR/merged.profdata"
-
-          if [ ! -f "$PROFDATA" ]; then
-            echo "Failed to create merged profdata"
-            touch swift-coverage.lcov
-            exit 0
-          fi
-
-          echo "Created profdata: $PROFDATA"
-
-          # Get the binary path inside the xctest bundle
-          BINARY="$XCTEST/Contents/MacOS/EdgeFirstClientPackageTests"
-
-          if [ ! -f "$BINARY" ]; then
-            echo "Binary not found at expected path: $BINARY"
-            touch swift-coverage.lcov
-            exit 0
-          fi
-
-          # Export Swift coverage in lcov format
-          # Filter out .build directory and test files, keep swift/EdgeFirstClient.swift
-          echo "=== Generating lcov report ==="
-          xcrun llvm-cov export \
-            -format=lcov \
-            -instr-profile="$PROFDATA" \
-            -ignore-filename-regex="\.build|Tests/" \
-            "$BINARY" \
-            > swift-coverage-raw.lcov
-
-          # Convert absolute paths to relative paths for SonarCloud
-          # /Users/runner/work/client/client/swift/... -> swift/...
-          WORKSPACE_PREFIX="${GITHUB_WORKSPACE}/"
-          echo "Stripping prefix: $WORKSPACE_PREFIX"
-          sed "s|${WORKSPACE_PREFIX}||g" swift-coverage-raw.lcov > swift-coverage.lcov
-
-          echo "Swift coverage report generated:"
-          wc -l swift-coverage.lcov
-          echo "=== Coverage file preview ==="
-          head -50 swift-coverage.lcov
-
-      - name: Convert lcov to SonarCloud generic XML format
-        run: |
-          # SonarCloud's sonar.swift.coverage.reportPaths expects llvm-cov show format,
-          # not lcov format. Convert lcov to generic XML format for sonar.coverageReportPaths.
-          python3 << 'PYEOF'
-          import re
-          import sys
-
-          def lcov_to_generic_xml(lcov_path, xml_path):
-              """Convert lcov format to SonarCloud generic test coverage XML format."""
-              files = {}
-              current_file = None
-
-              with open(lcov_path, 'r') as f:
-                  for line in f:
-                      line = line.strip()
-                      if line.startswith('SF:'):
-                          current_file = line[3:]
-                          files[current_file] = {}
-                      elif line.startswith('DA:') and current_file:
-                          # DA:line_number,hit_count
-                          parts = line[3:].split(',')
-                          if len(parts) >= 2:
-                              line_num = int(parts[0])
-                              hits = int(parts[1])
-                              files[current_file][line_num] = hits > 0
-                      elif line == 'end_of_record':
-                          current_file = None
-
-              # Generate XML
-              xml_lines = ['<coverage version="1">']
-              for filepath, lines in sorted(files.items()):
-                  xml_lines.append(f'  <file path="{filepath}">')
-                  for line_num, covered in sorted(lines.items()):
-                      covered_str = 'true' if covered else 'false'
-                      xml_lines.append(f'    <lineToCover lineNumber="{line_num}" covered="{covered_str}"/>')
-                  xml_lines.append('  </file>')
-              xml_lines.append('</coverage>')
-
-              with open(xml_path, 'w') as f:
-                  f.write('\n'.join(xml_lines))
-
-              # Print summary
-              total_lines = sum(len(lines) for lines in files.values())
-              covered_lines = sum(sum(1 for c in lines.values() if c) for lines in files.values())
-              print(f"Converted {len(files)} file(s) with {total_lines} lines ({covered_lines} covered)")
-
-          lcov_to_generic_xml('swift-coverage.lcov', 'swift-coverage.xml')
-          PYEOF
-
-          echo "=== Generated SonarCloud generic XML ==="
-          head -30 swift-coverage.xml
-          echo "..."
-          tail -10 swift-coverage.xml
-
-      - name: Upload coverage artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: swift-coverage
-          path: |
-            rust-ffi-coverage.lcov
-            swift-coverage.lcov
-            swift-coverage.xml
-            swift/EdgeFirstClient.swift
-          retention-days: 7
-
-      - name: Upload Rust FFI coverage to Codecov
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
-        with:
-          files: rust-ffi-coverage.lcov
-          flags: rust-ffi
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-      - name: Upload Swift coverage to Codecov
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
-        with:
-          files: swift-coverage.lcov
-          flags: swift
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-      - name: Upload test output
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: swift-test-results
-          path: swift-test-output.txt
-          retention-days: 7
-
-  # Code formatting check (uses stable Rust)
-  formatting:
-    name: Code Formatting
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: stable
-          components: rustfmt
-
-      - name: Check formatting
-        id: fmt
-        continue-on-error: true
-        run: |
-          if ! cargo fmt --all -- --check; then
-            echo "::warning::Code formatting issues detected. Run 'cargo fmt --all' to fix."
-            exit 1
-          fi
-
-      - name: Generate formatting summary
-        if: always()
-        run: |
-          echo "## 🎨 Code Formatting" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.fmt.outcome }}" = "success" ]; then
-            echo "✅ All code is properly formatted" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ Code formatting issues detected" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "To fix formatting issues, run:" >> $GITHUB_STEP_SUMMARY
-            echo '```bash' >> $GITHUB_STEP_SUMMARY
-            echo "cargo fmt --all" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+          {
+            echo "## 🔍 SonarCloud Analysis"
+            echo ""
+            echo "[View Full Report →](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})"
+          } >> "$GITHUB_STEP_SUMMARY"

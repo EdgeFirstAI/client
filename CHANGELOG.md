@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **UniFFI, Swift, and Kotlin mobile bindings.** The EdgeFirst Studio API for
+  iOS and Android is now provided by the complete
+  [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk), which
+  packages this client alongside the rest of the EdgeFirst on-device libraries.
+  Removed the `edgefirst-client-ffi` and `uniffi-bindgen` crates, the generated
+  Swift bindings and their test suite, `Package.swift`, and the `ANDROID.md` /
+  `APPLE.md` integration guides. Both removed crates were `publish = false`, so
+  no crates.io consumer is affected; the `edgefirst-client` and `edgefirst-cli`
+  crates and the `edgefirst-client` Python package are unchanged. Releases no
+  longer carry the `edgefirst-client-android-*.zip`,
+  `edgefirst-client-swift-*.zip`, or `EdgeFirstClient-*.xcframework.zip` assets.
+- Codecov reporting. Coverage is still collected and is reported through
+  SonarCloud, which already ingested the same `lcov.info` and `coverage.xml`.
+
+### Fixed
+
+- `make version-check` asserted a `Cargo.lock` version for the
+  `edgefirst-client-ffi` crate and would have failed on every run once that
+  crate was removed.
+
+### Changed
+
+- CI: `test.yml` reduced from six jobs to three (`lint`, `test`, `sonarcloud`).
+  Formatting and clippy split out of the former `lint-and-test` monolith so
+  they report in about a minute rather than behind the full test suite, and
+  SonarCloud now imports the clippy report instead of re-running clippy with a
+  different feature set. The `mobile.yml` workflow is removed entirely.
+- CI: `release.yml` resolves the `build.yml` and `sbom.yml` run ids for the
+  released commit and downloads their artifacts natively, replacing two
+  third-party actions that matched on human-readable check names.
+- CI: workflows now declare concurrency groups, per-job timeouts, and explicit
+  per-job least-privilege permissions. Runner labels are pinned rather than
+  floating, and build steps branch on an explicit `platform` matrix field
+  instead of the runner label, so repinning a runner cannot silently skip the
+  `cargo-zigbuild` cross-compilation step or the manylinux2014 glibc gate.
+- CI: SonarCloud analysis is no longer gated on the test job succeeding. The
+  coverage and clippy reports it consumes are uploaded regardless of test
+  outcome, so requiring success meant one red integration test also took down
+  all static analysis and the quality gate.
+- CI: pull-request validation no longer runs Studio integration tests. Those
+  80 tests were 99.4% of the suite's runtime (116 minutes against 0.7 for
+  every other test binary) and required credentials a fork cannot read. The
+  PR lane now runs 708 unit tests, 62 doc tests, and the Python files that
+  construct no client — around 8 seconds of test execution, with no Studio
+  access at all. The integration suite continues to run in `studio.yml`, on
+  demand against any environment and nightly across `test`, `stage` and
+  `saas`.
+- Tests: the twelve Studio-backed tests in `edgefirst-client`'s library test
+  module are marked `#[ignore]`. In this crate that attribute means "needs a
+  live Studio server" rather than "disabled": the PR lane skips them, and
+  `studio.yml` runs them with `--run-ignored all`. They had previously escaped
+  the pull-request filter, which excluded the CLI test binary but not the
+  Studio tests living alongside the client's unit tests, and failed with
+  `EmptyToken` once credentials were withdrawn from that lane.
+- Tests: every snapshot-restore test is disabled while the server team wires the
+  new app-based snapshot create and restore into the Studio API. The three
+  affected CLI tests carry a `SNAPSHOT-RESTORE-DISABLED` marker so the group can
+  be re-enabled together. Two of them previously recorded the mechanism of
+  unpatched server-side behaviour in their skip reason; that detail belongs in
+  the issue tracker, not in a public repository, and the reasons are now generic.
+- Tests: nextest now runs with `test-threads = 4` on both the `ci` and
+  `default` profiles. The suite is dominated by Studio integration tests bound
+  by a shared remote server, so nextest's default of one thread per core added
+  concurrent load rather than throughput — the same tests summed to 57 minutes
+  on a 2-vCPU runner and 227 minutes on a 16-vCPU one. Note that the
+  `RUST_TEST_THREADS` variable does not affect nextest; it only applies to
+  `cargo test --doc`.
+- CI: `pip` installs in `build.yml` pin their resolved versions and pass
+  `--only-binary=:all:`, matching the hardening already applied elsewhere, so
+  no build step can fall back to an sdist that executes setup scripts.
+
 ## [2.12.4] - 2026-07-23
 
 ### Fixed

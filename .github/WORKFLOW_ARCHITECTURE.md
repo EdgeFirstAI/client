@@ -5,18 +5,33 @@ This document provides a comprehensive overview of the GitHub Actions workflows 
 ## Workflow Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        GitHub Events                            │
-└─────────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         │ Push/PR            │ Manual             │ Tag (X.Y.Z)
-         ▼                    ▼                    ▼
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│  Test Workflow   │  │  Build Workflow  │  │Release Workflow  │
-│   (test.yml)     │  │   (build.yml)    │  │  (release.yml)   │
-│                  │  │                  │  │                  │
-└──────────────────┘  └──────────────────┘  └──────────────────┘
+ Push / PR to main                      Tag vX.Y.Z[rcN]        Manual
+        │                                      │                  │
+        ├──► test.yml    lint ─┐               │                  ├──► studio.yml
+        │                test ─┴─► sonarcloud  │                  │
+        │                                      │                  └──► (any workflow,
+        ├──► build.yml   build-cli                                     workflow_dispatch)
+        │                    └─► build-wheels ─► verify
+        │                                      │
+        └──► sbom.yml    sbom-compliance       │
+                                               ▼
+                                          release.yml
+                                               │
+                              create-release ──┴── wait-for-ci
+                                                        │  resolves the build.yml and
+                                                        │  sbom.yml *run ids* for this
+                                                        │  commit, then fans out:
+                                    ┌───────────────────┼───────────────────┐
+                                    ▼                   ▼                   ▼
+                              upload-cli          upload-wheels        upload-sbom
+                              upload-manpage      publish-pypi         publish-crates-io
 ```
+
+Release never rebuilds. It waits for the `build.yml` and `sbom.yml` runs that
+were triggered by the push to `main`, then downloads their artifacts by run id,
+so what ships is byte-identical to what was tested.
+
+A separate `tag-release.yml` creates the tag when a `release/*` PR merges.
 
 ## Workflow Files
 
@@ -34,36 +49,34 @@ This document provides a comprehensive overview of the GitHub Actions workflows 
 
 ```
 test.yml
-├── lint-and-test (uses stable rust)
-│   ├── Check formatting (cargo fmt)
-│   ├── Run clippy linter
-│   ├── Run Rust tests with coverage (cargo nextest)
-│   ├── Run Rust doc tests with coverage
-│   ├── Run Python tests with coverage
-│   ├── Publish test results
-│   ├── Upload Rust coverage to Codecov
-│   ├── Upload Python coverage to Codecov
-│   └── Upload coverage artifacts
-├── audit (uses stable rust)
-│   └── Security audit (cargo audit)
-└── sonarcloud
-    ├── Download coverage reports
-    ├── Run SonarQube scan
+├── lint                         (ubuntu-24.04-xlarge)
+│   ├── Audit workflows for script injection
+│   ├── Check formatting (cargo fmt --all --check)
+│   ├── Clippy (--all-targets --all-features, JSON)
+│   └── Upload artifact: clippy-report-linux
+├── test                         (ubuntu-24.04-xlarge)
+│   ├── Rust doc tests (before instrumentation)
+│   ├── cargo llvm-cov show-env  ──► instruments everything below
+│   ├── cargo nextest (JUnit via the `ci` profile)
+│   ├── maturin build + Python unittest under slipcover
+│   ├── Upload artifact: coverage-reports (lcov.info, coverage.xml)
+│   └── Publish merged Rust + Python test results
+└── sonarcloud                   [needs: lint, test]
+    ├── Download coverage-reports and clippy-report-*
+    ├── Scan with -Dsonar.rust.clippy.reportPaths=…
     └── Check quality gate (PR only)
 ```
 
 **Key Features**:
 
-- **Merged lint and test jobs**: Both use stable rust, share single cache for maximum efficiency
-- **Audit uses stable rust**: All jobs now use stable toolchain consistently
-- **Intelligent caching**: Swatinem/rust-cache with incremental compilation support
-- **Enhanced test reporting**: cargo-nextest with JUnit XML output
-- **Separate coverage tracking**: Rust (lcov) and Python (XML) uploaded to Codecov
-- **SonarCloud integration**: Quality gate checks on pull requests
+- **Lint split from test**: formatting and clippy report in about a minute instead of behind the whole suite. `cargo fmt` runs first because it needs no build.
+- **Rust and Python share one job**: `cargo llvm-cov show-env` is exported into the environment before the maturin build, so the extension module is compiled instrumented and its profraw feeds the same `lcov.info` as the Rust tests. Splitting them would mean a second instrumented build of the workspace for no coverage gain.
+- **Clippy is imported by SonarCloud, not re-run**: the scan used to compile the workspace with clippy a second time and report a different set of lints than CI enforces. The `lint` job emits `--message-format=json` and the scan consumes it.
+- **No dependency-audit job**: SonarCloud covers dependency advisories. `make security-audit` remains for local pre-commit use.
+- **Enhanced test reporting**: cargo-nextest with JUnit XML output, merged with the Python results into one check.
 
 **Secrets Required**:
 
-- `CODECOV_TOKEN`: For uploading coverage reports
 - `SONAR_TOKEN`: For SonarCloud analysis and quality gate checks
 - `STUDIO_USERNAME`: For running Studio integration tests
 - `STUDIO_PASSWORD`: For running Studio integration tests
@@ -90,7 +103,8 @@ Studio credentials are only available to project maintainers. Contributors can r
 
 **Artifacts Generated**:
 
-- `coverage-reports`: lcov.info and coverage.xml files
+- `coverage-reports`: `lcov.info` and `coverage.xml`
+- `clippy-report-linux`: clippy diagnostics in JSON, consumed by the `sonarcloud` job
 
 ---
 
@@ -126,22 +140,36 @@ build.yml
 
 **Matrix Strategy** (same for CLI and wheels):
 
-| OS | Target | CLI Output | Wheel Platform |
-|---|---|---|---|
-| ubuntu-latest | x86_64-unknown-linux-gnu | edgefirst-client-linux-amd64 | wheels-linux-x86_64 |
-| ubuntu-latest | aarch64-unknown-linux-gnu | edgefirst-client-linux-arm64 | wheels-linux-aarch64 |
-| macos-latest | x86_64-apple-darwin | edgefirst-client-macos-amd64 | wheels-macos-x86_64 |
-| macos-latest | aarch64-apple-darwin | edgefirst-client-macos-arm64 | wheels-macos-aarch64 |
-| windows-latest | x86_64-pc-windows-msvc | edgefirst-client-windows-amd64.exe | wheels-windows-x86_64 |
+| Runner | `platform` | Target | CLI Output | Wheel Platform |
+|---|---|---|---|---|
+| ubuntu-24.04 | linux | x86_64-unknown-linux-gnu | edgefirst-client-linux-amd64 | wheels-linux-x86_64 |
+| ubuntu-24.04 | linux | aarch64-unknown-linux-gnu | edgefirst-client-linux-arm64 | wheels-linux-aarch64 |
+| macos-14 | macos | x86_64-apple-darwin | edgefirst-client-macos-amd64 | wheels-macos-x86_64 |
+| macos-14 | macos | aarch64-apple-darwin | edgefirst-client-macos-arm64 | wheels-macos-aarch64 |
+| windows-2025 | windows | x86_64-pc-windows-msvc | edgefirst-client-windows-amd64.exe | wheels-windows-x86_64 |
+
+Steps branch on the `platform` field, never on the runner label. Keying on
+`matrix.os == 'ubuntu-latest'` meant that repinning a runner would silently skip
+the `cargo-zigbuild` step and the glibc gate below and fall through to a plain
+`cargo build` — publishing a binary against the runner's much newer glibc with a
+green check. `platform` describes what is being built, so a runner bump cannot
+disable a build step.
+
+**Linux aarch64 is cross-compiled on x86_64**, deliberately. `cargo-zigbuild`
+targets `…-gnu.2.17` to hold the manylinux2014 glibc floor, and an `objdump`
+gate fails the build if any symbol requires more. Moving these lanes to native
+ARM runners would raise the floor to the runner's glibc and break older
+distributions.
 
 **Key Features**:
 
-- **Serial execution**: Wheels build after CLI to maximize incremental compilation cache benefits
+- **Wheels build after CLI**: each wheel bundles its platform's CLI binary, so the dependency is real. Actions cannot express per-matrix-entry `needs`, so the whole wheel matrix waits on the whole CLI matrix; dropping the edge would mean building every CLI twice.
 - **Shared cache**: Both CLI and wheels use same cache key per target (`{target}-build`)
 - **Cross-compilation**: Uses `cargo-zigbuild` with zig for Linux targets (manylinux2014 compatibility)
 - **Explicit --target flag**: All builds use `--target` for consistent `target/<triple>/release/` paths
 - **maturin with zig**: Python wheels use maturin[zig] for cross-platform wheel builds
 - **Swatinem/rust-cache**: Intelligent caching with incremental compilation state preservation
+- **`verify` asserts, not counts**: it checks the expected number of binaries and wheels arrived and fails otherwise. It previously piped `wc -l` into the job summary and always exited 0, so a matrix entry that produced nothing still showed green.
 
 **Artifacts Generated**:
 
@@ -166,62 +194,29 @@ build.yml
 
 ```
 release.yml
-├── create-release
-│   ├── Extract version from tag
-│   ├── Verify Cargo.toml version matches tag
-│   └── Create GitHub release
-├── generate-sbom
-│   ├── Install scancode-toolkit and cyclonedx-cli
-│   ├── Install cargo-cyclonedx
-│   ├── Generate SBOM using make sbom
-│   └── Upload sbom.json to release
-├── build-cli (matrix)
-│   ├── Build CLI binaries (5 platforms)
-│   ├── Create compressed archives
-│   └── Upload to GitHub release
-├── build-wheels (matrix)
-│   ├── Build CLI and bundle with wheel
-│   ├── Build wheels (5 platforms)
-│   └── Upload as artifacts
-├── publish-pypi
-│   ├── Download all wheels
-│   └── Publish to PyPI
-├── publish-crates-io
-│   ├── Verify Cargo.toml version matches tag
-│   ├── Publish edgefirst-client (library crate)
-│   └── Publish edgefirst-cli (CLI binary)
-└── upload-wheels-to-release
-    └── Upload all wheels to GitHub release
+├── create-release                       Verify Cargo.toml version == tag
+├── wait-for-ci      [needs: create-release]
+│   ├── Wait for build.yml  ──► outputs build-run-id
+│   └── Wait for sbom.yml   ──► outputs sbom-run-id
+├── upload-sbom      [needs: wait-for-ci]   sbom.json  ──► release
+├── generate-manpage [needs: create-release] pandoc CLI.md ──► release
+├── upload-cli       [needs: wait-for-ci]   5 binaries ──► release
+├── upload-wheels    [needs: wait-for-ci]   5 wheels   ──► release
+├── publish-pypi     [needs: wait-for-ci]   wheels     ──► PyPI (OIDC)
+└── publish-crates-io[needs: create-release] cargo publish --workspace
 ```
 
-**Workflow Diagram**:
+`wait-for-ci` runs `.github/scripts/wait-for-run.sh`, which polls
+`gh run list` for the workflow's run on this exact commit and returns its
+run id. Downstream jobs pass that id to `actions/download-artifact`, which
+is what lets them reach artifacts from a different workflow run.
 
-```
-Tag Push (e.g., 1.0.0 or 1.0.0rc1)
-         │
-         ▼
-  create-release ────┐
-         │           │
-         │           ├──► generate-sbom
-         │           │       └──► Upload sbom.json to release
-         │           │
-         │           ▼
-         ├──────► build-cli (5 platforms)
-         │           │
-         │           └──► Upload binaries to release
-         │
-         ├──────► build-wheels (5 platforms)
-         │           │
-         │           ├──► publish-pypi
-         │           │       └──► PyPI
-         │           │
-         │           └──► upload-wheels-to-release
-         │                   └──► GitHub Release
-         │
-         └──────► publish-crates-io
-                     ├──► edgefirst-client → crates.io
-                     └──► edgefirst-cli → crates.io
-```
+This replaced `lewagon/wait-on-check-action`, which matched on
+human-readable **check names**. That coupling was silent and brittle:
+renaming or deleting a job left the release blocking on a check that would
+never appear, surfacing only as a timeout. Matching on the workflow file
+also yields the run id the download step needs, which the check-name
+approach could not provide.
 
 **Key Features**:
 
@@ -240,7 +235,7 @@ Tag Push (e.g., 1.0.0 or 1.0.0rc1)
 
 **Secrets Required**:
 
-- `CARGO_TOKEN`: For publishing to crates.io
+- `CARGO_REGISTRY_TOKEN`: For publishing to crates.io
 
 **Note**: PyPI publishing uses **Trusted Publisher** authentication (OpenID Connect) and does not require an API token. The workflow uses the `pypi` environment with `id-token: write` permission for secure, token-less authentication.
 
@@ -274,7 +269,8 @@ cache:
 
 **Cache Key Strategy**: Each workflow/job has a unique cache key to avoid conflicts:
 
-- **Lint & Test**: `stable-lint-test` (stable toolchain for all checks and tests)
+- **Lint**: `lint` (clippy and rustfmt only; no instrumentation)
+- **Test**: `test` (nextest and llvm-cov; kept separate so an uninstrumented lint build is never reused by the coverage build)
 - **Build (CLI + Python)**: `{target}-build` (per-target architecture, shared between CLI and Python wheel builds)
 
 **Key Features**:
@@ -294,9 +290,9 @@ cache:
 
 **Design Decisions**:
 
-- Merged lint and test jobs since both use stable toolchain, maximizing cache reuse
+- Lint is split from test so a formatting or clippy failure reports in about a minute, and so its clippy report can be imported by SonarCloud
 - Merged Python wheels into build workflow to share cache with CLI builds (serial execution for incremental benefits)
-- Audit job uses stable rust to match distributed binaries (critical for security audits)
+- No dependency-audit job: SonarCloud covers advisories, and `make security-audit` covers the local pre-commit case
 - Direct triggers (push/PR) instead of workflow_run for simpler pipeline and parallel execution
 - No separate dependency pre-warming workflow as Swatinem/rust-cache handles this efficiently
 
@@ -335,6 +331,11 @@ The CI workflow includes SonarCloud analysis for continuous code quality monitor
 - Project configuration: `sonar-project.properties`
 - Organization: `edgefirstai`
 - Project key: `EdgeFirstAI_client`
+- Clippy findings are **imported** from the `lint` job's JSON report via a
+  `-Dsonar.rust.clippy.reportPaths` scan argument. That property is set from the
+  workflow rather than the properties file because the artifact path is only
+  known at run time. The scan fails loudly if no report is found: passing an
+  empty list would make Sonar silently report zero clippy issues.
 
 **Quality Gate**:
 
@@ -362,8 +363,7 @@ The CI workflow includes SonarCloud analysis for continuous code quality monitor
 Every Push/PR
      │
      ├──► cargo fmt check
-     ├──► cargo clippy
-     ├──► cargo audit
+     ├──► cargo clippy (JSON, exported to SonarCloud)
      ├──► cargo test (with coverage)
      ├──► cargo test --doc
      ├──► Python unittest (with coverage)
@@ -403,15 +403,14 @@ Test Execution
      └──► Python Coverage (slipcover)
              └──► coverage.xml
                   │
-                  ├──► Upload to Codecov
-                  │    ├── Flag: rust
-                  │    └── Flag: python
-                  │
-                  └──► Upload to SonarCloud
-                       └── Integrated with code analysis
+                  └──► artifact: coverage-reports
+                           │
+                           └──► sonarcloud job
+                                └── Integrated with code analysis
 ```
 
-**Codecov Configuration**: See `codecov.yml`
+Both languages land in a single `lcov.info` because the Python extension module
+is built under the same llvm-cov instrumentation as the Rust tests.
 
 **SonarCloud Configuration**: See `sonar-project.properties`
 
@@ -546,9 +545,8 @@ STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
 | Secret | Purpose | Required For |
 |--------|---------|--------------|
-| `CODECOV_TOKEN` | Upload coverage | Test workflow |
 | `SONAR_TOKEN` | SonarCloud analysis and quality gate | Test workflow |
-| `CARGO_TOKEN` | Publish to crates.io | Release workflow |
+| `CARGO_REGISTRY_TOKEN` | Publish to crates.io | Release workflow |
 | `STUDIO_USERNAME` | Run tests | Test workflow |
 | `STUDIO_PASSWORD` | Run tests | Test workflow |
 

@@ -2,7 +2,7 @@
 #
 # This workflow orchestrates the release process by:
 # 1. Creating the GitHub release
-# 2. Downloading pre-built artifacts from build.yml, mobile.yml, and sbom.yml
+# 2. Downloading pre-built artifacts from build.yml and sbom.yml
 # 3. Uploading artifacts to the GitHub release
 # 4. Publishing to PyPI and crates.io
 #
@@ -18,6 +18,12 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+rc[0-9]+'
 
+# Serialize releases of the same tag, and never cancel one in flight: a
+# half-uploaded release leaves published assets in an inconsistent state.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
@@ -30,20 +36,24 @@ jobs:
   # ==========================================================================
   create-release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Get version from tag
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
         id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Verify version matches tag
+        env:
+          TAG_VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG_VERSION="${{ steps.get_version.outputs.version }}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
             exit 1
@@ -79,58 +89,43 @@ jobs:
             edgefirst-client = "${{ steps.get_version.outputs.version }}"
             ```
 
-            ### Android SDK
-            Download `edgefirst-client-android-${{ steps.get_version.outputs.version }}.zip` from the assets below.
-            See the included README.md for integration instructions.
-
-            ### iOS/macOS SDK (Swift)
-
-            **Swift Package Manager (Recommended)**
-            ```swift
-            // In Xcode: File > Add Package Dependencies...
-            // Enter: https://github.com/EdgeFirstAI/client.git
-            // Select version: ${{ steps.get_version.outputs.version }}
-            ```
-
-            **Manual Installation**
-            Download `edgefirst-client-swift-${{ steps.get_version.outputs.version }}.zip` from the assets below.
-            See the included README.md for integration instructions.
+            ### iOS and Android
+            The EdgeFirst Studio API for iOS and Android is provided by the
+            [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk).
 
   # ==========================================================================
   # Wait for CI Workflows to Complete
+  #
+  # Resolves each workflow's run id for this commit, which is what
+  # actions/download-artifact needs to reach across workflow runs.
   # ==========================================================================
   wait-for-ci:
     name: Wait for CI Workflows
     needs: [create-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      build-run-id: ${{ steps.build.outputs.run-id }}
+      sbom-run-id: ${{ steps.sbom.outputs.run-id }}
     steps:
-      - name: Wait for Build workflow
-        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
-        with:
-          ref: ${{ github.sha }}
-          check-name: 'Verify Builds'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 10
-          # Verify Builds is an aggregation job that only gets registered after
-          # all build-cli and build-wheels matrix jobs complete (~30 min).
-          # Allow up to 5 min for the check to appear before failing.
-          checks-discovery-timeout: 300
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Wait for Mobile SDK workflow
-        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
-        with:
-          ref: ${{ github.sha }}
-          check-name: 'Generate Swift Bindings'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 10
+      - name: Wait for Build workflow
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "run-id=$(./.github/scripts/wait-for-run.sh build.yml "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       - name: Wait for SBOM workflow
-        uses: lewagon/wait-on-check-action@84840133801bb697fed25fd0e21078b85f5831a0 # v1.6.0
-        with:
-          ref: ${{ github.sha }}
-          check-name: 'Generate SBOM & Check License Compliance'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 10
+        id: sbom
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "run-id=$(./.github/scripts/wait-for-run.sh sbom.yml "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
   # ==========================================================================
   # Download and Upload SBOM
@@ -138,20 +133,27 @@ jobs:
   upload-sbom:
     name: Upload SBOM
     needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
     steps:
+      # run-id + github-token are what reach across workflow runs; without
+      # them download-artifact only sees artifacts from THIS run, of which
+      # there are none.
       - name: Download SBOM artifact
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workflow: sbom.yml
-          commit: ${{ github.sha }}
           name: sbom
           path: .
+          run-id: ${{ needs.wait-for-ci.outputs.sbom-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify SBOM exists
         run: |
-          if [ ! -f sbom.json ]; then
-            echo "Error: sbom.json not found in artifacts"
+          if [ ! -s sbom.json ]; then
+            echo "::error::sbom.json not found or empty in artifacts"
             exit 1
           fi
           echo "SBOM downloaded successfully:"
@@ -169,9 +171,12 @@ jobs:
   generate-manpage:
     name: Generate Man Page
     needs: [create-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install pandoc
         run: |
@@ -194,7 +199,11 @@ jobs:
   upload-cli:
     name: Upload CLI Binaries
     needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
     strategy:
       matrix:
         include:
@@ -210,21 +219,29 @@ jobs:
             extension: zip
     steps:
       - name: Download CLI artifact
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workflow: build.yml
-          commit: ${{ github.sha }}
           name: ${{ matrix.artifact }}
           path: cli/
+          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # actions/upload-artifact does not preserve file modes, so the downloaded
+      # binary may arrive 0644. Restore 0755 before archiving so the published
+      # tarball carries an executable binary.
       - name: Package CLI binary
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          ARTIFACT: ${{ matrix.artifact }}
+          EXTENSION: ${{ matrix.extension }}
         run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
+          set -euo pipefail
+          chmod +x cli/*
           cd cli
-          if [ "${{ matrix.extension }}" = "zip" ]; then
-            zip "../${{ matrix.artifact }}-${VERSION}.zip" *
+          if [ "$EXTENSION" = "zip" ]; then
+            zip "../${ARTIFACT}-${VERSION}.zip" ./*
           else
-            tar czf "../${{ matrix.artifact }}-${VERSION}.tar.gz" *
+            tar czf "../${ARTIFACT}-${VERSION}.tar.gz" ./*
           fi
 
       - name: Upload CLI to release
@@ -239,23 +256,30 @@ jobs:
   upload-wheels:
     name: Upload Wheels
     needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
     steps:
       - name: Download all wheel artifacts
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workflow: build.yml
-          commit: ${{ github.sha }}
-          name: wheels-*
-          name_is_regexp: true
+          pattern: wheels-*
           path: wheels/
-          merge_multiple: true
+          merge-multiple: true
+          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: List downloaded wheels
         run: |
+          set -euo pipefail
           echo "Downloaded wheels:"
           find wheels -name "*.whl" -type f
-          ls -lh wheels/
+          if [ -z "$(find wheels -name '*.whl' -type f)" ]; then
+            echo "::error::no wheels downloaded from build.yml"
+            exit 1
+          fi
 
       - name: Upload wheels to release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
@@ -264,168 +288,34 @@ jobs:
           files: wheels/**/*.whl
 
   # ==========================================================================
-  # Download and Upload Mobile SDKs
-  # ==========================================================================
-  upload-mobile:
-    name: Upload Mobile SDKs
-    needs: [create-release, wait-for-ci]
-    runs-on: macos-14  # Use macOS for swift package compute-checksum
-    outputs:
-      xcframework_checksum: ${{ steps.checksum.outputs.checksum }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Download Android SDK artifact
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
-        with:
-          workflow: mobile.yml
-          commit: ${{ github.sha }}
-          name: edgefirst-client-android
-          path: android-sdk/
-
-      - name: Download Swift SDK artifact
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
-        with:
-          workflow: mobile.yml
-          commit: ${{ github.sha }}
-          name: edgefirst-client-swift
-          path: swift-sdk/
-
-      - name: Package Mobile SDKs
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
-
-          # Package Android SDK with README
-          cp ANDROID.md android-sdk/README.md
-          cd android-sdk
-          zip -r "../edgefirst-client-android-${VERSION}.zip" .
-          cd ..
-
-          # Package Swift SDK for manual download (includes local Package.swift)
-          cp APPLE.md swift-sdk/README.md
-          cd swift-sdk
-          zip -r "../edgefirst-client-swift-${VERSION}.zip" .
-          cd ..
-
-          # Create XCFramework ZIP for SPM binary distribution
-          # Structure: XCFramework must be at root level of the archive
-          # SPM will download this and extract the XCFramework for linking
-          cd swift-sdk
-          zip -r -X "../EdgeFirstClient-${VERSION}.xcframework.zip" EdgeFirstClient.xcframework
-          cd ..
-
-      - name: Compute SPM checksum
-        id: checksum
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
-          CHECKSUM=$(swift package compute-checksum "EdgeFirstClient-${VERSION}.xcframework.zip")
-          echo "checksum=${CHECKSUM}" >> $GITHUB_OUTPUT
-          echo "XCFramework checksum: ${CHECKSUM}"
-
-      - name: Upload Mobile SDKs to release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: |
-            edgefirst-client-android-${{ needs.create-release.outputs.version }}.zip
-            edgefirst-client-swift-${{ needs.create-release.outputs.version }}.zip
-            EdgeFirstClient-${{ needs.create-release.outputs.version }}.xcframework.zip
-
-  # ==========================================================================
-  # Update Swift Package Manifest
-  # ==========================================================================
-  update-swift-package:
-    name: Update Swift Package
-    needs: [create-release, upload-mobile]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: main
-
-      - name: Download Swift SDK artifact
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
-        with:
-          workflow: mobile.yml
-          commit: ${{ github.sha }}
-          name: edgefirst-client-swift
-          path: swift-sdk-temp/
-
-      - name: Update Package.swift with version and checksum
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
-          CHECKSUM="${{ needs.upload-mobile.outputs.xcframework_checksum }}"
-
-          # Update version and checksum variables at top of Package.swift
-          sed -i "s|let version = \".*\"|let version = \"${VERSION}\"|" Package.swift
-          sed -i "s|let checksum = \".*\"|let checksum = \"${CHECKSUM}\"|" Package.swift
-
-          echo "Updated Package.swift:"
-          cat Package.swift
-
-      - name: Update Swift bindings source
-        run: |
-          # Copy the generated Swift bindings to the repo
-          # The swift/ directory is managed by this workflow - do not edit manually
-          cp swift-sdk-temp/swift/EdgeFirstClient.swift swift/EdgeFirstClient.swift
-
-          echo "Updated Swift bindings:"
-          head -50 swift/EdgeFirstClient.swift
-
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
-        with:
-          # Requires "Allow GitHub Actions to create and approve pull requests" enabled in repo settings
-          commit-message: "automation: update Swift package for v${{ needs.create-release.outputs.version }} release [skip ci]"
-          branch: release/update-swift-${{ needs.create-release.outputs.version }}
-          delete-branch: true
-          title: "automation: Update Swift Package for v${{ needs.create-release.outputs.version }} [skip ci]"
-          body: |
-            Automated update of Swift Package Manager manifest and bindings for release v${{ needs.create-release.outputs.version }}.
-
-            This PR updates:
-            - `Package.swift` with the new version and XCFramework checksum
-            - `swift/EdgeFirstClient.swift` with the latest generated bindings
-
-            **XCFramework checksum:** `${{ needs.upload-mobile.outputs.xcframework_checksum }}`
-
-            Created automatically by the release workflow.
-          labels: |
-            automated
-            release
-          assignees: ${{ github.actor }}
-          signoff: true
-
-  # ==========================================================================
   # Publish to PyPI
   # ==========================================================================
   publish-pypi:
     name: Publish to PyPI
     needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write
+      actions: read
     steps:
       - name: Download all wheel artifacts
-        uses: dawidd6/action-download-artifact@8a338493df3d275e4a7a63bcff3b8fe97e51a927 # v19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          workflow: build.yml
-          commit: ${{ github.sha }}
-          name: wheels-*
-          name_is_regexp: true
+          pattern: wheels-*
           path: wheels/
-          merge_multiple: true
+          merge-multiple: true
+          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Flatten wheel directory structure
         run: |
-          # Move all .whl files to the root wheels/ directory
-          find wheels -name "*.whl" -type f -exec mv {} wheels/ \;
-          # Remove now-empty subdirectories
-          find wheels -mindepth 1 -type d -delete
+          set -euo pipefail
+          # pypi-publish takes a flat directory; merge-multiple can still leave
+          # per-artifact subdirectories when names collide.
+          find wheels -mindepth 2 -name "*.whl" -type f -exec mv -n {} wheels/ \;
+          find wheels -mindepth 1 -type d -empty -delete
           echo "Wheels to publish:"
           ls -lh wheels/
 
@@ -441,9 +331,12 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     needs: [create-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
@@ -451,9 +344,10 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_VERSION }}
 
       - name: Verify version matches tag
+        env:
+          TAG_VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG_VERSION="${{ needs.create-release.outputs.version }}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
             exit 1
