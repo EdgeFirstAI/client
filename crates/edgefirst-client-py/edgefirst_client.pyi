@@ -609,6 +609,45 @@ class TaskID:
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
 
+class BackgroundTaskID:
+    """A background task id in the ``bt-`` form used by Studio apps.
+
+    This is the same identity as :class:`TaskID`, written the way an app sees
+    it. Studio launches every app with its own task id in the environment and
+    uses the same form in log URLs (``/logs/bt-55b5``) and cloud-batch job
+    names. Use :meth:`to_task_id` to get the form the task APIs accept, rather
+    than decoding the hex by hand.
+
+    Can be constructed from an integer, a prefixed hex string (e.g.,
+    ``"bt-55b5"``), or another ``BackgroundTaskID`` instance.
+
+    Examples:
+        >>> bt = BackgroundTaskID("bt-55b5")
+        >>> int(bt)
+        21941
+        >>> str(bt)
+        'bt-55b5'
+        >>> str(bt.to_task_id())
+        'task-55b5'
+
+    Note:
+        Parsing is strict about the prefix: a ``"task-..."`` string is rejected
+        here, and vice versa, even though both carry the same value. Convert
+        explicitly rather than passing the strings around interchangeably.
+    """
+
+    def __init__(self, value: Union[int, str, "BackgroundTaskID"]) -> None: ...
+    @staticmethod
+    def from_str(s: str) -> "BackgroundTaskID": ...
+    def to_task_id(self) -> "TaskID": ...
+    @property
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
 class TrainingSessionID:
     """Unique identifier for a training session within an experiment.
 
