@@ -71,7 +71,6 @@ tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-perfetto = "0.1.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-uniffi = "0.31.1"
 url = "2.5.8"
 uuid = { version = "1.23.3", features = ["v4", "serde"] }
 walkdir = "2.5.0"
@@ -82,11 +81,6 @@ opt-level = 3
 lto = true
 strip = true
 debug = false
-
-# Disable stripping for the FFI crate to preserve UniFFI metadata
-# This is required for uniffi-bindgen to extract bindings from the library
-[profile.release.package.edgefirst-client-ffi]
-strip = false
 
 [profile.profiling]
 inherits = "release"

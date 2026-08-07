@@ -1314,8 +1314,8 @@ impl ValidationSession {
         };
 
         // Guarantee a terminal `current == total` event reaches the consumer
-        // so completion handlers (Python callbacks, UniFFI progress bridges)
-        // always observe the finished state. Use `send().await` rather than
+        // so completion handlers (such as Python callbacks) always observe the
+        // finished state. Use `send().await` rather than
         // `try_send` here so the event is never dropped.
         if result.is_ok()
             && let Some(tx) = progress

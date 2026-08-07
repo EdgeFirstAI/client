@@ -24,7 +24,7 @@ This document provides instructions for AI coding assistants (GitHub Copilot, Cu
 
 ## Overview
 
-**EdgeFirst Client** is the official Client API and CLI for [EdgeFirst Studio](https://edgefirst.studio), the MLOps platform for 3D visual and 4D spatial perception AI. This multi-language (Rust + Python + Swift + Kotlin) library enables programmatic access to EdgeFirst Studio's capabilities for dataset management, model training, validation, and deployment.
+**EdgeFirst Client** is the official Client API and CLI for [EdgeFirst Studio](https://edgefirst.studio), the MLOps platform for 3D visual and 4D spatial perception AI. This multi-language (Rust + Python) library enables programmatic access to EdgeFirst Studio's capabilities for dataset management, model training, validation, and deployment.
 
 ### Project Context
 
@@ -33,7 +33,7 @@ EdgeFirst Client serves as the **bridge between developers and EdgeFirst Studio*
 - Direct integration with EdgeFirst Studio's REST API
 - Automation for CI/CD pipelines and custom workflows
 - Production-grade reliability (used internally by EdgeFirst Studio's training and validation services)
-- Cross-platform support (Rust library + Python bindings + Swift/Kotlin mobile SDKs + CLI)
+- Cross-platform support (Rust library + Python bindings + CLI)
 
 When contributing to EdgeFirst Client, AI assistants should prioritize:
 
@@ -265,17 +265,6 @@ Brief summary of what changed and why
   - Use type narrowing patterns: `self.assertIsNotNone(x)` → `assert x is not None`
   - Prefer specific assertions: `assertGreater(len(x), 0)`
 
-**Swift:**
-
-- Format with `swift format` (requires Swift 6+ / Xcode 16+)
-- Swift bindings are generated via UniFFI from the FFI crate
-- Swift SDK tests require a local XCFramework build (`make xcframework`)
-
-**Kotlin:**
-
-- Kotlin bindings are generated via UniFFI from the FFI crate
-- Generated to `artifacts/kotlin/` directory
-
 ### Code Quality Tools
 
 Before submitting code, verify:
@@ -322,12 +311,6 @@ Before submitting code, verify:
 - **Recommended**: Use `slipcover` to match CI/CD behavior
 - Fixtures: Standard unittest patterns
 
-**Swift Tests:**
-
-- Test files in `swift/EdgeFirstClientTests/`
-- Require local XCFramework build and Studio credentials
-- Run with: `make swift-test`
-
 **Studio Integration Tests:**
 
 - Require authenticated access to EdgeFirst Studio test servers
@@ -349,7 +332,6 @@ Before submitting code, verify:
 make test          # Run all tests (Rust + Python)
 make rust-test     # Rust tests only
 make py-test       # Python tests only
-make swift-test    # Swift tests (requires XCFramework + credentials)
 ```
 
 **Manual commands:**
@@ -558,17 +540,15 @@ For security issues:
 
 ### Technology Stack
 
-- **Languages**: Rust (stable), Python 3.8+, Swift 6+, Kotlin
+- **Languages**: Rust (stable), Python 3.8+
 - **Rust edition**: 2024
-- **Architecture**: Cargo workspace monorepo with 5 crates:
+- **Architecture**: Cargo workspace monorepo with 3 crates:
   - `crates/edgefirst-client/`: Core Rust library
   - `crates/edgefirst-cli/`: CLI application
   - `crates/edgefirst-client-py/`: Python bindings via PyO3
-  - `crates/edgefirst-client-ffi/`: Foreign function interface via UniFFI (Swift/Kotlin)
-  - `crates/uniffi-bindgen/`: UniFFI binding generator tool
-- **Key dependencies**: Tokio (async runtime), reqwest (HTTP with rustls), serde (JSON), PyO3 (Python bindings), UniFFI (mobile bindings)
+- **Key dependencies**: Tokio (async runtime), reqwest (HTTP with rustls), serde (JSON), PyO3 (Python bindings)
 - **TLS**: reqwest with `rustls` feature only (no native-tls)
-- **Target platforms**: Linux, macOS, Windows (x86_64, ARM64), iOS, iOS Simulator
+- **Target platforms**: Linux, macOS, Windows (x86_64, ARM64)
 
 ### Architecture Patterns
 
@@ -614,22 +594,13 @@ client.download_dataset(id, &["image"], path, Some(tx)).await?;
 
 ```bash
 make build         # Build all crates
-make format        # Format all code (Rust + Python + Swift)
+make format        # Format all code (Rust + Python)
 make lint          # Run all linters
 make pre-commit    # Run pre-commit checks (format + lint + build)
 make pre-release   # Full pre-release validation
 make version-check # Check version consistency across all files
 make sbom          # Generate Software Bill of Materials
 make check-license # Check dependency license compliance
-```
-
-**Mobile SDK builds:**
-
-```bash
-make swift         # Generate Swift bindings to swift/
-make kotlin        # Generate Kotlin bindings to artifacts/kotlin/
-make xcframework   # Build XCFramework for local Swift development
-make swift-test    # Run Swift SDK tests
 ```
 
 **Manual commands:**
@@ -673,12 +644,6 @@ ruff check --fix *.py examples/*.py crates/edgefirst-client-py/edgefirst_client.
 - Test files: `test*.py` in the `test/` directory
 - Run with slipcover (recommended): `python3 -m slipcover --xml --out coverage.xml -m xmlrunner discover -s test -p "test*.py" -o target/python`
 - Alternative: `python -m unittest discover -s test -p "test*.py"`
-
-**Swift:**
-
-- Test files: `swift/EdgeFirstClientTests/`
-- Requires local XCFramework and Studio credentials
-- Run with: `make swift-test`
 
 ### Versioning & Release
 
