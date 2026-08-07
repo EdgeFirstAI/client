@@ -40,6 +40,17 @@ jobs:
       - name: Audit workflows for script injection
         run: ./.github/scripts/audit-injection.sh .
 
+      # Fails when a new RPC method is called without a wiremock test. Also
+      # needs no toolchain, so it reports in seconds alongside the audit above.
+      #
+      # A ratchet against .github/rpc-mock-baseline.txt, not a coverage
+      # threshold: existing gaps are tolerated, new ones are not. Without this,
+      # a newly wired API is exercised only by the nightly Studio run, so its
+      # first failure lands hours later against a commit range instead of the
+      # pull request responsible.
+      - name: Check new RPC methods have wiremock tests
+        run: ./.github/scripts/rpc-mock-coverage.sh
+
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:

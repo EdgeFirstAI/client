@@ -2194,3 +2194,319 @@ async fn usage_summary_surfaces_jsonrpc_error() {
         "expected RpcError(-32000, _), got {err:?}"
     );
 }
+
+// ===========================================================================
+// Core read surface: org.get, project.list/get, dataset.list/get,
+// auth.verify_token.
+//
+// These are the most-called methods in the client and were previously reachable
+// only through the nightly Studio suite. Shapes below were taken from the Go
+// handlers in dve-database rather than from this crate's structs, so the tests
+// check the client against the server's contract instead of against its own
+// assumptions. See .github/copilot-instructions.md, "Every New RPC Method Needs
+// a Wiremock Test".
+// ===========================================================================
+
+/// `org.get` — server returns database.Organization; the client reads `id`,
+/// `name` and `latest_credit`, ignoring the rest.
+#[tokio::test]
+async fn org_get_parses_organization() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("org.get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 34,
+            "name": "Au-Zone Technologies",
+            "latest_credit": 250,
+            // Fields the server sends and the client does not model. Present
+            // deliberately: a deny_unknown_fields regression would fail here.
+            "username": "testing",
+            "folder": "AuZone_Technologies_Inc_100",
+            "is_public": false
+        }))))
+        .mount(&server)
+        .await;
+
+    let org = client_for(&server.uri())
+        .organization()
+        .await
+        .expect("org.get should parse");
+    assert_eq!(org.id().to_string(), "org-22");
+    assert_eq!(org.name(), "Au-Zone Technologies");
+    assert_eq!(org.credits(), 250);
+}
+
+/// The server declares `latest_credit` as Go `float64`, while the client
+/// deserializes it into `i64`. Go emits whole floats without a decimal point,
+/// so integral values round-trip and this only bites when an organization
+/// actually holds a fractional credit -- at which point `organization()` fails
+/// outright rather than degrading.
+///
+/// Asserting the current behaviour rather than the desired one, so the day it
+/// is fixed this test fails and gets updated deliberately.
+#[tokio::test]
+async fn org_get_fails_on_fractional_credit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("org.get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 34, "name": "Au-Zone", "latest_credit": 12.5
+        }))))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .organization()
+        .await
+        .expect_err("i64 cannot hold 12.5");
+    assert!(
+        matches!(err, Error::JsonError(_)),
+        "expected a deserialization error, got {err:?}"
+    );
+}
+
+/// `project.list` takes no params and returns an array.
+#[tokio::test]
+async fn project_list_parses_and_filters_by_name() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("project.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            { "id": 1, "name": "Unit Testing", "description": "ci fixtures" },
+            { "id": 2, "name": "Ocean", "description": "cleanup" },
+            { "id": 3, "name": "unit testing archive", "description": "old" }
+        ]))))
+        .mount(&server)
+        .await;
+    let client = client_for(&server.uri());
+
+    let all = client.projects(None).await.expect("project.list");
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].id().to_string(), "p-1");
+
+    // Filtering happens client-side, on the same response.
+    let filtered = client
+        .projects(Some("Unit Testing"))
+        .await
+        .expect("project.list filtered");
+    assert!(
+        !filtered.is_empty(),
+        "name filter dropped every project: {filtered:?}"
+    );
+    for p in &filtered {
+        assert!(
+            p.name().to_lowercase().contains("unit testing"),
+            "filter returned unrelated project {}",
+            p.name()
+        );
+    }
+}
+
+/// An empty project list is a legitimate response, not an error.
+#[tokio::test]
+async fn project_list_tolerates_an_empty_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("project.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+    assert!(
+        client_for(&server.uri())
+            .projects(None)
+            .await
+            .expect("empty list is valid")
+            .is_empty()
+    );
+}
+
+/// `project.get` sends the id as a bare integer, not the `p-` string form.
+#[tokio::test]
+async fn project_get_sends_a_numeric_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "project.get",
+            "params": { "project_id": 4242 }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 4242, "name": "Unit Testing", "description": "ci fixtures"
+        }))))
+        .mount(&server)
+        .await;
+
+    let project = client_for(&server.uri())
+        .project(edgefirst_client::ProjectID::from(4242))
+        .await
+        .expect("project.get");
+    assert_eq!(project.id().to_string(), "p-1092");
+    assert_eq!(project.name(), "Unit Testing");
+}
+
+/// A 403 on `project.get` surfaces as a plain `RpcError`, NOT as
+/// `Error::PermissionDenied`.
+///
+/// That is worth stating explicitly because it is easy to assume otherwise:
+/// `map_rpc_error` does translate 401/403 into `PermissionDenied`, but it is
+/// invoked per call site rather than centrally in `rpc()`, and only seven
+/// methods opt in (`job.list`, `job.run`, `job.stop`, `task.chart.add`,
+/// `task.data.list`, `task.data.upload`, `val.data.upload`). The other
+/// seventy-eight return the raw code.
+///
+/// Asserting the behaviour that exists, not the one that would be tidier. If
+/// the mapping is ever centralised this test fails and is updated deliberately.
+#[tokio::test]
+async fn project_get_403_is_not_mapped_to_permission_denied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("project.get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(403, "permission denied")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .project(edgefirst_client::ProjectID::from(1))
+        .await
+        .expect_err("403 should fail");
+    assert!(
+        matches!(err, Error::RpcError(403, _)),
+        "expected RpcError(403, _) -- project.get does not call map_rpc_error -- got {err:?}"
+    );
+}
+
+/// `dataset.list` is scoped by project and renames `createdAt` on the wire.
+#[tokio::test]
+async fn dataset_list_parses_and_scopes_by_project() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "dataset.list",
+            "params": { "project_id": 7 }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "id": 3771,
+            "project_id": 7,
+            "name": "Deer",
+            "description": "static fixture",
+            "cloud_key": "dvedata/org/datasets/3771",
+            "createdAt": "2026-01-02T03:04:05Z"
+        }]))))
+        .mount(&server)
+        .await;
+
+    let datasets = client_for(&server.uri())
+        .datasets(edgefirst_client::ProjectID::from(7), None)
+        .await
+        .expect("dataset.list");
+    assert_eq!(datasets.len(), 1);
+    assert_eq!(datasets[0].id().to_string(), "ds-ebb");
+    assert_eq!(datasets[0].name(), "Deer");
+}
+
+/// The optional tag fields carry `#[serde(default)]`; a response omitting them
+/// must still parse, since the server only populates them for tagged versions.
+#[tokio::test]
+async fn dataset_get_parses_without_optional_tag_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "dataset.get",
+            "params": { "dataset_id": 3771 }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 3771,
+            "project_id": 7,
+            "name": "Deer",
+            "description": "",
+            "cloud_key": "dvedata/org/datasets/3771",
+            "createdAt": "2026-01-02T03:04:05Z"
+        }))))
+        .mount(&server)
+        .await;
+
+    let dataset = client_for(&server.uri())
+        .dataset(DatasetID::from(3771))
+        .await
+        .expect("dataset.get without tag fields");
+    assert_eq!(dataset.name(), "Deer");
+}
+
+/// Code 101 without a task id has no typed variant and must fall through to
+/// RpcError -- the TaskNotFound mapping applies only when a task id was
+/// supplied by the caller.
+#[tokio::test]
+async fn dataset_get_101_without_task_id_stays_a_plain_rpc_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("dataset.get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(101, "not found in DB")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .dataset(DatasetID::from(1))
+        .await
+        .expect_err("101 should fail");
+    assert!(
+        matches!(err, Error::RpcError(101, _)),
+        "expected RpcError(101, _), got {err:?}"
+    );
+}
+
+/// `auth.verify_token` posts no params and is the call every credentialled
+/// entry point makes first.
+#[tokio::test]
+async fn verify_token_accepts_a_valid_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("auth.verify_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "token": "irrelevant-but-present"
+        }))))
+        .mount(&server)
+        .await;
+
+    client_for(&server.uri())
+        .verify_token()
+        .await
+        .expect("verify_token should accept a 200");
+}
+
+/// A rejected token surfaces as `RpcError(401, _)` rather than
+/// `PermissionDenied`, for the same reason as `project.get` above:
+/// `auth.verify_token` is not one of the seven methods that call
+/// `map_rpc_error`.
+///
+/// This one has teeth. `verify_token` is the first call every credentialled
+/// entry point makes, so callers wanting to distinguish "token expired, go
+/// re-authenticate" from any other failure have to match on the numeric code
+/// themselves.
+#[tokio::test]
+async fn verify_token_401_is_not_mapped_to_permission_denied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("auth.verify_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(401, "token expired")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .verify_token()
+        .await
+        .expect_err("401 should fail");
+    assert!(
+        matches!(err, Error::RpcError(401, _)),
+        "expected RpcError(401, _) -- auth.verify_token does not call map_rpc_error -- got {err:?}"
+    );
+}

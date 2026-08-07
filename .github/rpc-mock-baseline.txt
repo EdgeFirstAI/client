@@ -1,0 +1,67 @@
+# Client RPC methods that have no wiremock test.
+#
+# This is a ratchet baseline, not a target. .github/scripts/rpc-mock-coverage.sh
+# fails when a client RPC call appears that is NOT listed here, so adding an API
+# obliges you to mock it. Entries are removed as mocks are written; the file is
+# meant to shrink and eventually disappear.
+#
+# Everything listed here is exercised only by the nightly Studio suite, which
+# means a break shows up hours later against a commit range instead of in the
+# pull request that caused it.
+#
+# Before mocking one, check the server's actual request and response shape:
+#
+#   .github/scripts/rpc-mock-coverage.sh --dve-database ~/Software/Studio/dve-database
+#
+# Generated 2026-08-07 from the state at that commit; edit by hand thereafter.
+annotation.add_bulk
+annotation.bulk.del
+annset.add
+annset.del
+annset.get
+annset.list
+auth.login
+auth.refresh
+dataset.create
+dataset.delete
+docker.update.status
+groups.create
+groups.list
+image.delete_from_dataset
+image.set_group_id
+label.add2
+label.del
+label.update
+samples.populate2
+snapshots.complete_multipart_upload
+snapshots.create
+snapshots.create_download_url
+snapshots.create_upload_url_multipart
+snapshots.delete
+snapshots.get
+snapshots.list
+snapshots.restore
+snapshots.update
+status.stages
+status.update
+task.list
+trainer.download.file
+trainer.get
+trainer.get_artifacts
+trainer.list2
+trainer.session.metrics
+trainer.upload.files
+validate.session.list
+validate.session.metrics
+version
+version.changelog
+version.changelog.count
+version.current
+version.summary
+version.summary.recalculate
+version.tag.create
+version.tag.delete
+version.tag.get
+version.tag.list
+version.tag.restore
+

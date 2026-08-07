@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tests: wiremock coverage for the core read surface — `org.get`,
+  `project.list`, `project.get`, `dataset.list`, `dataset.get` and
+  `auth.verify_token`. These are among the most-called methods in the client and
+  were previously exercised only by the nightly Studio suite. Response shapes
+  were taken from the Go handlers in `dve-database` rather than from this
+  crate's own structs, so the tests check the client against the server's
+  contract instead of restating its assumptions.
+- CI: `.github/scripts/rpc-mock-coverage.sh` fails the `lint` job when a client
+  RPC call appears with no wiremock test. It is a ratchet against
+  `.github/rpc-mock-baseline.txt` rather than a coverage threshold: the 50
+  methods already unmocked are tolerated, new ones are not. Run with
+  `--dve-database <path>` for a cross-review against the server's registered
+  endpoints, which also reports client calls the server no longer registers.
+  Currently 35 of 85 client RPC methods are mocked.
+
 - `BackgroundTaskID`, the `bt-` rendering of a background task id that Studio
   apps receive in their environment and that Studio uses in log URLs and
   cloud-batch job names (DE-2876). It is the same identity as `TaskID` under a
