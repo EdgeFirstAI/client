@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage and clippy reports it consumes are uploaded regardless of test
   outcome, so requiring success meant one red integration test also took down
   all static analysis and the quality gate.
+- Tests: nextest now runs with `test-threads = 4` on both the `ci` and
+  `default` profiles. The suite is dominated by Studio integration tests bound
+  by a shared remote server, so nextest's default of one thread per core added
+  concurrent load rather than throughput — the same tests summed to 57 minutes
+  on a 2-vCPU runner and 227 minutes on a 16-vCPU one. Note that the
+  `RUST_TEST_THREADS` variable does not affect nextest; it only applies to
+  `cargo test --doc`.
 - CI: `pip` installs in `build.yml` pin their resolved versions and pass
   `--only-binary=:all:`, matching the hardening already applied elsewhere, so
   no build step can fall back to an sdist that executes setup scripts.
