@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **UniFFI, Swift, and Kotlin mobile bindings.** The EdgeFirst Studio API for
+  iOS and Android is now provided by the complete
+  [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk), which
+  packages this client alongside the rest of the EdgeFirst on-device libraries.
+  Removed the `edgefirst-client-ffi` and `uniffi-bindgen` crates, the generated
+  Swift bindings and their test suite, `Package.swift`, and the `ANDROID.md` /
+  `APPLE.md` integration guides. Both removed crates were `publish = false`, so
+  no crates.io consumer is affected; the `edgefirst-client` and `edgefirst-cli`
+  crates and the `edgefirst-client` Python package are unchanged. Releases no
+  longer carry the `edgefirst-client-android-*.zip`,
+  `edgefirst-client-swift-*.zip`, or `EdgeFirstClient-*.xcframework.zip` assets.
+- Codecov reporting. Coverage is still collected and is reported through
+  SonarCloud, which already ingested the same `lcov.info` and `coverage.xml`.
+
+### Fixed
+
+- `make version-check` asserted a `Cargo.lock` version for the
+  `edgefirst-client-ffi` crate and would have failed on every run once that
+  crate was removed.
+
+### Changed
+
+- CI: `test.yml` reduced from six jobs to three (`lint`, `test`, `sonarcloud`).
+  Formatting and clippy split out of the former `lint-and-test` monolith so
+  they report in about a minute rather than behind the full test suite, and
+  SonarCloud now imports the clippy report instead of re-running clippy with a
+  different feature set. The `mobile.yml` workflow is removed entirely.
+- CI: `release.yml` resolves the `build.yml` and `sbom.yml` run ids for the
+  released commit and downloads their artifacts natively, replacing two
+  third-party actions that matched on human-readable check names.
+- CI: workflows now declare concurrency groups, per-job timeouts, and
+  least-privilege permissions. Runner labels are pinned rather than floating,
+  and build steps branch on an explicit `platform` matrix field instead of the
+  runner label, so repinning a runner cannot silently skip the
+  `cargo-zigbuild` cross-compilation step or the manylinux2014 glibc gate.
+
 ## [2.12.4] - 2026-07-23
 
 ### Fixed
