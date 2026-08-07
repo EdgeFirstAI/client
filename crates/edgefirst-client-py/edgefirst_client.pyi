@@ -893,9 +893,12 @@ class Organization:
         ...
 
     @property
-    def credits(self) -> int:
+    def credits(self) -> float:
         """
-        The number of credits available to the organization.
+        The organization's most recent monthly credit.
+
+        A float, matching the server's own type. Note this is not the spendable
+        balance -- see ``Client.usage_summary()`` for that.
         """
         ...
 

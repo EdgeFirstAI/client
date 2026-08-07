@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Organization::credits()` returns `f64` instead of `i64`
+  (`Organization.credits` in Python is now a float). The server declares
+  `latest_credit` as Go `float64`; deserializing it into `i64` meant an
+  organization holding a fractional credit failed `org.get` outright rather than
+  degrading. Go emits whole floats without a decimal point, so integral values
+  always round-tripped and hid it. CLI output is unchanged for whole numbers.
+- **Breaking:** JSON-RPC error codes are now mapped to typed errors for every
+  method. `map_rpc_error` was invoked per call site and only `job.run`,
+  `job.stop` and `job.list` opted in, so the other eighty-two methods returned a
+  bare `RpcError` — a 401 from `auth.verify_token` among them, which is the
+  first call every credentialled entry point makes. The mapping now happens in
+  `process_rpc_response`, through which every JSON-RPC response passes, and the
+  HTTP-status paths in `rpc_download` and `post_multipart` use it too so an HTTP
+  403 and a JSON-RPC 403 reach callers as the same variant.
+
+  Callers matching `Error::RpcError(401 | 403, _)` must now match
+  `Error::PermissionDenied(method)`, and `RpcError(413, _)` must now match
+  `Error::PayloadTooLarge { .. }`. Other codes are unaffected. `job.stop` keeps
+  a local mapping because turning code 101 into `TaskNotFound` needs a task id
+  that `rpc` does not have.
+
 ### Added
 
 - Tests: wiremock coverage for the core read surface — `org.get`,

@@ -193,8 +193,14 @@ typeid!(
 pub struct Organization {
     id: OrganizationID,
     name: String,
+    /// `f64` to match the server, which declares `latest_credit` as Go
+    /// `float64`. This was `i64` until a wiremock test built from the server's
+    /// shape showed that a fractional credit fails to deserialize outright,
+    /// taking the whole `org.get` call with it. Go emits whole floats without a
+    /// decimal point, which is why integral values had always round-tripped and
+    /// hid the problem.
     #[serde(rename = "latest_credit")]
-    credits: i64,
+    credits: f64,
 }
 
 impl Display for Organization {
@@ -212,7 +218,7 @@ impl Organization {
         &self.name
     }
 
-    pub fn credits(&self) -> i64 {
+    pub fn credits(&self) -> f64 {
         self.credits
     }
 }

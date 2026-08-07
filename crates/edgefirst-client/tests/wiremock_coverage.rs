@@ -2234,19 +2234,16 @@ async fn org_get_parses_organization() {
         .expect("org.get should parse");
     assert_eq!(org.id().to_string(), "org-22");
     assert_eq!(org.name(), "Au-Zone Technologies");
-    assert_eq!(org.credits(), 250);
+    assert!((org.credits() - 250.0).abs() < f64::EPSILON);
 }
 
-/// The server declares `latest_credit` as Go `float64`, while the client
-/// deserializes it into `i64`. Go emits whole floats without a decimal point,
-/// so integral values round-trip and this only bites when an organization
-/// actually holds a fractional credit -- at which point `organization()` fails
-/// outright rather than degrading.
-///
-/// Asserting the current behaviour rather than the desired one, so the day it
-/// is fixed this test fails and gets updated deliberately.
+/// A fractional credit parses. The server declares `latest_credit` as Go
+/// `float64`, and this used to deserialize into `i64` -- which meant any
+/// organization holding a fractional credit failed `org.get` outright rather
+/// than degrading. Go emits whole floats without a decimal point, so integral
+/// values always round-tripped and hid it.
 #[tokio::test]
-async fn org_get_fails_on_fractional_credit() {
+async fn org_get_parses_a_fractional_credit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api"))
@@ -2257,13 +2254,14 @@ async fn org_get_fails_on_fractional_credit() {
         .mount(&server)
         .await;
 
-    let err = client_for(&server.uri())
+    let org = client_for(&server.uri())
         .organization()
         .await
-        .expect_err("i64 cannot hold 12.5");
+        .expect("fractional credit should parse");
     assert!(
-        matches!(err, Error::JsonError(_)),
-        "expected a deserialization error, got {err:?}"
+        (org.credits() - 12.5).abs() < f64::EPSILON,
+        "expected 12.5, got {}",
+        org.credits()
     );
 }
 
@@ -2348,20 +2346,14 @@ async fn project_get_sends_a_numeric_id() {
     assert_eq!(project.name(), "Unit Testing");
 }
 
-/// A 403 on `project.get` surfaces as a plain `RpcError`, NOT as
-/// `Error::PermissionDenied`.
+/// A 403 surfaces as `Error::PermissionDenied` naming the method.
 ///
-/// That is worth stating explicitly because it is easy to assume otherwise:
-/// `map_rpc_error` does translate 401/403 into `PermissionDenied`, but it is
-/// invoked per call site rather than centrally in `rpc()`, and only seven
-/// methods opt in (`job.list`, `job.run`, `job.stop`, `task.chart.add`,
-/// `task.data.list`, `task.data.upload`, `val.data.upload`). The other
-/// seventy-eight return the raw code.
-///
-/// Asserting the behaviour that exists, not the one that would be tidier. If
-/// the mapping is ever centralised this test fails and is updated deliberately.
+/// This is the mapping every method now gets: `map_rpc_error` is applied inside
+/// `process_rpc_response`, through which every JSON-RPC response passes. It was
+/// previously invoked per call site and only `job.run`, `job.stop` and
+/// `job.list` opted in, so the other eighty-two methods returned a raw code.
 #[tokio::test]
-async fn project_get_403_is_not_mapped_to_permission_denied() {
+async fn project_get_maps_403_to_permission_denied() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api"))
@@ -2375,8 +2367,8 @@ async fn project_get_403_is_not_mapped_to_permission_denied() {
         .await
         .expect_err("403 should fail");
     assert!(
-        matches!(err, Error::RpcError(403, _)),
-        "expected RpcError(403, _) -- project.get does not call map_rpc_error -- got {err:?}"
+        matches!(&err, Error::PermissionDenied(m) if m == "project.get"),
+        "expected PermissionDenied(\"project.get\"), got {err:?}"
     );
 }
 
@@ -2482,17 +2474,15 @@ async fn verify_token_accepts_a_valid_token() {
         .expect("verify_token should accept a 200");
 }
 
-/// A rejected token surfaces as `RpcError(401, _)` rather than
-/// `PermissionDenied`, for the same reason as `project.get` above:
-/// `auth.verify_token` is not one of the seven methods that call
-/// `map_rpc_error`.
+/// A rejected token surfaces as `PermissionDenied`, which is what callers
+/// branch on to decide whether to re-authenticate.
 ///
-/// This one has teeth. `verify_token` is the first call every credentialled
-/// entry point makes, so callers wanting to distinguish "token expired, go
-/// re-authenticate" from any other failure have to match on the numeric code
-/// themselves.
+/// This is the case that most wanted the central mapping: `verify_token` is the
+/// first call every credentialled entry point makes, and before centralisation
+/// it returned a bare `RpcError(401, _)`, leaving callers to match the numeric
+/// code by hand to tell an expired token from any other failure.
 #[tokio::test]
-async fn verify_token_401_is_not_mapped_to_permission_denied() {
+async fn verify_token_maps_401_to_permission_denied() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api"))
@@ -2506,7 +2496,53 @@ async fn verify_token_401_is_not_mapped_to_permission_denied() {
         .await
         .expect_err("401 should fail");
     assert!(
-        matches!(err, Error::RpcError(401, _)),
-        "expected RpcError(401, _) -- auth.verify_token does not call map_rpc_error -- got {err:?}"
+        matches!(&err, Error::PermissionDenied(m) if m == "auth.verify_token"),
+        "expected PermissionDenied(\"auth.verify_token\"), got {err:?}"
+    );
+}
+
+/// 413 maps to the typed variant on an ordinary RPC method, not just on the
+/// upload paths that used to special-case it by hand.
+#[tokio::test]
+async fn rpc_maps_413_to_payload_too_large() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("dataset.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(413, "too big")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .datasets(edgefirst_client::ProjectID::from(1), None)
+        .await
+        .expect_err("413 should fail");
+    assert!(
+        matches!(&err, Error::PayloadTooLarge { method, .. } if method == "dataset.list"),
+        "expected PayloadTooLarge for dataset.list, got {err:?}"
+    );
+}
+
+/// `job.stop` still maps code 101 to `TaskNotFound`, which the central mapping
+/// cannot do on its own: it needs the task id, and `rpc` does not have one.
+/// This is the reason `job.stop` keeps a local `map_rpc_error` call while
+/// `job.run` and `job.list` dropped theirs.
+#[tokio::test]
+async fn job_stop_still_maps_101_to_task_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("job.stop"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(101, "Cannot find task")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .job_stop(TaskID::from(0x5678))
+        .await
+        .expect_err("101 should fail");
+    assert!(
+        matches!(&err, Error::TaskNotFound(id) if id.value() == 0x5678),
+        "expected TaskNotFound(task-5678), got {err:?}"
     );
 }
