@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Authentication tokens are no longer written to logs. Trace-level logging
+  emitted every JSON-RPC response body verbatim, and the `auth.login` and
+  `auth.refresh` responses carry a bearer token valid for days. Request params
+  were already redacted, so the password was protected while the token it
+  returned was not. Anyone running with `RUST_LOG=edgefirst_client=trace` — the
+  nightly CI workflow among them, which uploads its logs as build artifacts
+  retained for 30 days — was recording live credentials.
+
+  Redaction is now by field name rather than by calling method, applied to
+  responses, requests, invalid-body error logs, and Perfetto trace spans, so an
+  endpoint that starts returning a token is covered without anyone noticing it
+  first. Bodies that fail to parse are still logged in full unless they mention
+  a sensitive field, in which case they are withheld: a lost debugging aid is
+  recoverable, a leaked token is not. Only the credential is removed — the rest
+  of the response stays readable.
+
+  **If you have run this client with trace logging enabled, treat any tokens in
+  those logs as compromised and rotate the affected credentials.**
+
 ### Removed
 
 - **UniFFI, Swift, and Kotlin mobile bindings.** The EdgeFirst Studio API for
