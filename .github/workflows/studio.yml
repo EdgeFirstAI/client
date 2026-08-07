@@ -119,6 +119,15 @@ jobs:
       - name: Create output directories
         run: mkdir -p test-results test-logs
 
+      # `--run-ignored all` is unconditional here, NOT gated on include_ignored.
+      # In this crate `#[ignore]` means "needs a live Studio server" (see the
+      # module docs on `mod tests` in edgefirst-client/src/lib.rs), and this
+      # workflow is the thing that supplies one. Gating it would mean the
+      # nightly silently ran zero of the twelve Studio tests -- passing green
+      # while checking nothing, which is worse than failing.
+      #
+      # Trade-off, stated plainly: there is now no way to disable an individual
+      # test in this crate via `#[ignore]`. Use a nextest filter if that comes up.
       - name: Run edgefirst-client lib tests
         id: tests
         run: |
@@ -129,7 +138,7 @@ jobs:
             --profile ci \
             -p edgefirst-client \
             --lib \
-            ${{ inputs.include_ignored && '--run-ignored all' || '' }} \
+            --run-ignored all \
             2>&1 | tee test-logs/rust-client-lib.log
           TEST_EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT

@@ -207,13 +207,27 @@ jobs:
           printf 'edgefirst-client @ file://%s %s\n' "$WHEEL" "$HASH" > /tmp/wheel-constraint.txt
           pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/wheel-constraint.txt
 
-      # Catches a broken PyO3 signature or a stale .pyi in seconds, which is
-      # the failure mode that most wants fast feedback on a PR.
+      # Catches a wheel that builds but cannot load -- an ABI mismatch, a missing
+      # symbol, or a class dropped from the #[pymodule] export table -- in
+      # seconds, which is the failure mode that most wants fast feedback on a PR.
+      #
+      # There is deliberately no __version__ check: the extension module does not
+      # export one. Asserting on the exported classes tests something that
+      # actually exists.
       - name: Smoke-test the wheel
         if: success() || failure()
         run: |
           set -euo pipefail
-          python3 -c "import edgefirst_client; print('edgefirst_client', edgefirst_client.__version__)"
+          python3 - <<'PY'
+          import edgefirst_client
+
+          expected = ["Client", "Project", "Dataset", "Experiment", "Snapshot"]
+          missing = [name for name in expected if not hasattr(edgefirst_client, name)]
+          if missing:
+              raise SystemExit(f"edgefirst_client is missing exports: {missing}")
+
+          print("edgefirst_client imported OK, exports present:", ", ".join(expected))
+          PY
 
       # Only the Python tests that construct no Client. The Studio-backed
       # Python suite runs in studio.yml.
@@ -278,10 +292,21 @@ jobs:
     # superseded PR push, and a job killed by `timeout-minutes` is also
     # reported as `cancelled` rather than `failed`.
     #
-    # An earlier `!cancelled()` here did NOT cover this: that function reports
-    # whether THIS job is being cancelled and says nothing about the state of a
-    # dependency, so a cancelled `test` still satisfied it.
+    # `!cancelled()` alone does NOT express that: it reports whether THIS job is
+    # being cancelled and says nothing about a dependency's state, so a cancelled
+    # `test` still satisfied it. The explicit `needs.test.result` checks below are
+    # what actually discriminate.
+    #
+    # It still has to be here though, for a completely different reason. GitHub
+    # wraps every `if:` in an implicit `success()` unless the expression already
+    # contains a status check function (`always()`, `cancelled()`, `failure()`,
+    # `success()`). Without one, the implicit gate skips this job the moment
+    # `test` goes red -- before the `needs.test.result == 'failure'` branch is
+    # ever consulted, so that branch can never fire. `!cancelled()` supplies the
+    # status function; the `needs.*.result` checks supply the logic. Dropping
+    # either half silently takes SonarCloud offline exactly when a test fails.
     if: >
+      !cancelled() &&
       (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.lint.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'failure')
