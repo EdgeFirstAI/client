@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codecov reporting. Coverage is still collected and is reported through
   SonarCloud, which already ingested the same `lcov.info` and `coverage.xml`.
 
+### Changed
+
+- CI: the nightly `studio.yml` now collects coverage and publishes the
+  project's authoritative SonarCloud number, combining unit and Studio
+  integration coverage. Instrumentation runs on a single matrix leg (`stage`),
+  since all three servers exercise the same code, and the leg additionally runs
+  the credential-free test binaries that `--lib` excludes — without them the
+  wiremock-only paths would report as uncovered and the number would fall
+  rather than rise.
+- CI: `test.yml`'s SonarCloud analysis is now restricted to pull requests. Both
+  workflows write to the same SonarCloud project, so leaving the pull-request
+  lane to also scan the default branch would overwrite the fuller nightly
+  coverage with unit-only coverage, leaving the project figure flapping by
+  roughly nine points depending on which workflow finished last. The trade-off
+  is that the default branch is re-analysed nightly rather than on every merge;
+  pull-request analysis is unchanged, and no quality-gate condition depends on
+  coverage.
+
 ### Fixed
 
 - `make version-check` asserted a `Cargo.lock` version for the

@@ -305,9 +305,17 @@ jobs:
     # ever consulted, so that branch can never fire. `!cancelled()` supplies the
     # status function; the `needs.*.result` checks supply the logic. Dropping
     # either half silently takes SonarCloud offline exactly when a test fails.
+    #
+    # Pull requests only. The default branch is analysed by studio.yml's nightly
+    # instead, because that run has both unit and Studio coverage while this one
+    # has unit coverage alone. Both write to the same SonarCloud project, so
+    # letting this job also scan `main` would overwrite the fuller number with
+    # the thinner one and leave project coverage flapping by roughly nine points
+    # depending on which workflow landed last.
     if: >
       !cancelled() &&
-      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       needs.lint.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'failure')
     permissions:

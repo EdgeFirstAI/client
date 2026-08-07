@@ -45,6 +45,16 @@ env:
   RUST_BACKTRACE: 1
   RUST_STABLE_VERSION: "1.94"
   RUST_LOG: "edgefirst_client=trace"
+  # Coverage is collected from exactly ONE matrix leg. The three servers run the
+  # same code against different data, so instrumenting all of them would triple
+  # the cost to produce three near-identical reports. `stage` is the choice
+  # because it is the most production-like environment that is still safe to
+  # write to.
+  #
+  # If this value ever stops matching a server in the matrix, no leg instruments
+  # and the sonarcloud job below fails on the missing artifact rather than
+  # silently publishing unit-test-only coverage.
+  COVERAGE_SERVER: stage
 
 jobs:
   # A scheduled run has no `inputs`, so the server list cannot come from them.
@@ -58,18 +68,40 @@ jobs:
       contents: read
     outputs:
       servers: ${{ steps.pick.outputs.servers }}
+      coverage: ${{ steps.pick.outputs.coverage }}
     steps:
       - name: Pick servers
         id: pick
+        # `coverage` is resolved here rather than in the sonarcloud job's `if`
+        # because a job-level `if` cannot read workflow-level `env`, so it has no
+        # way to see COVERAGE_SERVER. Deciding it once, here, keeps the constant
+        # in a single place instead of hardcoding 'stage' in a condition that
+        # would silently drift out of sync with the env block.
+        # COVERAGE_SERVER comes from the workflow-level env block and is already
+        # in the shell environment; only the dispatch input needs mapping here.
         env:
           DISPATCH_SERVER: ${{ inputs.studio_server }}
         run: |
           set -euo pipefail
           if [ -n "$DISPATCH_SERVER" ]; then
             printf 'servers=["%s"]\n' "$DISPATCH_SERVER" >> "$GITHUB_OUTPUT"
+            SERVERS="$DISPATCH_SERVER"
           else
             echo 'servers=["test","stage","saas"]' >> "$GITHUB_OUTPUT"
+            SERVERS="test stage saas"
           fi
+
+          # Coverage only exists when the instrumented leg is actually running.
+          # A dispatch against a single non-stage server produces no reports, and
+          # the scan must be skipped rather than fail on a missing artifact.
+          COVERAGE=false
+          for s in $SERVERS; do
+            if [ "$s" = "$COVERAGE_SERVER" ]; then
+              COVERAGE=true
+            fi
+          done
+          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
+
           cat "$GITHUB_OUTPUT"
 
   rust-client-lib:
@@ -115,6 +147,19 @@ jobs:
         uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
         with:
           tool: nextest
+
+      - name: Install cargo-llvm-cov
+        if: matrix.server == env.COVERAGE_SERVER
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
+        with:
+          tool: cargo-llvm-cov
+
+      # Exported into GITHUB_ENV so the cargo invocation below inherits the
+      # instrumentation flags, exactly as test.yml does for the unit lane.
+      - name: Set up coverage environment
+        if: matrix.server == env.COVERAGE_SERVER
+        run: |
+          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
 
       - name: Create output directories
         run: mkdir -p test-results test-logs
@@ -211,6 +256,36 @@ jobs:
           echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
           echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
 
+      # The step above runs `--lib`, which excludes the wiremock_coverage test
+      # binary. Without this the nightly lcov would report every wiremock-only
+      # path as uncovered and the project number would go DOWN, not up.
+      #
+      # Deliberately not allowed to fail the job: these tests need no credentials
+      # and already gate every pull request, so a failure here is a duplicate
+      # signal. It is collected for coverage, not as a second opinion.
+      - name: Cover the credential-free test binaries
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        continue-on-error: true
+        run: |
+          cargo nextest run --locked --no-fail-fast --profile ci \
+            -E 'not binary(cli) and not kind(lib)'
+
+      # Generated even when tests fail: partial coverage from a red run is still
+      # the truest picture of what these tests reach, and withholding it would
+      # silently drop the project's number back to unit-only.
+      - name: Generate coverage report
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        run: cargo llvm-cov report --lcov --output-path lcov-client-lib.info
+
+      - name: Upload coverage report
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: studio-coverage-client-lib
+          path: lcov-client-lib.info
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -292,6 +367,20 @@ jobs:
         uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
         with:
           tool: nextest
+
+      - name: Install cargo-llvm-cov
+        if: matrix.server == env.COVERAGE_SERVER
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
+        with:
+          tool: cargo-llvm-cov
+
+      # This is the leg that matters most for the project number: the CLI suite
+      # is the only thing that exercises main.rs, which the unit lane leaves at
+      # roughly a quarter covered.
+      - name: Set up coverage environment
+        if: matrix.server == env.COVERAGE_SERVER
+        run: |
+          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
 
       - name: Create output directories
         run: mkdir -p test-results test-logs
@@ -376,6 +465,19 @@ jobs:
           echo "passed=${{ steps.parse.outputs.passed }}" >> $GITHUB_OUTPUT
           echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
           echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
+
+      - name: Generate coverage report
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        run: cargo llvm-cov report --lcov --output-path lcov-cli.info
+
+      - name: Upload coverage report
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: studio-coverage-cli
+          path: lcov-cli.info
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Upload test results
         if: always()
@@ -625,11 +727,21 @@ jobs:
       - name: Create output directories
         run: mkdir -p test-results test-logs
 
+      # Only the coverage leg pays for slipcover; the other servers run the same
+      # tests bare. Both branches invoke the identical xmlrunner discovery, so
+      # the result parsing below sees the same output either way.
       - name: Run Python tests
         id: tests
         run: |
           set +e
-          python3 -m xmlrunner discover -s . -p "test*.py" -o test-results -v 2>&1 | tee test-logs/python-lib.log
+          if [ "${{ matrix.server }}" = "${{ env.COVERAGE_SERVER }}" ]; then
+            python3 -m slipcover --xml --out coverage.xml \
+              -m xmlrunner discover -s . -p "test*.py" -o test-results -v 2>&1 \
+              | tee test-logs/python-lib.log
+          else
+            python3 -m xmlrunner discover -s . -p "test*.py" -o test-results -v 2>&1 \
+              | tee test-logs/python-lib.log
+          fi
           TEST_EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
           exit $TEST_EXIT_CODE
@@ -688,6 +800,15 @@ jobs:
           echo "failed=${{ steps.parse.outputs.failed }}" >> $GITHUB_OUTPUT
           echo "ignored=${{ steps.parse.outputs.ignored }}" >> $GITHUB_OUTPUT
 
+      - name: Upload Python coverage report
+        if: always() && matrix.server == env.COVERAGE_SERVER
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: studio-coverage-python
+          path: coverage.xml
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -725,6 +846,99 @@ jobs:
         run: |
           echo "::error::Python Library tests FAILED with exit code ${{ steps.tests.outputs.exit_code }}"
           exit 1
+
+  # Publishes the project's authoritative coverage number.
+  #
+  # test.yml scans pull requests with unit-lane coverage only; this scans the
+  # default branch with unit + Studio coverage combined. They are deliberately
+  # split that way because both write to the same SonarCloud project, and a
+  # branch analysis carrying only unit coverage would overwrite this one --
+  # making the project number flap between roughly 62% and 71% depending on
+  # which workflow finished last.
+  #
+  # The consequence to be aware of: the default branch is only re-analysed
+  # nightly, so its rating can lag a merge by up to a day. Pull-request analysis
+  # is unaffected and still runs on every push. The quality gate scores new code
+  # on the PR, and none of its five conditions is a coverage threshold, so
+  # nothing is gated on the number this job publishes.
+  sonarcloud:
+    name: SonarCloud Analysis (full coverage)
+    runs-on: ubuntu-24.04
+    needs: [prepare, rust-client-lib, rust-cli, python-lib]
+    timeout-minutes: 20
+    # Runs on partial success: coverage is uploaded under `always()` by each
+    # producer, so a red integration test still leaves a usable report. Skipped
+    # and cancelled are excluded because those produce no artifacts at all.
+    #
+    # `!cancelled()` is required for the same reason as in test.yml -- without a
+    # status check function GitHub applies an implicit `success()` and the
+    # `== 'failure'` branches below can never fire.
+    if: >
+      !cancelled() &&
+      needs.prepare.outputs.coverage == 'true' &&
+      (needs.rust-client-lib.result == 'success' || needs.rust-client-lib.result == 'failure') &&
+      (needs.rust-cli.result == 'success' || needs.rust-cli.result == 'failure')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for better analysis
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: studio-coverage-*
+          merge-multiple: true
+
+      # Fails loudly on a missing lcov. Letting the scan proceed without one
+      # would publish a near-zero Rust coverage figure over a perfectly good
+      # previous number -- worse than not scanning at all.
+      - name: Verify coverage files
+        run: |
+          set -euo pipefail
+          for f in lcov-client-lib.info lcov-cli.info; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f missing or empty — refusing to publish coverage that would read as zero"
+              exit 1
+            fi
+            echo "$f: $(wc -l < "$f") lines"
+          done
+
+          # Python coverage is not fatal: the repo has very little Python outside
+          # the tests themselves, so a missing report is worth a warning, not a
+          # failed scan.
+          if [ -s coverage.xml ]; then
+            echo "coverage.xml: $(wc -l < coverage.xml) lines"
+            echo "PY_COVERAGE_ARG=-Dsonar.python.coverage.reportPaths=coverage.xml" >> "$GITHUB_ENV"
+          else
+            echo "::warning::coverage.xml missing — Python coverage will not be updated"
+            echo "PY_COVERAGE_ARG=" >> "$GITHUB_ENV"
+          fi
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          # Overrides sonar.rust.lcov.reportPaths from sonar-project.properties,
+          # which names the single lcov.info the PR lane produces.
+          args: >
+            -Dsonar.rust.lcov.reportPaths=lcov-client-lib.info,lcov-cli.info
+            ${{ env.PY_COVERAGE_ARG }}
+
+      - name: Generate SonarCloud summary
+        if: always()
+        run: |
+          {
+            echo "## 🔍 SonarCloud Analysis (unit + Studio coverage)"
+            echo ""
+            echo "Scanned \`${{ github.ref_name }}\` with coverage from the \`${{ env.COVERAGE_SERVER }}\` leg."
+            echo ""
+            echo "[View Full Report →](https://sonarcloud.io/project/overview?id=${{ github.repository_owner }}_${{ github.event.repository.name }})"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   summary:
     name: Test Summary
