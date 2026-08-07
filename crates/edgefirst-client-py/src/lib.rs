@@ -1388,6 +1388,98 @@ impl SnapshotID {
     }
 }
 
+/// The `bt-` rendering of a background task id, as Studio apps receive it.
+///
+/// Same identity as `TaskID`; see `to_task_id()` to convert for use with the
+/// task APIs.
+#[pyclass(module = "edgefirst_client", from_py_object)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct BackgroundTaskID(edgefirst_client::BackgroundTaskID);
+
+impl Display for BackgroundTaskID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for BackgroundTaskID {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let id = edgefirst_client::BackgroundTaskID::try_from(s)
+            .map_err(|e| Error::TypeError(format!("Invalid background task ID: {:?}", e)))?;
+        Ok(BackgroundTaskID(id))
+    }
+}
+
+impl<'py> TryFrom<Bound<'py, PyAny>> for BackgroundTaskID {
+    type Error = Error;
+
+    fn try_from(value: Bound<'py, PyAny>) -> Result<Self, Self::Error> {
+        if let Ok(id) = value.extract::<BackgroundTaskID>() {
+            return Ok(id);
+        }
+        if let Ok(s) = value.extract::<String>() {
+            return s.parse();
+        }
+        if let Ok(id_val) = value.extract::<u64>() {
+            return Ok(BackgroundTaskID(edgefirst_client::BackgroundTaskID::from(
+                id_val,
+            )));
+        }
+        Err(Error::TypeError(
+            "BackgroundTaskID must be str, int, or BackgroundTaskID".into(),
+        ))
+    }
+}
+
+#[pymethods]
+impl BackgroundTaskID {
+    #[new]
+    fn new(value: Bound<'_, PyAny>) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+
+    fn __int__(&self) -> u64 {
+        self.0.value()
+    }
+
+    #[staticmethod]
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Ok(Self(s.parse()?))
+    }
+
+    /// Converts to the `task-` form the task APIs accept.
+    ///
+    /// This is what replaces the hand-rolled `int(task_id[3:], 16)` decode in
+    /// apps: parse the environment value into a `BackgroundTaskID`, convert,
+    /// and pass the result to `task_info` and friends.
+    fn to_task_id(&self) -> TaskID {
+        TaskID(edgefirst_client::TaskID::from(self.0))
+    }
+
+    #[getter]
+    pub fn value(&self) -> u64 {
+        self.0.value()
+    }
+
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BackgroundTaskID('{}')", self.0)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    fn __hash__(&self) -> u64 {
+        self.0.value()
+    }
+}
+
 #[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ImageId(edgefirst_client::ImageId);
@@ -9628,6 +9720,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SampleID>()?;
     m.add_class::<AnnotationSetID>()?;
     m.add_class::<TaskID>()?;
+    m.add_class::<BackgroundTaskID>()?;
     m.add_class::<TrainingSessionID>()?;
     m.add_class::<ValidationSessionID>()?;
     m.add_class::<SnapshotID>()?;

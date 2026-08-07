@@ -231,11 +231,16 @@ jobs:
 
       # Only the Python tests that construct no Client. The Studio-backed
       # Python suite runs in studio.yml.
+      # Named individually rather than discovered, because most of test/ needs a
+      # live Studio. test_ids is split by class for the same reason: its
+      # conversion tests are pure ID translation, while TestIDTypes calls
+      # get_client and belongs to studio.yml.
       - name: Run Python tests (no Studio)
         if: success() || failure()
         run: |
           python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
             test.test_coco_roundtrip test.test_storage test.test_parameter \
+            test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
             -o target/python
 
       - name: Generate coverage report

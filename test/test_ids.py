@@ -13,6 +13,7 @@ from test import get_client, skip_if_known_group_by_bug
 from edgefirst_client import (
     AnnotationSetID,
     AppId,
+    BackgroundTaskID,
     DatasetID,
     ExperimentID,
     ImageId,
@@ -398,6 +399,7 @@ class TestIDConversions(unittest.TestCase):
         (SampleID, "s"),
         (AnnotationSetID, "as"),
         (TaskID, "task"),
+        (BackgroundTaskID, "bt"),
         (TrainingSessionID, "t"),
         (ValidationSessionID, "v"),
         (SnapshotID, "ss"),
@@ -505,8 +507,12 @@ class TestIDConversions(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_all_id_types_covered(self):
-        """Ensure we test all 13 ID types."""
-        self.assertEqual(len(self.ID_TYPES), 13)
+        """Ensure every ID type the client exports is exercised above.
+
+        Deliberately a hard count: adding a ``typeid!`` in api.rs without
+        adding it here should fail rather than quietly go untested.
+        """
+        self.assertEqual(len(self.ID_TYPES), 14)
 
     def test_zero_value(self):
         """Test that ID types handle zero correctly."""
@@ -557,6 +563,56 @@ class TestIDConversions(unittest.TestCase):
             with self.subTest(cls=cls.__name__):
                 with self.assertRaises(RuntimeError):
                     cls(f"{prefix}-ghijkl")
+
+
+class TestBackgroundTaskID(unittest.TestCase):
+    """BackgroundTaskID and its relationship to TaskID.
+
+    Needs no server: this is pure ID translation.
+    """
+
+    def test_parses_the_form_apps_receive(self):
+        bt = BackgroundTaskID("bt-55b5")
+        self.assertEqual(bt.value, 0x55B5)
+        self.assertEqual(str(bt), "bt-55b5")
+
+    def test_converts_to_task_id(self):
+        """The conversion that replaces each app's local hex decoder."""
+        bt = BackgroundTaskID("bt-55b5")
+        task = bt.to_task_id()
+        self.assertEqual(task.value, bt.value)
+        self.assertEqual(str(task), "task-55b5")
+
+    def test_matches_the_hand_rolled_decode_it_replaces(self):
+        """Guards the migration path for modelpack and tflite-converter.
+
+        Both currently do ``int(task_id[3:], 16)``. If this client ever
+        disagreed with that, swapping them over would silently change which
+        task they addressed.
+        """
+        for raw in ("bt-55b5", "bt-1", "bt-abc123", "bt-0"):
+            with self.subTest(raw=raw):
+                self.assertEqual(BackgroundTaskID(raw).value, int(raw[3:], 16))
+
+    def test_prefixes_are_not_interchangeable(self):
+        """Same value, different rendering -- but not the same string."""
+        with self.assertRaises(RuntimeError):
+            BackgroundTaskID("task-55b5")
+        with self.assertRaises(RuntimeError):
+            TaskID("bt-55b5")
+
+    def test_round_trip_is_lossless(self):
+        for raw in (0, 1, 0x55B5, 2**64 - 1):
+            with self.subTest(raw=raw):
+                bt = BackgroundTaskID(raw)
+                self.assertEqual(BackgroundTaskID(bt.to_task_id().value).value, raw)
+
+    def test_accepts_int_str_and_self(self):
+        bt = BackgroundTaskID("bt-55b5")
+        self.assertEqual(BackgroundTaskID(0x55B5), bt)
+        self.assertEqual(BackgroundTaskID(bt), bt)
+        self.assertEqual(BackgroundTaskID.from_str("bt-55b5"), bt)
+        self.assertEqual(hash(BackgroundTaskID(0x55B5)), hash(bt))
 
 
 if __name__ == "__main__":

@@ -372,6 +372,16 @@ typeid!(
     /// export, or dataset processing. Each task has a unique ID displayed
     /// in hexadecimal format with a "task-" prefix (e.g., "task-8e7d6c").
     ///
+    /// # Relationship to [`BackgroundTaskID`]
+    ///
+    /// The same underlying task is rendered with two different prefixes
+    /// depending on where you meet it. The JSON-RPC API exchanges task ids as
+    /// plain integers, and this type is how the client renders them. Studio
+    /// apps, their log URLs, and cloud-batch job names instead use the `bt-`
+    /// form, which is [`BackgroundTaskID`]. Both wrap the identical `u64`, so
+    /// converting between them is lossless and free -- see the `From` impls
+    /// below.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -384,6 +394,56 @@ typeid!(
     TaskID,
     "task"
 );
+
+typeid!(
+    /// Unique identifier for a background task, in the `bt-` form used by
+    /// Studio apps.
+    ///
+    /// This is the same identity as [`TaskID`], written the way an app sees it.
+    /// Every Studio app is launched with its own task id in the environment,
+    /// and Studio surfaces the same id in log URLs (`/logs/bt-55b5`) and in
+    /// cloud-batch job names. Parsing that form previously had no home in this
+    /// client, so each app hand-rolled the hex decode -- `int(task_id[3:], 16)`
+    /// and similar -- reimplementing a format the client is supposed to own and
+    /// skipping the prefix validation the client would have applied.
+    ///
+    /// Convert to a [`TaskID`] to use it with [`Client::task_info`] and the
+    /// other task methods:
+    ///
+    /// ```rust
+    /// use edgefirst_client::{BackgroundTaskID, TaskID};
+    /// use std::str::FromStr;
+    ///
+    /// let bt = BackgroundTaskID::from_str("bt-55b5").unwrap();
+    /// assert_eq!(bt.value(), 0x55b5);
+    ///
+    /// // Same task, the form the RPC API expects.
+    /// let task: TaskID = bt.into();
+    /// assert_eq!(task.value(), 0x55b5);
+    /// assert_eq!(task.to_string(), "task-55b5");
+    /// ```
+    ///
+    /// [`Client::task_info`]: crate::Client::task_info
+    BackgroundTaskID,
+    "bt"
+);
+
+// Lossless both ways: the two types are the same u64 under different prefixes,
+// so this is a rendering change rather than a conversion. Provided in both
+// directions because callers arrive from both sides -- an app parses `bt-` from
+// its environment and needs a `TaskID` for the API, while code holding a
+// `TaskID` may need the `bt-` form to build a log URL.
+impl From<BackgroundTaskID> for TaskID {
+    fn from(id: BackgroundTaskID) -> Self {
+        TaskID::from(id.value())
+    }
+}
+
+impl From<TaskID> for BackgroundTaskID {
+    fn from(id: TaskID) -> Self {
+        BackgroundTaskID::from(id.value())
+    }
+}
 
 typeid!(
     /// Unique identifier for a dataset within a project.
@@ -3109,6 +3169,66 @@ mod tests {
         let id = SnapshotID::from(333444);
         let value: u64 = id.into();
         assert_eq!(value, 333444);
+    }
+
+    // ========== BackgroundTaskID Tests ==========
+
+    #[test]
+    fn test_background_task_id_parses_bt_prefix() {
+        // The form every Studio app receives, and the one that had no home in
+        // this client before -- apps decoded it by hand instead.
+        let id = BackgroundTaskID::from_str("bt-55b5").unwrap();
+        assert_eq!(id.value(), 0x55b5);
+    }
+
+    #[test]
+    fn test_background_task_id_display_round_trips() {
+        let id = BackgroundTaskID::from(0x55b5);
+        assert_eq!(id.to_string(), "bt-55b5");
+        assert_eq!(BackgroundTaskID::from_str("bt-55b5").unwrap(), id);
+    }
+
+    #[test]
+    fn test_background_task_id_rejects_other_prefixes() {
+        // Strict on purpose: the whole point of owning this format in the client
+        // is that a `task-` id and a `bt-` id cannot be silently interchanged as
+        // strings, even though they carry the same value.
+        for s in ["task-55b5", "55b5", "b-55b5", "bt55b5"] {
+            let result = BackgroundTaskID::from_str(s);
+            assert!(result.is_err(), "expected {s} to be rejected");
+        }
+    }
+
+    #[test]
+    fn test_background_task_id_rejects_invalid_hex() {
+        assert!(BackgroundTaskID::from_str("bt-ggg").is_err());
+    }
+
+    #[test]
+    fn test_background_task_id_converts_to_task_id() {
+        // Same identity, different rendering. This is the conversion that lets
+        // an app parse its own id and then call task_info with it.
+        let bt = BackgroundTaskID::from_str("bt-55b5").unwrap();
+        let task: TaskID = bt.into();
+        assert_eq!(task.value(), bt.value());
+        assert_eq!(task.to_string(), "task-55b5");
+    }
+
+    #[test]
+    fn test_task_id_converts_to_background_task_id() {
+        let task = TaskID::from_str("task-abc123").unwrap();
+        let bt: BackgroundTaskID = task.into();
+        assert_eq!(bt.value(), task.value());
+        assert_eq!(bt.to_string(), "bt-abc123");
+    }
+
+    #[test]
+    fn test_background_task_id_conversion_is_lossless() {
+        for raw in [0u64, 1, 0x55b5, u64::MAX] {
+            let bt = BackgroundTaskID::from(raw);
+            let round: BackgroundTaskID = TaskID::from(bt).into();
+            assert_eq!(round.value(), raw);
+        }
     }
 
     // ========== TaskID Tests ==========

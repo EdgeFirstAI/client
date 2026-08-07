@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BackgroundTaskID`, the `bt-` rendering of a background task id that Studio
+  apps receive in their environment and that Studio uses in log URLs and
+  cloud-batch job names (DE-2876). It is the same identity as `TaskID` under a
+  different prefix, and converts losslessly in both directions — `to_task_id()`
+  from Python, `From` impls in Rust. Apps previously decoded this by hand with
+  `int(task_id[3:], 16)`, reimplementing a format the client should own and
+  skipping the prefix validation the client applies; `modelpack` and
+  `tflite-converter` can now drop their local decoders. Exported from the
+  Python bindings and covered by a test asserting the client agrees with the
+  hand-rolled decode it replaces, so migrating cannot silently change which
+  task an app addresses.
+- `TaskID` documents its relationship to `BackgroundTaskID`. Its doctest
+  previously used `task-abc123`, a form nothing in the system emits.
+
 ### Security
 
 - Authentication tokens are no longer written to logs. Trace-level logging
@@ -44,24 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codecov reporting. Coverage is still collected and is reported through
   SonarCloud, which already ingested the same `lcov.info` and `coverage.xml`.
 
-### Changed
-
-- CI: the nightly `studio.yml` now collects coverage and publishes the
-  project's authoritative SonarCloud number, combining unit and Studio
-  integration coverage. Instrumentation runs on a single matrix leg (`stage`),
-  since all three servers exercise the same code, and the leg additionally runs
-  the credential-free test binaries that `--lib` excludes — without them the
-  wiremock-only paths would report as uncovered and the number would fall
-  rather than rise.
-- CI: `test.yml`'s SonarCloud analysis is now restricted to pull requests. Both
-  workflows write to the same SonarCloud project, so leaving the pull-request
-  lane to also scan the default branch would overwrite the fuller nightly
-  coverage with unit-only coverage, leaving the project figure flapping by
-  roughly nine points depending on which workflow finished last. The trade-off
-  is that the default branch is re-analysed nightly rather than on every merge;
-  pull-request analysis is unchanged, and no quality-gate condition depends on
-  coverage.
-
 ### Fixed
 
 - `make version-check` asserted a `Cargo.lock` version for the
@@ -70,6 +68,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI: the nightly `studio.yml` now collects coverage and publishes the
+  project's authoritative SonarCloud number, combining unit and Studio
+  integration coverage. Instrumentation runs on a single matrix leg (`stage`),
+  since all three servers exercise the same code, and the leg additionally runs
+  the credential-free test binaries that `--lib` excludes — without them the
+  wiremock-only paths would report as uncovered and the number would fall
+  rather than rise. Measured effect on the default branch: 62.0% to 75.4%.
+- CI: `test.yml`'s SonarCloud analysis is now restricted to pull requests. Both
+  workflows write to the same SonarCloud project, so leaving the pull-request
+  lane to also scan the default branch would overwrite the fuller nightly
+  coverage with unit-only coverage, leaving the project figure flapping by
+  roughly thirteen points depending on which workflow finished last. The
+  trade-off is that the default branch is re-analysed nightly rather than on
+  every merge; pull-request analysis is unchanged.
+
+  Note that establishing a coverage baseline activated the quality gate's
+  `new_coverage` condition, which scores new code at a 50% threshold. Pull
+  requests are analysed with unit coverage alone, so a change reachable only by
+  Studio integration tests can fail that condition despite being covered by the
+  nightly.
 - CI: `test.yml` reduced from six jobs to three (`lint`, `test`, `sonarcloud`).
   Formatting and clippy split out of the former `lint-and-test` monolith so
   they report in about a minute rather than behind the full test suite, and
