@@ -54,10 +54,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Every wrapper that puts a method name on the wire. A new wrapper added without
-# being listed here would make its calls invisible to this check, so the count
-# assertion below guards against exactly that.
-RPC_FNS='rpc|rpc_bulk|rpc_without_auth|rpc_download|post_multipart|rpc_with_retry'
+# Wrappers whose call sites pass a literal method name. This list is maintained
+# by hand -- nothing derives it -- so assert_wrapper_list_is_current() below
+# cross-checks it against the source rather than trusting it.
+RPC_FNS='rpc|rpc_bulk|rpc_without_auth|rpc_download|post_multipart'
+
+# Functions that also take a method name but never receive it as a literal:
+# rpc_with_http is the shared implementation the wrappers above delegate to, and
+# process_rpc_response only needs the name to label an error. Listing them keeps
+# the cross-check quiet about functions that are correctly absent from RPC_FNS.
+NON_WRAPPER_FNS='rpc_with_http|process_rpc_response'
 
 # Methods the client calls. Joined with the following line first, because many
 # call sites wrap after the opening paren, and tolerant of a turbofish
@@ -83,9 +89,48 @@ mocked_methods() {
   } 2>/dev/null | grep -E '^[a-z][a-z_0-9]*(\.[a-z][a-z_0-9]*)*$' | sort -u
 }
 
+# Cross-check RPC_FNS against the source, in both directions.
+#
+# This exists because RPC_FNS is hand-maintained and the rest of the script
+# cannot detect its own blind spot: a wrapper missing from the list is invisible
+# to client_methods() AND to assert_extraction_is_complete(), since both filter
+# through the same regex. Counting call sites cannot reveal a wrapper the count
+# never looked for. So this looks at function *definitions* instead, which the
+# list does not filter.
+#
+# It earns its keep: the list shipped with `rpc_with_retry` in it, a function
+# that does not exist, while `rpc_with_http` did exist and was absent.
+assert_wrapper_list_is_current() {
+  local defined unknown missing
+  # Functions taking a method name. Newlines collapsed first because these
+  # signatures wrap across several lines.
+  defined=$(tr '\n' ' ' < "$SRC/client.rs" \
+    | grep -oE 'async fn [a-z_0-9]+[^{]{0,200}method: *(String|&str)' \
+    | grep -oE 'async fn [a-z_0-9]+' | awk '{print $3}' | sort -u)
+
+  unknown=$(echo "$defined" | grep -vE "^($RPC_FNS|$NON_WRAPPER_FNS)$" || true)
+  if [ -n "$unknown" ]; then
+    echo "::warning::rpc-mock-coverage: these take a method name but are in neither RPC_FNS nor NON_WRAPPER_FNS:"
+    echo "$unknown" | indent
+    echo "::warning::If any is called with a literal method name, its calls are invisible to this check. Add it to RPC_FNS."
+  fi
+
+  # The other direction: a name in RPC_FNS that no longer exists silently
+  # narrows the regex and looks like thoroughness.
+  missing=$(echo "$RPC_FNS" | tr '|' '\n' | while read -r fn; do
+    grep -qE "async fn $fn[<(]" "$SRC/client.rs" || echo "$fn"
+  done)
+  if [ -n "$missing" ]; then
+    echo "::warning::rpc-mock-coverage: RPC_FNS names functions that do not exist: $(echo "$missing" | tr '\n' ' ')"
+  fi
+}
+
 # Guard the extractor itself. If call sites exist that the regex cannot resolve
 # to a literal, the gap list is silently short and this check is worthless --
 # so say so loudly rather than report a clean run.
+#
+# Note this only covers wrappers already in RPC_FNS; one missing from the list
+# is caught by assert_wrapper_list_is_current() above, not here.
 assert_extraction_is_complete() {
   local call_sites literals
   # Count occurrences, not matching lines: the literal pass joins everything
@@ -107,6 +152,7 @@ TOTAL=$(echo "$CLIENT" | grep -c . || true)
 COVERED=$(comm -12 <(echo "$CLIENT") <(echo "$MOCKED") | grep -c . || true)
 MISSING=$(echo "$GAPS" | grep -c . || true)
 
+assert_wrapper_list_is_current
 assert_extraction_is_complete
 
 if [ "$MODE" = "list" ] || [ -n "$DVE_DIR" ]; then
