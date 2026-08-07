@@ -257,10 +257,22 @@ jobs:
     needs: [lint, test]
     timeout-minutes: 20
     # Forks cannot read SONAR_TOKEN, so the scan is skipped rather than failed.
+    #
+    # Deliberately NOT gated on `test` succeeding. The `test` job uploads both
+    # coverage-reports and its clippy counterpart under `success() || failure()`,
+    # so a failing test still leaves Sonar everything it needs. Requiring success
+    # meant a single red integration test took all static analysis and the
+    # quality gate down with it -- which is exactly when that analysis is most
+    # worth having. `lint` must still succeed, because its clippy report is a
+    # hard input and the scan below fails loudly without it.
+    #
+    # `!cancelled()` rather than `always()`: a cancelled run has no artifacts,
+    # and the download would fail confusingly.
     if: >
+      !cancelled() &&
       (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.lint.result == 'success' &&
-      needs.test.result == 'success'
+      needs.test.result != 'skipped'
     permissions:
       contents: read
       pull-requests: read
