@@ -6,9 +6,13 @@ Tests cover:
 - Snapshot class properties and methods
 - Snapshot creation from files and directories
 - Snapshot download with progress tracking
-- Snapshot restore with AGTG options
 - Snapshot deletion
 - Error handling and edge cases
+
+Snapshot restore is deliberately NOT covered here. It is disabled across the
+suite while the server team wires the new app-based snapshot create and restore
+into the Studio API; the Rust equivalents are marked SNAPSHOT-RESTORE-DISABLED.
+This module previously advertised restore coverage it did not have.
 """
 
 import os

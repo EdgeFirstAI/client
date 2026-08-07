@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pull-request filter, which excluded the CLI test binary but not the
   Studio tests living alongside the client's unit tests, and failed with
   `EmptyToken` once credentials were withdrawn from that lane.
+- Tests: every snapshot-restore test is disabled while the server team wires the
+  new app-based snapshot create and restore into the Studio API. The three
+  affected CLI tests carry a `SNAPSHOT-RESTORE-DISABLED` marker so the group can
+  be re-enabled together. Two of them previously recorded the mechanism of
+  unpatched server-side behaviour in their skip reason; that detail belongs in
+  the issue tracker, not in a public repository, and the reasons are now generic.
 - Tests: nextest now runs with `test-threads = 4` on both the `ci` and
   `default` profiles. The suite is dominated by Studio integration tests bound
   by a shared remote server, so nextest's default of one thread per core added

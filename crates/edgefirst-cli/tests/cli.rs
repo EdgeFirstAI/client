@@ -3724,16 +3724,18 @@ fn compute_file_checksum(path: &Path) -> Result<String, Box<dyn std::error::Erro
 
 #[test]
 #[file_serial]
-// Disabled 2026-03 on a server-side snapshot-restore failure, tracked internally.
+// Snapshot restore is disabled across this suite while the server team wires the
+// new app-based snapshot create and restore into the Studio API. Re-enable the
+// whole group together once that lands -- grep for SNAPSHOT-RESTORE-DISABLED.
 //
-// Treat this marker as stale rather than as a current diagnosis. Since it was
-// written the restore worker image has been replaced twice and the restore
-// subsystem is being migrated to a Studio app, so the original failure may well
-// be gone -- and if it is not, the cause is unlikely to be what was recorded at
-// the time. Re-validate against a current server before either re-enabling this
-// test or reasoning from this note.
-#[ignore = "Blocked on a server-side snapshot-restore failure tracked internally; \
-            diagnosis predates two restore-worker updates, so re-validate first"]
+// This test was already disabled before that work began, on a server-side failure
+// tracked internally. Do not treat the earlier diagnosis as current: the restore
+// worker image has been replaced twice since it was written, so re-validate
+// against a live server rather than reasoning from the old note.
+//
+// SNAPSHOT-RESTORE-DISABLED
+#[ignore = "Snapshot restore disabled: the app-based create/restore rework is \
+            still being wired into the Studio API server-side"]
 fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // SNAPSHOT RESTORE TEST
@@ -4751,7 +4753,13 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 #[file_serial]
-#[ignore = "Requires MCAP test data (4GB+). Set TEST_MCAP_SNAPSHOT_ID to run."]
+// SNAPSHOT-RESTORE-DISABLED
+//
+// Two independent reasons, both of which must clear before this runs: the
+// server-side restore rework below, and the 4GB+ MCAP fixture it needs.
+#[ignore = "Snapshot restore disabled: the app-based create/restore rework is \
+            still being wired into the Studio API server-side. Also requires MCAP \
+            test data (4GB+) via TEST_MCAP_SNAPSHOT_ID"]
 fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error::Error>> {
     // This test requires an MCAP file to test autodepth and autolabel features.
     // These features only work with MCAP snapshots, not image-based snapshots.
@@ -4892,7 +4900,14 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
 /// constraint that all rows for a given image must have identical group values.
 #[test]
 #[file_serial]
-#[ignore = "Server-side validation for inconsistent groups not yet implemented. This test verifies the expected behavior when it is."]
+// SNAPSHOT-RESTORE-DISABLED
+//
+// This is an aspirational test: it asserts a server-side behaviour that is
+// tracked internally rather than one the client can currently rely on. It also
+// drives a restore, so it is disabled on that ground too.
+#[ignore = "Snapshot restore disabled: the app-based create/restore rework is \
+            still being wired into the Studio API server-side. Also asserts \
+            server-side behaviour tracked internally"]
 fn test_server_rejects_inconsistent_group_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     use polars::prelude::*;
     use std::io::Write;
