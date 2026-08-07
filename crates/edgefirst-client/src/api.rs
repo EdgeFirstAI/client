@@ -385,11 +385,16 @@ typeid!(
     /// # Examples
     ///
     /// ```rust
-    /// use edgefirst_client::TaskID;
+    /// use edgefirst_client::{BackgroundTaskID, TaskID};
     /// use std::str::FromStr;
     ///
     /// let task_id = TaskID::from_str("task-abc123").unwrap();
     /// assert_eq!(task_id.value(), 0xabc123);
+    ///
+    /// // The same task, rendered the way a Studio app would see it.
+    /// let background: BackgroundTaskID = task_id.into();
+    /// assert_eq!(background.to_string(), "bt-abc123");
+    /// assert_eq!(background.value(), task_id.value());
     /// ```
     TaskID,
     "task"

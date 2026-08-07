@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python bindings and covered by a test asserting the client agrees with the
   hand-rolled decode it replaces, so migrating cannot silently change which
   task an app addresses.
-- `TaskID` documents its relationship to `BackgroundTaskID`. Its doctest
-  previously used `task-abc123`, a form nothing in the system emits.
+- `TaskID` documents its relationship to `BackgroundTaskID`, and its doctest
+  demonstrates the conversion rather than only describing it.
 
 ### Security
 
