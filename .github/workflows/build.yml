@@ -7,6 +7,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Supersede an in-flight run when a PR is pushed again, but never on main:
+# release.yml resolves this workflow's run for a specific SHA, and a blanket
+# cancel would destroy the run a release depends on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
@@ -17,42 +27,48 @@ jobs:
   build-cli:
     name: Build CLI - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
           # Linux x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            platform: linux
             artifact_name: edgefirst-client
             asset_name: edgefirst-client-linux-amd64
 
           # Linux aarch64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
+            platform: linux
             artifact_name: edgefirst-client
             asset_name: edgefirst-client-linux-arm64
 
           # macOS x86_64
-          - os: macos-latest
+          - os: macos-14
             target: x86_64-apple-darwin
+            platform: macos
             artifact_name: edgefirst-client
             asset_name: edgefirst-client-macos-amd64
 
           # macOS aarch64 (Apple Silicon)
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
+            platform: macos
             artifact_name: edgefirst-client
             asset_name: edgefirst-client-macos-arm64
 
           # Windows x86_64
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
+            platform: windows
             artifact_name: edgefirst-client.exe
             asset_name: edgefirst-client-windows-amd64.exe
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
@@ -69,37 +85,46 @@ jobs:
           shared-key: "build"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Install zig and cargo-zigbuild for Linux targets (manylinux2014 compatibility)
-      - name: Install zig and cargo-zigbuild (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          pip install ziglang
-          cargo install cargo-zigbuild
+      # manylinux2014 compatibility: cargo-zigbuild pins the target glibc to
+      # 2.17 (see the `.2.17` suffix on the build below). It shells out to
+      # `zig`, which the ziglang wheel supplies, so both are needed.
+      - name: Install zig (Linux)
+        if: matrix.platform == 'linux'
+        run: pip install ziglang
+
+      # Prebuilt binary rather than `cargo install`, which compiled
+      # cargo-zigbuild from source on every Linux matrix job.
+      - name: Install cargo-zigbuild (Linux)
+        if: matrix.platform == 'linux'
+        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
+        with:
+          tool: cargo-zigbuild
 
       - name: Build CLI (Linux with zig)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17 -p edgefirst-cli
 
       - name: Build CLI (macOS/Windows)
-        if: matrix.os != 'ubuntu-latest'
+        if: matrix.platform != 'linux'
         run: cargo build --release --locked --target ${{ matrix.target }} -p edgefirst-cli
 
       # Verify GLIBC requirements for Linux binaries (manylinux2014 = glibc 2.17)
       - name: Verify GLIBC requirements (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
+          set -euo pipefail
           echo "Checking GLIBC requirements for ${{ matrix.target }}..."
           GLIBC_MAX=$(objdump -T "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
           echo "Maximum GLIBC version required: $GLIBC_MAX"
-          
+
           # Extract version numbers for comparison
-          GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-          GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
-          
+          GLIBC_MAJOR=$(echo "$GLIBC_MAX" | cut -d'_' -f2 | cut -d'.' -f1)
+          GLIBC_MINOR=$(echo "$GLIBC_MAX" | cut -d'_' -f2 | cut -d'.' -f2)
+
           # Check if version is <= 2.17 (manylinux2014)
-          if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
-            echo "❌ ERROR: Binary requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
+          if [ "$GLIBC_MAJOR" -gt 2 ] || { [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]; }; then
+            echo "::error::Binary requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
             exit 1
           fi
           echo "✅ GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
@@ -122,13 +147,14 @@ jobs:
   build-wheels:
     name: Build Python Wheel - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     needs: [build-cli]  # Run after CLI builds to bundle CLI binary in wheel
     strategy:
       fail-fast: false
       matrix:
         include:
           # Linux x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             platform: linux
             arch: x86_64
@@ -136,7 +162,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # Linux aarch64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             platform: linux
             arch: aarch64
@@ -144,7 +170,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # macOS x86_64
-          - os: macos-latest
+          - os: macos-14
             target: x86_64-apple-darwin
             platform: macos
             arch: x86_64
@@ -152,7 +178,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # macOS aarch64 (Apple Silicon)
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             platform: macos
             arch: aarch64
@@ -160,7 +186,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # Windows x86_64
-          - os: windows-latest
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
             platform: windows
             arch: x86_64
@@ -168,7 +194,7 @@ jobs:
             cli_binary: edgefirst-client.exe
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
@@ -199,7 +225,7 @@ jobs:
       # Set up maturin data directory with CLI binary as a script
       # Files in .data/scripts/ are installed as executables on the PATH
       - name: Bundle CLI binary in wheel (Unix)
-        if: matrix.os != 'windows-latest'
+        if: matrix.platform != 'windows'
         run: |
           mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
           cp cli-binary/${{ matrix.cli_artifact }} crates/edgefirst-client-py/edgefirst_client.data/scripts/${{ matrix.cli_binary }}
@@ -208,7 +234,7 @@ jobs:
           ls -la crates/edgefirst-client-py/edgefirst_client.data/scripts/
 
       - name: Bundle CLI binary in wheel (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           mkdir -p crates/edgefirst-client-py/edgefirst_client.data/scripts
@@ -219,23 +245,16 @@ jobs:
       - name: Install maturin
         run: pip install maturin[zig]
 
-      # Install zig and cargo-zigbuild for Linux targets
-      - name: Install zig and cargo-zigbuild (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          pip install ziglang
-          cargo install cargo-zigbuild
-
       # Install cross-compilation tools for Linux aarch64
       - name: Install cross-compilation tools (Linux aarch64)
-        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.platform == 'linux' && matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       # Build wheels with zig for better cross-compilation support on Linux
       - name: Build wheels (Linux with zig)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         run: |
           maturin build --release --locked --zig --compatibility manylinux2014 \
             --target ${{ matrix.target }} \
@@ -243,11 +262,18 @@ jobs:
 
       # Verify wheel contents for Linux (GLIBC + CLI binary)
       - name: Verify wheel contents (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           echo "Extracting and verifying wheel contents for ${{ matrix.target }}..."
-          WHEEL_FILE=$(ls target/wheels/*.whl)
+          wheels=(target/wheels/*.whl)
+          if [ ${#wheels[@]} -eq 0 ]; then
+            echo "::error::maturin produced no wheel for ${{ matrix.target }}"
+            exit 1
+          fi
+          WHEEL_FILE="${wheels[0]}"
           TEMP_DIR=$(mktemp -d)
           unzip -q "$WHEEL_FILE" -d "$TEMP_DIR"
 
@@ -270,10 +296,10 @@ jobs:
             GLIBC_MAX=$(objdump -T "$SO_FILE" | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sed 's/).*//' | sort -V | tail -1)
             echo "Python extension max GLIBC: $GLIBC_MAX"
 
-            GLIBC_MAJOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f1)
-            GLIBC_MINOR=$(echo $GLIBC_MAX | cut -d'_' -f2 | cut -d'.' -f2)
+            GLIBC_MAJOR=$(echo "$GLIBC_MAX" | cut -d'_' -f2 | cut -d'.' -f1)
+            GLIBC_MINOR=$(echo "$GLIBC_MAX" | cut -d'_' -f2 | cut -d'.' -f2)
 
-            if [ "$GLIBC_MAJOR" -gt 2 ] || ([ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]); then
+            if [ "$GLIBC_MAJOR" -gt 2 ] || { [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -gt 17 ]; }; then
               echo "❌ ERROR: Python extension requires $GLIBC_MAX, but manylinux2014 only supports up to GLIBC_2.17"
               rm -rf "$TEMP_DIR"
               exit 1
@@ -285,7 +311,7 @@ jobs:
 
       # Build wheels for macOS
       - name: Build wheels (macOS)
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'macos'
         run: |
           maturin build --release --locked \
             --target ${{ matrix.target }} \
@@ -293,7 +319,7 @@ jobs:
 
       # Verify wheel contents for macOS
       - name: Verify wheel contents (macOS)
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'macos'
         shell: bash
         run: |
           echo "Verifying wheel contents for ${{ matrix.target }}..."
@@ -312,12 +338,12 @@ jobs:
 
       # Build wheels for Windows
       - name: Build wheels (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         run: maturin build --release --locked -m crates/edgefirst-client-py/Cargo.toml
 
       # Verify wheel contents for Windows
       - name: Verify wheel contents (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           echo "Verifying wheel contents for ${{ matrix.target }}..."
@@ -344,7 +370,8 @@ jobs:
   # Verify all binaries and wheels were built successfully
   verify:
     name: Verify Builds
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     needs: [build-cli, build-wheels]
     steps:
       - name: Download all artifacts
@@ -352,12 +379,33 @@ jobs:
         with:
           path: artifacts
 
+      # Asserts the expected counts rather than only reporting them. The
+      # previous version piped `wc -l` into the job summary and always exited
+      # 0, so a matrix entry that silently produced nothing still showed a
+      # green "Verify Builds".
       - name: Verify artifacts
+        env:
+          EXPECTED_BINARIES: '5'   # linux x2, macos x2, windows
+          EXPECTED_WHEELS: '5'     # one per CLI target
         run: |
-          echo "## Build Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**CLI Binaries:**" >> $GITHUB_STEP_SUMMARY
-          ls -1 artifacts/*client* 2>/dev/null | wc -l | xargs -I {} echo "- {} binaries built" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Python Wheels:**" >> $GITHUB_STEP_SUMMARY
-          find artifacts/wheels-* -name "*.whl" 2>/dev/null | wc -l | xargs -I {} echo "- {} wheels built" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          BINARIES=$(find artifacts -type f -name '*client*' -not -name '*.whl' | wc -l | tr -d ' ')
+          WHEELS=$(find artifacts -type f -name '*.whl' | wc -l | tr -d ' ')
+
+          {
+            echo "## Build Artifacts"
+            echo ""
+            echo "- CLI binaries: ${BINARIES}/${EXPECTED_BINARIES}"
+            echo "- Python wheels: ${WHEELS}/${EXPECTED_WHEELS}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          rc=0
+          if [ "$BINARIES" -ne "$EXPECTED_BINARIES" ]; then
+            echo "::error::expected $EXPECTED_BINARIES CLI binaries, found $BINARIES"
+            rc=1
+          fi
+          if [ "$WHEELS" -ne "$EXPECTED_WHEELS" ]; then
+            echo "::error::expected $EXPECTED_WHEELS wheels, found $WHEELS"
+            rc=1
+          fi
+          exit "$rc"
