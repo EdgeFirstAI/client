@@ -89,7 +89,14 @@ jobs:
   test:
     name: Tests and coverage
     runs-on: ubuntu-24.04-xlarge
-    timeout-minutes: 45
+    # Generous on purpose. Runtime here is dominated by live Studio integration
+    # tests, which swing widely -- the Python suite alone has gone from 868s to
+    # 1100s between consecutive runs. An observed-good run is ~36 minutes, and
+    # an earlier 45 was tripped by a merely slow one. A timed-out job is
+    # reported as `cancelled`, not `failed`, so that failure mode is also
+    # genuinely hard to read. This is a hang detector, not a performance
+    # budget; it only has to beat GitHub's 6-hour default.
+    timeout-minutes: 90
     permissions:
       contents: read
       checks: write        # publish-unit-test-result-action creates a check run
@@ -264,13 +271,20 @@ jobs:
     # worth having. `lint` must still succeed, because its clippy report is a
     # hard input and the scan below fails loudly without it.
     #
-    # `!cancelled()` rather than `always()`: a cancelled run has no artifacts,
-    # and the download would fail confusingly.
+    # `success` or `failure` only -- never `cancelled` or `skipped`. Those two
+    # are the cases where `test` produced no artifacts at all, and running the
+    # scan then just fails on the download, turning one confusing red X into
+    # two. It happens more than it sounds: `cancel-in-progress` cancels every
+    # superseded PR push, and a job killed by `timeout-minutes` is also
+    # reported as `cancelled` rather than `failed`.
+    #
+    # An earlier `!cancelled()` here did NOT cover this: that function reports
+    # whether THIS job is being cancelled and says nothing about the state of a
+    # dependency, so a cancelled `test` still satisfied it.
     if: >
-      !cancelled() &&
       (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
       needs.lint.result == 'success' &&
-      needs.test.result != 'skipped'
+      (needs.test.result == 'success' || needs.test.result == 'failure')
     permissions:
       contents: read
       pull-requests: read
