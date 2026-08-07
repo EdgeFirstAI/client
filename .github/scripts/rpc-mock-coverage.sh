@@ -77,7 +77,10 @@ mocked_methods() {
     grep -rhoE 'rpc_method_body\("[^"]+"' "$TESTS" | grep -oE '"[^"]+"' | tr -d '"'
     grep -rhoE '"method":[[:space:]]*"[^"]+"' "$TESTS" | grep -oE '"[^"]+"$' | tr -d '"'
     grep -rhoE 'query_param\("method",[[:space:]]*"[^"]+"' "$TESTS" | grep -oE '"[^"]+"$' | tr -d '"'
-  } 2>/dev/null | sort -u
+    # Filtered to things shaped like a method name. The file's header comment
+    # documents the wire format with a `"method": "<name>"` example, which the
+    # pattern above would otherwise collect as a mocked method called "<name>".
+  } 2>/dev/null | grep -E '^[a-z][a-z_0-9]*(\.[a-z][a-z_0-9]*)*$' | sort -u
 }
 
 # Guard the extractor itself. If call sites exist that the regex cannot resolve

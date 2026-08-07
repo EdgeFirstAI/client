@@ -2402,8 +2402,14 @@ async fn dataset_list_parses_and_scopes_by_project() {
     assert_eq!(datasets[0].name(), "Deer");
 }
 
-/// The optional tag fields carry `#[serde(default)]`; a response omitting them
-/// must still parse, since the server only populates them for tagged versions.
+/// The tag fields carry `#[serde(default)]`, so a response omitting them still
+/// parses.
+///
+/// Only `tag_id` is genuinely optional on the wire — it is the one tag field
+/// the server marks `omitempty`. `tag` and `tag_description` are always emitted,
+/// empty-string when untagged. This response omits all three, which is stricter
+/// than the server ever is, and that is deliberate: the defaults should hold
+/// regardless of which subset arrives.
 #[tokio::test]
 async fn dataset_get_parses_without_optional_tag_fields() {
     let server = MockServer::start().await;
