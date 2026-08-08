@@ -33,8 +33,9 @@
 
 use base64::Engine as _;
 use edgefirst_client::{
-    Client, DatasetID, Error, ExperimentID, Parameter, SampleDimensionUpdate, SampleID, TaskID,
-    TrainingSessionID, ValidationSessionID,
+    AnnotationSetID, Client, DatasetID, Error, ExperimentID, GpsData, ImuData, Location, Parameter,
+    Sample, SampleDimensionUpdate, SampleFile, SampleID, TaskID, TrainingSessionID,
+    ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
@@ -2550,5 +2551,227 @@ async fn job_stop_still_maps_101_to_task_not_found() {
     assert!(
         matches!(&err, Error::TaskNotFound(id) if id.value() == 0x5678),
         "expected TaskNotFound(task-5678), got {err:?}"
+    );
+}
+
+// ===========================================================================
+// samples.list / samples.populate2 — GPS/IMU sensor metadata
+//
+// `samples.list` returns sensors as an array of single-key objects
+// (processSample in bridge_handler.go). `samples.populate2` accepts sensors as
+// an object map of type → payload (Samples_Populate). Shapes below follow the
+// Go handlers rather than this crate's structs.
+// ===========================================================================
+
+/// `samples.list` extracts GPS/IMU from the sensors array the server emits.
+#[tokio::test]
+#[serial]
+async fn samples_list_parses_gps_imu_from_sensors() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    // processSample builds sensors as []map[string]interface{} with one key
+    // per entry. GPS/IMU values are sensor.DataJSON ({"lat","lon"} /
+    // {"roll","pitch","yaw"}), not S3 URLs.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 2041133,
+                "image_name": "pose_location.png",
+                "group_name": "train",
+                "width": 100,
+                "height": 100,
+                "sensors": [
+                    {"gps": {"lat": 37.7749, "lon": -122.4194}},
+                    {"imu": {"roll": 10.0, "pitch": -5.0, "yaw": 90.0}},
+                    {"radar.pcd": "https://example.com/radar.pcd"}
+                ]
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let samples = client_for(&server.uri())
+        .samples(DatasetID::from(1u64), None, &[], &[], &[], None, None)
+        .await
+        .expect("samples.list with gps/imu should parse");
+    assert_eq!(samples.len(), 1);
+
+    let location = samples[0]
+        .location()
+        .expect("gps/imu sensors should become Sample.location");
+    let gps = location.gps.as_ref().expect("gps");
+    let imu = location.imu.as_ref().expect("imu");
+    assert!((gps.lat - 37.7749).abs() < 1e-6);
+    assert!((gps.lon - (-122.4194)).abs() < 1e-6);
+    assert!((imu.roll - 10.0).abs() < 1e-6);
+    assert!((imu.pitch - (-5.0)).abs() < 1e-6);
+    assert!((imu.yaw - 90.0).abs() < 1e-6);
+
+    // Non-location sensors remain files.
+    assert_eq!(samples[0].files().len(), 1);
+    assert_eq!(samples[0].files()[0].file_type(), "radar.pcd");
+}
+
+/// A JSON-RPC error from `samples.list` maps through the shared error path.
+#[tokio::test]
+#[serial]
+async fn samples_list_maps_403_to_permission_denied() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(403, "forbidden")))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .samples(DatasetID::from(1u64), None, &[], &[], &[], None, None)
+        .await
+        .expect_err("403 should fail");
+    assert!(
+        matches!(&err, Error::PermissionDenied(m) if m == "samples.list"),
+        "expected PermissionDenied(\"samples.list\"), got {err:?}"
+    );
+}
+
+/// `samples.populate2` must send GPS/IMU under `sensors` as an object map —
+/// the shape Samples_Populate reads (`value.(map[string]interface{})`), not
+/// the array `samples.list` returns.
+#[tokio::test]
+#[serial]
+async fn populate_samples_sends_gps_imu_as_sensors_object() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .and(body_partial_json(json!({
+            "method": "samples.populate2",
+            "params": {
+                "dataset_id": 1,
+                "annotation_set_id": 2,
+                "samples": [{
+                    "sensors": {
+                        "gps": {"lat": 37.7749, "lon": -122.4194},
+                        "imu": {"roll": 10.0, "pitch": -5.0, "yaw": 90.0}
+                    },
+                    "files": {
+                        "image": "pose_location.png"
+                    }
+                }]
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "urls": []
+        }]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut sample = Sample::new();
+    sample.files = vec![SampleFile::with_filename(
+        "image".to_string(),
+        "pose_location.png".to_string(),
+    )];
+    sample.location = Some(Location {
+        gps: Some(GpsData {
+            lat: 37.7749,
+            lon: -122.4194,
+        }),
+        imu: Some(ImuData {
+            roll: 10.0,
+            pitch: -5.0,
+            yaw: 90.0,
+        }),
+    });
+
+    let results = client_for(&server.uri())
+        .populate_samples(
+            DatasetID::from(1u64),
+            Some(AnnotationSetID::from(2u64)),
+            vec![sample],
+            None,
+        )
+        .await
+        .expect("populate2 with gps/imu should succeed");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].uuid, "11111111-1111-1111-1111-111111111111");
+}
+
+/// Failure path for `samples.populate2` — the server returns a JSON-RPC
+/// error when sensors are not an object map (or other validation fails).
+#[tokio::test]
+#[serial]
+async fn populate_samples_maps_json_rpc_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(
+            403,
+            "sensors not in correct format for sample with index 0",
+        )))
+        .mount(&server)
+        .await;
+
+    let mut sample = Sample::new();
+    sample.files = vec![SampleFile::with_filename(
+        "image".to_string(),
+        "pose_location.png".to_string(),
+    )];
+    sample.location = Some(Location {
+        gps: Some(GpsData {
+            lat: 37.7749,
+            lon: -122.4194,
+        }),
+        imu: None,
+    });
+
+    let err = client_for(&server.uri())
+        .populate_samples(
+            DatasetID::from(1u64),
+            Some(AnnotationSetID::from(2u64)),
+            vec![sample],
+            None,
+        )
+        .await
+        .expect_err("populate2 JSON-RPC error should fail");
+    assert!(
+        matches!(&err, Error::PermissionDenied(m) if m == "samples.populate2"),
+        "expected PermissionDenied(\"samples.populate2\"), got {err:?}"
     );
 }

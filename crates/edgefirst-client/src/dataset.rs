@@ -3654,6 +3654,71 @@ mod tests {
         assert_eq!(sample.files.len(), 2);
     }
 
+    #[test]
+    fn test_sample_serializes_location_as_sensors_object() {
+        use serde_json::json;
+
+        // samples.populate2 reads sensors as map[string]interface{}, not the
+        // array samples.list returns. Serializing Location under "sensors"
+        // must produce that object shape.
+        let mut sample = Sample::new();
+        sample.files = vec![SampleFile::with_filename(
+            "image".to_string(),
+            "pose_location.png".to_string(),
+        )];
+        sample.location = Some(Location {
+            gps: Some(GpsData {
+                lat: 37.7749,
+                lon: -122.4194,
+            }),
+            imu: Some(ImuData {
+                roll: 10.0,
+                pitch: -5.0,
+                yaw: 90.0,
+            }),
+        });
+
+        let json = serde_json::to_value(&sample).unwrap();
+        assert_eq!(
+            json.get("sensors"),
+            Some(&json!({
+                "gps": {"lat": 37.7749, "lon": -122.4194},
+                "imu": {"roll": 10.0, "pitch": -5.0, "yaw": 90.0}
+            }))
+        );
+        assert_eq!(
+            json.get("files"),
+            Some(&json!({ "image": "pose_location.png" }))
+        );
+        // Must not emit the list-shaped sensors array on the upload path.
+        assert!(json.get("sensors").and_then(|v| v.as_array()).is_none());
+    }
+
+    #[test]
+    fn test_sample_deserializes_gps_imu_from_sensors_object() {
+        use serde_json::json;
+
+        // populate2 docs / some payloads use a sensors object rather than the
+        // array processSample emits on list. Both must round-trip.
+        let sample_json = json!({
+            "id": 42,
+            "sensors": {
+                "gps": {"lat": 40.7128, "lon": -74.0060},
+                "imu": {"roll": 1.0, "pitch": 2.0, "yaw": 3.0}
+            }
+        });
+
+        let sample: Sample = serde_json::from_value(sample_json).unwrap();
+        let location = sample.location.as_ref().expect("location");
+        let gps = location.gps.as_ref().expect("gps");
+        let imu = location.imu.as_ref().expect("imu");
+        assert!((gps.lat - 40.7128).abs() < 0.0001);
+        assert!((gps.lon - (-74.0060)).abs() < 0.0001);
+        assert!((imu.roll - 1.0).abs() < 0.0001);
+        assert!((imu.pitch - 2.0).abs() < 0.0001);
+        assert!((imu.yaw - 3.0).abs() < 0.0001);
+    }
+
     // ==== Label Tests ====
     #[test]
     fn test_label_deserialization_and_accessors() {

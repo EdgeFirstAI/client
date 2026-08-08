@@ -251,7 +251,15 @@ jobs:
           python3 - <<'PY'
           import edgefirst_client
 
-          expected = ["Client", "Project", "Dataset", "Experiment", "Snapshot"]
+          expected = [
+              "Client",
+              "Project",
+              "Dataset",
+              "Experiment",
+              "Snapshot",
+              "GpsData",
+              "ImuData",
+          ]
           missing = [name for name in expected if not hasattr(edgefirst_client, name)]
           if missing:
               raise SystemExit(f"edgefirst_client is missing exports: {missing}")
@@ -276,6 +284,7 @@ jobs:
           python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
             test.test_coco_roundtrip test.test_storage test.test_parameter \
             test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
+            test.test_sample_metadata \
             -o target/python
 
       # Merges the deferred Rust run with the Python run into one lcov. Asserts

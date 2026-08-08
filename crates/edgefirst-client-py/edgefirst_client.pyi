@@ -2310,7 +2310,13 @@ class GpsData:
     """GPS location data for a sample."""
 
     def __init__(self, lat: float, lon: float) -> None:
-        """Create GPS metadata from latitude and longitude."""
+        """
+        Create GPS metadata from latitude and longitude.
+
+        Raises:
+            ValueError: If latitude is outside [-90, 90] or longitude is
+                outside [-180, 180], or either value is non-finite.
+        """
         ...
 
     @property
@@ -2327,7 +2333,13 @@ class ImuData:
     """IMU orientation data for a sample."""
 
     def __init__(self, roll: float, pitch: float, yaw: float) -> None:
-        """Create IMU metadata from roll, pitch, and yaw angles."""
+        """
+        Create IMU metadata from roll, pitch, and yaw angles.
+
+        Raises:
+            ValueError: If roll/yaw are outside [-180, 180], pitch is outside
+                [-90, 90], or any value is non-finite.
+        """
         ...
 
     @property

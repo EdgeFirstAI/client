@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python bindings and `.pyi` stubs for sample GPS/IMU metadata via new `GpsData` and `ImuData` types
 - Python `Sample.set_location()` / `Sample.location` for GPS coordinates and `Sample.set_pose()` / `Sample.pose` for IMU orientation when using `populate_samples()`
 - Python `Annotation.set_label_index()` setter for source-faithful label indices during sample population
-<<<<<<< HEAD
+- Python integration test coverage for `populate_samples()` round-trip of `Sample.location`, `Sample.pose`, and `Annotation.label_index`
+- Credential-free Python unit tests for `GpsData`/`ImuData` validation and in-memory Sample/Annotation setters (`test_sample_metadata.py`)
+- Wiremock coverage for `samples.list` GPS/IMU sensor parsing and `samples.populate2` sensors-object upload shape, cross-checked against `dve-database` handlers
 - Tests: wiremock coverage for the core read surface — `org.get`,
   `project.list`, `project.get`, `dataset.list`, `dataset.get` and
   `auth.verify_token`. These are among the most-called methods in the client and
@@ -104,6 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Python `GpsData(...)` and `ImuData(...)` constructors now validate coordinate
+  and orientation ranges and raise `ValueError` for invalid values
 - `make version-check` asserted a `Cargo.lock` version for the
   `edgefirst-client-ffi` crate and would have failed on every run once that
   crate was removed.
@@ -178,13 +182,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: `pip` installs in `build.yml` pin their resolved versions and pass
   `--only-binary=:all:`, matching the hardening already applied elsewhere, so
   no build step can fall back to an sdist that executes setup scripts.
-=======
-- Python integration test coverage for `populate_samples()` round-trip of `Sample.location`, `Sample.pose`, and `Annotation.label_index`
-
-### Fixed
-
-- Python `GpsData(...)` and `ImuData(...)` constructors now validate coordinate and orientation ranges and raise `ValueError` for invalid values
->>>>>>> 759e69b (DE-2863: Add GPS/IMU Python sample setters and label_index round-trip test)
 
 ## [2.12.4] - 2026-07-23
 
