@@ -1865,7 +1865,7 @@ impl Organization {
     }
 
     #[getter]
-    pub fn credits(&self) -> i64 {
+    pub fn credits(&self) -> f64 {
         self.0.credits()
     }
 }

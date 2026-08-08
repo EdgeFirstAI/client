@@ -302,7 +302,13 @@ Before submitting code, verify:
 
 - Separate `tests/` directory at crate root
 - Test API workflows end-to-end
-- Use real EdgeFirst Studio test servers (requires credentials)
+- Split by whether they need a server:
+  - `crates/edgefirst-client/tests/wiremock_coverage.rs` stands up a local
+    wiremock server and needs **no credentials**. This runs on every pull
+    request.
+  - `crates/edgefirst-cli/tests/cli.rs` drives a real Studio server and needs
+    credentials. This runs **only** in `studio.yml`, nightly or on demand — the
+    pull-request lane excludes it via `-E 'not binary(cli)'`.
 
 **Python Tests:**
 
@@ -323,6 +329,68 @@ Before submitting code, verify:
   - `STUDIO_SERVER=test` (or `stage`, `saas`)
   - `STUDIO_USERNAME=<username>`
   - `STUDIO_PASSWORD=<password>`
+
+### Every New RPC Method Needs a Wiremock Test
+
+**Rule: if you add a call to a JSON-RPC method the client has not used before,
+you add a wiremock test for it in the same change.** CI enforces this — the
+`lint` job runs `.github/scripts/rpc-mock-coverage.sh`, which fails when a
+client RPC call appears that is not covered by a mock and not listed in
+`.github/rpc-mock-baseline.txt`.
+
+**Why.** An unmocked method is exercised only by the nightly Studio suite. When
+it breaks, the failure arrives hours later against a range of commits rather
+than against the pull request that caused it, and it needs credentials a fork
+cannot read. A wiremock test moves that signal into the PR lane, where the whole
+credential-free suite runs in about three seconds.
+
+The baseline is a **ratchet**, not a target. It lists methods that were already
+unmocked when the check was introduced. Existing entries are tolerated; new ones
+fail the build. Delete an entry when you write its mock — that is how the number
+comes down.
+
+**Before writing the mock, cross-review the server.** Do not infer the request
+or response shape from the client's structs alone: they encode what the client
+expects, which is exactly the assumption a mock should be testing rather than
+restating. A mock built from a wrong assumption passes CI and still breaks
+against a real server.
+
+```bash
+# What is unmocked, and does every client call still exist server-side?
+.github/scripts/rpc-mock-coverage.sh --dve-database ~/Software/Studio/dve-database
+```
+
+That flag reports two kinds of drift the mock check alone cannot see: client
+calls the server no longer registers, and server endpoints the client has never
+wired up. It is deliberately not part of CI, because `dve-database` is private
+and absent from the runner.
+
+Then read the handler itself. For a method `foo.bar`, find its registration in
+`dve-database/api/*.go` (`EndPoint: "foo.bar"`) and follow the `Function` it
+names. Confirm from the Go source, not from the client:
+
+- **Parameter names and types.** The Go handler is what decides whether an id
+  arrives as `1234` or `"ds-4d2"`. Several handlers accept both.
+- **The success shape**, including fields the client currently ignores.
+- **The failure modes** — which conditions return a JSON-RPC error, and with
+  what code. `map_rpc_error` in `client.rs` keys typed errors off those codes,
+  so an incorrect code in a mock silently tests the wrong branch.
+
+**Each new method needs at least:**
+
+1. The success path, asserting the client sends the parameters the server
+   actually reads and parses the response into the right type.
+2. One failure path — a JSON-RPC error envelope with the code the server really
+   returns, asserting the client surfaces the typed error rather than a generic
+   one.
+
+Follow the conventions already in `wiremock_coverage.rs`: `rpc_method_body()` to
+match on the method name, `fake_jwt()` for a token the client accepts without
+attempting renewal, and `#[serial]` where a test mutates process-wide state.
+
+**Deliberately shipping without a mock?** Add the method to
+`.github/rpc-mock-baseline.txt` with a comment saying why. Reviewers should
+treat a new baseline entry as needing justification, not as routine.
 
 ### Running Tests
 
@@ -363,7 +431,15 @@ cargo llvm-cov report --lcov --output-path lcov.info
 - **NEVER use `tail` when running commands** - Users need to see full output for better experience. Use `| tee logfile.txt` if logs need to be captured.
 - **Run lib and CLI tests separately** - Running all tests together causes conflicts and timeouts. Use `-p edgefirst-client --lib` and `-p edgefirst-cli` separately, or `-- --test-threads=1`.
 
-**Note**: Integration tests require EdgeFirst Studio credentials. External contributors can rely on CI/CD to run these tests automatically via GitHub Actions.
+**Note**: Only the Studio integration tests need credentials, and they no longer
+run on pull requests — `studio.yml` runs them nightly across `test`, `stage` and
+`saas`, and on demand against a chosen server. Everything the PR lane runs is
+credential-free, so external contributors can run the full pull-request suite
+locally with no Studio access:
+
+```bash
+cargo nextest run --locked -E 'not binary(cli)'   # ~3 seconds
+```
 
 ---
 

@@ -40,6 +40,17 @@ jobs:
       - name: Audit workflows for script injection
         run: ./.github/scripts/audit-injection.sh .
 
+      # Fails when a new RPC method is called without a wiremock test. Also
+      # needs no toolchain, so it reports in seconds alongside the audit above.
+      #
+      # A ratchet against .github/rpc-mock-baseline.txt, not a coverage
+      # threshold: existing gaps are tolerated, new ones are not. Without this,
+      # a newly wired API is exercised only by the nightly Studio run, so its
+      # first failure lands hours later against a commit range instead of the
+      # pull request responsible.
+      - name: Check new RPC methods have wiremock tests
+        run: ./.github/scripts/rpc-mock-coverage.sh
+
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
@@ -145,23 +156,32 @@ jobs:
       - name: Run Rust doc tests (before coverage instrumentation)
         run: cargo test --doc --locked
 
-      # Exported into GITHUB_ENV so every later cargo/maturin invocation in this
-      # job inherits the instrumentation flags. This is why the Python bindings
-      # below contribute to the same lcov as the Rust tests.
-      - name: Set up coverage environment
+      # Writes the instrumented environment to /tmp/coverage-env.sh rather than
+      # exporting it into GITHUB_ENV. The distinction is load-bearing: the Rust
+      # step below uses `cargo llvm-cov nextest`, which applies its own
+      # instrumentation and fails if it inherits one already applied. Only the
+      # maturin and Python steps source the file.
+      - name: Set up coverage instrumentation
         if: success() || failure()
-        run: |
-          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
+        run: ./.github/scripts/setup-coverage-env.sh
 
-      - name: Build with coverage
-        if: success() || failure()
-        run: cargo build --locked
-
+      # `cargo llvm-cov nextest`, not a bare `cargo nextest run` under an
+      # exported environment. That distinction is the whole reason integration
+      # coverage works: with the bare form, the integration test binaries are
+      # built and run but their counters never reach the report, so every path
+      # reachable only from tests/ reads as uncovered. It looked like the mocks
+      # were not counted; in fact their coverage was being discarded.
+      #
+      # `--no-report` defers the report until the Python tests have also run, so
+      # both feed one lcov.
+      #
       # `not binary(cli)` is the whole split. Everything excluded here runs in
       # studio.yml against a real server.
       - name: Run Rust unit tests
         if: success() || failure()
-        run: cargo nextest run --locked --no-fail-fast --profile ci -E 'not binary(cli)'
+        run: |
+          cargo llvm-cov nextest --no-report \
+            --locked --no-fail-fast --profile ci -E 'not binary(cli)'
 
       - name: Install Python dependencies
         if: success() || failure()
@@ -176,9 +196,16 @@ jobs:
         run: |
           pip install --require-hashes --only-binary=:all: -r requirements.txt
 
+      # Sources the coverage env so the extension module is built instrumented
+      # and lands in cargo-llvm-cov's target tree, where `report` can find its
+      # object file. That redirect is why the wheel is under
+      # target/llvm-cov-target/wheels below rather than target/wheels.
       - name: Build Python package
         if: success() || failure()
-        run: maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
+        run: |
+          set -euo pipefail
+          source /tmp/coverage-env.sh
+          maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
 
       - name: Install Python package
         if: success() || failure()
@@ -197,9 +224,12 @@ jobs:
           # Glob into an array rather than `ls | head -1`: an empty result is
           # then an explicit failure instead of an empty $WHEEL that silently
           # produces a malformed constraints file.
-          wheels=("$PWD"/target/wheels/edgefirst_client-*.whl)
+          # Under target/llvm-cov-target because the coverage env redirects
+          # CARGO_TARGET_DIR there so the instrumented .so is where
+          # `cargo llvm-cov report` looks for it.
+          wheels=("$PWD"/target/llvm-cov-target/wheels/edgefirst_client-*.whl)
           if [ ${#wheels[@]} -eq 0 ]; then
-            echo "::error::maturin produced no wheel in target/wheels"
+            echo "::error::maturin produced no wheel in target/llvm-cov-target/wheels"
             exit 1
           fi
           WHEEL="${wheels[0]}"
@@ -235,17 +265,56 @@ jobs:
       # live Studio. test_ids is split by class for the same reason: its
       # conversion tests are pure ID translation, while TestIDTypes calls
       # get_client and belongs to studio.yml.
+      # Sources the coverage env so the instrumented extension module writes
+      # profraw where `cargo llvm-cov report` will find it. This is what makes
+      # the PyO3 crate appear in the Rust lcov at all.
       - name: Run Python tests (no Studio)
         if: success() || failure()
         run: |
+          set -euo pipefail
+          source /tmp/coverage-env.sh
           python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
             test.test_coco_roundtrip test.test_storage test.test_parameter \
             test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
             -o target/python
 
+      # Merges the deferred Rust run with the Python run into one lcov. Asserts
+      # the integration binaries actually contributed: this whole sequence
+      # previously reported success while silently discarding every path
+      # reachable only from tests/, so a bare "report written" is not evidence
+      # that it worked.
       - name: Generate coverage report
         if: success() || failure()
-        run: cargo llvm-cov report --lcov --output-path lcov.info
+        run: |
+          set -euo pipefail
+          cargo llvm-cov report \
+            --ignore-filename-regex '(\.cargo|/rustc/)' \
+            --lcov --output-path lcov.info
+
+          echo "source files in report: $(grep -c '^SF:' lcov.info)"
+
+          # Canary. `Client::organization` is reachable only from the wiremock
+          # integration tests, so a zero hit count means the integration
+          # binaries were dropped from the report again -- which is exactly the
+          # failure this sequence was rewritten to fix, and which is invisible
+          # otherwise because every test still passes.
+          LINE=$(grep -n 'pub async fn organization' crates/edgefirst-client/src/client.rs | head -1 | cut -d: -f1)
+          HITS=$(awk -v l="$LINE" '
+            /^SF:.*edgefirst-client\/src\/client\.rs$/ {f=1; next}
+            f && /^end_of_record/ {exit}
+            f && /^DA:/ { split(substr($0,4),a,","); if (a[1]==l) print a[2] }
+          ' lcov.info)
+          echo "canary Client::organization (client.rs:$LINE) hits=${HITS:-<absent>}"
+          if [ "${HITS:-0}" = "0" ]; then
+            echo "::error::Integration test coverage is missing from lcov.info."
+            echo "::error::Client::organization is covered by wiremock tests but reports 0 hits."
+            echo "::error::Check that the Rust step uses 'cargo llvm-cov nextest', not a bare 'cargo nextest run'."
+            exit 1
+          fi
+
+          if ! grep -q '^SF:.*edgefirst-client-py/src/lib.rs' lcov.info; then
+            echo "::warning::PyO3 crate missing from coverage — the maturin build may not have been instrumented"
+          fi
 
       - name: Upload coverage for SonarCloud
         if: success() || failure()

@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Organization::credits()` returns `f64` instead of `i64`
+  (`Organization.credits` in Python is now a float). The server declares
+  `latest_credit` as Go `float64`; deserializing it into `i64` meant an
+  organization holding a fractional credit failed `org.get` outright rather than
+  degrading. Go emits whole floats without a decimal point, so integral values
+  always round-tripped and hid it. CLI output is unchanged for whole numbers.
+- **Breaking:** JSON-RPC error codes are now mapped to typed errors for every
+  method. `map_rpc_error` was invoked per call site and only `job.run`,
+  `job.stop` and `job.list` opted in, so the other eighty-two methods returned a
+  bare `RpcError` — a 401 from `auth.verify_token` among them, which is the
+  first call every credentialled entry point makes. The mapping now happens in
+  `process_rpc_response`, through which every JSON-RPC response passes, and the
+  HTTP-status paths in `rpc_download` and `post_multipart` use it too so an HTTP
+  403 and a JSON-RPC 403 reach callers as the same variant.
+
+  Callers matching `Error::RpcError(401 | 403, _)` must now match
+  `Error::PermissionDenied(method)`, and `RpcError(413, _)` must now match
+  `Error::PayloadTooLarge { .. }`. Other codes are unaffected. `job.stop` keeps
+  a local mapping because turning code 101 into `TaskNotFound` needs a task id
+  that `rpc` does not have.
+
 ### Added
+
+- Tests: wiremock coverage for the core read surface — `org.get`,
+  `project.list`, `project.get`, `dataset.list`, `dataset.get` and
+  `auth.verify_token`. These are among the most-called methods in the client and
+  were previously exercised only by the nightly Studio suite. Response shapes
+  were taken from the Go handlers in `dve-database` rather than from this
+  crate's own structs, so the tests check the client against the server's
+  contract instead of restating its assumptions.
+- CI: `.github/scripts/rpc-mock-coverage.sh` fails the `lint` job when a client
+  RPC call appears with no wiremock test. It is a ratchet against
+  `.github/rpc-mock-baseline.txt` rather than a coverage threshold: the 50
+  methods already unmocked are tolerated, new ones are not. Run with
+  `--dve-database <path>` for a cross-review against the server's registered
+  endpoints, which also reports client calls the server no longer registers.
+  Currently 35 of 85 client RPC methods are mocked.
 
 - `BackgroundTaskID`, the `bt-` rendering of a background task id that Studio
   apps receive in their environment and that Studio uses in log URLs and

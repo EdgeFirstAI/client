@@ -5464,13 +5464,8 @@ impl Client {
             env,
             data,
         };
-        let resp: crate::api::Job = match self.rpc("job.run".to_owned(), Some(&req)).await {
-            Ok(r) => r,
-            Err(Error::RpcError(code, msg)) => {
-                return Err(map_rpc_error("job.run", code, msg, None));
-            }
-            Err(e) => return Err(e),
-        };
+        // No local error mapping: `rpc` applies it for every method now.
+        let resp: crate::api::Job = self.rpc("job.run".to_owned(), Some(&req)).await?;
         Ok(resp)
     }
 
@@ -5484,6 +5479,12 @@ impl Client {
             task_id: task_id.value(),
         };
         // We don't care about the response body; deserialize as serde_json::Value.
+        //
+        // Still maps locally, unlike job.run and job.list: code 101 means
+        // task-not-found, and turning that into the typed variant needs the
+        // task id, which `rpc` does not have. `rpc` has already applied the
+        // code-only mappings, so what reaches here as RpcError is whatever it
+        // could not classify -- 101 included.
         let _resp: serde_json::Value = match self.rpc("job.stop".to_owned(), Some(&req)).await {
             Ok(r) => r,
             Err(Error::RpcError(code, msg)) => {
@@ -5506,14 +5507,7 @@ impl Client {
     /// each job's `job_name`.
     pub async fn jobs(&self, name: Option<&str>) -> Result<Vec<crate::api::Job>, Error> {
         let req = JobsListRequest {};
-        let mut jobs: Vec<crate::api::Job> = match self.rpc("job.list".to_owned(), Some(&req)).await
-        {
-            Ok(r) => r,
-            Err(Error::RpcError(code, msg)) => {
-                return Err(map_rpc_error("job.list", code, msg, None));
-            }
-            Err(e) => return Err(e),
-        };
+        let mut jobs: Vec<crate::api::Job> = self.rpc("job.list".to_owned(), Some(&req)).await?;
         if let Some(name) = name {
             let needle = name.to_lowercase();
             jobs.retain(|j| j.job_name.to_lowercase().contains(&needle));
@@ -5668,7 +5662,7 @@ impl Client {
             };
 
             if let Some(error) = response.error {
-                Err(Error::RpcError(error.code, error.message))
+                Err(map_rpc_error(method, error.code, error.message, None))
             } else if let Some(result) = response.result {
                 Ok(result)
             } else {
@@ -5680,11 +5674,13 @@ impl Client {
             // type from both single-file rpc_download paths and multipart
             // upload paths; everything else falls through to HttpError.
             let status = resp.status();
-            if status.as_u16() == 413 {
-                return Err(Error::PayloadTooLarge {
-                    method: method.to_string(),
-                    size_hint: None,
-                });
+            if matches!(status.as_u16(), 401 | 403 | 413) {
+                return Err(map_rpc_error(
+                    method,
+                    status.as_u16() as i32,
+                    status.to_string(),
+                    None,
+                ));
             }
             let err = resp.error_for_status_ref().unwrap_err();
             Err(Error::HttpError(err))
@@ -5722,14 +5718,12 @@ impl Client {
 
         let status = resp.status();
         if !status.is_success() {
-            if status.as_u16() == 413 {
-                return Err(Error::PayloadTooLarge {
-                    method: method.to_string(),
-                    size_hint: None,
-                });
-            }
+            // Same mapping as a JSON-RPC error envelope, so an HTTP 403 and a
+            // JSON-RPC 403 reach the caller as the same variant. This subsumes
+            // the hand-written 413 case that used to live here: map_rpc_error
+            // produces an identical PayloadTooLarge, and adds 401/403.
             let body = resp.text().await.unwrap_or_default();
-            return Err(Error::RpcError(status.as_u16() as i32, body));
+            return Err(map_rpc_error(method, status.as_u16() as i32, body, None));
         }
 
         // HTTP 200 with Content-Type: application/json can mean two things:
@@ -5764,7 +5758,7 @@ impl Client {
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error")
                     .to_string();
-                return Err(Error::RpcError(code, message));
+                return Err(map_rpc_error(method, code, message, None));
             }
             // Not an error envelope — body is a JSON file. Write it to disk
             // and emit a single completion progress event so callers (e.g.,
@@ -5975,7 +5969,7 @@ impl Client {
                     }
 
                     // Process the response
-                    match self.process_rpc_response(res).await {
+                    match self.process_rpc_response(&method, res).await {
                         Ok(result) => {
                             if attempt > 0 {
                                 debug!("RPC '{}' succeeded on retry {}", method, attempt);
@@ -6027,8 +6021,13 @@ impl Client {
         }))
     }
 
+    /// `method` is threaded in solely so a JSON-RPC error envelope can be
+    /// mapped to a typed error that names the call that produced it. Every
+    /// JSON-RPC response the client receives passes through here, which is what
+    /// makes this the right place for that mapping rather than the call sites.
     async fn process_rpc_response<RpcResult>(
         &self,
+        method: &str,
         res: reqwest::Response,
     ) -> Result<RpcResult, Error>
     where
@@ -6089,7 +6088,11 @@ impl Client {
         // }
 
         if let Some(error) = response.error {
-            Err(Error::RpcError(error.code, error.message))
+            // No task id available here. The 101 -> TaskNotFound mapping needs
+            // one, so the few call sites that hold a task id still wrap this
+            // result themselves; everything else gets the code-based mapping
+            // for free.
+            Err(map_rpc_error(method, error.code, error.message, None))
         } else if let Some(result) = response.result {
             Ok(result)
         } else {
