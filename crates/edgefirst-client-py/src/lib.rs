@@ -1850,6 +1850,59 @@ impl Polygon {
 }
 
 #[pyclass(module = "edgefirst_client")]
+pub struct GpsData(edgefirst_client::GpsData);
+
+#[pymethods]
+impl GpsData {
+    #[new]
+    pub fn new(lat: f64, lon: f64) -> PyResult<Self> {
+        let gps = edgefirst_client::GpsData { lat, lon };
+        gps.validate()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(GpsData(gps))
+    }
+
+    #[getter]
+    pub fn lat(&self) -> f64 {
+        self.0.lat
+    }
+
+    #[getter]
+    pub fn lon(&self) -> f64 {
+        self.0.lon
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
+pub struct ImuData(edgefirst_client::ImuData);
+
+#[pymethods]
+impl ImuData {
+    #[new]
+    pub fn new(roll: f64, pitch: f64, yaw: f64) -> PyResult<Self> {
+        let imu = edgefirst_client::ImuData { roll, pitch, yaw };
+        imu.validate()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(ImuData(imu))
+    }
+
+    #[getter]
+    pub fn roll(&self) -> f64 {
+        self.0.roll
+    }
+
+    #[getter]
+    pub fn pitch(&self) -> f64 {
+        self.0.pitch
+    }
+
+    #[getter]
+    pub fn yaw(&self) -> f64 {
+        self.0.yaw
+    }
+}
+
+#[pyclass(module = "edgefirst_client")]
 pub struct Organization(edgefirst_client::Organization);
 
 #[pymethods]
@@ -8727,6 +8780,11 @@ impl Annotation {
         self.0.set_object_id(object_id);
     }
 
+    /// Sets the label index for this annotation.
+    pub fn set_label_index(&mut self, label_index: Option<u64>) {
+        self.0.set_label_index(label_index);
+    }
+
     /// Sets the sample this annotation belongs to.
     pub fn set_sample_id(&mut self, sample_id: Option<SampleID>) {
         self.0.set_sample_id(sample_id.map(|s| s.0));
@@ -9042,6 +9100,36 @@ impl Sample {
         self.inner.frame_number = frame_number;
     }
 
+    /// Sets the GPS location metadata for this sample.
+    pub fn set_location(&mut self, location: Option<&GpsData>) {
+        let location_data = self
+            .inner
+            .location
+            .get_or_insert_with(|| edgefirst_client::Location {
+                gps: None,
+                imu: None,
+            });
+        location_data.gps = location.map(|gps| gps.0.clone());
+        if location_data.gps.is_none() && location_data.imu.is_none() {
+            self.inner.location = None;
+        }
+    }
+
+    /// Sets the IMU pose metadata for this sample.
+    pub fn set_pose(&mut self, pose: Option<&ImuData>) {
+        let location_data = self
+            .inner
+            .location
+            .get_or_insert_with(|| edgefirst_client::Location {
+                gps: None,
+                imu: None,
+            });
+        location_data.imu = pose.map(|imu| imu.0.clone());
+        if location_data.gps.is_none() && location_data.imu.is_none() {
+            self.inner.location = None;
+        }
+    }
+
     /// Adds a file to this sample.
     pub fn add_file(&mut self, file: &SampleFile) {
         self.inner.files.push(file.0.clone());
@@ -9126,6 +9214,22 @@ impl Sample {
     #[getter]
     pub fn source(&self) -> Option<String> {
         self.inner.source().cloned()
+    }
+
+    #[getter]
+    pub fn location(&self) -> Option<GpsData> {
+        self.inner
+            .location()
+            .and_then(|loc| loc.gps.as_ref())
+            .map(|gps| GpsData(gps.clone()))
+    }
+
+    #[getter]
+    pub fn pose(&self) -> Option<ImuData> {
+        self.inner
+            .location()
+            .and_then(|loc| loc.imu.as_ref())
+            .map(|imu| ImuData(imu.clone()))
     }
 
     #[getter]
@@ -9757,6 +9861,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Box2d>()?;
     m.add_class::<Box3d>()?;
     m.add_class::<Polygon>()?;
+    m.add_class::<GpsData>()?;
+    m.add_class::<ImuData>()?;
     m.add_class::<Sample>()?;
     m.add_class::<SampleFile>()?;
     m.add_class::<FileType>()?;

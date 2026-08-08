@@ -32,7 +32,6 @@ image.set_group_id
 label.add2
 label.del
 label.update
-samples.populate2
 snapshots.complete_multipart_upload
 snapshots.create
 snapshots.create_download_url
