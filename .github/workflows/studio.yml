@@ -156,10 +156,12 @@ jobs:
 
       # Exported into GITHUB_ENV so the cargo invocation below inherits the
       # instrumentation flags, exactly as test.yml does for the unit lane.
-      - name: Set up coverage environment
+      # Writes the env to a file instead of GITHUB_ENV. `cargo llvm-cov nextest`
+      # below applies its own instrumentation and fails if it inherits one, so
+      # only the Python steps source this.
+      - name: Set up coverage instrumentation
         if: matrix.server == env.COVERAGE_SERVER
-        run: |
-          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
+        run: ./.github/scripts/setup-coverage-env.sh
 
       - name: Create output directories
         run: mkdir -p test-results test-logs
@@ -177,7 +179,16 @@ jobs:
         id: tests
         run: |
           set +e
-          cargo nextest run \
+          # Same tests either way; only the coverage leg pays for
+          # instrumentation. It must be `cargo llvm-cov nextest`, not a bare
+          # `cargo nextest run` under an exported environment -- the latter runs
+          # the tests but drops the integration binaries from the report.
+          if [ "${{ matrix.server }}" = "${{ env.COVERAGE_SERVER }}" ]; then
+            RUNNER=(cargo llvm-cov nextest --no-report)
+          else
+            RUNNER=(cargo nextest run)
+          fi
+          "${RUNNER[@]}" \
             --locked \
             --no-fail-fast \
             --profile ci \
@@ -267,7 +278,7 @@ jobs:
         if: always() && matrix.server == env.COVERAGE_SERVER
         continue-on-error: true
         run: |
-          cargo nextest run --locked --no-fail-fast --profile ci \
+          cargo llvm-cov nextest --no-report --locked --no-fail-fast --profile ci \
             -E 'not binary(cli) and not kind(lib)'
 
       # Generated even when tests fail: partial coverage from a red run is still
@@ -377,10 +388,12 @@ jobs:
       # This is the leg that matters most for the project number: the CLI suite
       # is the only thing that exercises main.rs, which the unit lane leaves at
       # roughly a quarter covered.
-      - name: Set up coverage environment
+      # Writes the env to a file instead of GITHUB_ENV. `cargo llvm-cov nextest`
+      # below applies its own instrumentation and fails if it inherits one, so
+      # only the Python steps source this.
+      - name: Set up coverage instrumentation
         if: matrix.server == env.COVERAGE_SERVER
-        run: |
-          cargo llvm-cov show-env --sh --no-cfg-coverage | sed "s/^export //;s/'//g" >> "$GITHUB_ENV"
+        run: ./.github/scripts/setup-coverage-env.sh
 
       - name: Create output directories
         run: mkdir -p test-results test-logs
@@ -389,7 +402,15 @@ jobs:
         id: tests
         run: |
           set +e
-          cargo nextest run \
+          # See the note on the client-lib job: the coverage leg must go through
+          # `cargo llvm-cov nextest`, or the cli integration binary -- which is
+          # the only thing that exercises main.rs -- contributes nothing.
+          if [ "${{ matrix.server }}" = "${{ env.COVERAGE_SERVER }}" ]; then
+            RUNNER=(cargo llvm-cov nextest --no-report)
+          else
+            RUNNER=(cargo nextest run)
+          fi
+          "${RUNNER[@]}" \
             --locked \
             --no-fail-fast \
             --profile ci \
