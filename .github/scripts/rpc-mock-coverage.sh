@@ -118,7 +118,8 @@ assert_wrapper_list_is_current() {
   # The other direction: a name in RPC_FNS that no longer exists silently
   # narrows the regex and looks like thoroughness.
   missing=$(echo "$RPC_FNS" | tr '|' '\n' | while read -r fn; do
-    grep -qE "async fn $fn[<(]" "$SRC/client.rs" || echo "$fn"
+    # Braces so the following bracket is not read as an array subscript.
+    grep -qE "async fn ${fn}[<(]" "$SRC/client.rs" || echo "$fn"
   done)
   if [ -n "$missing" ]; then
     echo "::warning::rpc-mock-coverage: RPC_FNS names functions that do not exist: $(echo "$missing" | tr '\n' ' ')"
