@@ -715,7 +715,12 @@ pub async fn export_studio_to_coco(
 
             if let Some(bbox) = bbox {
                 let label = ann.label().map(|s| s.as_str()).unwrap_or("unknown");
-                let category_id = builder.add_category(label, None);
+                // Prefer Studio label_index (source-faithful COCO category_id when
+                // present) so export does not renumber categories to sequential 1..N.
+                let category_id = match ann.label_index() {
+                    Some(idx) => builder.add_category_with_id(idx as u32, label, None),
+                    None => builder.add_category(label, None),
+                };
 
                 let segmentation = if options.include_masks {
                     ann.polygon().map(|polygon| {
@@ -922,40 +927,42 @@ fn build_sample_info_map(
     sample_info
 }
 
-/// Ensure all COCO category labels exist in Studio.
+/// Build parallel name/index arrays that preserve COCO `category_id` as
+/// Studio `label_index` (source-faithful; IDs are not rebased to 0..N).
+fn coco_label_specs(
+    categories: &[crate::coco::CocoCategory],
+) -> (Vec<String>, Vec<Option<u64>>) {
+    let names: Vec<String> = categories.iter().map(|c| c.name.clone()).collect();
+    let indices: Vec<Option<u64>> = categories.iter().map(|c| Some(u64::from(c.id))).collect();
+    (names, indices)
+}
+
+/// Ensure all COCO category labels exist in Studio with source-faithful indices.
+///
+/// Uses [`Client::add_labels_with_indices`] so each category is created (or
+/// reassigned) at its original COCO `category_id`. Name-only `add_label` would
+/// let the server assign sequential 0..N indices and break COCO round-trips.
 async fn ensure_labels_exist(
     client: &Client,
     dataset_id: &DatasetID,
     categories: &[crate::coco::CocoCategory],
 ) -> Result<std::collections::HashMap<String, u64>, Error> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
-    // Get existing labels
-    let existing_labels = client.labels(*dataset_id, None).await?;
-    let existing_label_names: HashSet<String> = existing_labels
-        .iter()
-        .map(|l| l.name().to_string())
-        .collect();
-
-    // Find COCO categories that don't exist as labels in Studio
-    let missing_labels: Vec<String> = categories
-        .iter()
-        .filter(|c| !existing_label_names.contains(&c.name))
-        .map(|c| c.name.clone())
-        .collect();
-
-    // Create missing labels
-    if !missing_labels.is_empty() {
-        log::info!(
-            "Creating {} missing labels in Studio...",
-            missing_labels.len()
-        );
-        for label_name in &missing_labels {
-            client.add_label(*dataset_id, label_name).await?;
-        }
+    if categories.is_empty() {
+        return Ok(HashMap::new());
     }
 
-    // Re-query labels to get their IDs after creation
+    let (names, indices) = coco_label_specs(categories);
+    log::info!(
+        "Ensuring {} COCO labels exist in Studio with source-faithful indices...",
+        names.len()
+    );
+    client
+        .add_labels_with_indices(*dataset_id, &names, &indices)
+        .await?;
+
+    // Re-query labels to get their IDs after create/reassign
     let labels = client.labels(*dataset_id, None).await?;
     let label_map: HashMap<String, u64> = labels
         .iter()
@@ -1577,7 +1584,10 @@ pub async fn verify_coco_import(
 
             if let Some(bbox) = bbox {
                 let label = ann.label().map(|s| s.as_str()).unwrap_or("unknown");
-                let category_id = builder.add_category(label, None);
+                let category_id = match ann.label_index() {
+                    Some(idx) => builder.add_category_with_id(idx as u32, label, None),
+                    None => builder.add_category(label, None),
+                };
 
                 let segmentation = if options.verify_masks {
                     ann.polygon().map(|polygon| {
@@ -1757,6 +1767,45 @@ mod tests {
     fn test_infer_group_from_filename_instances_2014() {
         let path = Path::new("instances_val2014.json");
         assert_eq!(infer_group_from_filename(path), Some("val".to_string()));
+    }
+
+    // =========================================================================
+    // coco_label_specs tests
+    // =========================================================================
+
+    #[test]
+    fn test_coco_label_specs_preserves_category_ids() {
+        let categories = vec![
+            CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                supercategory: None,
+                ..Default::default()
+            },
+            CocoCategory {
+                id: 3,
+                name: "car".to_string(),
+                supercategory: None,
+                ..Default::default()
+            },
+            CocoCategory {
+                id: 90,
+                name: "toothbrush".to_string(),
+                supercategory: None,
+                ..Default::default()
+            },
+        ];
+        let (names, indices) = coco_label_specs(&categories);
+        assert_eq!(names, vec!["person", "car", "toothbrush"]);
+        // Must preserve sparse COCO IDs — not rebase to 0..N
+        assert_eq!(indices, vec![Some(1), Some(3), Some(90)]);
+    }
+
+    #[test]
+    fn test_coco_label_specs_empty() {
+        let (names, indices) = coco_label_specs(&[]);
+        assert!(names.is_empty());
+        assert!(indices.is_empty());
     }
 
     // =========================================================================

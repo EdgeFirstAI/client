@@ -1641,6 +1641,7 @@ impl Client {
                 .iter()
                 .map(|name| NewLabelObject {
                     name: (*name).clone(),
+                    index: None,
                 })
                 .collect(),
         };
@@ -1732,12 +1733,22 @@ impl Client {
             .collect();
 
         if !to_create.is_empty() {
+            // Include requested indices on label.add2 when present so servers that
+            // honor optional create-time index can pin COCO/LVIS category_ids in
+            // one round-trip. apply_label_indices below remains the compatibility
+            // path for older servers (and for reassigning already-existing labels).
+            let index_by_name: HashMap<&str, Option<u64>> = names
+                .iter()
+                .zip(indices.iter())
+                .map(|(name, index)| (name.as_str(), *index))
+                .collect();
             let new_label = NewLabel {
                 dataset_id,
                 labels: to_create
                     .iter()
                     .map(|name| NewLabelObject {
                         name: (*name).clone(),
+                        index: index_by_name.get(name.as_str()).copied().flatten(),
                     })
                     .collect(),
             };

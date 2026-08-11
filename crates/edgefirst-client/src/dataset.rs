@@ -1957,6 +1957,14 @@ impl Display for Label {
 #[derive(Serialize, Clone, Debug)]
 pub struct NewLabelObject {
     pub name: String,
+    /// Optional source-faithful index (e.g. COCO `category_id`).
+    ///
+    /// When set, servers that honor `index` on `label.add2` create the label at
+    /// that index. Older servers ignore the field; callers that need the index
+    /// pinned should still run [`Client::add_labels_with_indices`] so the
+    /// two-pass `label.update` path covers them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
