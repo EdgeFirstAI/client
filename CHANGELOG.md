@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `import-coco` now creates Studio labels with source-faithful COCO `category_id`
+  indices via `add_labels_with_indices`, instead of name-only `add_label` which
+  let the server assign sequential 0..N indices and broke COCO round-trips
+- `export-coco` / verify paths prefer each annotation's Studio `label_index`
+  when emitting COCO `category_id`, so sparse IDs (e.g. toothbrush=90) survive
+  Studio export
+
+### Changed
+
+- `NewLabelObject` may optionally include `index` on the `label.add2` wire
+  payload so servers that honor create-time indices can pin them in one
+  round-trip; the two-pass `label.update` path remains for older servers
+
 ## [2.13.0] - 2026-08-08
 
 ### Changed
