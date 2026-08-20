@@ -1062,10 +1062,24 @@ impl Sample {
                 .map(|id| id.to_string())
                 .or_else(|| self.name())
                 .unwrap_or_else(|| "<unknown sample>".to_string());
+            // Report shape, not content: `image_url` can in principle hold a
+            // large inline/legacy payload or a URL carrying signed-request
+            // query parameters, and `is_valid_url` only checks the scheme
+            // (see below) -- so surface the scheme and length rather than
+            // ever writing the raw value into an error/log message.
             let reason = match self.image_url.as_deref() {
                 None => "missing image_url".to_string(),
                 Some("") => "empty image_url".to_string(),
-                Some(u) => format!("malformed image_url {u:?}"),
+                Some(u) => {
+                    let scheme = u.split_once("://").map(|(scheme, _)| scheme);
+                    match scheme {
+                        Some(scheme) => format!(
+                            "image_url has unsupported scheme {scheme:?} ({} bytes)",
+                            u.len()
+                        ),
+                        None => format!("image_url has no scheme ({} bytes)", u.len()),
+                    }
+                }
             };
             return Err(Error::MissingResource(format!(
                 "Sample {identity} has image_name {:?} but no fetchable image ({reason})",

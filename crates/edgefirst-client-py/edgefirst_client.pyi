@@ -3079,8 +3079,8 @@ class Sample:
             TypeError: If sample has no client reference and client is not
                        provided.
             RuntimeError: If file_type is FileType.Image and the sample has
-                          a registered image (a non-empty image name) but no
-                          fetchable image URL for it (missing, empty, or
+                          a registered image (an image name is present) but
+                          no fetchable image URL for it (missing, empty, or
                           malformed).
 
         .. deprecated::
