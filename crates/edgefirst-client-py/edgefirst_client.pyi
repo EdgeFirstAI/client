@@ -1624,6 +1624,11 @@ class Dataset:
 
         Raises:
             TypeError: If dataset has no client reference.
+            RuntimeError: If types includes FileType.Image and a matched
+                          sample has a registered image but no fetchable
+                          image URL for it (a dataset integrity problem).
+                          Samples with no image at all (e.g. lidar-only or
+                          radar-only captures) are unaffected.
 
         Example:
             >>> dataset.download("./data", ["train"], [FileType.Image])
@@ -3061,11 +3066,22 @@ class Sample:
 
         Returns:
             Optional[bytes]: The file data, or None if no file exists for the
-                             requested type.
+                             requested type -- including a sample with no
+                             image at all (e.g. a lidar-only or radar-only
+                             capture). For FileType.Image specifically, a
+                             sample whose record has a registered image but
+                             no fetchable URL for it is a dataset integrity
+                             problem rather than an absent optional file, so
+                             that case raises instead of returning None (see
+                             Raises).
 
         Raises:
             TypeError: If sample has no client reference and client is not
                        provided.
+            RuntimeError: If file_type is FileType.Image and the sample has
+                          a registered image (a non-empty image name) but no
+                          fetchable image URL for it (missing, empty, or
+                          malformed).
 
         .. deprecated::
             Passing ``client`` parameter is deprecated since v2.6.0.
@@ -6309,6 +6325,13 @@ class Client:
 
             Applications should detect the status change to
             reset their progress bar for the second phase.
+
+        Raises:
+            RuntimeError: If types includes FileType.Image and a matched
+                          sample has a registered image but no fetchable
+                          image URL for it (a dataset integrity problem).
+                          Samples with no image at all (e.g. lidar-only or
+                          radar-only captures) are unaffected.
 
         See also:
             ``examples/05_download_dataset.py`` and CLI ``download-dataset``.

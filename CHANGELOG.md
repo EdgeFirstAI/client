@@ -5,10 +5,33 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.13.1] - 2026-08-19
 
 ### Fixed
 
+- `download_dataset` now ensures every written image filename carries the
+  actual detected extension (`infer::get`), instead of writing `image_name`
+  verbatim. Some capture pipelines store `image_name` as a bare device-id
+  and timestamp with no extension at all; a file written without one is
+  invisible to any extension-based discovery downstream (confirmed against
+  a real dataset: 1,262 of 5,823 `val` samples and 5,384 of 23,236 `train`
+  samples matched this pattern), with no error or warning anywhere in the
+  chain to indicate images were silently being skipped. A name that already
+  carries the detected extension -- including the common `jpg`/`jpeg` and
+  `tif`/`tiff` alternate spellings -- is left unchanged rather than growing
+  a redundant second extension.
+- `Sample::download` now returns a new `Error::MissingResource` instead of
+  silently `Ok(None)` when the server's sample record has a registered
+  `image_name` (an `image_files` row genuinely exists) but no fetchable
+  `image_url` for it (missing, empty, or malformed) -- a presign failure or
+  corrupted reference, not an absent optional file. A sample with no
+  `image_name` at all (e.g. a lidar-only or radar-only capture in a
+  multi-modal dataset) is unaffected and still resolves to `Ok(None)`, same
+  as every other file type's legitimate "sample doesn't have this optional
+  type" case. Previously, `download_dataset` reported overall success while
+  quietly writing fewer image files to disk than the dataset's genuinely
+  image-bearing samples warranted, leaving callers no way to detect the
+  shortfall except by re-counting files on disk after the fact.
 - `import-coco` now creates Studio labels with source-faithful COCO `category_id`
   indices via `add_labels_with_indices`, instead of name-only `add_label` which
   let the server assign sequential 0..N indices and broke COCO round-trips
