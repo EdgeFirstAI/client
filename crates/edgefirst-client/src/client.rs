@@ -2408,7 +2408,17 @@ impl Client {
                                 .map(|name| sanitize_path_component(&name))
                                 .unwrap_or_else(|| "unknown".to_string());
 
-                            let image_name = sample.image_name().map(sanitize_path_component);
+                            // Some capture pipelines store `image_name` as a bare
+                            // device-id/timestamp with no extension at all (or, in
+                            // principle, a stale one that no longer matches the
+                            // actual downloaded bytes). Writing that verbatim makes
+                            // the file invisible to any extension-based discovery
+                            // downstream -- ensure it always carries the extension
+                            // `infer::get` actually detected for this payload.
+                            let image_name = sample
+                                .image_name()
+                                .map(sanitize_path_component)
+                                .map(|n| Client::ensure_extension(&n, &file_ext));
 
                             // Construct filename with smart prefixing for flatten mode
                             // When flatten=true and sample belongs to a sequence:
@@ -2468,6 +2478,50 @@ impl Client {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(())
+    }
+
+    /// Extension groups that `infer` collapses to one canonical spelling
+    /// (`jpg`, `tif`) but that commonly appear on disk under the other
+    /// spelling. Checked in both directions so an already-correct name
+    /// isn't given a redundant second extension.
+    const EXTENSION_ALIASES: &[&[&str]] = &[&["jpg", "jpeg"], &["tif", "tiff"]];
+
+    /// Ensures `name` ends with `.{ext}` (case-insensitive, alias-aware),
+    /// appending it only when the name doesn't already carry an extension
+    /// that names the same format.
+    ///
+    /// Some capture pipelines store `image_name` as a bare device-id and
+    /// timestamp with no extension at all; a stored extension can also, in
+    /// principle, disagree with what the downloaded bytes actually are.
+    /// Either way, writing the sample's raw `image_name` to disk verbatim
+    /// produces a file invisible to any extension-based discovery
+    /// downstream. `ext` is always the format `infer::get` detected for
+    /// this payload, so appending it (rather than trusting `name`) keeps
+    /// the on-disk filename self-describing regardless of what Studio
+    /// stored. A `name` that already ends in `.{ext}` -- or an alias of it,
+    /// e.g. `.jpeg` for a detected `jpg`, or `.tiff` for a detected `tif`
+    /// -- is left unchanged so an already-correct filename doesn't grow a
+    /// redundant second extension.
+    fn ensure_extension(name: &str, ext: &str) -> String {
+        let current = Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let ext_lower = ext.to_ascii_lowercase();
+
+        let matches = match &current {
+            Some(current) if *current == ext_lower => true,
+            Some(current) => Self::EXTENSION_ALIASES.iter().any(|group| {
+                group.contains(&current.as_str()) && group.contains(&ext_lower.as_str())
+            }),
+            None => false,
+        };
+
+        if matches {
+            name.to_string()
+        } else {
+            format!("{name}.{ext}")
+        }
     }
 
     /// Builds a filename with smart prefixing for flatten mode.
@@ -8384,5 +8438,62 @@ mod tests_bare_filename_parent {
         let parent = p.parent().expect("path-with-dir always has Some parent");
         assert!(!parent.as_os_str().is_empty());
         assert_eq!(parent, Path::new("dir"));
+    }
+}
+
+#[cfg(test)]
+mod tests_ensure_extension {
+    use super::Client;
+
+    #[test]
+    fn bare_name_gets_extension_appended() {
+        assert_eq!(
+            Client::ensure_extension("device-07129844_1719940437998957506", "png"),
+            "device-07129844_1719940437998957506.png"
+        );
+    }
+
+    #[test]
+    fn matching_extension_is_left_unchanged() {
+        assert_eq!(Client::ensure_extension("foo.png", "png"), "foo.png");
+    }
+
+    #[test]
+    fn matching_extension_is_case_insensitive() {
+        assert_eq!(Client::ensure_extension("foo.PNG", "png"), "foo.PNG");
+    }
+
+    #[test]
+    fn jpeg_alias_of_detected_jpg_is_left_unchanged() {
+        assert_eq!(Client::ensure_extension("frame.jpeg", "jpg"), "frame.jpeg");
+    }
+
+    #[test]
+    fn jpg_alias_of_detected_jpeg_is_left_unchanged() {
+        // Alias matching is symmetric: an already-`.jpg` name is untouched
+        // even if some future caller passes the longer spelling as `ext`.
+        assert_eq!(Client::ensure_extension("frame.jpg", "jpeg"), "frame.jpg");
+    }
+
+    #[test]
+    fn tiff_alias_of_detected_tif_is_left_unchanged() {
+        assert_eq!(Client::ensure_extension("scan.tiff", "tif"), "scan.tiff");
+    }
+
+    #[test]
+    fn disagreeing_extension_is_appended_not_replaced() {
+        // A stored extension that names a genuinely different format from
+        // what was detected is left in place and the real extension is
+        // appended -- correctness (the last extension is the real format)
+        // over cosmetics (no attempt to strip/replace the wrong one).
+        assert_eq!(Client::ensure_extension("foo.jpg", "png"), "foo.jpg.png");
+    }
+
+    #[test]
+    fn multi_dot_name_with_matching_extension_is_left_unchanged() {
+        assert_eq!(
+            Client::ensure_extension("image.tar.gz", "gz"),
+            "image.tar.gz"
+        );
     }
 }

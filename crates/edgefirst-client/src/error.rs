@@ -55,6 +55,11 @@ pub enum Error {
     UnsupportedFormat(String),
     /// Required image files are missing from the dataset.
     MissingImages(String),
+    /// A sample's metadata claims a resource exists (e.g. an image record
+    /// is registered) but the server could not resolve a fetchable URL for
+    /// it. Distinct from `MissingImages`, which covers local files that
+    /// still need to be extracted before import.
+    MissingResource(String),
     /// Required annotation files are missing from the dataset.
     MissingAnnotations(String),
     /// Referenced label is missing or not found.
@@ -226,6 +231,7 @@ impl std::fmt::Display for Error {
             Error::InvalidAnnotationType(s) => write!(f, "Invalid annotation type: {}", s),
             Error::UnsupportedFormat(s) => write!(f, "Unsupported format: {}", s),
             Error::MissingImages(s) => write!(f, "Missing images: {}", s),
+            Error::MissingResource(s) => write!(f, "Missing resource: {}", s),
             Error::MissingAnnotations(s) => write!(f, "Missing annotations: {}", s),
             Error::MissingLabel(s) => write!(f, "Missing label: {}", s),
             Error::InvalidParameters(s) => write!(f, "Invalid parameters: {}", s),

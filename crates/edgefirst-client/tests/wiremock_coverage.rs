@@ -2093,6 +2093,325 @@ async fn test_backfill_sample_dimensions_invalid_image_data() {
 
 #[tokio::test]
 #[serial]
+async fn test_download_dataset_writes_image_when_url_valid() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 60,
+                "image_name": "ok.png",
+                "image_url": format!("{}/images/ok.png", server.uri()),
+                "group_name": "val",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    // `download_dataset` runs downloaded bytes through `infer::get` to
+    // recover the file extension, so the body must carry a real magic
+    // number -- the 8-byte PNG signature is enough, no valid image data
+    // needed beyond it.
+    let png_signature: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    Mock::given(method("GET"))
+        .and(path("/images/ok.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(png_signature.to_vec()))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let output = tempfile::tempdir().unwrap();
+
+    client
+        .download_dataset(
+            DatasetID::from(1u64),
+            &["val".to_string()],
+            &[edgefirst_client::FileType::Image],
+            output.path().to_path_buf(),
+            true,
+            None,
+            None,
+        )
+        .await
+        .expect("download_dataset should succeed when every sample has a fetchable image");
+
+    let mut written = Vec::new();
+    let mut entries = tokio::fs::read_dir(output.path()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        written.push(entry.path());
+    }
+    assert_eq!(written.len(), 1, "exactly one image file should be written");
+    let content = tokio::fs::read(&written[0]).await.unwrap();
+    assert_eq!(content, png_signature);
+}
+
+/// Regression test: a sample with a registered `image_name` (the server
+/// only sends this key when an `image_files` row genuinely exists) but no
+/// fetchable `image_url` used to be silently skipped -- `download_dataset`
+/// returned `Ok(())` having written fewer files than the dataset's actual
+/// image-bearing samples warranted, and callers only discovered the
+/// shortfall by later re-counting files on disk (see the profiler's
+/// dataset cache check). This is a genuine dataset integrity problem, not
+/// a sample that simply has no image (see
+/// `test_download_dataset_lidar_only_sample_unaffected_by_missing_image`
+/// for that case), and it must now surface as a hard error instead.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_errors_when_sample_has_no_image_url() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 61,
+                "image_name": "no-asset.png",
+                "image_url": null,
+                "group_name": "val",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let output = tempfile::tempdir().unwrap();
+
+    let result = client
+        .download_dataset(
+            DatasetID::from(1u64),
+            &["val".to_string()],
+            &[edgefirst_client::FileType::Image],
+            output.path().to_path_buf(),
+            true,
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::MissingResource(_))),
+        "expected Error::MissingResource, got {result:?}"
+    );
+
+    let mut written = Vec::new();
+    let mut entries = tokio::fs::read_dir(output.path()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        written.push(entry.path());
+    }
+    assert!(
+        written.is_empty(),
+        "no file should be written for a sample with no fetchable image"
+    );
+}
+
+/// Regression test: some capture pipelines store `image_name` as a bare
+/// device-id/timestamp with no file extension at all. `download_dataset`
+/// used to write that name to disk verbatim, producing a file invisible to
+/// any extension-based discovery downstream (e.g. the profiler's dataset
+/// cache count and its actual image loader both filter by extension) --
+/// with zero indication anything was skipped. The written filename must
+/// always carry the extension actually detected for the downloaded bytes.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_appends_extension_to_bare_image_name() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 62,
+                // No extension -- the exact pattern seen on real captured
+                // datasets (a device id + timestamp, nothing else).
+                "image_name": "device-07129844_1719940437998957506",
+                "image_url": format!("{}/images/device-07129844_1719940437998957506", server.uri()),
+                "group_name": "val",
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let png_signature: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    Mock::given(method("GET"))
+        .and(path("/images/device-07129844_1719940437998957506"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(png_signature.to_vec()))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let output = tempfile::tempdir().unwrap();
+
+    client
+        .download_dataset(
+            DatasetID::from(1u64),
+            &["val".to_string()],
+            &[edgefirst_client::FileType::Image],
+            output.path().to_path_buf(),
+            true,
+            None,
+            None,
+        )
+        .await
+        .expect("download_dataset should succeed and name the file with its real extension");
+
+    let mut written = Vec::new();
+    let mut entries = tokio::fs::read_dir(output.path()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        written.push(entry.path());
+    }
+    assert_eq!(written.len(), 1, "exactly one image file should be written");
+    let name = written[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        name.ends_with(".png"),
+        "written filename {name:?} must carry the detected .png extension"
+    );
+}
+
+/// Regression test: a lidar-only sample (no `image_name` at all -- normal
+/// content for a multi-modal dataset, not a data integrity problem) must
+/// not block its own other file types when `file_types` combines
+/// `FileType::Image` with a non-image type. Before scoping the new
+/// `Error::MissingResource` check to samples that actually have a
+/// registered `image_name`, this sample's missing image aborted the whole
+/// `download_dataset` call via the per-sample task's `?`, discarding the
+/// legitimately-downloadable lidar file along with it.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_lidar_only_sample_unaffected_by_missing_image() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 63,
+                // No `image_name` / `image_url` at all -- the server omits
+                // both keys when no `image_files` row exists for this
+                // sample, which is exactly what a lidar-only capture looks
+                // like on the wire.
+                "group_name": "val",
+                "sensors": [
+                    {"lidar.pcd": format!("{}/sensors/lidar.pcd", server.uri())}
+                ]
+            }],
+            "continue_token": null
+        }))))
+        .mount(&server)
+        .await;
+
+    let lidar_bytes: &[u8] = b"not a real pcd file, just needs to round-trip";
+    Mock::given(method("GET"))
+        .and(path("/sensors/lidar.pcd"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(lidar_bytes.to_vec()))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let output = tempfile::tempdir().unwrap();
+
+    client
+        .download_dataset(
+            DatasetID::from(1u64),
+            &["val".to_string()],
+            &[
+                edgefirst_client::FileType::Image,
+                edgefirst_client::FileType::LidarPcd,
+            ],
+            output.path().to_path_buf(),
+            true,
+            None,
+            None,
+        )
+        .await
+        .expect(
+            "a lidar-only sample must not fail download_dataset when Image is \
+             requested alongside other types",
+        );
+
+    let mut written = Vec::new();
+    let mut entries = tokio::fs::read_dir(output.path()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        written.push(entry.path());
+    }
+    assert_eq!(
+        written.len(),
+        1,
+        "the lidar file must still be written even though the sample has no image"
+    );
+    let content = tokio::fs::read(&written[0]).await.unwrap();
+    assert_eq!(content, lidar_bytes);
+}
+
+#[tokio::test]
+#[serial]
 async fn test_backfill_sample_dimensions_null_id_with_progress() {
     let server = MockServer::start().await;
 

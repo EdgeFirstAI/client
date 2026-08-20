@@ -1042,7 +1042,49 @@ impl Sample {
             {
                 return Ok(Some(client.download(url).await?));
             }
-            return Ok(None);
+            // `image_name` and `image_url` are set independently by the
+            // server: `image_name` is only present when an `image_files`
+            // row exists for this sample at all, while `image_url` can
+            // still come back missing/empty for that same row if presigning
+            // failed or the stored URL isn't from supported storage. A
+            // sample with no `image_name` never had an image associated --
+            // that's normal content for a lidar-only or radar-only capture
+            // in a multi-modal dataset, not a defect, so it stays `Ok(None)`
+            // like every other optional file type. Only a sample that
+            // claims to have an image (`image_name` is set) but can't
+            // resolve one is a genuine dataset integrity problem worth
+            // surfacing as an error.
+            if self.image_name.is_none() {
+                return Ok(None);
+            }
+            let identity = self
+                .id()
+                .map(|id| id.to_string())
+                .or_else(|| self.name())
+                .unwrap_or_else(|| "<unknown sample>".to_string());
+            // Report shape, not content: `image_url` can in principle hold a
+            // large inline/legacy payload or a URL carrying signed-request
+            // query parameters, and `is_valid_url` only checks the scheme
+            // (see below) -- so surface the scheme and length rather than
+            // ever writing the raw value into an error/log message.
+            let reason = match self.image_url.as_deref() {
+                None => "missing image_url".to_string(),
+                Some("") => "empty image_url".to_string(),
+                Some(u) => {
+                    let scheme = u.split_once("://").map(|(scheme, _)| scheme);
+                    match scheme {
+                        Some(scheme) => format!(
+                            "image_url has unsupported scheme {scheme:?} ({} bytes)",
+                            u.len()
+                        ),
+                        None => format!("image_url has no scheme ({} bytes)", u.len()),
+                    }
+                }
+            };
+            return Err(Error::MissingResource(format!(
+                "Sample {identity} has image_name {:?} but no fetchable image ({reason})",
+                self.image_name
+            )));
         }
 
         // Find the matching file for this type
