@@ -859,6 +859,12 @@ pub struct SnapshotCreateFromDataset {
 /// Result of creating a snapshot from an existing dataset.
 ///
 /// Contains the snapshot ID and task ID for monitoring progress.
+///
+/// Servers differ in what they populate here. Older deployments create the
+/// snapshot record during the call and return a real `id` (plus a `task_id`).
+/// Newer ones dispatch a batch job that creates the record itself, and answer
+/// with `id` 0, no `task_id`, and the job handle in `cloud_instance_id` -- so
+/// `id` alone is not enough to tell success from a no-op.
 #[derive(Deserialize, Debug)]
 pub struct SnapshotFromDatasetResult {
     /// The created snapshot ID
@@ -867,6 +873,11 @@ pub struct SnapshotFromDatasetResult {
     /// Task ID for monitoring snapshot creation progress
     #[serde(default)]
     pub task_id: Option<TaskID>,
+    /// Handle for the dispatched batch job, when the server creates the
+    /// snapshot asynchronously. This is the only progress handle such a
+    /// server returns; without it the caller has nothing to follow.
+    #[serde(default)]
+    pub cloud_instance_id: Option<String>,
 }
 
 #[derive(Deserialize)]

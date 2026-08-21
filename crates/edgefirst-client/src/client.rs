@@ -4597,23 +4597,28 @@ impl Client {
             .rpc("snapshots.create".to_owned(), Some(params))
             .await?;
 
-        // The server can answer this call with a success-shaped payload it
-        // never acted on: `id` 0 and no `task_id`, with no error anywhere in
-        // the response. Zero is not a snapshot the caller can do anything
-        // with -- every later call against it fails with "Can not find
-        // snapshot: sql: no rows in result set", several steps removed from
-        // the operation that actually failed. Reject it here so the error
-        // names the real problem.
+        // Newer servers no longer create the snapshot record during this call:
+        // `snapshots.create` dispatches a batch job that creates it later, and
+        // answers with `id` 0, no `task_id`, and the job handle in
+        // `cloud_instance_id`. Returned as-is that renders as the sentinel
+        // "ss-0", and every later call against it fails with "Can not find
+        // snapshot: sql: no rows in result set" -- several steps removed from
+        // the call that actually changed behaviour. Say so here instead.
+        //
+        // Older deployments still return a real id from this endpoint, so this
+        // is a version check in practice, not a health check.
         if result.id.value() == 0 {
+            let started = match &result.cloud_instance_id {
+                Some(job) => format!(
+                    ", but did start batch job {job}; this server creates the \
+                     snapshot from that job rather than during the call"
+                ),
+                None => String::new(),
+            };
             return Err(Error::UnexpectedResponse(format!(
-                "snapshots.create reported success for dataset {} but returned \
-                 no snapshot (id 0{}); the server did not create one",
-                dataset_id,
-                if result.task_id.is_none() {
-                    ", no task id"
-                } else {
-                    ""
-                },
+                "snapshots.create returned no snapshot id for dataset \
+                 {dataset_id}{started}. This client cannot yet follow that \
+                 flow -- it needs a snapshot id to poll."
             )));
         }
 

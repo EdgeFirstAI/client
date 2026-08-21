@@ -3118,17 +3118,22 @@ async fn mock_default_annotation_set(server: &MockServer) {
 #[tokio::test]
 #[serial]
 async fn create_snapshot_from_dataset_rejects_zero_id() {
-    // Observed against live Studio servers: `snapshots.create` answers with a
-    // success envelope carrying id 0 and no task id, having created nothing.
-    // Taken at face value it renders as the sentinel "ss-0" and every later
-    // call fails with "Can not find snapshot", well away from the real fault.
+    // Newer Studio servers dispatch a batch job from `snapshots.create` and
+    // answer with id 0, no task id, and the job handle in `cloud_instance_id`.
+    // Taken at face value that renders as the sentinel "ss-0" and every later
+    // call fails with "Can not find snapshot", well away from the real cause.
+    // The error must name the job that WAS started, so the operator can find
+    // it, rather than implying nothing happened.
     let server = MockServer::start().await;
     mock_default_annotation_set(&server).await;
 
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("snapshots.create"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "id": 0 }))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0,
+            "cloud_instance_id": "batch-job-7f3a",
+        }))))
         .mount(&server)
         .await;
 
@@ -3140,10 +3145,10 @@ async fn create_snapshot_from_dataset_rejects_zero_id() {
     let Error::UnexpectedResponse(msg) = &err else {
         panic!("expected UnexpectedResponse, got {err:?}");
     };
-    // The message has to name the call and the missing pieces, or it is no
+    // The message has to name the call and surface the batch job, or it is no
     // better than the downstream "Can not find snapshot" it replaces.
     assert!(msg.contains("snapshots.create"), "got {msg}");
-    assert!(msg.contains("no task id"), "got {msg}");
+    assert!(msg.contains("batch-job-7f3a"), "got {msg}");
 }
 
 #[tokio::test]
