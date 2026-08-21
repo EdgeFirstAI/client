@@ -3094,3 +3094,79 @@ async fn populate_samples_maps_json_rpc_error() {
         "expected PermissionDenied(\"samples.populate2\"), got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// snapshots.create contract
+// ---------------------------------------------------------------------------
+
+/// Stub `annotation_sets` so `create_snapshot_from_dataset` can resolve a
+/// default set before it reaches `snapshots.create`.
+async fn mock_default_annotation_set(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("annset.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "id": 2,
+            "dataset_id": 1,
+            "name": "annotations",
+            "description": "default",
+        }]))))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_snapshot_from_dataset_rejects_zero_id() {
+    // Observed against live Studio servers: `snapshots.create` answers with a
+    // success envelope carrying id 0 and no task id, having created nothing.
+    // Taken at face value it renders as the sentinel "ss-0" and every later
+    // call fails with "Can not find snapshot", well away from the real fault.
+    let server = MockServer::start().await;
+    mock_default_annotation_set(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("snapshots.create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "id": 0 }))))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .create_snapshot_from_dataset(DatasetID::from(1u64), "backup", None)
+        .await
+        .expect_err("id 0 must not be reported as a created snapshot");
+
+    let Error::UnexpectedResponse(msg) = &err else {
+        panic!("expected UnexpectedResponse, got {err:?}");
+    };
+    // The message has to name the call and the missing pieces, or it is no
+    // better than the downstream "Can not find snapshot" it replaces.
+    assert!(msg.contains("snapshots.create"), "got {msg}");
+    assert!(msg.contains("no task id"), "got {msg}");
+}
+
+#[tokio::test]
+#[serial]
+async fn create_snapshot_from_dataset_accepts_real_id() {
+    let server = MockServer::start().await;
+    mock_default_annotation_set(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("snapshots.create"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_result(json!({ "id": 0x81f, "task_id": 0x31a0 }))),
+        )
+        .mount(&server)
+        .await;
+
+    let result = client_for(&server.uri())
+        .create_snapshot_from_dataset(DatasetID::from(1u64), "backup", None)
+        .await
+        .expect("a real snapshot id must still be accepted");
+
+    assert_eq!(result.id.to_string(), "ss-81f");
+    assert!(result.task_id.is_some());
+}

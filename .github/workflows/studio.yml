@@ -902,6 +902,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [prepare, rust-client-lib, rust-cli, rust-doc, python-lib]
     if: always()
+    permissions:
+      contents: read
+      # Needed by "Report nightly status" below, which opens, updates and
+      # closes the tracking issue.
+      issues: write
     steps:
       - name: Generate workflow summary
         run: |
@@ -1027,6 +1032,85 @@ jobs:
             echo "2. Check the JUnit XML file for test details" >> $GITHUB_STEP_SUMMARY
             echo "3. Search for \`FAILED\` or \`error\` in the log file" >> $GITHUB_STEP_SUMMARY
             echo "4. Look for \`TRACE\` entries for API call details" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # A `schedule` run has no audience. GitHub emails only the user who last
+      # touched the cron line -- not the owner, not the team -- so editing that
+      # line silently reassigns the alerts and a red nightly can sit unnoticed.
+      # It did: the suite was red 14 nights running with nobody paged.
+      #
+      # This keeps ONE tracking issue rather than one per night: the first
+      # failure opens it, later failures comment, and the first green run
+      # comments and closes it. Dispatch runs are skipped -- somebody is
+      # already watching those.
+      - name: Report nightly status
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LIB_RESULT: ${{ needs.rust-client-lib.outputs.result }}
+          CLI_RESULT: ${{ needs.rust-cli.outputs.result }}
+          DOC_RESULT: ${{ needs.rust-doc.outputs.result }}
+          PY_RESULT: ${{ needs.python-lib.outputs.result }}
+          LIB_FAILED: ${{ needs.rust-client-lib.outputs.failed }}
+          CLI_FAILED: ${{ needs.rust-cli.outputs.failed }}
+          DOC_FAILED: ${{ needs.rust-doc.outputs.failed }}
+          PY_FAILED: ${{ needs.python-lib.outputs.failed }}
+        run: |
+          set -euo pipefail
+
+          LABEL="nightly-failure"
+          TITLE="Nightly Studio integration tests are failing"
+
+          FAILED=false
+          for r in "$LIB_RESULT" "$CLI_RESULT" "$DOC_RESULT" "$PY_RESULT"; do
+            [ "$r" = "passed" ] || FAILED=true
+          done
+
+          # `|| true` on every lookup: a notification problem must never turn a
+          # green run red, nor mask which suite actually failed on a red one.
+          EXISTING=$(gh issue list --label "$LABEL" --state open \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)
+
+          if [ "$FAILED" = "false" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" \
+                --body "Nightly is green again as of [this run]($RUN_URL). Closing." || true
+              gh issue close "$EXISTING" || true
+            fi
+            echo "Nightly green; nothing to report."
+            exit 0
+          fi
+
+          # printf rather than a heredoc: this block is indented inside the YAML
+          # step, and a heredoc would carry that indentation into the issue body,
+          # where markdown reads four leading spaces as a code block.
+          BODY=$(printf '%s\n' \
+            "The nightly Studio integration run failed." \
+            "" \
+            "| Suite | Result | Failed tests |" \
+            "|-------|--------|--------------|" \
+            "| Rust client library | ${LIB_RESULT:-unknown} | ${LIB_FAILED:-?} |" \
+            "| Rust CLI | ${CLI_RESULT:-unknown} | ${CLI_FAILED:-?} |" \
+            "| Rust doc tests | ${DOC_RESULT:-unknown} | ${DOC_FAILED:-?} |" \
+            "| Python library | ${PY_RESULT:-unknown} | ${PY_FAILED:-?} |" \
+            "" \
+            "[Full run and artifacts]($RUN_URL)" \
+            "" \
+            "Per-test detail is in the JUnit XML inside each \`*-results-<server>\`" \
+            "artifact. This issue stays open and accumulates a comment per failing" \
+            "night until a nightly run goes green, which closes it automatically.")
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY" || true
+            echo "Commented on existing issue #$EXISTING"
+          else
+            gh label create "$LABEL" \
+              --description "Opened automatically by the nightly Studio run" \
+              --color B60205 >/dev/null 2>&1 || true
+            gh issue create --title "$TITLE" --label "$LABEL" --body "$BODY" || true
+            echo "Opened a new nightly failure issue"
           fi
 
       - name: Fail workflow if any tests failed

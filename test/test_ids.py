@@ -9,6 +9,7 @@ matching string representations.
 
 import unittest
 from test import get_client, skip_if_known_group_by_bug
+from test.fixtures import assert_fixture_present
 
 from edgefirst_client import (
     AnnotationSetID,
@@ -34,16 +35,23 @@ class TestIDTypes(unittest.TestCase):
     def _get_reference_dataset(self, client):
         """Return the Test Labels dataset from the Unit Testing project."""
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0)
+        assert_fixture_present(self, projects, 'project "Unit Testing"')
         project = projects[0]
 
         datasets = client.datasets(project.id, "Test Labels")
-        self.assertGreater(len(datasets), 0)
+        assert_fixture_present(
+            self, datasets, 'dataset "Test Labels"', 'project "Unit Testing"'
+        )
         dataset = next(
             (item for item in datasets if item.name == "Test Labels"),
             None,
         )
-        self.assertIsNotNone(dataset, "Test Labels dataset should exist")
+        assert_fixture_present(
+            self,
+            dataset,
+            'dataset named exactly "Test Labels"',
+            'project "Unit Testing"',
+        )
         assert dataset is not None
         return project, dataset
 
@@ -112,7 +120,7 @@ class TestIDTypes(unittest.TestCase):
         except RuntimeError as e:
             skip_if_known_group_by_bug(self, e)
             raise
-        self.assertGreater(len(samples), 0)
+        assert_fixture_present(self, samples, "samples", f'dataset "{dataset.name}"')
         sample = samples[0]
         sample_id = sample.id
         self.assertIsNotNone(sample_id)
@@ -358,7 +366,7 @@ class TestIDTypes(unittest.TestCase):
         except RuntimeError as e:
             skip_if_known_group_by_bug(self, e)
             raise
-        self.assertGreater(len(samples), 0)
+        assert_fixture_present(self, samples, "samples", f'dataset "{dataset.name}"')
         sample = samples[0]
         # Sample.id is Optional
         sample_id = sample.id

@@ -4593,7 +4593,31 @@ impl Client {
             dataset_id,
             annotation_set_id,
         };
-        self.rpc("snapshots.create".to_owned(), Some(params)).await
+        let result: SnapshotFromDatasetResult = self
+            .rpc("snapshots.create".to_owned(), Some(params))
+            .await?;
+
+        // The server can answer this call with a success-shaped payload it
+        // never acted on: `id` 0 and no `task_id`, with no error anywhere in
+        // the response. Zero is not a snapshot the caller can do anything
+        // with -- every later call against it fails with "Can not find
+        // snapshot: sql: no rows in result set", several steps removed from
+        // the operation that actually failed. Reject it here so the error
+        // names the real problem.
+        if result.id.value() == 0 {
+            return Err(Error::UnexpectedResponse(format!(
+                "snapshots.create reported success for dataset {} but returned \
+                 no snapshot (id 0{}); the server did not create one",
+                dataset_id,
+                if result.task_id.is_none() {
+                    ", no task id"
+                } else {
+                    ""
+                },
+            )));
+        }
+
+        Ok(result)
     }
 
     /// Download a snapshot from EdgeFirst Studio to local storage.

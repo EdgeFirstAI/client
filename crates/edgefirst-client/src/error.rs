@@ -43,6 +43,12 @@ pub enum Error {
     ParseIntError(std::num::ParseIntError),
     /// Server returned an invalid or unexpected response.
     InvalidResponse,
+    /// Server returned a well-formed response that does not satisfy the
+    /// method's contract -- for example a create call reporting success with
+    /// a null identifier. Unlike `InvalidResponse` this carries the specific
+    /// expectation that was not met, so the failure is actionable at the point
+    /// it happens rather than several calls downstream.
+    UnexpectedResponse(String),
     /// Requested functionality is not yet implemented.
     NotImplemented,
     /// File part size exceeds the maximum allowed limit.
@@ -217,6 +223,7 @@ impl std::fmt::Display for Error {
             Error::StripPrefixError(e) => write!(f, "Path prefix error: {}", e),
             Error::ParseIntError(e) => write!(f, "Integer parse error: {}", e),
             Error::InvalidResponse => write!(f, "Invalid server response"),
+            Error::UnexpectedResponse(msg) => write!(f, "Unexpected server response: {}", msg),
             Error::NotImplemented => write!(f, "Not implemented"),
             Error::PartTooLarge => write!(f, "File part size exceeds maximum limit"),
             // Keep this list in sync with `FileType::try_from` in dataset.rs
