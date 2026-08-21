@@ -205,54 +205,15 @@ jobs:
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
 
-      - name: Parse test results and generate JUnit XML
+      - name: Collect test results
         id: parse
         if: always()
         run: |
-          LOG_FILE="test-logs/rust-client-lib.log"
-          RESULT_LINE=$(grep -E "^test result:" "$LOG_FILE" | tail -1 || echo "")
-          
-          if [ -n "$RESULT_LINE" ]; then
-            PASSED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= passed)' || echo "0")
-            FAILED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= failed)' || echo "0")
-            IGNORED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= ignored)' || echo "0")
-          else
-            PASSED=0
-            FAILED=0
-            IGNORED=0
-          fi
-          
-          TOTAL=$((PASSED + FAILED))
-          
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "ignored=$IGNORED" >> $GITHUB_OUTPUT
-          echo "total=$TOTAL" >> $GITHUB_OUTPUT
-          
-          # Generate JUnit XML
-          cat > test-results/rust-client-lib-junit.xml << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <testsuites name="edgefirst-client lib" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
-            <testsuite name="edgefirst-client" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
-          EOF
-          
-          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" "$LOG_FILE" | while read -r line; do
-            TEST_NAME=$(echo "$line" | sed -E 's/^test ([^ ]+) \.\.\..*$/\1/')
-            STATUS=$(echo "$line" | grep -oE '(ok|FAILED|ignored)$')
-            
-            echo "    <testcase name=\"$TEST_NAME\" classname=\"edgefirst-client\">" >> test-results/rust-client-lib-junit.xml
-            if [ "$STATUS" = "FAILED" ]; then
-              echo "      <failure message=\"Test failed\">See logs for details</failure>" >> test-results/rust-client-lib-junit.xml
-            elif [ "$STATUS" = "ignored" ]; then
-              echo "      <skipped/>" >> test-results/rust-client-lib-junit.xml
-            fi
-            echo "    </testcase>" >> test-results/rust-client-lib-junit.xml
-          done
-          
-          cat >> test-results/rust-client-lib-junit.xml << EOF
-            </testsuite>
-          </testsuites>
-          EOF
+          ./.github/scripts/collect-nextest-results.sh \
+            "edgefirst-client lib" \
+            test-logs/rust-client-lib.log \
+            test-results/rust-client-lib-junit.xml \
+            "${{ steps.tests.outputs.exit_code }}"
 
       - name: Set result output
         id: set_result
@@ -426,53 +387,15 @@ jobs:
           STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
           TEST_DATASET_TYPES: box2d,box3d,mask
 
-      - name: Parse test results and generate JUnit XML
+      - name: Collect test results
         id: parse
         if: always()
         run: |
-          LOG_FILE="test-logs/rust-cli.log"
-          RESULT_LINE=$(grep -E "^test result:" "$LOG_FILE" | tail -1 || echo "")
-          
-          if [ -n "$RESULT_LINE" ]; then
-            PASSED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= passed)' || echo "0")
-            FAILED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= failed)' || echo "0")
-            IGNORED=$(echo "$RESULT_LINE" | grep -oP '\d+(?= ignored)' || echo "0")
-          else
-            PASSED=0
-            FAILED=0
-            IGNORED=0
-          fi
-          
-          TOTAL=$((PASSED + FAILED))
-          
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "ignored=$IGNORED" >> $GITHUB_OUTPUT
-          echo "total=$TOTAL" >> $GITHUB_OUTPUT
-          
-          cat > test-results/rust-cli-junit.xml << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <testsuites name="edgefirst-cli" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
-            <testsuite name="edgefirst-cli" tests="$TOTAL" failures="$FAILED" errors="0" skipped="$IGNORED">
-          EOF
-          
-          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" "$LOG_FILE" | while read -r line; do
-            TEST_NAME=$(echo "$line" | sed -E 's/^test ([^ ]+) \.\.\..*$/\1/')
-            STATUS=$(echo "$line" | grep -oE '(ok|FAILED|ignored)$')
-            
-            echo "    <testcase name=\"$TEST_NAME\" classname=\"edgefirst-cli\">" >> test-results/rust-cli-junit.xml
-            if [ "$STATUS" = "FAILED" ]; then
-              echo "      <failure message=\"Test failed\">See logs for details</failure>" >> test-results/rust-cli-junit.xml
-            elif [ "$STATUS" = "ignored" ]; then
-              echo "      <skipped/>" >> test-results/rust-cli-junit.xml
-            fi
-            echo "    </testcase>" >> test-results/rust-cli-junit.xml
-          done
-          
-          cat >> test-results/rust-cli-junit.xml << EOF
-            </testsuite>
-          </testsuites>
-          EOF
+          ./.github/scripts/collect-nextest-results.sh \
+            "edgefirst-cli" \
+            test-logs/rust-cli.log \
+            test-results/rust-cli-junit.xml \
+            "${{ steps.tests.outputs.exit_code }}"
 
       - name: Set result output
         id: set_result
@@ -744,6 +667,19 @@ jobs:
         run: |
           maturin build --locked -m crates/edgefirst-client-py/Cargo.toml
           pip install target/wheels/edgefirst_client-*.whl
+
+      # test_snapshots.TestLabelIndexRoundtrip shells out to the CLI to compare
+      # what the binary writes against what the Python bindings read back, so it
+      # needs the binary as well as the wheel. maturin builds only the wheel;
+      # without this the class errors in setUpClass ("edgefirst-client binary
+      # not found") on every server, which is how it went unnoticed -- one
+      # errored class in a 400-test run reads like a flake, not a job that never
+      # built its dependency.
+      #
+      # Debug, not --release: _find_edgefirst_cli checks target/release first
+      # and falls back to target/debug, and this job is not measuring runtime.
+      - name: Build edgefirst-cli binary for CLI-backed tests
+        run: cargo build --locked -p edgefirst-cli
 
       - name: Create output directories
         run: mkdir -p test-results test-logs

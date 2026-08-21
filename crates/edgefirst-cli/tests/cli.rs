@@ -3980,7 +3980,9 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
             .column("group")
             .expect("Snapshot arrow missing 'group' column!");
         let snap_name_col = snap_df.column("name")?;
-        let snap_frame_col = snap_df.column("frame")?;
+        // Optional for the same reason as in test_create_snapshot_from_dataset:
+        // server-served annotation arrows have no `frame` column.
+        let snap_frame_col = snap_df.column("frame").ok();
 
         // BASELINE VALIDATION: No nulls allowed in snapshot group column
         let snap_null_count = snap_groups.null_count();
@@ -4000,7 +4002,8 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
         let snap_groups_str = snap_groups_cast.str()?;
         let snap_names_cast = snap_name_col.cast(&DataType::String)?;
         let snap_names = snap_names_cast.str()?;
-        let snap_frames = snap_frame_col.i32()?;
+        // Cast to i32 to handle both i32 and u32 sources, as elsewhere.
+        let snap_frames = snap_frame_col.and_then(|f| f.cast(&DataType::Int32).ok());
 
         let mut image_groups: HashMap<(String, Option<i32>), String> = HashMap::new();
         let mut inconsistent_groups: Vec<(String, Option<i32>, String, String)> = Vec::new();
@@ -4008,7 +4011,10 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
         for idx in 0..snap_df.height() {
             if let (Some(name), Some(group)) = (snap_names.get(idx), snap_groups_str.get(idx)) {
                 let name = name.to_string();
-                let frame = snap_frames.get(idx);
+                let frame = snap_frames
+                    .as_ref()
+                    .and_then(|f| f.i32().ok())
+                    .and_then(|f| f.get(idx));
                 let group = group.to_string();
                 let key = (name.clone(), frame);
 
@@ -4315,6 +4321,112 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Build a `(name, frame) -> group` map from an annotations DataFrame.
+///
+/// Both `frame` and `group` are optional columns: annotation arrows served by
+/// Studio carry only name/object_id/label/label_index/group/polygon/box2d,
+/// while arrows written locally by the client's samples_dataframe() also carry
+/// `frame`. An absent column yields `None` for every row, so two schemas that
+/// differ only by its presence still compare like for like.
+#[allow(clippy::type_complexity)]
+fn build_image_groups(
+    df: &polars::prelude::DataFrame,
+) -> Result<HashMap<(String, Option<i32>), Option<String>>, Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+
+    let name_col = df.column("name")?;
+    let frame_col = df.column("frame").ok();
+    let group_col = df.column("group").ok();
+
+    let names_cast = name_col.cast(&DataType::String)?;
+    let names = names_cast.str()?;
+    // Cast frame to i32 to handle both i32 and u32 sources
+    let frames = frame_col.and_then(|f| f.cast(&DataType::Int32).ok());
+
+    let groups = group_col.and_then(|g| g.cast(&DataType::String).ok());
+
+    let mut map: HashMap<(String, Option<i32>), Option<String>> = HashMap::new();
+
+    for idx in 0..df.height() {
+        if let Some(name) = names.get(idx) {
+            // Absent column => None for every row, so both sides key on
+            // name alone and still compare like for like.
+            let frame = frames
+                .as_ref()
+                .and_then(|f| f.i32().ok())
+                .and_then(|f| f.get(idx));
+            let group = groups
+                .as_ref()
+                .and_then(|g| g.str().ok())
+                .and_then(|g| g.get(idx))
+                .map(|s| s.to_string());
+            let key = (name.to_string(), frame);
+            // Only insert if not already present (first row wins for group)
+            map.entry(key).or_insert(group);
+        }
+    }
+
+    Ok(map)
+}
+
+/// Regression test: annotation arrows with no `frame` column must compare.
+///
+/// `build_image_groups` used to require `frame`, so
+/// `test_create_snapshot_from_dataset` failed with
+/// `ColumnNotFound("frame" not found)` against every server that served an
+/// annotations arrow -- even though the original and snapshot schemas were
+/// byte-for-byte identical. The schema below is the one the nightly actually
+/// reported for both sides of that comparison.
+///
+/// Needs no Studio server, so unlike the rest of this file it still gives a
+/// verdict when the servers are unreachable. It is not reached by the
+/// pull-request lane, which excludes this whole binary via `not binary(cli)`.
+#[test]
+fn test_build_image_groups_without_frame_column() -> Result<(), Box<dyn std::error::Error>> {
+    use polars::prelude::*;
+
+    let frameless = df![
+        "name" => ["img_a", "img_a", "img_b"],
+        "object_id" => ["o1", "o2", "o3"],
+        "label" => ["deer", "deer", "deer"],
+        "label_index" => [0u32, 0, 0],
+        "group" => ["train", "train", "val"],
+    ]?;
+
+    let groups = build_image_groups(&frameless)?;
+
+    // One entry per unique name, each keyed with a None frame.
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
+        groups.get(&("img_a".to_string(), None)),
+        Some(&Some("train".to_string()))
+    );
+    assert_eq!(
+        groups.get(&("img_b".to_string(), None)),
+        Some(&Some("val".to_string()))
+    );
+
+    // The same rows with a `frame` column must still key on the frame value,
+    // so adding the column is not silently ignored.
+    let framed = df![
+        "name" => ["img_a", "img_a", "img_b"],
+        "object_id" => ["o1", "o2", "o3"],
+        "label" => ["deer", "deer", "deer"],
+        "label_index" => [0u32, 0, 0],
+        "group" => ["train", "train", "val"],
+        "frame" => [0i32, 1, 0],
+    ]?;
+
+    let framed_groups = build_image_groups(&framed)?;
+    assert_eq!(framed_groups.len(), 3);
+    assert_eq!(
+        framed_groups.get(&("img_a".to_string(), Some(1))),
+        Some(&Some("train".to_string()))
+    );
+
+    Ok(())
+}
+
 /// Test that exporting a dataset to a snapshot preserves all data.
 ///
 /// This is the mirror of `test_snapshot_restore` - it tests the inverse
@@ -4584,43 +4696,6 @@ fn test_create_snapshot_from_dataset() -> Result<(), Box<dyn std::error::Error>>
         );
         println!("Original columns: {:?}", original_df.get_column_names());
         println!("Snapshot columns: {:?}", snapshot_df.get_column_names());
-
-        // Build (name, frame) -> group mapping for both
-        #[allow(clippy::type_complexity)]
-        fn build_image_groups(
-            df: &DataFrame,
-        ) -> Result<HashMap<(String, Option<i32>), Option<String>>, Box<dyn std::error::Error>>
-        {
-            let name_col = df.column("name")?;
-            let frame_col = df.column("frame")?;
-            let group_col = df.column("group").ok();
-
-            let names_cast = name_col.cast(&DataType::String)?;
-            let names = names_cast.str()?;
-            // Cast frame to i32 to handle both i32 and u32 sources
-            let frames_cast = frame_col.cast(&DataType::Int32)?;
-            let frames = frames_cast.i32()?;
-
-            let groups = group_col.and_then(|g| g.cast(&DataType::String).ok());
-
-            let mut map: HashMap<(String, Option<i32>), Option<String>> = HashMap::new();
-
-            for idx in 0..df.height() {
-                if let Some(name) = names.get(idx) {
-                    let frame = frames.get(idx);
-                    let group = groups
-                        .as_ref()
-                        .and_then(|g| g.str().ok())
-                        .and_then(|g| g.get(idx))
-                        .map(|s| s.to_string());
-                    let key = (name.to_string(), frame);
-                    // Only insert if not already present (first row wins for group)
-                    map.entry(key).or_insert(group);
-                }
-            }
-
-            Ok(map)
-        }
 
         let original_groups = build_image_groups(&original_df)?;
         let snapshot_groups = build_image_groups(&snapshot_df)?;
