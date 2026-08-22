@@ -4593,7 +4593,36 @@ impl Client {
             dataset_id,
             annotation_set_id,
         };
-        self.rpc("snapshots.create".to_owned(), Some(params)).await
+        let result: SnapshotFromDatasetResult = self
+            .rpc("snapshots.create".to_owned(), Some(params))
+            .await?;
+
+        // Newer servers no longer create the snapshot record during this call:
+        // `snapshots.create` dispatches a batch job that creates it later, and
+        // answers with `id` 0, no `task_id`, and the job handle in
+        // `cloud_instance_id`. Returned as-is that renders as the sentinel
+        // "ss-0", and every later call against it fails with "Can not find
+        // snapshot: sql: no rows in result set" -- several steps removed from
+        // the call that actually changed behaviour. Say so here instead.
+        //
+        // Older deployments still return a real id from this endpoint, so this
+        // is a version check in practice, not a health check.
+        if result.id.value() == 0 {
+            let started = match &result.cloud_instance_id {
+                Some(job) => format!(
+                    ", but did start batch job {job}; this server creates the \
+                     snapshot from that job rather than during the call"
+                ),
+                None => String::new(),
+            };
+            return Err(Error::UnexpectedResponse(format!(
+                "snapshots.create returned no snapshot id for dataset \
+                 {dataset_id}{started}. This client cannot yet follow that \
+                 flow -- it needs a snapshot id to poll."
+            )));
+        }
+
+        Ok(result)
     }
 
     /// Download a snapshot from EdgeFirst Studio to local storage.

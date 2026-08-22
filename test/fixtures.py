@@ -231,3 +231,40 @@ def wait_for_label(client, dataset_id: str, name: str, timeout: float = 5.0):
     raise TimeoutError(
         f"Label '{name}' did not appear on dataset {dataset_id} within {timeout}s"
     )
+
+
+def current_server() -> str:
+    """Name of the Studio server under test, for use in failure messages."""
+    return os.getenv("STUDIO_SERVER", "<unset STUDIO_SERVER>")
+
+
+def assert_fixture_present(testcase, value, what: str, where: str = "") -> None:
+    """Assert that required server-side fixture data exists.
+
+    Fixture data lives on the Studio servers, not in this repository, so a
+    missing dataset is an environment problem rather than a code defect --
+    but only if the failure says so. The default unittest rendering of these
+    checks is `AssertionError: 0 not greater than 0`, which names neither the
+    fixture nor the server and reads like a logic bug; runs have been
+    misdiagnosed on exactly that. Fail loudly and specifically instead.
+
+    These deliberately fail rather than skip: absent fixture data means the
+    suite is not testing what it claims to, and a skip would hide that.
+
+    Args:
+        testcase: The unittest.TestCase invoking the check.
+        value: A collection (checked non-empty) or object (checked not None).
+        what: What was being looked for, e.g. 'dataset "COCO"'.
+        where: Optional container, e.g. 'project "Unit Testing"'.
+    """
+    found = value is not None if not hasattr(value, "__len__") else len(value) > 0
+    if found:
+        return
+
+    location = f" in {where}" if where else ""
+    testcase.fail(
+        f"Missing test fixture: {what}{location} was not found on the "
+        f"'{current_server()}' Studio server. This is server-side test data, "
+        f"not a code defect -- the fixture needs to be restored on that "
+        f"server before this test can be meaningful."
+    )

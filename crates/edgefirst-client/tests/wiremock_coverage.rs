@@ -3094,3 +3094,84 @@ async fn populate_samples_maps_json_rpc_error() {
         "expected PermissionDenied(\"samples.populate2\"), got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// snapshots.create contract
+// ---------------------------------------------------------------------------
+
+/// Stub `annotation_sets` so `create_snapshot_from_dataset` can resolve a
+/// default set before it reaches `snapshots.create`.
+async fn mock_default_annotation_set(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("annset.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "id": 2,
+            "dataset_id": 1,
+            "name": "annotations",
+            "description": "default",
+        }]))))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn create_snapshot_from_dataset_rejects_zero_id() {
+    // Newer Studio servers dispatch a batch job from `snapshots.create` and
+    // answer with id 0, no task id, and the job handle in `cloud_instance_id`.
+    // Taken at face value that renders as the sentinel "ss-0" and every later
+    // call fails with "Can not find snapshot", well away from the real cause.
+    // The error must name the job that WAS started, so the operator can find
+    // it, rather than implying nothing happened.
+    let server = MockServer::start().await;
+    mock_default_annotation_set(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("snapshots.create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "id": 0,
+            "cloud_instance_id": "batch-job-7f3a",
+        }))))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server.uri())
+        .create_snapshot_from_dataset(DatasetID::from(1u64), "backup", None)
+        .await
+        .expect_err("id 0 must not be reported as a created snapshot");
+
+    let Error::UnexpectedResponse(msg) = &err else {
+        panic!("expected UnexpectedResponse, got {err:?}");
+    };
+    // The message has to name the call and surface the batch job, or it is no
+    // better than the downstream "Can not find snapshot" it replaces.
+    assert!(msg.contains("snapshots.create"), "got {msg}");
+    assert!(msg.contains("batch-job-7f3a"), "got {msg}");
+}
+
+#[tokio::test]
+#[serial]
+async fn create_snapshot_from_dataset_accepts_real_id() {
+    let server = MockServer::start().await;
+    mock_default_annotation_set(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("snapshots.create"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_result(json!({ "id": 0x81f, "task_id": 0x31a0 }))),
+        )
+        .mount(&server)
+        .await;
+
+    let result = client_for(&server.uri())
+        .create_snapshot_from_dataset(DatasetID::from(1u64), "backup", None)
+        .await
+        .expect("a real snapshot id must still be accepted");
+
+    assert_eq!(result.id.to_string(), "ss-81f");
+    assert!(result.task_id.is_some());
+}

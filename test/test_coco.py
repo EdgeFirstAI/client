@@ -8,6 +8,7 @@ Tests COCO dataset availability and Polars DataFrame integration
 import unittest
 
 from test import get_client, skip_if_known_group_by_bug
+from test.fixtures import assert_fixture_present
 
 
 class TestCOCO(unittest.TestCase):
@@ -109,12 +110,14 @@ class TestCOCO(unittest.TestCase):
 
         # Find Unit Testing
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing should exist")
+        assert_fixture_present(self, projects, 'project "Unit Testing"')
         project = projects[0]
 
         # Find COCO dataset
         datasets = client.datasets(project.id, "COCO")
-        self.assertGreater(len(datasets), 0, "COCO dataset should exist")
+        assert_fixture_present(
+            self, datasets, 'dataset "COCO"', 'project "Unit Testing"'
+        )
 
         # Filter to get exact "COCO" dataset (not "COCO People")
         dataset = None
@@ -122,7 +125,9 @@ class TestCOCO(unittest.TestCase):
             if d.name == "COCO":
                 dataset = d
                 break
-        self.assertIsNotNone(dataset, "COCO dataset should exist")
+        assert_fixture_present(
+            self, dataset, 'dataset named exactly "COCO"', 'project "Unit Testing"'
+        )
         assert dataset is not None
 
         # Retrieve labels and verify correct indices
@@ -155,12 +160,14 @@ class TestCOCO(unittest.TestCase):
 
         # Find Unit Testing
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing should exist")
+        assert_fixture_present(self, projects, 'project "Unit Testing"')
         project = projects[0]
 
         # Find COCO dataset
         datasets = client.datasets(project.id, "COCO")
-        self.assertGreater(len(datasets), 0, "COCO dataset should exist")
+        assert_fixture_present(
+            self, datasets, 'dataset "COCO"', 'project "Unit Testing"'
+        )
 
         # Filter to get exact "COCO" dataset (not "COCO People")
         dataset = None
@@ -168,7 +175,9 @@ class TestCOCO(unittest.TestCase):
             if d.name == "COCO":
                 dataset = d
                 break
-        self.assertIsNotNone(dataset, "COCO dataset should exist")
+        assert_fixture_present(
+            self, dataset, 'dataset named exactly "COCO"', 'project "Unit Testing"'
+        )
         assert dataset is not None
 
         # Verify samples retrieval
@@ -191,11 +200,13 @@ class TestCOCO(unittest.TestCase):
 
         # Find Unit Testing and COCO dataset
         projects = client.projects("Unit Testing")
-        self.assertGreater(len(projects), 0, "Unit Testing should exist")
+        assert_fixture_present(self, projects, 'project "Unit Testing"')
         project = projects[0]
 
         datasets = client.datasets(project.id, "COCO")
-        self.assertGreater(len(datasets), 0, "COCO dataset should exist")
+        assert_fixture_present(
+            self, datasets, 'dataset "COCO"', 'project "Unit Testing"'
+        )
 
         # Filter to get exact "COCO" dataset
         dataset = None
@@ -203,7 +214,9 @@ class TestCOCO(unittest.TestCase):
             if d.name == "COCO":
                 dataset = d
                 break
-        self.assertIsNotNone(dataset, "COCO dataset should exist")
+        assert_fixture_present(
+            self, dataset, 'dataset named exactly "COCO"', 'project "Unit Testing"'
+        )
         assert dataset is not None
 
         # Get annotation set
