@@ -5,6 +5,22 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.13.2] - 2026-08-23
+
+### Fixed
+
+- `create_snapshot_from_dataset` no longer reports success when the server
+  creates the snapshot asynchronously via a batch job instead of during the
+  call. Such servers answer with snapshot id 0 and no task id, which the
+  client previously returned as-is; every later call against that id then
+  failed with an unrelated "Can not find snapshot" error, several steps
+  removed from the real cause. The client now rejects id 0 with a new
+  `Error::UnexpectedResponse` naming the actual problem, and captures the
+  server's batch job handle in `SnapshotFromDatasetResult.cloud_instance_id`
+  when one is returned.
+
 ## [2.13.1] - 2026-08-19
 
 ### Fixed
