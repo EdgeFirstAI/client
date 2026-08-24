@@ -5,6 +5,32 @@ All notable changes to EdgeFirst Client will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.13.2] - 2026-08-24
+
+### Fixed
+
+- `create_snapshot_from_dataset` no longer misreports success when the
+  server creates the snapshot asynchronously via a batch job instead of
+  during the call. Such servers answer with snapshot id 0 and no task id,
+  which the client previously returned as-is; every later call against
+  that id then failed with an unrelated "Can not find snapshot" error,
+  several steps removed from the real cause. The client now fails the call
+  immediately with a new `Error::UnexpectedResponse` naming the batch job
+  that was started (from `cloud_instance_id`, when the server supplies it),
+  instead of pretending the snapshot exists.
+
+### Known Issues
+
+- `create_snapshot_from_dataset` cannot complete at all against Studio
+  servers running the async batch-job flow (dve-database 88783443 and
+  later, 2026-08-17+): those servers give no reliable way to obtain the
+  created snapshot's id, only an opaque `cloud_instance_id` batch-job
+  handle with no client-facing way to resolve it to a snapshot. This is a
+  server-side API contract defect, not something this client can work
+  around; tracked as [DE-2911](https://au-zone.atlassian.net/browse/DE-2911).
+
 ## [2.13.1] - 2026-08-19
 
 ### Fixed
