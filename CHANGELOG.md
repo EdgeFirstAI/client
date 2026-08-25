@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `samples()` now keeps GPS/IMU location metadata when the caller (including
+  the Python default `types=[FileType.Image]`) supplies a file-type filter.
+  Studio treats `types` as a replacement sensor list, and `"image"` is not a
+  sensor type, so location set via `populate_samples()` never came back.
+- `populate_samples` now pre-creates labels with requested `label_index`
+  before `samples.populate2`, matching `upload-dataset`. Studio's populate
+  path auto-assigns index 0 for a new name and ignores the annotation's
+  `label_index`, so sparse indices (e.g. 4242) never survived a round-trip.
+
 ## [2.13.2] - 2026-08-24
 
 ### Fixed
