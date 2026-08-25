@@ -646,6 +646,27 @@ const DEFAULT_MASK_SAMPLES_PAGE_SIZE: u32 = 100;
 /// Maximum `samples.list` page size accepted by the server.
 const MAX_SAMPLES_LIST_PAGE_SIZE: u32 = 1000;
 
+/// GPS/IMU tokens the server uses for sample location metadata.
+const LOCATION_SENSOR_TYPES: [&str; 2] = ["gps", "imu"];
+
+/// Union GPS/IMU onto a non-empty `samples.list` types filter.
+///
+/// Python (and Dataset.samples) default `types` to `[FileType::Image]`. The
+/// server treats any supplied `types` as a replacement sensor list, and
+/// `"image"` is not a sensor type, so location never came back. Empty `types`
+/// is left empty so the server keeps its full default list.
+pub(crate) fn with_location_sensor_types(mut types: Vec<String>) -> Vec<String> {
+    if types.is_empty() {
+        return types;
+    }
+    for loc in LOCATION_SENSOR_TYPES {
+        if !types.iter().any(|t| t == loc) {
+            types.push(loc.to_string());
+        }
+    }
+    types
+}
+
 /// Resolve the `limit` for a `samples.list` request.
 ///
 /// Returns `Some(n)` when `types` includes `"mask"` (server wire name for
@@ -3092,11 +3113,15 @@ impl Client {
     ) -> Result<Vec<Sample>, Error> {
         // Use server-recognized annotation type names (box2d/box3d/mask) for
         // the types filter; the server maps them to its internal DB types.
-        let types_vec = annotation_types
-            .iter()
-            .map(|t| t.as_server_type().to_string())
-            .chain(types.iter().map(|t| t.to_string()))
-            .collect::<Vec<_>>();
+        // GPS/IMU are sample metadata, not FileType variants — keep them on
+        // any non-empty filter so location round-trips through populate2.
+        let types_vec = with_location_sensor_types(
+            annotation_types
+                .iter()
+                .map(|t| t.as_server_type().to_string())
+                .chain(types.iter().map(|t| t.to_string()))
+                .collect::<Vec<_>>(),
+        );
         let labels = self
             .labels(dataset_id, version)
             .await?
@@ -3333,6 +3358,10 @@ impl Client {
     ///   to populate the `size` column.
     /// - **UUIDs are generated automatically** if not provided. If you need
     ///   deterministic UUIDs, set `sample.uuid` explicitly before calling.
+    /// - **Labels are pre-created** from annotation `label` / `label_index`
+    ///   before `samples.populate2`, so a requested index (including 0 and
+    ///   sparse COCO ids) is stored even when the server auto-assigns indices
+    ///   during populate.
     ///
     /// # Arguments
     ///
@@ -3449,6 +3478,18 @@ impl Client {
             let _prepare_span = tracing::info_span!("prepare_samples", n = samples.len()).entered();
             self.prepare_samples_for_upload(samples, &mut files_to_upload)?
         };
+
+        // Pin labels (and source-faithful indices) before populate2, matching
+        // upload-dataset. The server's FromJSON path auto-assigns Index = 0
+        // for a new name and ignores the annotation's label_index; pre-creating
+        // lets AddLabel reuse the row we already placed at the requested index.
+        {
+            let (label_names, label_indices) = Self::collect_labels_from_samples(&samples)?;
+            if !label_names.is_empty() {
+                self.add_labels_with_indices(dataset_id, &label_names, label_indices.as_slice())
+                    .await?;
+            }
+        }
 
         let has_files_to_upload = !files_to_upload.is_empty();
 
@@ -7228,6 +7269,19 @@ mod tests {
         let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
         assert_eq!(names, vec!["ace".to_string()]);
         assert_eq!(indices, vec![Some(12)]);
+    }
+
+    #[test]
+    fn test_with_location_sensor_types_empty_stays_empty() {
+        assert!(with_location_sensor_types(vec![]).is_empty());
+    }
+
+    #[test]
+    fn test_with_location_sensor_types_unions_gps_imu_onto_image() {
+        let got = with_location_sensor_types(vec!["image".to_string()]);
+        assert!(got.contains(&"image".to_string()));
+        assert!(got.contains(&"gps".to_string()));
+        assert!(got.contains(&"imu".to_string()));
     }
 
     #[test]

@@ -33,14 +33,15 @@
 
 use base64::Engine as _;
 use edgefirst_client::{
-    AnnotationSetID, Client, DatasetID, Error, ExperimentID, GpsData, ImuData, Location, Parameter,
-    Sample, SampleDimensionUpdate, SampleFile, SampleID, TaskID, TrainingSessionID,
-    ValidationSessionID,
+    Annotation, AnnotationSetID, Client, DatasetID, Error, ExperimentID, FileType, GpsData,
+    ImuData, Location, Parameter, Sample, SampleDimensionUpdate, SampleFile, SampleID, TaskID,
+    TrainingSessionID, ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use wiremock::matchers::{body_json, body_partial_json, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -2948,6 +2949,64 @@ async fn samples_list_parses_gps_imu_from_sensors() {
     assert_eq!(samples[0].files()[0].file_type(), "radar.pcd");
 }
 
+/// Python/Dataset.samples default `types=[Image]`. The request must still
+/// ask for gps/imu so the server does not drop location metadata.
+#[tokio::test]
+#[serial]
+async fn samples_list_image_filter_still_requests_gps_imu() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": 1 }))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "samples.list",
+            "params": { "types": ["image", "gps", "imu"] }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": [{
+                "id": 1,
+                "image_name": "pose_location.png",
+                "sensors": [
+                    {"gps": {"lat": 37.7749, "lon": -122.4194}},
+                    {"imu": {"roll": 10.0, "pitch": -5.0, "yaw": 90.0}}
+                ]
+            }],
+            "continue_token": null
+        }))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let samples = client_for(&server.uri())
+        .samples(
+            DatasetID::from(1u64),
+            None,
+            &[],
+            &[],
+            &[FileType::Image],
+            None,
+            None,
+        )
+        .await
+        .expect("samples.list with Image+gps+imu types should succeed");
+    assert_eq!(samples.len(), 1);
+    assert!(samples[0].location().is_some());
+}
+
 /// A JSON-RPC error from `samples.list` maps through the shared error path.
 #[tokio::test]
 #[serial]
@@ -3093,6 +3152,93 @@ async fn populate_samples_maps_json_rpc_error() {
         matches!(&err, Error::PermissionDenied(m) if m == "samples.populate2"),
         "expected PermissionDenied(\"samples.populate2\"), got {err:?}"
     );
+}
+
+/// Annotated populate_samples must pin labels via `label.add2` (with the
+/// requested index) before `samples.populate2`. Studio's populate path
+/// auto-assigns index 0 for a new name and ignores annotation `label_index`.
+#[tokio::test]
+#[serial]
+async fn populate_samples_precreates_labels_with_indices() {
+    let server = MockServer::start().await;
+
+    // First labels() (before add2) is empty so the name is created; later
+    // lists return the row at 4242 so apply_label_indices skips label.update.
+    struct SequentialLabelList {
+        calls: AtomicUsize,
+    }
+    impl Respond for SequentialLabelList {
+        fn respond(&self, _: &Request) -> ResponseTemplate {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                ResponseTemplate::new(200).set_body_json(rpc_result(json!([])))
+            } else {
+                ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+                    "id": 7,
+                    "dataset_id": 1,
+                    "index": 4242,
+                    "name": "pose_loc",
+                }])))
+            }
+        }
+    }
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(SequentialLabelList {
+            calls: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.add2"))
+        .and(body_partial_json(json!({
+            "method": "label.add2",
+            "params": {
+                "dataset_id": 1,
+                "labels": [{"name": "pose_loc", "index": 4242}]
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!("ok"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "urls": []
+        }]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut sample = Sample::new();
+    sample.files = vec![SampleFile::with_filename(
+        "image".to_string(),
+        "pose_location.png".to_string(),
+    )];
+    let mut ann = Annotation::new();
+    ann.set_label(Some("pose_loc".into()));
+    ann.set_label_index(Some(4242));
+    sample.annotations = vec![ann];
+
+    let results = client_for(&server.uri())
+        .populate_samples(
+            DatasetID::from(1u64),
+            Some(AnnotationSetID::from(2u64)),
+            vec![sample],
+            None,
+        )
+        .await
+        .expect("populate2 after label pre-create should succeed");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].uuid, "11111111-1111-1111-1111-111111111111");
 }
 
 // ---------------------------------------------------------------------------
