@@ -275,7 +275,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             &image_file_names,
         );
         log::info!("Staged {} images", report.staged);
-        if !report.missing.is_empty() {
+        if !report.missing.is_empty() || report.collisions > 0 {
             const MAX_LISTED: usize = 5;
             let listed: Vec<&str> = report
                 .missing
@@ -293,6 +293,12 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             if report.missing.len() > MAX_LISTED {
                 msg.push_str(&format!(" (+{} more)", report.missing.len() - MAX_LISTED));
             }
+            if report.collisions > 0 {
+                msg.push_str(&format!(
+                    "; {} destination-basename collision(s) skipped (see warnings above)",
+                    report.collisions
+                ));
+            }
             log::warn!("{}", msg);
         }
     }
@@ -307,6 +313,11 @@ struct StageReport {
     staged: usize,
     /// COCO `file_name` values that could not be found under `images_dir`.
     missing: Vec<String>,
+    /// Number of `file_name`s that mapped to a destination basename already
+    /// claimed *within this run* by a different source path, and were
+    /// therefore skipped rather than silently overwriting/aliasing another
+    /// image (e.g. `train/000001.jpg` and `val/000001.jpg`).
+    collisions: usize,
 }
 
 /// Stage images referenced by `file_names` into the EdgeFirst on-disk
@@ -319,8 +330,13 @@ struct StageReport {
 /// Source resolution per `file_name` tries `images_dir.join(file_name)`
 /// first (COCO `file_name` may carry subpaths), then falls back to
 /// `images_dir.join(basename)`. The destination always uses the basename.
-/// Destination files that already exist are left untouched, making re-runs
-/// idempotent. Missing sources are reported non-fatally via `StageReport`.
+/// Destination files that already exist from a prior run are left
+/// untouched, making re-runs idempotent. Two `file_name`s that resolve to
+/// the same destination basename but different source paths within the
+/// same run (e.g. `train/000001.jpg` and `val/000001.jpg`) are a
+/// collision: only the first is staged, the rest are counted in
+/// `StageReport::collisions` and logged, never silently treated as staged.
+/// Missing sources are reported non-fatally via `StageReport`.
 fn stage_images(
     output_path: &Path,
     images_dir: &Path,
@@ -343,11 +359,19 @@ fn stage_images(
         return StageReport {
             staged: 0,
             missing: file_names.to_vec(),
+            collisions: 0,
         };
     }
 
     let mut staged = 0;
     let mut missing = Vec::new();
+    let mut collisions = 0;
+
+    // Basenames claimed by a source path within this run, so a second
+    // `file_name` mapping to the same basename from a *different* source
+    // can be detected as a collision rather than counted as staged just
+    // because the destination now exists.
+    let mut claimed_this_run: HashMap<std::ffi::OsString, (PathBuf, String)> = HashMap::new();
 
     for file_name in file_names {
         let basename = match Path::new(file_name).file_name() {
@@ -357,13 +381,6 @@ fn stage_images(
                 continue;
             }
         };
-        let dest = dest_dir.join(basename);
-
-        // Skip files already staged from a prior run.
-        if dest.symlink_metadata().is_ok() {
-            staged += 1;
-            continue;
-        }
 
         let candidate = images_dir.join(file_name);
         let src = if candidate.exists() {
@@ -371,6 +388,33 @@ fn stage_images(
         } else {
             images_dir.join(basename)
         };
+
+        if let Some((claimed_src, claimed_file_name)) = claimed_this_run.get(basename) {
+            if claimed_src == &src {
+                // Same source referenced twice (e.g. by two annotations) — harmless.
+                staged += 1;
+            } else {
+                log::warn!(
+                    "Destination basename '{}' collision: '{}' was already staged from '{}' this run; skipping '{}' ({})",
+                    basename.to_string_lossy(),
+                    claimed_file_name,
+                    claimed_src.display(),
+                    file_name,
+                    src.display(),
+                );
+                collisions += 1;
+            }
+            continue;
+        }
+
+        let dest = dest_dir.join(basename);
+
+        // Skip files already staged from a prior run.
+        if dest.symlink_metadata().is_ok() {
+            staged += 1;
+            claimed_this_run.insert(basename.to_os_string(), (src, file_name.clone()));
+            continue;
+        }
 
         if !src.exists() {
             missing.push(file_name.clone());
@@ -384,7 +428,10 @@ fn stage_images(
         };
 
         match result {
-            Ok(()) => staged += 1,
+            Ok(()) => {
+                staged += 1;
+                claimed_this_run.insert(basename.to_os_string(), (src, file_name.clone()));
+            }
             Err(e) => {
                 log::warn!("Failed to stage image '{}': {}", file_name, e);
                 missing.push(file_name.clone());
@@ -392,7 +439,11 @@ fn stage_images(
         }
     }
 
-    StageReport { staged, missing }
+    StageReport {
+        staged,
+        missing,
+        collisions,
+    }
 }
 
 /// Symlink `dest` to the canonicalized `src` (Unix/macOS). Staging is a
@@ -2453,6 +2504,38 @@ mod tests {
             std::fs::read(&staged).unwrap(),
             b"jpegdata",
             "re-run must leave exactly one, unmodified copy"
+        );
+    }
+
+    #[test]
+    fn staging_reports_collision_on_duplicate_basename_from_different_sources() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("train")).unwrap();
+        std::fs::create_dir_all(src.join("val")).unwrap();
+        std::fs::write(src.join("train/000001.jpg"), b"train-data").unwrap();
+        std::fs::write(src.join("val/000001.jpg"), b"val-data").unwrap();
+
+        let out = dir.path().join("ds/ds.arrow");
+        let file_names = vec!["train/000001.jpg".to_string(), "val/000001.jpg".to_string()];
+
+        let report = stage_images(&out, &src, false, &file_names);
+
+        assert_eq!(
+            report.staged, 1,
+            "only the first source claiming the basename must be staged"
+        );
+        assert_eq!(
+            report.collisions, 1,
+            "the second file_name must be counted as a collision, not staged"
+        );
+        assert!(report.missing.is_empty());
+
+        let dest = dir.path().join("ds/ds/000001.jpg");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"train-data",
+            "the destination must retain the first-staged source's bytes, never the second's"
         );
     }
 }
