@@ -664,8 +664,7 @@ enum Command {
     /// segmentation annotations.
     ///
     /// Examples:
-    ///   edgefirst coco-to-arrow instances.json -o dataset.arrow
-    ///   edgefirst coco-to-arrow coco.zip -o dataset.arrow --group train
+    ///   edgefirst coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
     CocoToArrow {
         /// Path to COCO annotation file (JSON) or ZIP archive
         coco_path: PathBuf,
@@ -682,6 +681,16 @@ enum Command {
         /// Group name for all samples (e.g., "train", "val")
         #[clap(long)]
         group: Option<String>,
+
+        /// Stage the referenced images next to the output, producing a
+        /// complete offline dataset (<stem>/<stem>.arrow + <stem>/<stem>/)
+        #[clap(long)]
+        images: Option<PathBuf>,
+
+        /// Symlink staged images instead of copying (saves space for large
+        /// sets)
+        #[clap(long, requires = "images")]
+        link: bool,
     },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
@@ -4820,6 +4829,8 @@ async fn handle_coco_to_arrow(
     output: PathBuf,
     masks: bool,
     group: Option<String>,
+    images: Option<PathBuf>,
+    link: bool,
 ) -> Result<(), Error> {
     use edgefirst_client::coco::{CocoToArrowOptions, coco_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
@@ -4839,9 +4850,12 @@ async fn handle_coco_to_arrow(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
+    let staging_requested = images.is_some();
     let options = CocoToArrowOptions {
         include_masks: masks,
         group,
+        images_dir: images,
+        link_images: link,
         ..Default::default()
     };
 
@@ -4860,6 +4874,9 @@ async fn handle_coco_to_arrow(
     pb.finish_with_message("done");
 
     println!("\n✓ Converted {} samples to Arrow format", count);
+    if staging_requested {
+        println!("✓ Image staging complete (see log output above for counts)");
+    }
 
     Ok(())
 }
@@ -5887,9 +5904,18 @@ async fn main() -> Result<(), Error> {
             output,
             masks,
             group,
+            images,
+            link,
         } => {
-            return handle_coco_to_arrow(coco_path.clone(), output.clone(), *masks, group.clone())
-                .await;
+            return handle_coco_to_arrow(
+                coco_path.clone(),
+                output.clone(),
+                *masks,
+                group.clone(),
+                images.clone(),
+                *link,
+            )
+            .await;
         }
         Command::ArrowToCoco {
             arrow_path,
