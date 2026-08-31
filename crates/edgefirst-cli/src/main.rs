@@ -664,9 +664,9 @@ enum Command {
     /// segmentation annotations.
     ///
     /// Examples:
-    ///   edgefirst coco-to-arrow instances.json -o dataset.arrow
-    ///   edgefirst coco-to-arrow coco.zip -o dataset.arrow --group train
-    ///   edgefirst coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
+    ///   edgefirst-client coco-to-arrow instances.json -o dataset.arrow
+    ///   edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
+    ///   edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
     CocoToArrow {
         /// Path to COCO annotation file (JSON) or ZIP archive
         coco_path: PathBuf,
