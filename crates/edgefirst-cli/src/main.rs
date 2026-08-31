@@ -685,7 +685,7 @@ enum Command {
         group: Option<String>,
 
         /// Stage the referenced images next to the output, producing a
-        /// complete offline dataset (<stem>/<stem>.arrow + <stem>/<stem>/)
+        /// complete offline dataset (<dir>/<stem>.arrow + <dir>/<stem>/)
         #[clap(long)]
         images: Option<PathBuf>,
 
@@ -4648,8 +4648,6 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
 /// column and sets `schema_version` metadata.
 #[cfg(feature = "polars")]
 fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> {
-    use std::sync::Arc;
-
     use edgefirst_client::{coco::SCHEMA_VERSION, unflatten_polygon_coordinates};
     use polars::prelude::*;
 
@@ -4789,32 +4787,11 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         PlSmallStr::from(SCHEMA_VERSION),
     );
 
-    // Write output
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::InvalidParameters(format!(
-                "Cannot create output directory {}: {}",
-                parent.display(),
-                e
-            ))
-        })?;
-    }
-
-    let mut out_file = std::fs::File::create(&output_path).map_err(|e| {
-        Error::InvalidParameters(format!(
-            "Cannot create output file {}: {}",
-            output_path.display(),
-            e
-        ))
-    })?;
-
-    let mut writer = IpcWriter::new(&mut out_file);
-    writer.set_custom_schema_metadata(Arc::new(metadata));
-    writer
-        .finish(&mut df)
-        .map_err(|e| Error::InvalidParameters(format!("Failed to write Arrow file: {}", e)))?;
+    // Write output. Format is chosen by `output_path`'s extension (`.parquet`
+    // writes Parquet, anything else writes Arrow IPC), matching coco-to-arrow
+    // — otherwise a `.parquet` input migrated in place would get raw IPC
+    // bytes written back under a `.parquet` name.
+    edgefirst_client::coco::write_dataset(&mut df, &output_path, metadata)?;
 
     println!(
         "\nMigrated to schema version {}: {}",
@@ -7488,6 +7465,46 @@ mod tests {
             assert_eq!(samples[0].annotations.len(), 2);
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_migrate_parquet_output_writes_valid_parquet() {
+            // Regression test: migrate's write path used to be unconditionally
+            // Arrow IPC, with default output = input path, so a foreign
+            // metadata-less .parquet file got overwritten in place with raw
+            // IPC bytes under a .parquet name. The write must dispatch on the
+            // output extension the same way coco-to-arrow does.
+            let test_dir = std::env::temp_dir().join("migrate_test_parquet_output");
+            std::fs::create_dir_all(&test_dir).unwrap();
+            let parquet_path = test_dir.join("dataset.parquet");
+
+            // A minimal, metadata-less Parquet dataset file (no
+            // schema_version), like an externally-produced Parquet
+            // annotation file that has never been through this SDK.
+            let mut df = DataFrame::new_infer_height(vec![
+                Series::new("name".into(), vec!["sample1"]).into_column(),
+                Series::new("frame".into(), vec!["0"]).into_column(),
+            ])
+            .unwrap();
+            {
+                let mut file = std::fs::File::create(&parquet_path).unwrap();
+                ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+            }
+
+            // Migrate in place (no --output supplied).
+            handle_migrate(parquet_path.clone(), None).unwrap();
+
+            // The result must still be readable as Parquet, not raw Arrow IPC
+            // bytes written under a .parquet name.
+            let (migrated_df, metadata) =
+                edgefirst_client::format::read_dataset_dataframe(&parquet_path).unwrap();
+            assert_eq!(migrated_df.height(), 1);
+            assert_eq!(
+                metadata.get("schema_version").map(String::as_str),
+                Some(edgefirst_client::coco::SCHEMA_VERSION)
+            );
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
     }

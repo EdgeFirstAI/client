@@ -4,11 +4,12 @@
 **Last Updated**: 5 July, 2026
 **Status**: DRAFT (pending review)
 
-> **Implementation status (as of client v2.13.2):** the SDK has implemented the
-> 2026.04 Arrow schema since v2.9.0 — it is the current format, not a future one.
-> Dataset annotation files can now also be written and read as Apache Parquet
-> (`.parquet`), selected by output file extension, with the same file-level
-> metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet
+> **Implementation status:** the SDK has implemented the 2026.04 Arrow schema
+> since client v2.9.0 — it is the current format, not a future one. As of the
+> next release after v2.13.2 (Unreleased), dataset annotation files can also be
+> written and read as Apache Parquet (`.parquet`), selected by output file
+> extension, with the same file-level metadata (`schema_version`,
+> `category_metadata`, `labels`) carried as Parquet
 > footer key-value pairs — full parity with Arrow IPC. One gap remains:
 > `validate-snapshot`'s directory-name auto-discovery only looks for
 > `<name>.arrow` in a snapshot directory, so a directory whose annotation file

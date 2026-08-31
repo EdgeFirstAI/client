@@ -465,7 +465,7 @@ fn stage_via_link(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// Apache Parquet with the metadata stored as footer key-value pairs;
 /// anything else (including `.arrow`/`.ipc`) writes Arrow IPC with the
 /// metadata stored as custom schema metadata.
-fn write_dataset(
+pub fn write_dataset(
     df: &mut DataFrame,
     output_path: &Path,
     metadata: BTreeMap<PlSmallStr, PlSmallStr>,

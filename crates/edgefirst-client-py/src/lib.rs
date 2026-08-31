@@ -9956,25 +9956,25 @@ pub fn collect_labels_from_samples(
 /// * `output_path` - Output Arrow file path
 /// * `include_masks` - Include segmentation masks (default: True)
 /// * `group` - Optional group name for all samples (e.g., "train")
+/// * `progress` - Optional callback function(current, total) for progress
 /// * `images_dir` - Optional path to stage the referenced images from,
 ///   producing a complete offline dataset next to `output_path`
 /// * `link_images` - Symlink staged images instead of copying (default:
 ///   False)
-/// * `progress` - Optional callback function(current, total) for progress
 ///
 /// # Returns
 /// Number of annotations converted
 #[cfg(feature = "polars")]
 #[pyfunction]
-#[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, images_dir = None, link_images = false, progress = None))]
+#[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, progress = None, images_dir = None, link_images = false))]
 pub fn coco_to_arrow(
     coco_path: PathBuf,
     output_path: PathBuf,
     include_masks: bool,
     group: Option<String>,
+    progress: Option<Py<PyAny>>,
     images_dir: Option<PathBuf>,
     link_images: bool,
-    progress: Option<Py<PyAny>>,
 ) -> Result<usize, Error> {
     use edgefirst_client::coco::CocoToArrowOptions;
 
