@@ -78,12 +78,72 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
     "camera.jpg",
 ];
 
+/// Returns true if `path`'s extension marks it as a Parquet dataset file
+/// (the shared extension dispatch used by [`read_dataset_dataframe`] and
+/// [`read_dataset_metadata`]); anything else (including `.arrow`/`.ipc`) is
+/// treated as Arrow IPC.
+fn is_parquet_dataset(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("parquet")
+}
+
+/// Read only the file-level metadata (`schema_version`, `labels`,
+/// `category_metadata`) of an EdgeFirst dataset annotation file
+/// (`.arrow`/`.ipc`/`.parquet`), without decoding any row data.
+///
+/// This is the cheap counterpart to [`read_dataset_dataframe`]: for both
+/// formats, only the file footer / schema metadata is parsed. Use this for
+/// checks like "is this file already at the target schema version" where
+/// the DataFrame itself isn't needed — a full Parquet/Arrow decode should
+/// only happen once it's known to be necessary.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or its metadata cannot be
+/// decoded for the selected format.
+#[cfg(feature = "polars")]
+pub fn read_dataset_metadata(path: &Path) -> Result<BTreeMap<String, String>, Error> {
+    use polars::prelude::*;
+
+    let file = File::open(path).map_err(|e| {
+        Error::InvalidParameters(format!("Cannot open dataset file {:?}: {}", path, e))
+    })?;
+
+    if is_parquet_dataset(path) {
+        let mut reader = ParquetReader::new(file);
+        let parquet_meta = reader.get_metadata().map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read Parquet metadata {:?}: {}", path, e))
+        })?;
+        Ok(parquet_meta
+            .key_value_metadata
+            .as_ref()
+            .map(|kv| {
+                kv.iter()
+                    .filter_map(|e| e.value.clone().map(|v| (e.key.to_string(), v)))
+                    .collect()
+            })
+            .unwrap_or_default())
+    } else {
+        let mut file = file;
+        let custom_meta = IpcReader::new(&mut file).custom_metadata().ok().flatten();
+        Ok(custom_meta
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+}
+
 /// Read an EdgeFirst dataset annotation file (`.arrow`/`.ipc`/`.parquet`) and
 /// its file-level metadata (`schema_version`, `labels`, `category_metadata`).
 ///
 /// Format is selected from the file extension: `.parquet` reads the Apache
 /// Parquet footer key-value metadata; anything else (including
 /// `.arrow`/`.ipc`) reads Arrow IPC custom schema metadata.
+///
+/// If only the metadata is needed (not the DataFrame), prefer the cheaper
+/// [`read_dataset_metadata`], which skips decoding row data entirely.
 ///
 /// # Errors
 ///
@@ -95,12 +155,11 @@ pub fn read_dataset_dataframe(
 ) -> Result<(polars::prelude::DataFrame, BTreeMap<String, String>), Error> {
     use polars::prelude::*;
 
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let file = File::open(path).map_err(|e| {
         Error::InvalidParameters(format!("Cannot open dataset file {:?}: {}", path, e))
     })?;
 
-    if ext == "parquet" {
+    if is_parquet_dataset(path) {
         let mut reader = ParquetReader::new(file);
         let parquet_meta = reader
             .get_metadata()
@@ -1000,5 +1059,67 @@ mod tests {
         let display = format!("{}", issue);
         assert!(display.contains("test"));
         assert!(display.contains("test.jpg"));
+    }
+
+    // =========================================================================
+    // read_dataset_metadata: cheap "already at target version" no-op check
+    // =========================================================================
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_read_dataset_metadata_arrow_already_current_short_circuits() {
+        use polars::prelude::*;
+        use std::{io::BufWriter, sync::Arc};
+
+        let temp_dir = TempDir::new().unwrap();
+        let arrow_path = temp_dir.path().join("current.arrow");
+
+        let names = Series::new("name".into(), &["sample1"]);
+        let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
+
+        let file = File::create(&arrow_path).unwrap();
+        let writer = BufWriter::new(file);
+        let mut ipc_writer = IpcWriter::new(writer);
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            PlSmallStr::from("schema_version"),
+            PlSmallStr::from("2026.04"),
+        );
+        ipc_writer.set_custom_schema_metadata(Arc::new(metadata));
+        ipc_writer.finish(&mut df).unwrap();
+
+        // Reading only the metadata must succeed and report the version
+        // without erroring, so a migrate-style version check can short
+        // circuit on an already-current file.
+        let meta = read_dataset_metadata(&arrow_path).unwrap();
+        assert_eq!(
+            meta.get("schema_version").map(|s| s.as_str()),
+            Some("2026.04")
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_read_dataset_metadata_parquet_already_current_short_circuits() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+        let parquet_path = temp_dir.path().join("current.parquet");
+
+        let names = Series::new("name".into(), &["sample1"]);
+        let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
+
+        let file = File::create(&parquet_path).unwrap();
+        let kv = vec![("schema_version".to_string(), "2026.04".to_string())];
+        ParquetWriter::new(file)
+            .with_key_value_metadata(Some(KeyValueMetadata::from_static(kv)))
+            .finish(&mut df)
+            .unwrap();
+
+        let meta = read_dataset_metadata(&parquet_path).unwrap();
+        assert_eq!(
+            meta.get("schema_version").map(|s| s.as_str()),
+            Some("2026.04")
+        );
     }
 }

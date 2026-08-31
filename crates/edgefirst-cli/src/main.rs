@@ -4655,11 +4655,11 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         )));
     }
 
-    // Read the DataFrame and its existing metadata. Accepts .arrow/.ipc/.parquet.
-    let (df, existing_metadata) = edgefirst_client::format::read_dataset_dataframe(&input)?;
-
-    // Check schema_version — if already >= 2026.04, nothing to do
-    if let Some(version) = existing_metadata.get("schema_version")
+    // Check schema_version before touching row data — this reads only the
+    // file footer/schema metadata (no DataFrame decode) so the common no-op
+    // case (already migrated) stays cheap regardless of file size.
+    if let Some(version) =
+        edgefirst_client::format::read_dataset_metadata(&input)?.get("schema_version")
         && version.as_str() >= SCHEMA_VERSION
     {
         println!(
@@ -4668,6 +4668,10 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         );
         return Ok(());
     }
+
+    // Migration is needed: now read the full DataFrame and its existing
+    // metadata. Accepts .arrow/.ipc/.parquet.
+    let (df, existing_metadata) = edgefirst_client::format::read_dataset_dataframe(&input)?;
 
     let has_mask = df.get_column_names().contains(&&PlSmallStr::from("mask"));
     let row_count = df.height();
