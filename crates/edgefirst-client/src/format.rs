@@ -59,7 +59,7 @@
 //! ```
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     path::{Path, PathBuf},
 };
@@ -77,6 +77,70 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
     "camera.png",
     "camera.jpg",
 ];
+
+/// Read an EdgeFirst dataset annotation file (`.arrow`/`.ipc`/`.parquet`) and
+/// its file-level metadata (`schema_version`, `labels`, `category_metadata`).
+///
+/// Format is selected from the file extension: `.parquet` reads the Apache
+/// Parquet footer key-value metadata; anything else (including
+/// `.arrow`/`.ipc`) reads Arrow IPC custom schema metadata.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or the DataFrame/metadata
+/// cannot be decoded for the selected format.
+#[cfg(feature = "polars")]
+pub fn read_dataset_dataframe(
+    path: &Path,
+) -> Result<(polars::prelude::DataFrame, BTreeMap<String, String>), Error> {
+    use polars::prelude::*;
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let file = File::open(path).map_err(|e| {
+        Error::InvalidParameters(format!("Cannot open dataset file {:?}: {}", path, e))
+    })?;
+
+    if ext == "parquet" {
+        let mut reader = ParquetReader::new(file);
+        let parquet_meta = reader
+            .get_metadata()
+            .map_err(|e| {
+                Error::InvalidParameters(format!(
+                    "Failed to read Parquet metadata {:?}: {}",
+                    path, e
+                ))
+            })?
+            .clone();
+        let metadata: BTreeMap<String, String> = parquet_meta
+            .key_value_metadata
+            .as_ref()
+            .map(|kv| {
+                kv.iter()
+                    .filter_map(|e| e.value.clone().map(|v| (e.key.to_string(), v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let df = reader.finish().map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read Parquet file {:?}: {}", path, e))
+        })?;
+        Ok((df, metadata))
+    } else {
+        let mut file = file;
+        let mut reader = IpcReader::new(&mut file);
+        let custom_meta = reader.custom_metadata().ok().flatten();
+        let metadata: BTreeMap<String, String> = custom_meta
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let df = reader.finish().map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read Arrow file {:?}: {}", path, e))
+        })?;
+        Ok((df, metadata))
+    }
+}
 
 /// Resolve all file paths referenced by an Arrow annotation file.
 ///
@@ -116,15 +180,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
 /// ```
 #[cfg(feature = "polars")]
 pub fn resolve_arrow_files(arrow_path: &Path) -> Result<HashMap<String, PathBuf>, Error> {
-    use polars::prelude::*;
-
-    let mut file = File::open(arrow_path).map_err(|e| {
-        Error::InvalidParameters(format!("Cannot open Arrow file {:?}: {}", arrow_path, e))
-    })?;
-
-    let df = IpcReader::new(&mut file).finish().map_err(|e| {
-        Error::InvalidParameters(format!("Failed to read Arrow file {:?}: {}", arrow_path, e))
-    })?;
+    let (df, _metadata) = read_dataset_dataframe(arrow_path)?;
 
     // Get the name column (required)
     let names = df
@@ -226,15 +282,7 @@ pub fn resolve_files_with_container(
     arrow_path: &Path,
     sensor_container: &Path,
 ) -> Result<Vec<ResolvedFile>, Error> {
-    use polars::prelude::*;
-
-    let mut file = File::open(arrow_path).map_err(|e| {
-        Error::InvalidParameters(format!("Cannot open Arrow file {:?}: {}", arrow_path, e))
-    })?;
-
-    let df = IpcReader::new(&mut file).finish().map_err(|e| {
-        Error::InvalidParameters(format!("Failed to read Arrow file {:?}: {}", arrow_path, e))
-    })?;
+    let (df, _metadata) = read_dataset_dataframe(arrow_path)?;
 
     // Build an index of all files in the sensor container
     let file_index = build_file_index(sensor_container)?;

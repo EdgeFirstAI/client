@@ -2117,7 +2117,7 @@ fn parse_annotations_from_arrow(
     progress: &indicatif::ProgressBar,
 ) -> Result<Vec<edgefirst_client::Sample>, Error> {
     use polars::prelude::*;
-    use std::{collections::HashMap, fs::File};
+    use std::collections::HashMap;
 
     // Map: sample_name -> metadata
     // sequence_name is Some(name) when frame is not-null, indicating this sample is
@@ -2125,10 +2125,7 @@ fn parse_annotations_from_arrow(
     let mut samples_map: HashMap<String, SampleMetadata> = HashMap::new();
 
     if let Some(arrow_path) = annotations {
-        let mut file = File::open(arrow_path)?;
-        let df = IpcReader::new(&mut file)
-            .finish()
-            .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
+        let (df, _metadata) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
 
         let total_rows = df.height();
 
@@ -4658,18 +4655,11 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         )));
     }
 
-    // Read existing metadata
-    let existing_metadata = {
-        let mut meta_file = std::fs::File::open(&input).map_err(|e| {
-            Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e))
-        })?;
-        let mut reader = IpcReader::new(&mut meta_file);
-        reader.custom_metadata().ok().flatten()
-    };
+    // Read the DataFrame and its existing metadata. Accepts .arrow/.ipc/.parquet.
+    let (df, existing_metadata) = edgefirst_client::format::read_dataset_dataframe(&input)?;
 
     // Check schema_version — if already >= 2026.04, nothing to do
-    if let Some(ref meta) = existing_metadata
-        && let Some(version) = meta.get(&PlSmallStr::from("schema_version"))
+    if let Some(version) = existing_metadata.get("schema_version")
         && version.as_str() >= SCHEMA_VERSION
     {
         println!(
@@ -4678,13 +4668,6 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         );
         return Ok(());
     }
-
-    // Read the DataFrame
-    let mut file = std::fs::File::open(&input)
-        .map_err(|e| Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e)))?;
-    let df = IpcReader::new(&mut file)
-        .finish()
-        .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
 
     let has_mask = df.get_column_names().contains(&&PlSmallStr::from("mask"));
     let row_count = df.height();
@@ -4782,8 +4765,9 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
 
     // Prepare metadata: preserve existing, update schema_version
     let mut metadata: std::collections::BTreeMap<PlSmallStr, PlSmallStr> = existing_metadata
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-        .unwrap_or_default();
+        .into_iter()
+        .map(|(k, v)| (PlSmallStr::from(k), PlSmallStr::from(v)))
+        .collect();
 
     metadata.insert(
         PlSmallStr::from("schema_version"),

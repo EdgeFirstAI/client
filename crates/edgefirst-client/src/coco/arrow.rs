@@ -441,31 +441,15 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let arrow_path = arrow_path.as_ref();
     let output_path = output_path.as_ref();
 
-    // Read file-level metadata (must be done before consuming the reader)
-    let (schema_version, category_metadata_json, labels_metadata_json) = {
-        let mut meta_file = std::fs::File::open(arrow_path)?;
-        let mut reader = IpcReader::new(&mut meta_file);
-        let meta = reader.custom_metadata().ok().flatten();
-        let sv = meta.as_ref().and_then(|m| {
-            m.get(&PlSmallStr::from("schema_version"))
-                .map(|s| s.to_string())
-        });
-        let cm = meta.as_ref().and_then(|m| {
-            m.get(&PlSmallStr::from("category_metadata"))
-                .map(|s| s.to_string())
-        });
-        let lm = meta
-            .as_ref()
-            .and_then(|m| m.get(&PlSmallStr::from("labels")).map(|s| s.to_string()));
-        (sv, cm, lm)
-    };
+    // Read the DataFrame and its file-level metadata (schema_version,
+    // category_metadata, labels). Accepts .arrow/.ipc/.parquet.
+    let (df, metadata) = crate::format::read_dataset_dataframe(arrow_path)?;
+    let schema_version = metadata.get("schema_version").cloned();
+    let category_metadata_json = metadata.get("category_metadata").cloned();
+    let labels_metadata_json = metadata.get("labels").cloned();
 
     // Determine format version: absent → 2025.10, present → use value
     let is_legacy = schema_version.is_none();
-
-    // Read Arrow file
-    let mut file = std::fs::File::open(arrow_path)?;
-    let df = IpcReader::new(&mut file).finish()?;
 
     // Get group column for filtering
     let groups_to_filter: std::collections::HashSet<_> = options.groups.iter().cloned().collect();
@@ -2179,5 +2163,44 @@ mod tests {
         assert!(cols.iter().any(|c| c.as_str() == "name"));
         assert!(cols.iter().any(|c| c.as_str() == "label"));
         assert!(cols.iter().any(|c| c.as_str() == "box2d"));
+    }
+
+    #[tokio::test]
+    async fn parquet_to_coco_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, MINIMAL_COCO_JSON).unwrap();
+        let parquet = dir.path().join("out.parquet");
+
+        let n = coco_to_arrow(&coco, &parquet, &CocoToArrowOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let roundtrip_json = dir.path().join("roundtrip.json");
+        let converted = arrow_to_coco(
+            &parquet,
+            &roundtrip_json,
+            &ArrowToCocoOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(converted, 2, "arrow_to_coco must accept a .parquet input");
+
+        let output: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&roundtrip_json).unwrap()).unwrap();
+
+        let categories = output["categories"].as_array().unwrap();
+        assert_eq!(categories.len(), 2, "categories must round-trip");
+        let category_names: std::collections::HashSet<_> = categories
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(category_names.contains("person"));
+        assert!(category_names.contains("cat"));
+
+        let annotations = output["annotations"].as_array().unwrap();
+        assert_eq!(annotations.len(), 2, "annotation count must round-trip");
     }
 }
