@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Converting a COCO dataset for offline use is now one command: `coco-to-arrow`
+  can stage the referenced images alongside the annotations (`--images`, with
+  `--link` to symlink instead of copy), producing a dataset ready for offline
+  validation.
+- Datasets can now also be written and read as Parquet (`.parquet`) in
+  addition to Arrow.
+
 ### Fixed
 
 - `samples()` now keeps GPS/IMU location metadata when the caller (including
