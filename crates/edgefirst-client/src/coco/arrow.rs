@@ -250,18 +250,49 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
         metadata.insert(PlSmallStr::from("labels"), PlSmallStr::from(labels_json));
     }
 
-    // Write Arrow file
+    write_dataset(&mut df.clone(), output_path, metadata)?;
+
+    Ok(all_samples.len())
+}
+
+/// Write a DataFrame plus file-level metadata to `output_path`.
+///
+/// Format is selected from the output path extension: `.parquet` writes
+/// Apache Parquet with the metadata stored as footer key-value pairs;
+/// anything else (including `.arrow`/`.ipc`) writes Arrow IPC with the
+/// metadata stored as custom schema metadata.
+fn write_dataset(
+    df: &mut DataFrame,
+    output_path: &Path,
+    metadata: BTreeMap<PlSmallStr, PlSmallStr>,
+) -> Result<(), Error> {
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
+    let ext = output_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     let mut file = std::fs::File::create(output_path)?;
-    let mut writer = IpcWriter::new(&mut file);
-    writer.set_custom_schema_metadata(Arc::new(metadata));
-    writer.finish(&mut df.clone())?;
-
-    Ok(all_samples.len())
+    match ext {
+        "parquet" => {
+            let kv = metadata
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            ParquetWriter::new(&mut file)
+                .with_key_value_metadata(Some(KeyValueMetadata::from_static(kv)))
+                .finish(df)?;
+        }
+        _ => {
+            let mut writer = IpcWriter::new(&mut file);
+            writer.set_custom_schema_metadata(Arc::new(metadata));
+            writer.finish(df)?;
+        }
+    }
+    Ok(())
 }
 
 /// Convert a single image's annotations to EdgeFirst samples.
@@ -2084,5 +2115,69 @@ mod tests {
             None,
             "unannotated image row must have a null label"
         );
+    }
+
+    // =========================================================================
+    // Parquet output tests
+    // =========================================================================
+
+    const MINIMAL_COCO_JSON: &str = r#"{
+        "images": [
+            {"id": 1, "width": 640, "height": 480, "file_name": "test1.jpg"},
+            {"id": 2, "width": 320, "height": 240, "file_name": "test2.jpg"}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0},
+            {"id": 2, "image_id": 2, "category_id": 2, "bbox": [5, 5, 50, 40], "area": 2000, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 1, "name": "person", "supercategory": "human"},
+            {"id": 2, "name": "cat", "supercategory": "animal"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn coco_to_parquet_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, MINIMAL_COCO_JSON).unwrap();
+        let out = dir.path().join("out.parquet");
+
+        let n = coco_to_arrow(&coco, &out, &CocoToArrowOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let file = std::fs::File::open(&out).unwrap();
+        let mut reader = ParquetReader::new(file);
+
+        // KV metadata: read the parquet footer key-value pairs.
+        let metadata = reader.get_metadata().unwrap().clone();
+        let kv = metadata
+            .key_value_metadata
+            .as_ref()
+            .expect("parquet footer must carry key-value metadata");
+        let get = |key: &str| {
+            kv.iter()
+                .find(|e| e.key == key)
+                .and_then(|e| e.value.clone())
+        };
+        assert_eq!(
+            get("schema_version").as_deref(),
+            Some(SCHEMA_VERSION),
+            "schema_version metadata should be '2026.04'"
+        );
+        assert!(get("labels").is_some(), "labels metadata should be present");
+        assert!(
+            get("category_metadata").is_some(),
+            "category_metadata metadata should be present"
+        );
+
+        let df = reader.finish().unwrap();
+        assert_eq!(df.height(), 2);
+        let cols = df.get_column_names();
+        assert!(cols.iter().any(|c| c.as_str() == "name"));
+        assert!(cols.iter().any(|c| c.as_str() == "label"));
+        assert!(cols.iter().any(|c| c.as_str() == "box2d"));
     }
 }
