@@ -19,7 +19,7 @@ use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample};
 use polars::prelude::*;
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -34,6 +34,11 @@ pub const SCHEMA_VERSION: &str = "2026.04";
 type PolygonRings = Vec<Vec<(f32, f32)>>;
 
 /// Options for COCO to Arrow conversion.
+///
+/// Construct with `..Default::default()` (as every call site in this
+/// workspace does) rather than a fully-specified struct literal: new fields
+/// may be added here in a minor release, following this crate's existing
+/// convention for `*Options` structs.
 #[derive(Debug, Clone)]
 pub struct CocoToArrowOptions {
     /// Include segmentation masks in output.
@@ -42,6 +47,11 @@ pub struct CocoToArrowOptions {
     pub group: Option<String>,
     /// Maximum number of parallel workers.
     pub max_workers: usize,
+    /// Stage the images referenced by the COCO file into the EdgeFirst
+    /// on-disk layout next to the output annotation file.
+    pub images_dir: Option<PathBuf>,
+    /// Symlink instead of copy (large datasets).
+    pub link_images: bool,
 }
 
 impl Default for CocoToArrowOptions {
@@ -50,6 +60,8 @@ impl Default for CocoToArrowOptions {
             include_masks: true,
             group: None,
             max_workers: max_workers(),
+            images_dir: None,
+            link_images: false,
         }
     }
 }
@@ -122,6 +134,14 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     let index = Arc::new(CocoIndex::from_dataset(&dataset));
     let total_images = dataset.images.len();
 
+    // Captured before `dataset.images` is moved into the worker loop below;
+    // used for image staging after the annotation write.
+    let image_file_names: Vec<String> = dataset
+        .images
+        .iter()
+        .map(|img| img.file_name.clone())
+        .collect();
+
     // Send initial progress
     if let Some(ref p) = progress {
         let _ = p
@@ -182,7 +202,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     }
 
     // Convert to DataFrame
-    let df = crate::samples_dataframe(&all_samples)?;
+    let mut df = crate::samples_dataframe(&all_samples)?;
 
     // Build schema-level metadata
     let mut metadata: BTreeMap<PlSmallStr, PlSmallStr> = BTreeMap::new();
@@ -250,18 +270,269 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
         metadata.insert(PlSmallStr::from("labels"), PlSmallStr::from(labels_json));
     }
 
-    // Write Arrow file
+    write_dataset(&mut df, output_path, metadata)?;
+
+    if let Some(images_dir) = &options.images_dir {
+        let report = stage_images(
+            output_path,
+            images_dir,
+            options.link_images,
+            &image_file_names,
+        );
+        log::info!("Staged {} images", report.staged);
+        if !report.missing.is_empty() || !report.failed.is_empty() || report.collisions > 0 {
+            const MAX_LISTED: usize = 5;
+            let mut msg = String::new();
+            if !report.missing.is_empty() {
+                let listed: Vec<&str> = report
+                    .missing
+                    .iter()
+                    .take(MAX_LISTED)
+                    .map(String::as_str)
+                    .collect();
+                msg.push_str(&format!(
+                    "{} images referenced by {} were not found in {}: {}",
+                    report.missing.len(),
+                    coco_path.display(),
+                    images_dir.display(),
+                    listed.join(", "),
+                ));
+                if report.missing.len() > MAX_LISTED {
+                    msg.push_str(&format!(" (+{} more)", report.missing.len() - MAX_LISTED));
+                }
+            }
+            if !report.failed.is_empty() {
+                let listed: Vec<&str> = report
+                    .failed
+                    .iter()
+                    .take(MAX_LISTED)
+                    .map(String::as_str)
+                    .collect();
+                if !msg.is_empty() {
+                    msg.push_str("; ");
+                }
+                msg.push_str(&format!(
+                    "{} image(s) failed to stage (copy/link I/O error, see warnings above): {}",
+                    report.failed.len(),
+                    listed.join(", "),
+                ));
+                if report.failed.len() > MAX_LISTED {
+                    msg.push_str(&format!(" (+{} more)", report.failed.len() - MAX_LISTED));
+                }
+            }
+            if report.collisions > 0 {
+                msg.push_str(&format!(
+                    "; {} destination-basename collision(s) skipped (see warnings above)",
+                    report.collisions
+                ));
+            }
+            log::warn!("{}", msg);
+        }
+    }
+
+    Ok(all_samples.len())
+}
+
+/// Outcome of staging images referenced by a COCO dataset into the output
+/// annotation file's sibling image directory.
+struct StageReport {
+    /// Number of images copied/linked (or already present from a prior run).
+    staged: usize,
+    /// COCO `file_name` values that could not be found under `images_dir`.
+    missing: Vec<String>,
+    /// COCO `file_name` values that were found under `images_dir` but failed
+    /// to copy/link into the staging directory (see warnings logged at the
+    /// point of failure for the underlying I/O error).
+    failed: Vec<String>,
+    /// Number of `file_name`s that mapped to a destination basename already
+    /// claimed *within this run* by a different source path, and were
+    /// therefore skipped rather than silently overwriting/aliasing another
+    /// image (e.g. `train/000001.jpg` and `val/000001.jpg`).
+    collisions: usize,
+}
+
+/// Stage images referenced by `file_names` into the EdgeFirst on-disk
+/// layout next to `output_path`.
+///
+/// For an output annotation path `<dir>/<stem>.<ext>`, images are staged
+/// into the sibling directory `<dir>/<stem>/`, which is where
+/// `resolve_files_with_container` expects to find them.
+///
+/// Source resolution per `file_name` tries `images_dir.join(file_name)`
+/// first (COCO `file_name` may carry subpaths), then falls back to
+/// `images_dir.join(basename)`. The destination always uses the basename.
+/// Destination files that already exist from a prior run are left
+/// untouched, making re-runs idempotent. Two `file_name`s that resolve to
+/// the same destination basename but different source paths within the
+/// same run (e.g. `train/000001.jpg` and `val/000001.jpg`) are a
+/// collision: only the first is staged, the rest are counted in
+/// `StageReport::collisions` and logged, never silently treated as staged.
+/// Missing sources and copy/link I/O failures are both reported
+/// non-fatally via `StageReport`, in its `missing` and `failed` fields
+/// respectively.
+fn stage_images(
+    output_path: &Path,
+    images_dir: &Path,
+    link: bool,
+    file_names: &[String],
+) -> StageReport {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("dataset");
+    let dest_dir = parent.join(stem);
+
+    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+        log::warn!(
+            "Failed to create image staging directory {}: {}",
+            dest_dir.display(),
+            e
+        );
+        return StageReport {
+            staged: 0,
+            missing: file_names.to_vec(),
+            failed: Vec::new(),
+            collisions: 0,
+        };
+    }
+
+    let mut staged = 0;
+    let mut missing = Vec::new();
+    let mut failed = Vec::new();
+    let mut collisions = 0;
+
+    // Basenames claimed by a source path within this run, so a second
+    // `file_name` mapping to the same basename from a *different* source
+    // can be detected as a collision rather than counted as staged just
+    // because the destination now exists.
+    let mut claimed_this_run: HashMap<std::ffi::OsString, (PathBuf, String)> = HashMap::new();
+
+    for file_name in file_names {
+        let basename = match Path::new(file_name).file_name() {
+            Some(b) => b,
+            None => {
+                missing.push(file_name.clone());
+                continue;
+            }
+        };
+
+        let candidate = images_dir.join(file_name);
+        let src = if candidate.exists() {
+            candidate
+        } else {
+            images_dir.join(basename)
+        };
+
+        if let Some((claimed_src, claimed_file_name)) = claimed_this_run.get(basename) {
+            if claimed_src == &src {
+                // Same source referenced twice (e.g. by two annotations) — harmless.
+                staged += 1;
+            } else {
+                log::warn!(
+                    "Destination basename '{}' collision: '{}' was already staged from '{}' this run; skipping '{}' ({})",
+                    basename.to_string_lossy(),
+                    claimed_file_name,
+                    claimed_src.display(),
+                    file_name,
+                    src.display(),
+                );
+                collisions += 1;
+            }
+            continue;
+        }
+
+        let dest = dest_dir.join(basename);
+
+        // Skip files already staged from a prior run.
+        if dest.symlink_metadata().is_ok() {
+            staged += 1;
+            claimed_this_run.insert(basename.to_os_string(), (src, file_name.clone()));
+            continue;
+        }
+
+        if !src.exists() {
+            missing.push(file_name.clone());
+            continue;
+        }
+
+        let result = if link {
+            stage_via_link(&src, &dest)
+        } else {
+            std::fs::copy(&src, &dest).map(|_| ())
+        };
+
+        match result {
+            Ok(()) => {
+                staged += 1;
+                claimed_this_run.insert(basename.to_os_string(), (src, file_name.clone()));
+            }
+            Err(e) => {
+                log::warn!("Failed to stage image '{}': {}", file_name, e);
+                failed.push(file_name.clone());
+            }
+        }
+    }
+
+    StageReport {
+        staged,
+        missing,
+        failed,
+        collisions,
+    }
+}
+
+/// Symlink `dest` to the canonicalized `src` (Unix/macOS). Staging is a
+/// Linux/macOS workflow; other platforms fall back to copying.
+#[cfg(unix)]
+fn stage_via_link(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let canonical = src.canonicalize()?;
+    std::os::unix::fs::symlink(canonical, dest)
+}
+
+#[cfg(not(unix))]
+fn stage_via_link(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dest).map(|_| ())
+}
+
+/// Write a DataFrame plus file-level metadata to `output_path`.
+///
+/// Format is selected from the output path extension: `.parquet` writes
+/// Apache Parquet with the metadata stored as footer key-value pairs;
+/// anything else (including `.arrow`/`.ipc`) writes Arrow IPC with the
+/// metadata stored as custom schema metadata.
+pub fn write_dataset(
+    df: &mut DataFrame,
+    output_path: &Path,
+    metadata: BTreeMap<PlSmallStr, PlSmallStr>,
+) -> Result<(), Error> {
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
+    let ext = output_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     let mut file = std::fs::File::create(output_path)?;
-    let mut writer = IpcWriter::new(&mut file);
-    writer.set_custom_schema_metadata(Arc::new(metadata));
-    writer.finish(&mut df.clone())?;
-
-    Ok(all_samples.len())
+    match ext {
+        "parquet" => {
+            let kv = metadata
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            ParquetWriter::new(&mut file)
+                .with_key_value_metadata(Some(KeyValueMetadata::from_static(kv)))
+                .finish(df)?;
+        }
+        _ => {
+            let mut writer = IpcWriter::new(&mut file);
+            writer.set_custom_schema_metadata(Arc::new(metadata));
+            writer.finish(df)?;
+        }
+    }
+    Ok(())
 }
 
 /// Convert a single image's annotations to EdgeFirst samples.
@@ -410,31 +681,15 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let arrow_path = arrow_path.as_ref();
     let output_path = output_path.as_ref();
 
-    // Read file-level metadata (must be done before consuming the reader)
-    let (schema_version, category_metadata_json, labels_metadata_json) = {
-        let mut meta_file = std::fs::File::open(arrow_path)?;
-        let mut reader = IpcReader::new(&mut meta_file);
-        let meta = reader.custom_metadata().ok().flatten();
-        let sv = meta.as_ref().and_then(|m| {
-            m.get(&PlSmallStr::from("schema_version"))
-                .map(|s| s.to_string())
-        });
-        let cm = meta.as_ref().and_then(|m| {
-            m.get(&PlSmallStr::from("category_metadata"))
-                .map(|s| s.to_string())
-        });
-        let lm = meta
-            .as_ref()
-            .and_then(|m| m.get(&PlSmallStr::from("labels")).map(|s| s.to_string()));
-        (sv, cm, lm)
-    };
+    // Read the DataFrame and its file-level metadata (schema_version,
+    // category_metadata, labels). Accepts .arrow/.ipc/.parquet.
+    let (df, metadata) = crate::format::read_dataset_dataframe(arrow_path)?;
+    let schema_version = metadata.get("schema_version").cloned();
+    let category_metadata_json = metadata.get("category_metadata").cloned();
+    let labels_metadata_json = metadata.get("labels").cloned();
 
     // Determine format version: absent → 2025.10, present → use value
     let is_legacy = schema_version.is_none();
-
-    // Read Arrow file
-    let mut file = std::fs::File::open(arrow_path)?;
-    let df = IpcReader::new(&mut file).finish()?;
 
     // Get group column for filtering
     let groups_to_filter: std::collections::HashSet<_> = options.groups.iter().cloned().collect();
@@ -2083,6 +2338,240 @@ mod tests {
             label_col.str().unwrap().get(i),
             None,
             "unannotated image row must have a null label"
+        );
+    }
+
+    // =========================================================================
+    // Parquet output tests
+    // =========================================================================
+
+    const MINIMAL_COCO_JSON: &str = r#"{
+        "images": [
+            {"id": 1, "width": 640, "height": 480, "file_name": "test1.jpg"},
+            {"id": 2, "width": 320, "height": 240, "file_name": "test2.jpg"}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0},
+            {"id": 2, "image_id": 2, "category_id": 2, "bbox": [5, 5, 50, 40], "area": 2000, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 1, "name": "person", "supercategory": "human"},
+            {"id": 2, "name": "cat", "supercategory": "animal"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn coco_to_parquet_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, MINIMAL_COCO_JSON).unwrap();
+        let out = dir.path().join("out.parquet");
+
+        let n = coco_to_arrow(&coco, &out, &CocoToArrowOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let file = std::fs::File::open(&out).unwrap();
+        let mut reader = ParquetReader::new(file);
+
+        // KV metadata: read the parquet footer key-value pairs.
+        let metadata = reader.get_metadata().unwrap().clone();
+        let kv = metadata
+            .key_value_metadata
+            .as_ref()
+            .expect("parquet footer must carry key-value metadata");
+        let get = |key: &str| {
+            kv.iter()
+                .find(|e| e.key == key)
+                .and_then(|e| e.value.clone())
+        };
+        assert_eq!(
+            get("schema_version").as_deref(),
+            Some(SCHEMA_VERSION),
+            "schema_version metadata should be '2026.04'"
+        );
+        assert!(get("labels").is_some(), "labels metadata should be present");
+        assert!(
+            get("category_metadata").is_some(),
+            "category_metadata metadata should be present"
+        );
+
+        let df = reader.finish().unwrap();
+        assert_eq!(df.height(), 2);
+        let cols = df.get_column_names();
+        assert!(cols.iter().any(|c| c.as_str() == "name"));
+        assert!(cols.iter().any(|c| c.as_str() == "label"));
+        assert!(cols.iter().any(|c| c.as_str() == "box2d"));
+    }
+
+    #[tokio::test]
+    async fn parquet_to_coco_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, MINIMAL_COCO_JSON).unwrap();
+        let parquet = dir.path().join("out.parquet");
+
+        let n = coco_to_arrow(&coco, &parquet, &CocoToArrowOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let roundtrip_json = dir.path().join("roundtrip.json");
+        let converted = arrow_to_coco(
+            &parquet,
+            &roundtrip_json,
+            &ArrowToCocoOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(converted, 2, "arrow_to_coco must accept a .parquet input");
+
+        let output: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&roundtrip_json).unwrap()).unwrap();
+
+        let categories = output["categories"].as_array().unwrap();
+        assert_eq!(categories.len(), 2, "categories must round-trip");
+        let category_names: std::collections::HashSet<_> = categories
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(category_names.contains("person"));
+        assert!(category_names.contains("cat"));
+
+        let annotations = output["annotations"].as_array().unwrap();
+        assert_eq!(annotations.len(), 2, "annotation count must round-trip");
+    }
+
+    // =========================================================================
+    // Image staging tests
+    // =========================================================================
+
+    const STAGING_COCO_JSON: &str = r#"{
+        "images": [
+            {"id": 1, "width": 640, "height": 480, "file_name": "img1.jpg"},
+            {"id": 2, "width": 320, "height": 240, "file_name": "img2.jpg"}
+        ],
+        "annotations": [],
+        "categories": []
+    }"#;
+
+    #[tokio::test]
+    async fn staging_copies_referenced_images_and_reports_missing() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("img1.jpg"), b"jpegdata").unwrap();
+
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, STAGING_COCO_JSON).unwrap();
+
+        let out = dir.path().join("ds/ds.arrow");
+        let options = CocoToArrowOptions {
+            images_dir: Some(src),
+            ..Default::default()
+        };
+
+        coco_to_arrow(&coco, &out, &options, None).await.unwrap();
+
+        assert!(dir.path().join("ds/ds/img1.jpg").exists());
+        assert!(
+            !dir.path().join("ds/ds/img2.jpg").exists(),
+            "missing source images must be skipped non-fatally"
+        );
+    }
+
+    #[tokio::test]
+    async fn staging_links_when_requested() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("img1.jpg"), b"jpegdata").unwrap();
+
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, STAGING_COCO_JSON).unwrap();
+
+        let out = dir.path().join("ds/ds.arrow");
+        let options = CocoToArrowOptions {
+            images_dir: Some(src),
+            link_images: true,
+            ..Default::default()
+        };
+
+        coco_to_arrow(&coco, &out, &options, None).await.unwrap();
+
+        let staged = dir.path().join("ds/ds/img1.jpg");
+        #[cfg(unix)]
+        assert!(
+            std::fs::symlink_metadata(&staged)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "--link must produce a symlink, not a copy"
+        );
+        assert!(staged.exists());
+    }
+
+    #[tokio::test]
+    async fn staging_is_idempotent_on_rerun() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("img1.jpg"), b"jpegdata").unwrap();
+
+        let coco = dir.path().join("instances.json");
+        std::fs::write(&coco, STAGING_COCO_JSON).unwrap();
+
+        let out = dir.path().join("ds/ds.arrow");
+        let options = CocoToArrowOptions {
+            images_dir: Some(src),
+            ..Default::default()
+        };
+
+        coco_to_arrow(&coco, &out, &options, None).await.unwrap();
+        coco_to_arrow(&coco, &out, &options, None)
+            .await
+            .expect("re-running staging over an already-staged output must not error");
+
+        let staged = dir.path().join("ds/ds/img1.jpg");
+        assert!(staged.exists());
+        assert_eq!(
+            std::fs::read(&staged).unwrap(),
+            b"jpegdata",
+            "re-run must leave exactly one, unmodified copy"
+        );
+    }
+
+    #[test]
+    fn staging_reports_collision_on_duplicate_basename_from_different_sources() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("train")).unwrap();
+        std::fs::create_dir_all(src.join("val")).unwrap();
+        std::fs::write(src.join("train/000001.jpg"), b"train-data").unwrap();
+        std::fs::write(src.join("val/000001.jpg"), b"val-data").unwrap();
+
+        let out = dir.path().join("ds/ds.arrow");
+        let file_names = vec!["train/000001.jpg".to_string(), "val/000001.jpg".to_string()];
+
+        let report = stage_images(&out, &src, false, &file_names);
+
+        assert_eq!(
+            report.staged, 1,
+            "only the first source claiming the basename must be staged"
+        );
+        assert_eq!(
+            report.collisions, 1,
+            "the second file_name must be counted as a collision, not staged"
+        );
+        assert!(report.missing.is_empty());
+
+        let dest = dir.path().join("ds/ds/000001.jpg");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"train-data",
+            "the destination must retain the first-staged source's bytes, never the second's"
         );
     }
 }

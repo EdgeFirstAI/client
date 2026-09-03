@@ -664,8 +664,9 @@ enum Command {
     /// segmentation annotations.
     ///
     /// Examples:
-    ///   edgefirst coco-to-arrow instances.json -o dataset.arrow
-    ///   edgefirst coco-to-arrow coco.zip -o dataset.arrow --group train
+    ///   edgefirst-client coco-to-arrow instances.json -o dataset.arrow
+    ///   edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
+    ///   edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
     CocoToArrow {
         /// Path to COCO annotation file (JSON) or ZIP archive
         coco_path: PathBuf,
@@ -682,6 +683,16 @@ enum Command {
         /// Group name for all samples (e.g., "train", "val")
         #[clap(long)]
         group: Option<String>,
+
+        /// Stage the referenced images next to the output, producing a
+        /// complete offline dataset (<dir>/<stem>.arrow + <dir>/<stem>/)
+        #[clap(long)]
+        images: Option<PathBuf>,
+
+        /// Symlink staged images instead of copying (saves space for large
+        /// sets)
+        #[clap(long, requires = "images")]
+        link: bool,
     },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
@@ -2117,7 +2128,7 @@ fn parse_annotations_from_arrow(
     progress: &indicatif::ProgressBar,
 ) -> Result<Vec<edgefirst_client::Sample>, Error> {
     use polars::prelude::*;
-    use std::{collections::HashMap, fs::File};
+    use std::collections::HashMap;
 
     // Map: sample_name -> metadata
     // sequence_name is Some(name) when frame is not-null, indicating this sample is
@@ -2125,10 +2136,7 @@ fn parse_annotations_from_arrow(
     let mut samples_map: HashMap<String, SampleMetadata> = HashMap::new();
 
     if let Some(arrow_path) = annotations {
-        let mut file = File::open(arrow_path)?;
-        let df = IpcReader::new(&mut file)
-            .finish()
-            .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
+        let (df, _metadata) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
 
         let total_rows = df.height();
 
@@ -4640,8 +4648,6 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
 /// column and sets `schema_version` metadata.
 #[cfg(feature = "polars")]
 fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> {
-    use std::sync::Arc;
-
     use edgefirst_client::{coco::SCHEMA_VERSION, unflatten_polygon_coordinates};
     use polars::prelude::*;
 
@@ -4658,18 +4664,11 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         )));
     }
 
-    // Read existing metadata
-    let existing_metadata = {
-        let mut meta_file = std::fs::File::open(&input).map_err(|e| {
-            Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e))
-        })?;
-        let mut reader = IpcReader::new(&mut meta_file);
-        reader.custom_metadata().ok().flatten()
-    };
-
-    // Check schema_version — if already >= 2026.04, nothing to do
-    if let Some(ref meta) = existing_metadata
-        && let Some(version) = meta.get(&PlSmallStr::from("schema_version"))
+    // Check schema_version before touching row data — this reads only the
+    // file footer/schema metadata (no DataFrame decode) so the common no-op
+    // case (already migrated) stays cheap regardless of file size.
+    if let Some(version) =
+        edgefirst_client::format::read_dataset_metadata(&input)?.get("schema_version")
         && version.as_str() >= SCHEMA_VERSION
     {
         println!(
@@ -4679,12 +4678,9 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         return Ok(());
     }
 
-    // Read the DataFrame
-    let mut file = std::fs::File::open(&input)
-        .map_err(|e| Error::InvalidParameters(format!("Cannot open {}: {}", input.display(), e)))?;
-    let df = IpcReader::new(&mut file)
-        .finish()
-        .map_err(|e| Error::InvalidParameters(format!("Failed to read Arrow file: {}", e)))?;
+    // Migration is needed: now read the full DataFrame and its existing
+    // metadata. Accepts .arrow/.ipc/.parquet.
+    let (df, existing_metadata) = edgefirst_client::format::read_dataset_dataframe(&input)?;
 
     let has_mask = df.get_column_names().contains(&&PlSmallStr::from("mask"));
     let row_count = df.height();
@@ -4782,40 +4778,20 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
 
     // Prepare metadata: preserve existing, update schema_version
     let mut metadata: std::collections::BTreeMap<PlSmallStr, PlSmallStr> = existing_metadata
-        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-        .unwrap_or_default();
+        .into_iter()
+        .map(|(k, v)| (PlSmallStr::from(k), PlSmallStr::from(v)))
+        .collect();
 
     metadata.insert(
         PlSmallStr::from("schema_version"),
         PlSmallStr::from(SCHEMA_VERSION),
     );
 
-    // Write output
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::InvalidParameters(format!(
-                "Cannot create output directory {}: {}",
-                parent.display(),
-                e
-            ))
-        })?;
-    }
-
-    let mut out_file = std::fs::File::create(&output_path).map_err(|e| {
-        Error::InvalidParameters(format!(
-            "Cannot create output file {}: {}",
-            output_path.display(),
-            e
-        ))
-    })?;
-
-    let mut writer = IpcWriter::new(&mut out_file);
-    writer.set_custom_schema_metadata(Arc::new(metadata));
-    writer
-        .finish(&mut df)
-        .map_err(|e| Error::InvalidParameters(format!("Failed to write Arrow file: {}", e)))?;
+    // Write output. Format is chosen by `output_path`'s extension (`.parquet`
+    // writes Parquet, anything else writes Arrow IPC), matching coco-to-arrow
+    // — otherwise a `.parquet` input migrated in place would get raw IPC
+    // bytes written back under a `.parquet` name.
+    edgefirst_client::coco::write_dataset(&mut df, &output_path, metadata)?;
 
     println!(
         "\nMigrated to schema version {}: {}",
@@ -4832,6 +4808,8 @@ async fn handle_coco_to_arrow(
     output: PathBuf,
     masks: bool,
     group: Option<String>,
+    images: Option<PathBuf>,
+    link: bool,
 ) -> Result<(), Error> {
     use edgefirst_client::coco::{CocoToArrowOptions, coco_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
@@ -4851,9 +4829,12 @@ async fn handle_coco_to_arrow(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
 
+    let staging_requested = images.is_some();
     let options = CocoToArrowOptions {
         include_masks: masks,
         group,
+        images_dir: images,
+        link_images: link,
         ..Default::default()
     };
 
@@ -4872,6 +4853,9 @@ async fn handle_coco_to_arrow(
     pb.finish_with_message("done");
 
     println!("\n✓ Converted {} samples to Arrow format", count);
+    if staging_requested {
+        println!("✓ Image staging complete (see log output above for counts)");
+    }
 
     Ok(())
 }
@@ -5899,9 +5883,18 @@ async fn main() -> Result<(), Error> {
             output,
             masks,
             group,
+            images,
+            link,
         } => {
-            return handle_coco_to_arrow(coco_path.clone(), output.clone(), *masks, group.clone())
-                .await;
+            return handle_coco_to_arrow(
+                coco_path.clone(),
+                output.clone(),
+                *masks,
+                group.clone(),
+                images.clone(),
+                *link,
+            )
+            .await;
         }
         Command::ArrowToCoco {
             arrow_path,
@@ -7472,6 +7465,46 @@ mod tests {
             assert_eq!(samples[0].annotations.len(), 2);
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_migrate_parquet_output_writes_valid_parquet() {
+            // Regression test: migrate's write path used to be unconditionally
+            // Arrow IPC, with default output = input path, so a foreign
+            // metadata-less .parquet file got overwritten in place with raw
+            // IPC bytes under a .parquet name. The write must dispatch on the
+            // output extension the same way coco-to-arrow does.
+            let test_dir = std::env::temp_dir().join("migrate_test_parquet_output");
+            std::fs::create_dir_all(&test_dir).unwrap();
+            let parquet_path = test_dir.join("dataset.parquet");
+
+            // A minimal, metadata-less Parquet dataset file (no
+            // schema_version), like an externally-produced Parquet
+            // annotation file that has never been through this SDK.
+            let mut df = DataFrame::new_infer_height(vec![
+                Series::new("name".into(), vec!["sample1"]).into_column(),
+                Series::new("frame".into(), vec!["0"]).into_column(),
+            ])
+            .unwrap();
+            {
+                let mut file = std::fs::File::create(&parquet_path).unwrap();
+                ParquetWriter::new(&mut file).finish(&mut df).unwrap();
+            }
+
+            // Migrate in place (no --output supplied).
+            handle_migrate(parquet_path.clone(), None).unwrap();
+
+            // The result must still be readable as Parquet, not raw Arrow IPC
+            // bytes written under a .parquet name.
+            let (migrated_df, metadata) =
+                edgefirst_client::format::read_dataset_dataframe(&parquet_path).unwrap();
+            assert_eq!(migrated_df.height(), 1);
+            assert_eq!(
+                metadata.get("schema_version").map(String::as_str),
+                Some(edgefirst_client::coco::SCHEMA_VERSION)
+            );
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
     }

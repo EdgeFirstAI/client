@@ -4,16 +4,25 @@
 **Last Updated**: 5 July, 2026
 **Status**: DRAFT (pending review)
 
-> **Implementation status (as of client v2.12.1):** the SDK has implemented the
-> 2026.04 Arrow schema since v2.9.0 — it is the current format, not a future one.
-> However, several items in this specification are design targets, not yet shipped:
-> **Parquet export is not implemented** (Arrow IPC is the only DataFrame format the
-> SDK reads/writes); and the **configurable box-format/mask-interpretation file-level
+> **Implementation status:** the SDK has implemented the 2026.04 Arrow schema
+> since client v2.9.0 — it is the current format, not a future one. As of the
+> next release after v2.13.2 (Unreleased), dataset annotation files can also be
+> written and read as Apache Parquet (`.parquet`), selected by output file
+> extension, with the same file-level metadata (`schema_version`,
+> `category_metadata`, `labels`) carried as Parquet
+> footer key-value pairs — full parity with Arrow IPC. One gap remains:
+> `validate-snapshot`'s directory-name auto-discovery only looks for
+> `<name>.arrow` in a snapshot directory, so a directory whose annotation file
+> is Parquet-only is not auto-discovered by that command; pointing readers at
+> the `.parquet` file directly still works everywhere else.
+>
+> Several other items in this specification remain design targets, not yet
+> shipped: the **configurable box-format/mask-interpretation file-level
 > metadata** (`box2d_format`, `box2d_normalized`, `box3d_format`, `box3d_normalized`,
 > `mask_interpretation`) described below is not read or written anywhere in the
 > codebase — box2d is unconditionally `cxcywh` in Arrow and `ltwh` in JSON. Only
 > `schema_version`, `category_metadata`, and `labels` file-level metadata keys are
-> actually implemented. Treat any Parquet or configurable-box-format example in this
+> actually implemented. Treat any configurable-box-format example in this
 > document as the intended future design, not current behavior.
 
 ---

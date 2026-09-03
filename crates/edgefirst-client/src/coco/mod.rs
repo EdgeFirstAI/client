@@ -90,6 +90,7 @@ pub use convert::{
 #[cfg(feature = "polars")]
 pub use arrow::{
     ArrowToCocoOptions, CocoToArrowOptions, SCHEMA_VERSION, arrow_to_coco, coco_to_arrow,
+    write_dataset,
 };
 
 // Re-export Studio integration (feature-gated)

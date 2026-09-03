@@ -994,7 +994,7 @@ For details on the EdgeFirst Dataset Format and its COCO mapping, see: https://d
 
 ### coco-to-arrow
 
-Convert COCO annotations to EdgeFirst Arrow format. Reads a COCO annotation JSON file or ZIP archive and converts it to the EdgeFirst Dataset Format (Arrow).
+Convert COCO annotations to the EdgeFirst Dataset Format. Reads a COCO annotation JSON file or ZIP archive and converts it to an EdgeFirst dataset annotation file, optionally staging the referenced images alongside it for a complete offline dataset.
 
 **edgefirst-client coco-to-arrow** [*OPTIONS*] **\--output** *OUTPUT* *COCO_PATH*
 
@@ -1006,13 +1006,19 @@ Convert COCO annotations to EdgeFirst Arrow format. Reads a COCO annotation JSON
 **Options:**
 
 **-o, \--output** *OUTPUT*
-:   Output Arrow file path (required).
+:   Output annotation file path (required). Format is chosen by extension: `.parquet` writes Apache Parquet, anything else (including `.arrow`) writes Arrow IPC. Both carry the same file-level metadata (`schema_version`, `category_metadata`, `labels`).
 
 **\--masks** *MASKS*
 :   Include segmentation masks. Defaults to **true**; pass `--masks=false` to convert bounding boxes only. [possible values: true, false]
 
 **\--group** *GROUP*
-:   Group name applied to all samples (e.g. `train`, `val`). Sets the dataset split for every converted sample.
+:   Group name applied to all samples (e.g. `train`, `val`). Sets the dataset split for every converted sample. Convert each split with its own invocation (see examples) when a COCO source only covers one split at a time.
+
+**\--images** *IMAGES*
+:   Stage the images referenced by the COCO file into the EdgeFirst on-disk layout next to the output: for an output path `<dir>/<stem>.arrow`, images are copied into the sibling directory `<dir>/<stem>/`, which is where `validate-snapshot` and sample loading expect to find them. Missing source images are warned about but don't fail the conversion, and re-running is idempotent (existing destination files are left untouched).
+
+**\--link**
+:   Symlink staged images instead of copying (requires `--images`). Saves disk space for large datasets.
 
 **Examples:**
 
@@ -1025,6 +1031,13 @@ edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
 
 # Convert bounding boxes only (no segmentation)
 edgefirst-client coco-to-arrow instances_val2017.json -o val.arrow --masks=false --group val
+
+# Write Parquet instead of Arrow (selected by the output extension)
+edgefirst-client coco-to-arrow instances_val2017.json -o val.parquet --group val
+
+# One-command offline dataset: convert annotations and stage the referenced
+# images (symlinked) into val2017/val2017/, ready for validate-snapshot
+edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
 ```
 
 **Note:** Every image in the COCO `images` array produces at least one row. An image with no annotations is emitted as a single placeholder row with a null label, preserving the image and its `group` so dataset splits cover the full image set.
