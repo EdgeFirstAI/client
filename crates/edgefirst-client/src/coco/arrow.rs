@@ -34,6 +34,11 @@ pub const SCHEMA_VERSION: &str = "2026.04";
 type PolygonRings = Vec<Vec<(f32, f32)>>;
 
 /// Options for COCO to Arrow conversion.
+///
+/// Construct with `..Default::default()` (as every call site in this
+/// workspace does) rather than a fully-specified struct literal: new fields
+/// may be added here in a minor release, following this crate's existing
+/// convention for `*Options` structs.
 #[derive(Debug, Clone)]
 pub struct CocoToArrowOptions {
     /// Include segmentation masks in output.
@@ -197,7 +202,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     }
 
     // Convert to DataFrame
-    let df = crate::samples_dataframe(&all_samples)?;
+    let mut df = crate::samples_dataframe(&all_samples)?;
 
     // Build schema-level metadata
     let mut metadata: BTreeMap<PlSmallStr, PlSmallStr> = BTreeMap::new();
@@ -265,7 +270,7 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
         metadata.insert(PlSmallStr::from("labels"), PlSmallStr::from(labels_json));
     }
 
-    write_dataset(&mut df.clone(), output_path, metadata)?;
+    write_dataset(&mut df, output_path, metadata)?;
 
     if let Some(images_dir) = &options.images_dir {
         let report = stage_images(
@@ -275,23 +280,45 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             &image_file_names,
         );
         log::info!("Staged {} images", report.staged);
-        if !report.missing.is_empty() || report.collisions > 0 {
+        if !report.missing.is_empty() || !report.failed.is_empty() || report.collisions > 0 {
             const MAX_LISTED: usize = 5;
-            let listed: Vec<&str> = report
-                .missing
-                .iter()
-                .take(MAX_LISTED)
-                .map(String::as_str)
-                .collect();
-            let mut msg = format!(
-                "{} images referenced by {} were not found in {}: {}",
-                report.missing.len(),
-                coco_path.display(),
-                images_dir.display(),
-                listed.join(", "),
-            );
-            if report.missing.len() > MAX_LISTED {
-                msg.push_str(&format!(" (+{} more)", report.missing.len() - MAX_LISTED));
+            let mut msg = String::new();
+            if !report.missing.is_empty() {
+                let listed: Vec<&str> = report
+                    .missing
+                    .iter()
+                    .take(MAX_LISTED)
+                    .map(String::as_str)
+                    .collect();
+                msg.push_str(&format!(
+                    "{} images referenced by {} were not found in {}: {}",
+                    report.missing.len(),
+                    coco_path.display(),
+                    images_dir.display(),
+                    listed.join(", "),
+                ));
+                if report.missing.len() > MAX_LISTED {
+                    msg.push_str(&format!(" (+{} more)", report.missing.len() - MAX_LISTED));
+                }
+            }
+            if !report.failed.is_empty() {
+                let listed: Vec<&str> = report
+                    .failed
+                    .iter()
+                    .take(MAX_LISTED)
+                    .map(String::as_str)
+                    .collect();
+                if !msg.is_empty() {
+                    msg.push_str("; ");
+                }
+                msg.push_str(&format!(
+                    "{} image(s) failed to stage (copy/link I/O error, see warnings above): {}",
+                    report.failed.len(),
+                    listed.join(", "),
+                ));
+                if report.failed.len() > MAX_LISTED {
+                    msg.push_str(&format!(" (+{} more)", report.failed.len() - MAX_LISTED));
+                }
             }
             if report.collisions > 0 {
                 msg.push_str(&format!(
@@ -313,6 +340,10 @@ struct StageReport {
     staged: usize,
     /// COCO `file_name` values that could not be found under `images_dir`.
     missing: Vec<String>,
+    /// COCO `file_name` values that were found under `images_dir` but failed
+    /// to copy/link into the staging directory (see warnings logged at the
+    /// point of failure for the underlying I/O error).
+    failed: Vec<String>,
     /// Number of `file_name`s that mapped to a destination basename already
     /// claimed *within this run* by a different source path, and were
     /// therefore skipped rather than silently overwriting/aliasing another
@@ -336,7 +367,9 @@ struct StageReport {
 /// same run (e.g. `train/000001.jpg` and `val/000001.jpg`) are a
 /// collision: only the first is staged, the rest are counted in
 /// `StageReport::collisions` and logged, never silently treated as staged.
-/// Missing sources are reported non-fatally via `StageReport`.
+/// Missing sources and copy/link I/O failures are both reported
+/// non-fatally via `StageReport`, in its `missing` and `failed` fields
+/// respectively.
 fn stage_images(
     output_path: &Path,
     images_dir: &Path,
@@ -359,12 +392,14 @@ fn stage_images(
         return StageReport {
             staged: 0,
             missing: file_names.to_vec(),
+            failed: Vec::new(),
             collisions: 0,
         };
     }
 
     let mut staged = 0;
     let mut missing = Vec::new();
+    let mut failed = Vec::new();
     let mut collisions = 0;
 
     // Basenames claimed by a source path within this run, so a second
@@ -434,7 +469,7 @@ fn stage_images(
             }
             Err(e) => {
                 log::warn!("Failed to stage image '{}': {}", file_name, e);
-                missing.push(file_name.clone());
+                failed.push(file_name.clone());
             }
         }
     }
@@ -442,6 +477,7 @@ fn stage_images(
     StageReport {
         staged,
         missing,
+        failed,
         collisions,
     }
 }
