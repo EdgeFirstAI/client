@@ -17,7 +17,7 @@ mod integration {
     };
     use pathfinding::{kuhn_munkres::kuhn_munkres_min, matrix::Matrix};
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         path::PathBuf,
         time::{Duration, Instant},
     };
@@ -27,6 +27,20 @@ mod integration {
     fn coco_val_path() -> Option<PathBuf> {
         let path = dirs::home_dir()?.join("Datasets/COCO/annotations/instances_val2017.json");
         if path.exists() { Some(path) } else { None }
+    }
+
+    fn expected_edgefirst_rows(dataset: &CocoDataset) -> usize {
+        let annotated_images: HashSet<_> = dataset
+            .annotations
+            .iter()
+            .map(|annotation| annotation.image_id)
+            .collect();
+        dataset.annotations.len()
+            + dataset
+                .images
+                .iter()
+                .filter(|image| !annotated_images.contains(&image.id))
+                .count()
     }
 
     // ==================== Timing Infrastructure ====================
@@ -1001,8 +1015,8 @@ mod integration {
 
         assert_eq!(
             arrow_count,
-            original.annotations.len(),
-            "Arrow annotation count mismatch"
+            expected_edgefirst_rows(&original),
+            "Arrow row count must include placeholders for unannotated images"
         );
 
         // Step 3: Convert Arrow → COCO
@@ -1261,7 +1275,7 @@ mod integration {
             .await
             .expect("COCO → Arrow failed");
 
-        assert_eq!(count, subset.annotations.len());
+        assert_eq!(count, expected_edgefirst_rows(&subset));
 
         let to_coco_options = ArrowToCocoOptions::default();
         arrow_to_coco(&arrow_path, &restored_path, &to_coco_options, None)

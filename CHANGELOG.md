@@ -7,17 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-09-03
+
 ### Added
 
 - Converting a COCO dataset for offline use is now one command: `coco-to-arrow`
   can stage the referenced images alongside the annotations (`--images`, with
   `--link` to symlink instead of copy), producing a dataset ready for offline
-  validation.
+  validation. Passing a standard extracted COCO directory combines its
+  `instances_train*` and `instances_val*` annotations into one output while
+  preserving the inferred `train`/`val` groups, including unannotated images.
 - Datasets can now also be written and read as Parquet (`.parquet`) in
-  addition to Arrow.
+  addition to Arrow, and `validate-snapshot` accepts either format.
 
 ### Fixed
 
+- `validate-snapshot` now resolves valid symlinked image containers created by
+  `coco-to-arrow --link`, and `arrow-to-coco --pretty` now actually writes
+  indented JSON.
+- Updated `h2` to 0.4.16 to address RUSTSEC-2026-0258.
 - `samples()` now keeps GPS/IMU location metadata when the caller (including
   the Python default `types=[FileType.Image]`) supplies a file-type filter.
   Studio treats `types` as a replacement sensor list, and `"image"` is not a

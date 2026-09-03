@@ -584,26 +584,34 @@ Contributors should focus on:
 3. Ensuring all tests pass before merge
 4. Verifying documentation is current
 
-Maintainers handle the release process following SPS guidelines:
+Maintainers prepare releases through a reviewed release branch:
 
 ```bash
-# 1. Update version in Cargo.toml (workspace and dependencies)
-# 2. Update CHANGELOG.md: Move [Unreleased] to [X.Y.Z] - YYYY-MM-DD
-# 3. Update CLI.md header with new version and date
-# 4. Commit: git commit -s -m "chore: prepare vX.Y.Z release"
-# 5. Create tag: git tag -a vX.Y.Z -m "Release vX.Y.Z"
-# 6. Push: git push origin main --tags
+# 1. Branch from current main
+git switch -c release/X.Y.Z main
+
+# 2. Update Cargo.toml (workspace and internal dependency), Cargo.lock,
+#    CHANGELOG.md ([Unreleased] -> dated [X.Y.Z]), and CLI.md version/date
+# 3. Run the complete local release checks
+make pre-release
+
+# 4. Commit with DCO, push, and open "Release X.Y.Z" against main
+git commit -s -m "chore: prepare vX.Y.Z release"
+git push -u origin release/X.Y.Z
 ```
 
-GitHub Actions automatically (triggered by tag push):
+Do not create or push the release tag manually. When the reviewed
+`release/X.Y.Z` pull request is merged, `tag-release.yml` creates the annotated
+`vX.Y.Z` tag on the merge commit. GitHub Actions then:
 
 - Verifies version matches tag
-- Builds binaries for all platforms
+- Uses the binaries and wheels built and tested for the same commit
 - Publishes to crates.io and PyPI
 - Creates GitHub Release with artifacts
 - Generates man page and SBOM
 
-**Tag Format**: Always use `vX.Y.Z` format (e.g., `v2.5.0`), not `X.Y.Z`
+**Branch format**: `release/X.Y.Z`. **Tag format**: `vX.Y.Z`, created
+automatically after merge.
 
 ## Getting Help
 

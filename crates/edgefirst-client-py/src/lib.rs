@@ -9952,8 +9952,10 @@ pub fn collect_labels_from_samples(
 /// Convert COCO dataset to EdgeFirst Arrow format.
 ///
 /// # Arguments
-/// * `coco_path` - Path to COCO annotation JSON file or ZIP archive
-/// * `output_path` - Output Arrow file path
+/// * `coco_path` - Path to COCO annotation JSON/ZIP or a standard extracted
+///   directory; directory inputs combine inferred train/val groups
+/// * `output_path` - Output Arrow IPC or Parquet file path (selected by
+///   extension)
 /// * `include_masks` - Include segmentation masks (default: True)
 /// * `group` - Optional group name for all samples (e.g., "train")
 /// * `progress` - Optional callback function(current, total) for progress
@@ -9963,7 +9965,7 @@ pub fn collect_labels_from_samples(
 ///   False)
 ///
 /// # Returns
-/// Number of annotations converted
+/// Number of EdgeFirst rows written (including unannotated image placeholders)
 #[cfg(feature = "polars")]
 #[pyfunction]
 #[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, progress = None, images_dir = None, link_images = false))]

@@ -657,21 +657,22 @@ enum Command {
         // a local `verbose` here collides with the global one and makes clap
         // panic on a type mismatch (global u8 count vs local bool).
     },
-    /// Convert COCO annotations to EdgeFirst Arrow format.
+    /// Convert COCO annotations to the EdgeFirst Dataset Format.
     ///
-    /// Reads a COCO annotation JSON file or ZIP archive and converts it to
-    /// the EdgeFirst Dataset Format (Arrow). Supports bbox and polygon
-    /// segmentation annotations.
+    /// Reads a COCO annotation JSON file, ZIP archive, or standard extracted
+    /// COCO directory. A directory combines discovered train/val files into
+    /// one dataset with inferred groups. The output extension selects Arrow
+    /// IPC (`.arrow`) or Parquet (`.parquet`).
     ///
     /// Examples:
     ///   edgefirst-client coco-to-arrow instances.json -o dataset.arrow
     ///   edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
     ///   edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
     CocoToArrow {
-        /// Path to COCO annotation file (JSON) or ZIP archive
+        /// Path to a COCO annotation file, ZIP archive, or extracted directory
         coco_path: PathBuf,
 
-        /// Output Arrow file path
+        /// Output EdgeFirst file path (.arrow or .parquet)
         #[clap(long, short = 'o')]
         output: PathBuf,
 
@@ -680,12 +681,12 @@ enum Command {
         #[clap(long, action = clap::ArgAction::Set, default_value_t = true)]
         masks: bool,
 
-        /// Group name for all samples (e.g., "train", "val")
+        /// Group name for all samples; overrides directory split inference
         #[clap(long)]
         group: Option<String>,
 
         /// Stage the referenced images next to the output, producing a
-        /// complete offline dataset (<dir>/<stem>.arrow + <dir>/<stem>/)
+        /// complete offline dataset (annotation file + sibling image folder)
         #[clap(long)]
         images: Option<PathBuf>,
 
@@ -1674,8 +1675,12 @@ fn parse_polygon_from_dataframe(
                 } else {
                     continue;
                 };
-                let points: Vec<(f32, f32)> =
-                    coords.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+                let points: Vec<(f32, f32)> = coords
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|[x, y]| (*x, *y))
+                    .collect();
                 if !points.is_empty() {
                     rings.push(points);
                 }
@@ -4814,7 +4819,12 @@ async fn handle_coco_to_arrow(
     use edgefirst_client::coco::{CocoToArrowOptions, coco_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
 
-    println!("Converting COCO to Arrow format...");
+    let output_format = if output.extension().is_some_and(|ext| ext == "parquet") {
+        "Parquet"
+    } else {
+        "Arrow IPC"
+    };
+    println!("Converting COCO to EdgeFirst {output_format} format...");
     println!("  Input:  {:?}", coco_path);
     println!("  Output: {:?}", output);
 
@@ -4852,7 +4862,7 @@ async fn handle_coco_to_arrow(
     let count = task.await??;
     pb.finish_with_message("done");
 
-    println!("\n✓ Converted {} samples to Arrow format", count);
+    println!("\n✓ Converted {count} samples to {output_format} format");
     if staging_requested {
         println!("✓ Image staging complete (see log output above for counts)");
     }
@@ -4898,10 +4908,6 @@ async fn handle_arrow_to_coco(
         }),
     };
 
-    // Note: pretty option is not yet exposed in ArrowToCocoOptions
-    // We would need to add it to the options struct
-    let _ = pretty;
-
     let arrow_path_clone = arrow_path.clone();
     let output_clone = output.clone();
     let task = tokio::spawn(async move {
@@ -4915,6 +4921,16 @@ async fn handle_arrow_to_coco(
 
     let count = task.await??;
     pb.finish_with_message("done");
+
+    if pretty {
+        use edgefirst_client::coco::{CocoReadOptions, CocoReader, CocoWriteOptions, CocoWriter};
+        let dataset = CocoReader::with_options(CocoReadOptions::default()).read_json(&output)?;
+        CocoWriter::with_options(CocoWriteOptions {
+            pretty: true,
+            ..Default::default()
+        })
+        .write_json(&dataset, &output)?;
+    }
 
     println!("\n✓ Converted {} annotations to COCO format", count);
 

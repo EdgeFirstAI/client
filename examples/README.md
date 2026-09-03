@@ -1,9 +1,10 @@
 # EdgeFirst Client Python Examples
 
 Tutorial scripts and notebooks for the [EdgeFirst Client](https://github.com/EdgeFirstAI/client)
-Python API. All read workflows use the public **Coffee Cup** dataset
+Python API. Studio-backed read workflows use the public **Coffee Cup** dataset
 [`ds-145f`](https://edgefirst.studio/public/datasets/ds-145f/gallery) on SaaS.
-Write workflows (06, 07) use ephemeral sandbox datasets only.
+Write workflows (06, 07) use ephemeral sandbox datasets only. Example 08 is
+fully offline and operates on a local COCO dataset.
 
 ## Quick start (PyPI — no Rust required)
 
@@ -93,6 +94,7 @@ Verify both install paths (PyPI wheel and maturin develop) before releasing.
 | [05_download_dataset](05_download_dataset.py) | `download-dataset` | `download_dataset`, YOLO export |
 | [06_create_annotations](06_create_annotations.py) | `upload-dataset` (reference) | `populate_samples` |
 | [07_manage_labels](07_manage_labels.py) | `dataset ds-145f --labels` | `add_label`, `label.set_index` |
+| [08_coco_conversion](08_coco_conversion.py) | `coco-to-arrow`, `validate-snapshot` | `coco_to_arrow`, `polars.read_ipc` / `read_parquet` |
 
 [05_download_dataset](05_download_dataset.py) writes a flat YOLO/Darknet layout —
 images and labels mirror each other per group:
@@ -107,9 +109,25 @@ This YOLO export **flattens** the dataset: each sequence's frames are collapsed
 into a single `images/<group>/` directory, so the per-sequence folder hierarchy
 is lost. That is fine for YOLO/Darknet training. To preserve full dataset
 fidelity (sequence hierarchy + rich annotations), use the **EdgeFirst Dataset
-Format** instead — annotations stored as Arrow with images in their native
+Format** instead — annotations stored as Arrow or Parquet with images in their native
 sequence layout (see [DATASET_FORMAT.md](../DATASET_FORMAT.md) and
 [04_polars_dataframe](04_polars_dataframe.py)).
+
+## Offline COCO conversion
+
+A standard extracted COCO root containing `annotations/instances_train*.json`,
+`annotations/instances_val*.json`, `train2017/`, and `val2017/` can become one
+EdgeFirst dataset without Studio:
+
+```bash
+python examples/08_coco_conversion.py ~/Datasets/COCO \
+  --output coco/coco.arrow --images ~/Datasets/COCO --link
+edgefirst-client validate-snapshot coco
+```
+
+The directory conversion infers `train` and `val` into the sample-level
+`group` column. Change the output extension to `.parquet` for Parquet. For a
+single annotation JSON, pass `--group train` or `--group val` explicitly.
 
 ## Running examples
 

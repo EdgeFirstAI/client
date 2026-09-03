@@ -7893,6 +7893,52 @@ class Client:
         """
         ...
 
+def coco_to_arrow(
+    coco_path: Union[str, Path],
+    output_path: Union[str, Path],
+    include_masks: bool = True,
+    group: Optional[str] = None,
+    progress: Optional[Progress] = None,
+    images_dir: Optional[Union[str, Path]] = None,
+    link_images: bool = False,
+) -> int:
+    """
+    Convert COCO annotations to an offline EdgeFirst dataset.
+
+    A JSON file or ZIP produces one group when ``group`` is supplied. A
+    standard extracted COCO directory discovers all ``instances_*.json``
+    files and combines inferred groups such as ``train`` and ``val`` into one
+    output. The ``.arrow`` or ``.parquet`` output extension selects the
+    storage format.
+
+    When ``images_dir`` is set, referenced images are staged in the sibling
+    directory named after ``output_path``; ``link_images=True`` uses symlinks
+    on Unix.
+
+    Returns:
+        Number of EdgeFirst rows written, including placeholder rows for
+        unannotated images.
+    """
+    ...
+
+def arrow_to_coco(
+    arrow_path: Union[str, Path],
+    output_path: Union[str, Path],
+    include_masks: bool = True,
+    groups: List[str] = [],
+    progress: Optional[Progress] = None,
+) -> int:
+    """
+    Convert an EdgeFirst Arrow IPC or Parquet dataset to COCO JSON.
+
+    Args:
+        groups: Optional group filter, for example ``["train", "val"]``.
+
+    Returns:
+        Number of COCO annotations written.
+    """
+    ...
+
 def version() -> str:
     """
     Get the version of the edgefirst_client library.

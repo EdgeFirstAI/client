@@ -11,7 +11,7 @@ help:
 	@echo "Common tasks:"
 	@echo "  make format      - Format all code (Rust + Python)"
 	@echo "  make lint        - Run all linters"
-	@echo "  make test        - Run all tests (Rust + Python)"
+	@echo "  make test        - Run credential-free PR tests (Rust + Python)"
 	@echo "  make build       - Build all crates"
 	@echo "  make clean       - Clean build artifacts"
 	@echo "  make pre-commit  - Run pre-commit checks (format + lint + build + security-audit)"
@@ -67,17 +67,30 @@ test: rust-test py-test
 # Run Rust tests
 rust-test:
 	@echo "Running Rust unit tests..."
-	cargo test --all-features --locked
+	@if ! command -v cargo-nextest >/dev/null 2>&1; then \
+		echo "cargo-nextest not found — installing via 'cargo install cargo-nextest'..."; \
+		cargo install cargo-nextest --locked || { \
+			echo "❌ Failed to install cargo-nextest. Install it manually and retry."; \
+			exit 1; \
+		}; \
+	fi
+	cargo nextest run --all-features --locked --profile ci -E 'not binary(cli)'
 	@echo "Running Rust doc tests..."
 	cargo test --doc --locked
 
 # Run Python tests
 py-test:
-	@echo "Running Python tests..."
+	@echo "Running credential-free Python tests..."
 	@if [ -d venv ]; then \
-		venv/bin/python -m unittest discover -s test -p "test*.py"; \
+		venv/bin/python -m unittest \
+			test.test_coco_roundtrip test.test_storage test.test_parameter \
+			test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
+			test.test_sample_metadata; \
 	else \
-		python3 -m unittest discover -s test -p "test*.py"; \
+		python3 -m unittest \
+			test.test_coco_roundtrip test.test_storage test.test_parameter \
+			test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
+			test.test_sample_metadata; \
 	fi
 
 # Build all crates
@@ -143,12 +156,14 @@ pre-commit: format lint build security-audit
 	@echo "  1. Review your changes: git diff"
 	@echo "  2. Update CHANGELOG.md if user-visible changes"
 	@echo "  3. Update documentation if needed"
-	@echo "  4. Run 'make test' if credentials available"
+	@echo "  4. Run 'make test' (credential-free PR lane)"
 	@echo "  5. Commit your changes"
 	@echo ""
 
-# Pre-release validation (comprehensive checks before release)
-pre-release: clean format lint build test sbom check-license version-check security-audit
+# Pre-release validation (comprehensive checks before release).
+# Do not depend on `clean`: it removes the contributor's venv, including the
+# Python formatter and the locally built bindings required by `py-test`.
+pre-release: format lint build test sbom check-license version-check security-audit
 	@echo ""
 	@echo "Running pre-release validation..."
 	@echo ""
@@ -168,9 +183,9 @@ pre-release: clean format lint build test sbom check-license version-check secur
 	@echo "  2. ✅ Version consistent"
 	@echo "  3. ✅ CHANGELOG.md updated"
 	@echo "  4. Review CHANGELOG.md [Unreleased] entries"
-	@echo "  5. Run: cargo release patch --execute --no-confirm"
-	@echo "  6. Verify tag created: git describe"
-	@echo "  7. Push release: git push && git push --tags"
+	@echo "  5. Push release/X.Y.Z and open a PR to main"
+	@echo "  6. Merge only after review and explicit approval"
+	@echo "  7. tag-release.yml creates vX.Y.Z automatically after merge"
 	@echo ""
 
 # Check for common issues
@@ -208,6 +223,7 @@ install-deps:
 	@echo "Installing development dependencies..."
 	@echo "Installing Rust tools..."
 	@rustup component add rustfmt clippy
+	@cargo install cargo-nextest --locked
 	@echo "  (nightly toolchain no longer required for formatting)"
 	@echo "Installing Python tools..."
 	@if [ -d venv ]; then \

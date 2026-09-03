@@ -9,9 +9,10 @@
 //!
 //! ## Supported Workflows
 //!
-//! 1. **COCO → EdgeFirst Arrow**: Convert COCO JSON/ZIP to Arrow-based
-//!    EdgeFirst format
-//! 2. **EdgeFirst Arrow → COCO**: Convert Arrow format back to COCO JSON
+//! 1. **COCO → EdgeFirst dataset**: Convert COCO JSON/ZIP or a standard
+//!    multi-split directory to Arrow IPC or Parquet
+//! 2. **EdgeFirst dataset → COCO**: Convert Arrow IPC or Parquet back to COCO
+//!    JSON
 //! 3. **COCO → Studio**: Import COCO directly into EdgeFirst Studio via API
 //! 4. **Studio → COCO**: Export Studio dataset to COCO format
 //!
@@ -19,8 +20,8 @@
 //!
 //! Phase 1 supports:
 //! - Bounding boxes (box2d)
-//! - Polygon segmentation (mask)
-//! - RLE segmentation (decoded to polygons)
+//! - Polygon segmentation (`polygon`)
+//! - RLE segmentation (PNG-encoded raster `mask`)
 //!
 //! Not yet supported: keypoints, captions, panoptic segmentation.
 //!
