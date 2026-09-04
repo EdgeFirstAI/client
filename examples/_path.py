@@ -9,6 +9,14 @@ import sys
 from pathlib import Path
 
 
+def normalize_user_path(path: Path) -> Path:
+    """Validate and normalize a path supplied on a tutorial command line."""
+    value = str(path)
+    if any(ord(character) < 32 for character in value):
+        raise ValueError("Paths must not contain control characters")
+    return path.expanduser().resolve(strict=False)
+
+
 def repo_root() -> Path:
     """
     Return the EdgeFirst Client repository root.

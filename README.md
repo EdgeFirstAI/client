@@ -376,7 +376,28 @@ When uploading unannotated datasets, EdgeFirst Studio can populate annotations v
 - **Manual annotation** in the Studio web interface
 - **AGTG (Automated Ground-Truth Generation)** via `restore-snapshot --autolabel` (MCAP snapshots only)
 
-**Note**: The CLI does not currently parse annotations from other formats (e.g., COCO, YOLO). To upload pre-annotated datasets from these formats, first convert them to EdgeFirst Dataset Format using the annotation schema in [DATASET_FORMAT.md](DATASET_FORMAT.md).
+COCO annotations can be converted directly. A standard extracted COCO
+directory is combined into one EdgeFirst dataset, with train/validation splits
+stored in the sample-level `group` column:
+
+```bash
+# Arrow IPC, with images symlinked into coco/coco/
+edgefirst-client coco-to-arrow ~/Datasets/COCO \
+  --output coco/coco.arrow --images ~/Datasets/COCO --link
+edgefirst-client validate-snapshot coco
+
+# Use .parquet for a compressed Parquet annotation file instead
+edgefirst-client coco-to-arrow ~/Datasets/COCO \
+  --output coco-parquet/coco-parquet.parquet \
+  --images ~/Datasets/COCO --link
+edgefirst-client validate-snapshot coco-parquet
+```
+
+For one COCO JSON file, assign its split explicitly with `--group train` or
+`--group val`. See [CLI.md](CLI.md#coco-interchange),
+[DATASET_FORMAT.md](DATASET_FORMAT.md), and
+[examples/08_coco_conversion.py](examples/08_coco_conversion.py). YOLO
+annotations still require an external conversion.
 
 ##### Rust API
 

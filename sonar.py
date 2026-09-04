@@ -661,7 +661,6 @@ def print_summary(summary: Dict[str, Any]) -> None:
             print(f"    {sev}: {count}", file=sys.stderr)
 
 
-
 def resolve_output_path(raw: str) -> Path:
     """Resolve ``raw`` to an absolute path, refusing anything outside the
     current working directory.

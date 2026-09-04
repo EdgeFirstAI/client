@@ -99,11 +99,18 @@ class TestCocoRoundtrip(unittest.TestCase):
             # Verify restored file
             with open(restored_path) as f:
                 restored = json.load(f)
+            with open(self.coco_path) as f:
+                original = json.load(f)
 
             self.assertEqual(
                 len(restored["annotations"]),
+                len(original["annotations"]),
+                "COCO annotation count should round-trip",
+            )
+            self.assertGreaterEqual(
                 count,
-                "Annotation count should match",
+                len(original["annotations"]),
+                "EdgeFirst rows include placeholders for unannotated images",
             )
             self.assertEqual(
                 len(restored["categories"]),
@@ -253,11 +260,14 @@ class TestCocoRoundtrip(unittest.TestCase):
                 output_path,
                 groups=["val"],
             )
+            with open(self.coco_path) as f:
+                original = json.load(f)
             self.assertEqual(
-                count1,
                 count2,
-                "Filtered count should match original",
+                len(original["annotations"]),
+                "Filtered COCO annotation count should match the source",
             )
+            self.assertGreaterEqual(count1, count2)
 
 
 class TestCocoConversionEdgeCases(unittest.TestCase):

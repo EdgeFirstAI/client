@@ -2,8 +2,8 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.13.2
-date: 2026-08-24
+footer: edgefirst-client 2.14.0
+date: 2026-09-03
 ---
 
 # NAME
@@ -914,7 +914,7 @@ The command will:
 
 1. Scan the folder recursively for image files (JPEG, PNG)
 2. Optionally detect sequence patterns (name_frame.ext)
-3. Create an Arrow file with the 2025.10 schema and null annotations
+3. Create an Arrow file with the current 2026.04 schema and null annotations
 
 **Arguments:**
 
@@ -952,14 +952,16 @@ Validate a snapshot directory structure against the EdgeFirst Dataset Format spe
 
 The command checks that the directory follows the EdgeFirst Dataset Format:
 
-- Arrow file exists at expected location (`<name>.arrow` or `<name>/<name>.arrow`)
+- Exactly one annotation file exists at the expected location (`<name>.arrow`
+  or `<name>.parquet`)
 - Sensor container directory exists (e.g., `camera/`, `lidar/`)
-- All files referenced in the Arrow file exist on disk
+- All files referenced in the annotation file exist on disk
 
 **Arguments:**
 
 *PATH*
-:   Snapshot directory to validate. Can be a directory containing an Arrow file and sensor data.
+:   Snapshot directory to validate. The directory basename must match its
+    Arrow or Parquet annotation filename and sibling sensor container.
 
 **Options:**
 
@@ -988,20 +990,32 @@ edgefirst-client validate-snapshot ./sensor_data && edgefirst-client create-snap
 
 ## COCO INTERCHANGE
 
-Tools for converting between the COCO (Common Objects in Context) annotation format and the EdgeFirst Dataset Format, and for importing and exporting COCO datasets directly to and from EdgeFirst Studio. These commands support bounding boxes and polygon segmentation; RLE segmentation is decoded to polygons.
+Tools for converting between the COCO (Common Objects in Context) annotation
+format and the EdgeFirst Dataset Format, and for importing and exporting COCO
+datasets directly to and from EdgeFirst Studio. These commands support bounding
+boxes, polygon segmentation, and RLE segmentation. RLE masks are stored as
+PNG-encoded raster data in the EdgeFirst `mask` column.
 
 For details on the EdgeFirst Dataset Format and its COCO mapping, see: https://doc.edgefirst.ai/latest/datasets/format/
 
 ### coco-to-arrow
 
-Convert COCO annotations to the EdgeFirst Dataset Format. Reads a COCO annotation JSON file or ZIP archive and converts it to an EdgeFirst dataset annotation file, optionally staging the referenced images alongside it for a complete offline dataset.
+Convert COCO annotations to the EdgeFirst Dataset Format. The input may be one
+COCO annotation JSON file, a ZIP archive, or a standard extracted COCO
+directory. For a directory, all `instances_*.json` files are combined into one
+output and split names such as `train` and `val` are inferred into the
+sample-level `group` column. Referenced images can be staged alongside the
+annotation file for a complete offline dataset.
 
 **edgefirst-client coco-to-arrow** [*OPTIONS*] **\--output** *OUTPUT* *COCO_PATH*
 
 **Arguments:**
 
 *COCO_PATH*
-:   Path to a COCO annotation file (JSON) or ZIP archive.
+:   Path to a COCO annotation file (JSON), ZIP archive, or extracted COCO root.
+    A standard root contains `annotations/instances_train*.json`,
+    `annotations/instances_val*.json`, and matching image directories such as
+    `train2017/` and `val2017/`.
 
 **Options:**
 
@@ -1012,10 +1026,16 @@ Convert COCO annotations to the EdgeFirst Dataset Format. Reads a COCO annotatio
 :   Include segmentation masks. Defaults to **true**; pass `--masks=false` to convert bounding boxes only. [possible values: true, false]
 
 **\--group** *GROUP*
-:   Group name applied to all samples (e.g. `train`, `val`). Sets the dataset split for every converted sample. Convert each split with its own invocation (see examples) when a COCO source only covers one split at a time.
+:   Group name applied to all samples (e.g. `train`, `val`). Use this for a
+    single JSON/ZIP input. On a directory input it overrides inferred split
+    groups for every discovered annotation file; omit it to preserve train/val.
 
 **\--images** *IMAGES*
-:   Stage the images referenced by the COCO file into the EdgeFirst on-disk layout next to the output: for an output path `<dir>/<stem>.arrow`, images are copied into the sibling directory `<dir>/<stem>/`, which is where `validate-snapshot` and sample loading expect to find them. Missing source images are warned about but don't fail the conversion, and re-running is idempotent (existing destination files are left untouched).
+:   Stage referenced images into the EdgeFirst on-disk layout next to the
+    output: for `<dir>/<stem>.arrow` or `.parquet`, images are copied into
+    `<dir>/<stem>/`. With a directory input, pass the COCO root so split
+    directories are resolved automatically. Missing images warn but do not fail
+    conversion; re-running is idempotent.
 
 **\--link**
 :   Symlink staged images instead of copying (requires `--images`). Saves disk space for large datasets.
@@ -1023,35 +1043,51 @@ Convert COCO annotations to the EdgeFirst Dataset Format. Reads a COCO annotatio
 **Examples:**
 
 ```bash
-# Convert detection annotations (boxes + masks) to Arrow
-edgefirst-client coco-to-arrow instances.json -o dataset.arrow
+# Standard COCO train + val → one offline Arrow dataset:
+# coco/coco.arrow plus linked images in coco/coco/
+edgefirst-client coco-to-arrow ~/Datasets/COCO \
+  -o coco/coco.arrow --images ~/Datasets/COCO --link
+edgefirst-client validate-snapshot coco
 
-# Convert a COCO ZIP archive and tag every sample as the train split
-edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
+# The same combined dataset as Parquet
+edgefirst-client coco-to-arrow ~/Datasets/COCO \
+  -o coco-parquet/coco-parquet.parquet --images ~/Datasets/COCO --link
+edgefirst-client validate-snapshot coco-parquet
+
+# One split from a single JSON; --group assigns the split
+edgefirst-client coco-to-arrow instances_val2017.json \
+  -o val/val.arrow --images ~/Datasets/COCO/val2017 --group val
 
 # Convert bounding boxes only (no segmentation)
-edgefirst-client coco-to-arrow instances_val2017.json -o val.arrow --masks=false --group val
-
-# Write Parquet instead of Arrow (selected by the output extension)
-edgefirst-client coco-to-arrow instances_val2017.json -o val.parquet --group val
-
-# One-command offline dataset: convert annotations and stage the referenced
-# images (symlinked) into val2017/val2017/, ready for validate-snapshot
-edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
+edgefirst-client coco-to-arrow instances_val2017.json \
+  -o val.parquet --masks=false --group val
 ```
 
-**Note:** Every image in the COCO `images` array produces at least one row. An image with no annotations is emitted as a single placeholder row with a null label, preserving the image and its `group` so dataset splits cover the full image set.
+Every image in each COCO `images` array produces at least one row. An image
+with no annotations is emitted as a placeholder row with a null label,
+preserving the image and its `group` so splits cover the full image set.
+
+Load and filter the resulting groups with Polars:
+
+```python
+import polars as pl
+
+df = pl.read_ipc("coco/coco.arrow")  # pl.read_parquet(...) for Parquet
+train = df.filter(pl.col("group") == "train")
+val = df.filter(pl.col("group") == "val")
+```
 
 ### arrow-to-coco
 
-Convert EdgeFirst Arrow format to COCO annotations. Reads an EdgeFirst Arrow file and converts it to COCO JSON, optionally filtered by group.
+Convert EdgeFirst Arrow IPC or Parquet annotations to COCO JSON, optionally
+filtered by group.
 
 **edgefirst-client arrow-to-coco** [*OPTIONS*] **\--output** *OUTPUT* *ARROW_PATH*
 
 **Arguments:**
 
 *ARROW_PATH*
-:   Path to an EdgeFirst Arrow file.
+:   Path to an EdgeFirst Arrow IPC or Parquet file.
 
 **Options:**
 

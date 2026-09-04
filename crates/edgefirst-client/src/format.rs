@@ -83,7 +83,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
 /// [`read_dataset_metadata`]); anything else (including `.arrow`/`.ipc`) is
 /// treated as Arrow IPC.
 fn is_parquet_dataset(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("parquet")
+    path.extension().and_then(std::ffi::OsStr::to_str) == Some("parquet")
 }
 
 /// Read only the file-level metadata (`schema_version`, `labels`,
@@ -416,7 +416,7 @@ fn build_file_index(root: &Path) -> Result<HashMap<String, PathBuf>, Error> {
     for entry in WalkDir::new(root)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.file_type().is_file() || (e.file_type().is_symlink() && e.path().is_file()))
     {
         let path = entry.path().to_path_buf();
         if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
@@ -465,7 +465,7 @@ fn find_matching_file(
 /// Validation issue found in dataset structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationIssue {
-    /// Arrow file is missing
+    /// Dataset annotation file is missing (legacy variant name).
     MissingArrowFile { expected: PathBuf },
     /// Sensor container directory is missing
     MissingSensorContainer { expected: PathBuf },
@@ -481,7 +481,11 @@ impl std::fmt::Display for ValidationIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ValidationIssue::MissingArrowFile { expected } => {
-                write!(f, "Missing Arrow file: {:?}", expected)
+                write!(
+                    f,
+                    "Missing dataset annotation file: expected {:?} or the same path with a .parquet extension",
+                    expected
+                )
             }
             ValidationIssue::MissingSensorContainer { expected } => {
                 write!(f, "Missing sensor container directory: {:?}", expected)
@@ -502,9 +506,9 @@ impl std::fmt::Display for ValidationIssue {
 /// Validate the structure of a dataset directory.
 ///
 /// Checks that the directory follows the EdgeFirst Dataset Format:
-/// - Arrow file exists at expected location
+/// - Arrow or Parquet annotation file exists at expected location
 /// - Sensor container directory exists
-/// - All files referenced in Arrow file exist in container
+/// - All files referenced in the annotation file exist in the container
 /// - Reports any unreferenced files
 ///
 /// # Arguments
@@ -541,15 +545,30 @@ pub fn validate_dataset_structure(dataset_dir: &Path) -> Result<Vec<ValidationIs
         .and_then(|n| n.to_str())
         .ok_or_else(|| Error::InvalidParameters("Invalid dataset directory path".to_owned()))?;
 
-    // Check for Arrow file
+    // The annotation file shares the dataset directory's basename. Accept
+    // either supported columnar representation, but reject an ambiguous
+    // directory containing both rather than silently validating one of them.
     let arrow_path = dataset_dir.join(format!("{}.arrow", dataset_name));
-    if !arrow_path.exists() {
-        issues.push(ValidationIssue::MissingArrowFile {
-            expected: arrow_path.clone(),
-        });
-        // Can't continue validation without Arrow file
-        return Ok(issues);
-    }
+    let parquet_path = dataset_dir.join(format!("{}.parquet", dataset_name));
+    let dataset_path = match (arrow_path.exists(), parquet_path.exists()) {
+        (true, false) => arrow_path,
+        (false, true) => parquet_path,
+        (true, true) => {
+            issues.push(ValidationIssue::InvalidStructure {
+                message: format!(
+                    "Both {:?} and {:?} exist; keep exactly one dataset annotation file",
+                    arrow_path, parquet_path
+                ),
+            });
+            return Ok(issues);
+        }
+        (false, false) => {
+            issues.push(ValidationIssue::MissingArrowFile {
+                expected: arrow_path.clone(),
+            });
+            return Ok(issues);
+        }
+    };
 
     // Check for sensor container
     let container_path = dataset_dir.join(dataset_name);
@@ -562,7 +581,7 @@ pub fn validate_dataset_structure(dataset_dir: &Path) -> Result<Vec<ValidationIs
     }
 
     // Resolve files and check for missing ones
-    let resolved = resolve_files_with_container(&arrow_path, &container_path)?;
+    let resolved = resolve_files_with_container(&dataset_path, &container_path)?;
 
     // Track which files were referenced
     let mut referenced_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -1024,6 +1043,60 @@ mod tests {
             "Unexpected missing files: {:?}",
             missing_files
         );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_validate_dataset_structure_parquet() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_dir = temp_dir.path().join("my_dataset");
+        std::fs::create_dir_all(&dataset_dir).unwrap();
+
+        let names = Series::new("name".into(), &["image1"]);
+        let frames: Vec<Option<u64>> = vec![None];
+        let frame_series = Series::new("frame".into(), &frames);
+        let mut df = DataFrame::new_infer_height(vec![names.into(), frame_series.into()]).unwrap();
+        let parquet_path = dataset_dir.join("my_dataset.parquet");
+        ParquetWriter::new(File::create(&parquet_path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+
+        let container = dataset_dir.join("my_dataset");
+        create_test_image(&container.join("image1.camera.jpeg"));
+
+        let issues = validate_dataset_structure(&dataset_dir).unwrap();
+        assert!(
+            issues
+                .iter()
+                .all(|issue| !matches!(issue, ValidationIssue::MissingFile { .. })),
+            "Parquet dataset should resolve its staged image: {issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .all(|issue| !matches!(issue, ValidationIssue::MissingArrowFile { .. })),
+            "Parquet must satisfy dataset annotation discovery: {issues:?}"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_validate_dataset_structure_rejects_ambiguous_annotation_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_dir = temp_dir.path().join("my_dataset");
+        std::fs::create_dir_all(&dataset_dir).unwrap();
+        std::fs::write(dataset_dir.join("my_dataset.arrow"), b"arrow").unwrap();
+        std::fs::write(dataset_dir.join("my_dataset.parquet"), b"parquet").unwrap();
+
+        let issues = validate_dataset_structure(&dataset_dir).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(matches!(
+            &issues[0],
+            ValidationIssue::InvalidStructure { message }
+                if message.contains("Both") && message.contains("keep exactly one")
+        ));
     }
 
     #[cfg(feature = "polars")]

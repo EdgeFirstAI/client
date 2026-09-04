@@ -1,20 +1,18 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.04
-**Last Updated**: 5 July, 2026
+**Last Updated**: 3 September, 2026
 **Status**: DRAFT (pending review)
 
 > **Implementation status:** the SDK has implemented the 2026.04 Arrow schema
 > since client v2.9.0 — it is the current format, not a future one. As of the
-> next release after v2.13.2 (Unreleased), dataset annotation files can also be
-> written and read as Apache Parquet (`.parquet`), selected by output file
+> client v2.14.0, dataset annotation files can also be written and read as
+> Apache Parquet (`.parquet`), selected by output file
 > extension, with the same file-level metadata (`schema_version`,
 > `category_metadata`, `labels`) carried as Parquet
-> footer key-value pairs — full parity with Arrow IPC. One gap remains:
-> `validate-snapshot`'s directory-name auto-discovery only looks for
-> `<name>.arrow` in a snapshot directory, so a directory whose annotation file
-> is Parquet-only is not auto-discovered by that command; pointing readers at
-> the `.parquet` file directly still works everywhere else.
+> footer key-value pairs — full parity with Arrow IPC. `validate-snapshot`
+> accepts either format when the annotation filename matches the dataset
+> directory basename.
 >
 > Several other items in this specification remain design targets, not yet
 > shipped: the **configurable box-format/mask-interpretation file-level
@@ -40,6 +38,7 @@
    - [LiDAR](#lidar)
 5. [Annotation Formats](#annotation-formats)
    - [DataFrame Format (Arrow/Parquet/Polars)](#dataframe-format-arrowparquetpolars)
+   - [Offline COCO Conversion](#offline-coco-conversion)
    - [JSON Format (Nested)](#json-format-nested)
    - [Format Comparison](#format-comparison)
 6. [File-Level Metadata](#file-level-metadata)
@@ -246,9 +245,16 @@ Combination of sequences and standalone images:
 
 ### File Organization
 
-**Arrow file location**: Always at root level: `{dataset_name}/{dataset_name}.arrow`
+The examples below show `.arrow`; `.parquet` is interchangeable and uses the
+same basename and sibling sensor container.
 
-**Sensor container**: Directory or ZIP file with same base name as Arrow file
+**Annotation file location**: Always at root level:
+`{dataset_name}/{dataset_name}.arrow` or
+`{dataset_name}/{dataset_name}.parquet`. Keep exactly one of these files in a
+dataset directory so discovery is unambiguous.
+
+**Sensor container**: Directory or ZIP file with the same base name as the
+annotation file.
 
 #### Directory Structure Options
 
@@ -411,7 +417,7 @@ EdgeFirst supports three annotation storage formats optimized for different use 
 
 Both formats share the same logical schema. Arrow IPC is optimized for local performance; Parquet is optimized for transfer and interoperability. Use Arrow for training pipelines, Parquet for distribution.
 
-> **Note**: This schema is defined for the 2026.04 release, and the SDK (since v2.9.0) implements it — 2026.04 is current, not upcoming. Older 2025.10 files are still read transparently; see the [Version History](#version-history) section for that schema and the [Migration from 2025.10](#migration-from-202510) section to upgrade a file. **Parquet is not implemented** — see the implementation-status note at the top of this document.
+> **Note**: This schema is defined for the 2026.04 release, and the SDK (since v2.9.0) implements it — 2026.04 is current, not upcoming. Older 2025.10 files are still read transparently; see the [Version History](#version-history) section for that schema and the [Migration from 2025.10](#migration-from-202510) section to upgrade a file. Parquet support is available in client v2.14.0 and later.
 
 **Schema (2026.04)**:
 
@@ -497,6 +503,78 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
 import polars as pl
 df = pl.read_ipc("dataset.arrow")
 ```
+
+### Offline COCO Conversion
+
+The EdgeFirst Client converts a standard extracted COCO directory directly to
+one offline dataset; EdgeFirst Studio and credentials are not involved. Given:
+
+```text
+COCO/
+├── annotations/
+│   ├── instances_train2017.json
+│   └── instances_val2017.json
+├── train2017/
+└── val2017/
+```
+
+create Arrow IPC or Parquet annotations plus a sibling image container:
+
+```bash
+# Arrow IPC
+edgefirst-client coco-to-arrow COCO \
+  --output coco/coco.arrow --images COCO --link
+
+# Parquet
+edgefirst-client coco-to-arrow COCO \
+  --output coco-parquet/coco-parquet.parquet --images COCO --link
+
+edgefirst-client validate-snapshot coco
+edgefirst-client validate-snapshot coco-parquet
+```
+
+Directory conversion discovers `instances_*.json` files and assigns the split
+inferred from each filename to the sample-level `group` column (`train`, `val`,
+or `test`). All splits are written into the same annotation file. For a single
+JSON or ZIP input, set the group explicitly:
+
+```bash
+edgefirst-client coco-to-arrow instances_val2017.json \
+  --output val/val.arrow --images val2017 --group val
+```
+
+The output layout is identical for both storage formats:
+
+```text
+coco/
+├── coco.arrow                 # or coco.parquet
+└── coco/
+    ├── 000000000009.jpg
+    └── ...
+```
+
+`--images` copies referenced images; `--link` uses symlinks on Unix to avoid a
+second copy. Existing staged files are left untouched on re-run. Missing source
+images and basename collisions are reported as warnings. An image with no
+annotations still receives one placeholder row with a null `label`, retaining
+its `name`, `size`, and `group`.
+
+Use Polars to select a split:
+
+```python
+import polars as pl
+
+df = pl.read_ipc("coco/coco.arrow")
+train = df.filter(pl.col("group") == "train")
+val = df.filter(pl.col("group") == "val")
+
+# Parquet uses the same schema:
+df_parquet = pl.read_parquet("coco-parquet/coco-parquet.parquet")
+```
+
+See [CLI.md](CLI.md#coco-interchange) and
+[examples/08_coco_conversion.py](examples/08_coco_conversion.py) for complete
+command and Python API examples.
 
 ### JSON Format (Nested)
 
@@ -1623,8 +1701,7 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 - `.radar.png` - Radar data cube
 - `.lidar.pcd` - LiDAR point cloud
 
-**Use Parquet when** (design target — not yet implemented in the SDK; see the
-implementation-status note at the top of this document):
+**Use Parquet when**:
 
 - Distributing datasets to collaborators or cloud storage
 - Querying with DuckDB, Spark, or pandas (Parquet is the standard interchange format)
@@ -1642,16 +1719,16 @@ implementation-status note at the top of this document):
 This version introduces significant changes to the annotation schema including new geometry types, configurable box formats, file-level metadata, and Parquet support. Several changes are **breaking** — see [Migration from 2025.10](#migration-from-202510).
 
 > **Implementation status:** the geometry changes, score columns, and COCO/LVIS
-> extensions below shipped in client SDK v2.9.0 and are what the SDK actually does
-> today. **Parquet support and configurable box format are specification-only** — not
-> implemented in the SDK as of v2.12.1. See the implementation-status note at the top
-> of this document.
+> extensions below shipped in client SDK v2.9.0 and are what the SDK actually
+> does today. Parquet support shipped in client v2.14.0. Configurable box
+> format remains specification-only; see the implementation-status note at the
+> top of this document.
 
 #### New Features
 
-**Storage Formats** (design target, not yet implemented — see note above):
+**Storage Formats**:
 
-- **Parquet support**: ZSTD-compressed columnar format for transfer/interop with DuckDB, Spark, pandas
+- **Parquet support** (client v2.14.0+): ZSTD-compressed columnar format for transfer/interop with DuckDB, Spark, pandas
 - **File-level metadata**: Schema version, box format descriptors, mask interpretation in Arrow/Parquet metadata (only `schema_version`/`category_metadata`/`labels` are actually implemented; box format descriptors and mask interpretation are not)
 
 **Geometry Changes** (implemented in v2.9.0+):

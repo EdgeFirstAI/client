@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-//! COCO to EdgeFirst Arrow format conversion.
+//! COCO to EdgeFirst Arrow IPC or Parquet conversion.
 //!
 //! Provides high-performance conversion between COCO JSON and EdgeFirst Arrow
 //! format, supporting async operations and progress tracking.
@@ -11,9 +11,9 @@ use super::{
         box2d_to_coco_bbox, coco_bbox_to_box2d, coco_segmentation_to_mask_data,
         coco_segmentation_to_polygon, polygon_to_coco_polygon,
     },
-    reader::CocoReader,
-    types::{CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
-    writer::{CocoDatasetBuilder, CocoWriter},
+    reader::{CocoReader, read_coco_directory},
+    types::{CocoCategory, CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
+    writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter},
 };
 use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample};
 use polars::prelude::*;
@@ -75,6 +75,8 @@ pub struct ArrowToCocoOptions {
     pub include_masks: bool,
     /// COCO info section.
     pub info: Option<CocoInfo>,
+    /// Pretty-print the output JSON.
+    pub pretty: bool,
 }
 
 impl Default for ArrowToCocoOptions {
@@ -83,6 +85,7 @@ impl Default for ArrowToCocoOptions {
             groups: vec![],
             include_masks: true,
             info: None,
+            pretty: false,
         }
     }
 }
@@ -100,14 +103,15 @@ fn max_workers() -> usize {
         })
 }
 
-/// Convert COCO annotations to EdgeFirst Arrow format.
+/// Convert COCO annotations to the EdgeFirst Dataset Format.
 ///
 /// This is a high-performance async conversion that uses parallel workers
 /// for parsing and transforming annotations.
 ///
 /// # Arguments
-/// * `coco_path` - Path to COCO annotation JSON file or ZIP archive
-/// * `output_path` - Output Arrow file path
+/// * `coco_path` - Path to COCO annotation JSON/ZIP or a standard extracted
+///   directory; directory inputs combine inferred train/val groups
+/// * `output_path` - Output Arrow IPC or Parquet path, selected by extension
 /// * `options` - Conversion options
 /// * `progress` - Optional progress channel
 ///
@@ -122,25 +126,33 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     let coco_path = coco_path.as_ref();
     let output_path = output_path.as_ref();
 
-    // Read COCO dataset
-    let reader = CocoReader::new();
-    let dataset = if coco_path.extension().is_some_and(|e| e == "zip") {
-        reader.read_annotations_zip(coco_path)?
+    // A directory is the standard multi-split COCO layout. Process each
+    // annotation file independently so train/val image or annotation IDs may
+    // overlap without one split silently replacing rows from another.
+    let mut sources: Vec<(CocoDataset, Option<String>, Option<String>)> = if coco_path.is_dir() {
+        read_coco_directory(coco_path, &Default::default())?
+            .into_iter()
+            .map(|(dataset, inferred_group)| {
+                let group = options.group.clone().or(Some(inferred_group.clone()));
+                (dataset, group, Some(inferred_group))
+            })
+            .collect()
     } else {
-        reader.read_json(coco_path)?
+        let reader = CocoReader::new();
+        let dataset = if coco_path.extension().is_some_and(|e| e == "zip") {
+            reader.read_annotations_zip(coco_path)?
+        } else {
+            reader.read_json(coco_path)?
+        };
+        vec![(dataset, options.group.clone(), None)]
     };
 
-    // Build index for efficient lookups
-    let index = Arc::new(CocoIndex::from_dataset(&dataset));
-    let total_images = dataset.images.len();
-
-    // Captured before `dataset.images` is moved into the worker loop below;
-    // used for image staging after the annotation write.
-    let image_file_names: Vec<String> = dataset
-        .images
+    let total_images: usize = sources
         .iter()
-        .map(|img| img.file_name.clone())
-        .collect();
+        .map(|(dataset, _, _)| dataset.images.len())
+        .sum();
+    let categories = collect_compatible_categories(&sources)?;
+    let mut image_file_names = Vec::with_capacity(total_images);
 
     // Send initial progress
     if let Some(ref p) = progress {
@@ -156,42 +168,53 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     // Process images in parallel
     let sem = Arc::new(Semaphore::new(options.max_workers));
     let current = Arc::new(AtomicUsize::new(0));
-    let include_masks = options.include_masks;
-    let group = options.group.clone();
-
     let mut tasks = Vec::with_capacity(total_images);
+    for (dataset, group, inferred_group) in sources.drain(..) {
+        let split_dir = if coco_path.is_dir() {
+            inferred_group
+                .as_deref()
+                .and_then(|group| find_split_image_dir(coco_path, group))
+        } else {
+            None
+        };
+        image_file_names.extend(dataset.images.iter().map(|image| {
+            split_dir
+                .as_ref()
+                .map(|dir| dir.join(&image.file_name).to_string_lossy().into_owned())
+                .unwrap_or_else(|| image.file_name.clone())
+        }));
 
-    for image in dataset.images {
-        let sem = sem.clone();
-        let index = index.clone();
-        let current = current.clone();
-        let progress = progress.clone();
-        let total = total_images;
-        let group = group.clone();
+        let index = Arc::new(CocoIndex::from_dataset(&dataset));
+        for image in dataset.images {
+            let sem = sem.clone();
+            let index = index.clone();
+            let current = current.clone();
+            let progress = progress.clone();
+            let group = group.clone();
+            let include_masks = options.include_masks;
 
-        let task = tokio::spawn(async move {
-            let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
+            let task = tokio::spawn(async move {
+                let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
 
-            // Convert this image's annotations to EdgeFirst samples
-            let samples =
-                convert_image_annotations(&image, &index, include_masks, group.as_deref());
+                let samples =
+                    convert_image_annotations(&image, &index, include_masks, group.as_deref());
 
-            // Update progress
-            let c = current.fetch_add(1, Ordering::SeqCst) + 1;
-            if let Some(ref p) = progress {
-                let _ = p
-                    .send(Progress {
-                        current: c,
-                        total,
-                        status: None,
-                    })
-                    .await;
-            }
+                let c = current.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Some(ref p) = progress {
+                    let _ = p
+                        .send(Progress {
+                            current: c,
+                            total: total_images,
+                            status: None,
+                        })
+                        .await;
+                }
 
-            Ok::<Vec<Sample>, Error>(samples)
-        });
+                Ok::<Vec<Sample>, Error>(samples)
+            });
 
-        tasks.push(task);
+            tasks.push(task);
+        }
     }
 
     // Collect all samples
@@ -216,9 +239,8 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     // All categories are stored so that categories without annotations
     // (e.g., those only referenced in neg_category_ids) can be
     // reconstructed during Arrow→COCO export.
-    if !dataset.categories.is_empty() {
-        let cat_meta: HashMap<String, serde_json::Value> = dataset
-            .categories
+    if !categories.is_empty() {
+        let cat_meta: HashMap<String, serde_json::Value> = categories
             .iter()
             .map(|c| {
                 let mut entry = serde_json::Map::new();
@@ -262,8 +284,8 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     }
 
     // Write labels metadata: sorted list of category names by category_id.
-    if !dataset.categories.is_empty() {
-        let mut cats: Vec<_> = dataset.categories.iter().collect();
+    if !categories.is_empty() {
+        let mut cats: Vec<_> = categories.iter().collect();
         cats.sort_by_key(|c| c.id);
         let labels: Vec<String> = cats.iter().map(|c| c.name.clone()).collect();
         let labels_json = serde_json::to_string(&labels).unwrap_or_default();
@@ -333,6 +355,97 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
     Ok(all_samples.len())
 }
 
+/// Collect the shared category vocabulary for a multi-split conversion.
+///
+/// EdgeFirst metadata is keyed by category name while rows retain the numeric
+/// COCO category ID in `label_index`. A disagreement between splits therefore
+/// cannot be represented faithfully and is rejected instead of silently
+/// selecting whichever split happened to be read last.
+fn collect_compatible_categories(
+    sources: &[(CocoDataset, Option<String>, Option<String>)],
+) -> Result<Vec<CocoCategory>, Error> {
+    let mut by_name: BTreeMap<String, CocoCategory> = BTreeMap::new();
+    let mut names_by_id: BTreeMap<u32, String> = BTreeMap::new();
+
+    for (dataset, _, _) in sources {
+        for category in &dataset.categories {
+            if let Some(existing_name) = names_by_id.get(&category.id)
+                && existing_name != &category.name
+            {
+                return Err(Error::CocoError(format!(
+                    "COCO splits disagree on category {}: '{}' versus '{}'",
+                    category.id, existing_name, category.name
+                )));
+            }
+            if let Some(existing) = by_name.get(&category.name) {
+                if existing.id != category.id {
+                    return Err(Error::CocoError(format!(
+                        "COCO splits disagree on category '{}': id {} versus {}",
+                        category.name, existing.id, category.id
+                    )));
+                }
+
+                let conflicting_field = [
+                    (
+                        "supercategory",
+                        existing.supercategory.as_ref() != category.supercategory.as_ref(),
+                    ),
+                    (
+                        "synset",
+                        existing.synset.as_ref() != category.synset.as_ref(),
+                    ),
+                    (
+                        "frequency",
+                        existing.frequency.as_ref() != category.frequency.as_ref(),
+                    ),
+                    (
+                        "synonyms",
+                        existing.synonyms.as_ref() != category.synonyms.as_ref(),
+                    ),
+                    ("definition", existing.def.as_ref() != category.def.as_ref()),
+                ]
+                .into_iter()
+                .find_map(|(field, differs)| differs.then_some(field));
+
+                if let Some(field) = conflicting_field {
+                    return Err(Error::CocoError(format!(
+                        "COCO splits disagree on category '{}' metadata field '{}'",
+                        category.name, field
+                    )));
+                }
+            }
+            names_by_id.insert(category.id, category.name.clone());
+            by_name
+                .entry(category.name.clone())
+                .or_insert_with(|| category.clone());
+        }
+    }
+
+    Ok(by_name.into_values().collect())
+}
+
+/// Find the immediate COCO image directory associated with an inferred group.
+///
+/// Standard layouts use `train2017`, `val2017`, and `test2017`. Matching after
+/// trimming the year also supports other year suffixes without hard-coding one
+/// COCO release.
+fn find_split_image_dir(coco_root: &Path, group: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(coco_root)
+        .ok()?
+        .filter_map(Result::ok)
+        // `Path::is_dir` follows symlinks, which is common for large local
+        // COCO image trees stored on another volume.
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name_str = name.to_str()?;
+            (name_str.trim_end_matches(char::is_numeric) == group).then(|| PathBuf::from(name))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
 /// Outcome of staging images referenced by a COCO dataset into the output
 /// annotation file's sibling image directory.
 struct StageReport {
@@ -379,7 +492,7 @@ fn stage_images(
     let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = output_path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("dataset");
     let dest_dir = parent.join(stem);
 
@@ -513,7 +626,7 @@ pub fn write_dataset(
     }
     let ext = output_path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     let mut file = std::fs::File::create(output_path)?;
     match ext {
@@ -1179,7 +1292,10 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let annotation_count = dataset.annotations.len();
 
     // Write output
-    let writer = CocoWriter::new();
+    let writer = CocoWriter::with_options(CocoWriteOptions {
+        pretty: options.pretty,
+        ..Default::default()
+    });
     writer.write_json(&dataset, output_path)?;
 
     Ok(annotation_count)
@@ -1726,6 +1842,7 @@ mod tests {
         assert!(options.groups.is_empty());
         assert!(options.include_masks);
         assert!(options.info.is_none());
+        assert!(!options.pretty);
     }
 
     #[test]
@@ -1819,12 +1936,20 @@ mod tests {
 
         // Convert back to COCO
         let restored_path = temp_dir.path().join("restored.json");
-        let options = ArrowToCocoOptions::default();
+        let options = ArrowToCocoOptions {
+            pretty: true,
+            ..Default::default()
+        };
         arrow_to_coco(&arrow_path, &restored_path, &options, None)
             .await
             .unwrap();
 
         // Verify restored data
+        let contents = std::fs::read_to_string(&restored_path).unwrap();
+        assert!(
+            contents.lines().count() > 1,
+            "pretty output should span multiple lines"
+        );
         let reader = CocoReader::new();
         let restored = reader.read_json(&restored_path).unwrap();
 
@@ -2442,6 +2567,211 @@ mod tests {
 
         let annotations = output["annotations"].as_array().unwrap();
         assert_eq!(annotations.len(), 2, "annotation count must round-trip");
+    }
+
+    #[tokio::test]
+    async fn coco_directory_combines_splits_for_arrow_and_parquet() {
+        let dir = TempDir::new().unwrap();
+        let coco_root = dir.path().join("coco");
+        let annotations = coco_root.join("annotations");
+        std::fs::create_dir_all(&annotations).unwrap();
+        std::fs::create_dir_all(coco_root.join("train2017")).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(coco_root.join("val-images")).unwrap();
+            std::os::unix::fs::symlink(coco_root.join("val-images"), coco_root.join("val2017"))
+                .unwrap();
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(coco_root.join("val2017")).unwrap();
+
+        // Deliberately reuse image and annotation IDs across splits. Processing
+        // each source independently must retain both rather than deduplicating
+        // one split by numeric ID.
+        let split_json = |file_name: &str, annotated: bool| {
+            let annotations = if annotated {
+                r#"[{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0}]"#
+            } else {
+                "[]"
+            };
+            format!(
+                r#"{{
+                    "images": [{{"id": 1, "width": 640, "height": 480, "file_name": "{file_name}"}}],
+                    "annotations": {annotations},
+                    "categories": [{{"id": 1, "name": "person", "supercategory": "human"}}]
+                }}"#
+            )
+        };
+        std::fs::write(
+            annotations.join("instances_train2017.json"),
+            split_json("train.jpg", true),
+        )
+        .unwrap();
+        std::fs::write(
+            annotations.join("instances_val2017.json"),
+            split_json("val.jpg", false),
+        )
+        .unwrap();
+        std::fs::write(coco_root.join("train2017/train.jpg"), b"train").unwrap();
+        std::fs::write(coco_root.join("val2017/val.jpg"), b"val").unwrap();
+
+        for extension in ["arrow", "parquet"] {
+            let dataset_name = format!("combined_{extension}");
+            let output_dir = dir.path().join(&dataset_name);
+            let output = output_dir.join(format!("{dataset_name}.{extension}"));
+            let options = CocoToArrowOptions {
+                images_dir: Some(coco_root.clone()),
+                link_images: true,
+                ..Default::default()
+            };
+            let count = coco_to_arrow(&coco_root, &output, &options, None)
+                .await
+                .unwrap();
+            assert_eq!(count, 2, "annotated and empty images must both be retained");
+
+            let (df, metadata) = crate::format::read_dataset_dataframe(&output).unwrap();
+            assert_eq!(df.height(), 2);
+            assert_eq!(
+                metadata.get("schema_version").map(String::as_str),
+                Some(SCHEMA_VERSION)
+            );
+
+            let groups = df.column("group").unwrap().cast(&DataType::String).unwrap();
+            let groups: std::collections::HashSet<_> =
+                groups.str().unwrap().iter().flatten().collect();
+            assert_eq!(groups, std::collections::HashSet::from(["train", "val"]));
+
+            let names = df.column("name").unwrap().str().unwrap();
+            assert!(names.iter().flatten().any(|name| name == "train"));
+            assert!(names.iter().flatten().any(|name| name == "val"));
+
+            let staged = output_dir.join(&dataset_name);
+            assert_eq!(std::fs::read(staged.join("train.jpg")).unwrap(), b"train");
+            assert_eq!(std::fs::read(staged.join("val.jpg")).unwrap(), b"val");
+            assert!(
+                crate::format::validate_dataset_structure(&output_dir)
+                    .unwrap()
+                    .is_empty(),
+                "linked image staging should pass offline validation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coco_directory_rejects_incompatible_split_categories() {
+        let dir = TempDir::new().unwrap();
+        let annotations = dir.path().join("annotations");
+        std::fs::create_dir_all(&annotations).unwrap();
+        let make_json = |category: &str| {
+            format!(
+                r#"{{
+                    "images": [{{"id": 1, "width": 1, "height": 1, "file_name": "image.jpg"}}],
+                    "annotations": [],
+                    "categories": [{{"id": 1, "name": "{category}"}}]
+                }}"#
+            )
+        };
+        std::fs::write(
+            annotations.join("instances_train2017.json"),
+            make_json("person"),
+        )
+        .unwrap();
+        std::fs::write(
+            annotations.join("instances_val2017.json"),
+            make_json("vehicle"),
+        )
+        .unwrap();
+
+        let output = dir.path().join("output.arrow");
+        let error = coco_to_arrow(dir.path(), &output, &CocoToArrowOptions::default(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("COCO splits disagree on category 1")
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn compatible_categories_reject_conflicting_persisted_metadata() {
+        let category = CocoCategory {
+            id: 1,
+            name: "person".to_string(),
+            supercategory: Some("human".to_string()),
+            synset: Some("person.n.01".to_string()),
+            frequency: Some("f".to_string()),
+            synonyms: Some(vec!["person".to_string(), "human".to_string()]),
+            def: Some("a human being".to_string()),
+            ..Default::default()
+        };
+        let conflicting = [
+            (
+                "supercategory",
+                CocoCategory {
+                    supercategory: Some("animal".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "synset",
+                CocoCategory {
+                    synset: Some("person.n.02".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "frequency",
+                CocoCategory {
+                    frequency: Some("c".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "synonyms",
+                CocoCategory {
+                    synonyms: Some(vec!["individual".to_string()]),
+                    ..category.clone()
+                },
+            ),
+            (
+                "definition",
+                CocoCategory {
+                    def: Some("a different definition".to_string()),
+                    ..category.clone()
+                },
+            ),
+        ];
+
+        for (field, conflicting_category) in conflicting {
+            let sources = vec![
+                (
+                    CocoDataset {
+                        categories: vec![category.clone()],
+                        ..Default::default()
+                    },
+                    Some("train".to_string()),
+                    None,
+                ),
+                (
+                    CocoDataset {
+                        categories: vec![conflicting_category],
+                        ..Default::default()
+                    },
+                    Some("val".to_string()),
+                    None,
+                ),
+            ];
+
+            let error = collect_compatible_categories(&sources).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("metadata field '{field}'")),
+                "unexpected error for {field}: {error}"
+            );
+        }
     }
 
     // =========================================================================

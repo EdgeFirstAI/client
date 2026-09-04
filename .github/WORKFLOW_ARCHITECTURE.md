@@ -420,101 +420,30 @@ is built under the same llvm-cov instrumentation as the Rust tests.
 
 ### For Maintainers
 
-> **Note**: This project uses [cargo-release](https://github.com/crate-ci/cargo-release) for automated version management and tagging. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-process) for complete details.
+See [CONTRIBUTING.md](../CONTRIBUTING.md#release-process) for the release
+checklist. The authoritative path is a reviewed release pull request:
 
-**1. Install cargo-release** (if not already installed)
+1. Create `release/X.Y.Z` from current `main`.
+2. Update the workspace and internal dependency versions in `Cargo.toml`,
+   regenerate `Cargo.lock`, promote the changelog's `[Unreleased]` entries to a
+   dated `[X.Y.Z]` section, and update the `CLI.md` footer/date.
+3. Run `make pre-release`, commit with DCO, push the branch, and open
+   `Release X.Y.Z` against `main`.
+4. Merge only after required review and checks. Do not create or push a tag
+   manually.
+5. `tag-release.yml` validates the branch name and creates annotated tag
+   `vX.Y.Z` on the merge commit.
+6. The tag triggers `release.yml`, which waits for `build.yml` and `sbom.yml`
+   artifacts from that same commit, creates the GitHub Release, uploads CLI
+   binaries/wheels/SBOM/man page, and publishes to PyPI and crates.io.
 
-```bash
-cargo install cargo-release
-```
+The release publisher accepts `vX.Y.ZrcN`, but `tag-release.yml` currently
+validates stable `release/X.Y.Z` branches only. Release candidates therefore
+require an explicit workflow update before using this automated path.
 
-**2. Update CHANGELOG.md**
-
-```bash
-# Add release notes for the new version
-# Edit CHANGELOG.md manually
-```
-
-**3. Run cargo-release**
-
-For **stable releases**:
-
-```bash
-# Patch release (e.g., 2.2.2 → 2.2.3)
-cargo release patch --execute --no-confirm
-
-# Minor release (e.g., 2.2.3 → 2.3.0)
-cargo release minor --execute --no-confirm
-
-# Major release (e.g., 2.3.0 → 3.0.0)
-cargo release major --execute --no-confirm
-```
-
-For **release candidates** (rarely used):
-
-```bash
-# Manually edit version to use rcN format (e.g., 2.3.0rc1)
-sed -i '' 's/version = "2.2.2"/version = "2.3.0rc1"/' Cargo.toml
-sed -i '' 's/edgefirst-client = { version = "2.2.2"/edgefirst-client = { version = "2.3.0rc1"/' Cargo.toml
-cargo release 2.3.0rc1 --execute --no-confirm
-```
-
-**4. Push changes and tags**
-
-```bash
-git push && git push --tags
-```
-
-**Important**:
-
-- The workflow will fail if the tag version doesn't match the version in `Cargo.toml`
-- cargo-release automatically updates all workspace crates and creates the git tag locally
-- Tags use format `X.Y.Z` (no "v" prefix)
-
-**5. Monitor Workflow**
-
-- Go to Actions tab
-- Watch "Release" workflow
-- Verify all jobs complete successfully
-
-**6. Verify Release**
-
-- Check GitHub release page
-- Verify crates.io publication
-- Verify PyPI publication
-- Test downloads
-
-### What cargo-release Does
-
-When you run `cargo release`, it automatically:
-
-1. Updates workspace version in root `Cargo.toml`
-2. Updates workspace dependency version for `edgefirst-client`
-3. Updates all crate versions (inherited via `version.workspace = true`)
-4. Updates `Cargo.lock`
-5. Creates commit: "Release X.Y.Z Preparations"
-6. Creates git tag: `X.Y.Z` (locally, not pushed)
-
-Configuration is in `release.toml`:
-
-- Only allows releases from `main` branch (safety)
-- Uses tag format `X.Y.Z` without "v" prefix
-- Disables automatic publishing (handled by CI)
-- Disables automatic pushing (manual control for review)
-
-### GitHub Actions Workflow
-
-After pushing the tag, the workflow automatically:
-
-1. Verifies Cargo.toml version matches the tag
-2. Creates GitHub release
-3. Builds CLI binaries (5 platforms)
-4. Builds Python wheels (5 platforms)
-5. Publishes to crates.io
-6. Publishes to PyPI
-7. Uploads all artifacts to GitHub release
-
-**Note**: If the version verification fails (tag doesn't match Cargo.toml), the entire workflow will fail immediately.
+After publication, verify the Release workflow, GitHub assets, PyPI package,
+and crates.io crate. A version mismatch between `Cargo.toml`, the release
+branch, and the generated tag fails the workflow.
 
 ---
 
