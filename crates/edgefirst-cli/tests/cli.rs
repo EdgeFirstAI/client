@@ -5462,7 +5462,7 @@ fn test_coco_roundtrip_cli() {
     // Verify restored file content
     let contents = std::fs::read_to_string(&restored).unwrap();
     assert!(
-        contents.starts_with("{\n  \"info\""),
+        contents.starts_with("{\n") && contents.contains("\n  \""),
         "--pretty should produce indented JSON"
     );
     let restored_data: serde_json::Value = serde_json::from_str(&contents).unwrap();

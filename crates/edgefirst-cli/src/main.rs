@@ -4906,6 +4906,7 @@ async fn handle_arrow_to_coco(
             year: Some(chrono::Utc::now().year() as u32),
             ..Default::default()
         }),
+        pretty,
     };
 
     let arrow_path_clone = arrow_path.clone();
@@ -4921,16 +4922,6 @@ async fn handle_arrow_to_coco(
 
     let count = task.await??;
     pb.finish_with_message("done");
-
-    if pretty {
-        use edgefirst_client::coco::{CocoReadOptions, CocoReader, CocoWriteOptions, CocoWriter};
-        let dataset = CocoReader::with_options(CocoReadOptions::default()).read_json(&output)?;
-        CocoWriter::with_options(CocoWriteOptions {
-            pretty: true,
-            ..Default::default()
-        })
-        .write_json(&dataset, &output)?;
-    }
 
     println!("\n✓ Converted {} annotations to COCO format", count);
 

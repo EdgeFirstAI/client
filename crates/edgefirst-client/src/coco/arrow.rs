@@ -13,7 +13,7 @@ use super::{
     },
     reader::{CocoReader, read_coco_directory},
     types::{CocoCategory, CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
-    writer::{CocoDatasetBuilder, CocoWriter},
+    writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter},
 };
 use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample};
 use polars::prelude::*;
@@ -75,6 +75,8 @@ pub struct ArrowToCocoOptions {
     pub include_masks: bool,
     /// COCO info section.
     pub info: Option<CocoInfo>,
+    /// Pretty-print the output JSON.
+    pub pretty: bool,
 }
 
 impl Default for ArrowToCocoOptions {
@@ -83,6 +85,7 @@ impl Default for ArrowToCocoOptions {
             groups: vec![],
             include_masks: true,
             info: None,
+            pretty: false,
         }
     }
 }
@@ -460,7 +463,7 @@ fn stage_images(
     let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = output_path
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("dataset");
     let dest_dir = parent.join(stem);
 
@@ -594,7 +597,7 @@ pub fn write_dataset(
     }
     let ext = output_path
         .extension()
-        .and_then(|e| e.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     let mut file = std::fs::File::create(output_path)?;
     match ext {
@@ -1260,7 +1263,10 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     let annotation_count = dataset.annotations.len();
 
     // Write output
-    let writer = CocoWriter::new();
+    let writer = CocoWriter::with_options(CocoWriteOptions {
+        pretty: options.pretty,
+        ..Default::default()
+    });
     writer.write_json(&dataset, output_path)?;
 
     Ok(annotation_count)
@@ -1807,6 +1813,7 @@ mod tests {
         assert!(options.groups.is_empty());
         assert!(options.include_masks);
         assert!(options.info.is_none());
+        assert!(!options.pretty);
     }
 
     #[test]
@@ -1900,12 +1907,20 @@ mod tests {
 
         // Convert back to COCO
         let restored_path = temp_dir.path().join("restored.json");
-        let options = ArrowToCocoOptions::default();
+        let options = ArrowToCocoOptions {
+            pretty: true,
+            ..Default::default()
+        };
         arrow_to_coco(&arrow_path, &restored_path, &options, None)
             .await
             .unwrap();
 
         // Verify restored data
+        let contents = std::fs::read_to_string(&restored_path).unwrap();
+        assert!(
+            contents.lines().count() > 1,
+            "pretty output should span multiple lines"
+        );
         let reader = CocoReader::new();
         let restored = reader.read_json(&restored_path).unwrap();
 

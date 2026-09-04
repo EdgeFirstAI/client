@@ -83,7 +83,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
 /// [`read_dataset_metadata`]); anything else (including `.arrow`/`.ipc`) is
 /// treated as Arrow IPC.
 fn is_parquet_dataset(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("parquet")
+    path.extension().and_then(std::ffi::OsStr::to_str) == Some("parquet")
 }
 
 /// Read only the file-level metadata (`schema_version`, `labels`,

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import edgefirst_client as ec
 import polars as pl
+from _path import normalize_user_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,21 +52,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output = normalize_user_path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     rows = ec.coco_to_arrow(
         args.coco_path,
-        args.output,
+        output,
         group=args.group,
         images_dir=args.images,
         link_images=args.link,
     )
-    print(f"Wrote {rows} rows to {args.output}")
+    print(f"Wrote {rows} rows to {output}")
 
-    if args.output.suffix == ".parquet":
-        dataframe = pl.read_parquet(args.output)
+    if output.suffix == ".parquet":
+        dataframe = pl.read_parquet(output)
     else:
-        dataframe = pl.read_ipc(args.output)
+        dataframe = pl.read_ipc(output)
 
     sample_keys = ["name"]
     if "group" in dataframe.columns:
