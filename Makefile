@@ -1,8 +1,8 @@
 # EdgeFirst Client Makefile
 # Provides common development tasks and pre-commit automation
 
-.PHONY: help format lint test build clean pre-commit pre-release sbom check-license version-check \
-        security-audit
+.PHONY: help format lint test build clean pre-commit pre-release pre-release-test sbom \
+        check-license version-check security-audit
 
 # Default target
 help:
@@ -163,7 +163,10 @@ pre-commit: format lint build security-audit
 # Pre-release validation (comprehensive checks before release).
 # Do not depend on `clean`: it removes the contributor's venv, including the
 # Python formatter and the locally built bindings required by `py-test`.
-pre-release: format lint build test sbom check-license version-check security-audit
+pre-release-test: py-dev
+	$(MAKE) test
+
+pre-release: format lint build pre-release-test sbom check-license version-check security-audit
 	@echo ""
 	@echo "Running pre-release validation..."
 	@echo ""

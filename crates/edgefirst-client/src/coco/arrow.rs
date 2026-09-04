@@ -377,13 +377,42 @@ fn collect_compatible_categories(
                     category.id, existing_name, category.name
                 )));
             }
-            if let Some(existing) = by_name.get(&category.name)
-                && existing.id != category.id
-            {
-                return Err(Error::CocoError(format!(
-                    "COCO splits disagree on category '{}': id {} versus {}",
-                    category.name, existing.id, category.id
-                )));
+            if let Some(existing) = by_name.get(&category.name) {
+                if existing.id != category.id {
+                    return Err(Error::CocoError(format!(
+                        "COCO splits disagree on category '{}': id {} versus {}",
+                        category.name, existing.id, category.id
+                    )));
+                }
+
+                let conflicting_field = [
+                    (
+                        "supercategory",
+                        existing.supercategory.as_ref() != category.supercategory.as_ref(),
+                    ),
+                    (
+                        "synset",
+                        existing.synset.as_ref() != category.synset.as_ref(),
+                    ),
+                    (
+                        "frequency",
+                        existing.frequency.as_ref() != category.frequency.as_ref(),
+                    ),
+                    (
+                        "synonyms",
+                        existing.synonyms.as_ref() != category.synonyms.as_ref(),
+                    ),
+                    ("definition", existing.def.as_ref() != category.def.as_ref()),
+                ]
+                .into_iter()
+                .find_map(|(field, differs)| differs.then_some(field));
+
+                if let Some(field) = conflicting_field {
+                    return Err(Error::CocoError(format!(
+                        "COCO splits disagree on category '{}' metadata field '{}'",
+                        category.name, field
+                    )));
+                }
             }
             names_by_id.insert(category.id, category.name.clone());
             by_name
@@ -2663,6 +2692,86 @@ mod tests {
                 .contains("COCO splits disagree on category 1")
         );
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn compatible_categories_reject_conflicting_persisted_metadata() {
+        let category = CocoCategory {
+            id: 1,
+            name: "person".to_string(),
+            supercategory: Some("human".to_string()),
+            synset: Some("person.n.01".to_string()),
+            frequency: Some("f".to_string()),
+            synonyms: Some(vec!["person".to_string(), "human".to_string()]),
+            def: Some("a human being".to_string()),
+            ..Default::default()
+        };
+        let conflicting = [
+            (
+                "supercategory",
+                CocoCategory {
+                    supercategory: Some("animal".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "synset",
+                CocoCategory {
+                    synset: Some("person.n.02".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "frequency",
+                CocoCategory {
+                    frequency: Some("c".to_string()),
+                    ..category.clone()
+                },
+            ),
+            (
+                "synonyms",
+                CocoCategory {
+                    synonyms: Some(vec!["individual".to_string()]),
+                    ..category.clone()
+                },
+            ),
+            (
+                "definition",
+                CocoCategory {
+                    def: Some("a different definition".to_string()),
+                    ..category.clone()
+                },
+            ),
+        ];
+
+        for (field, conflicting_category) in conflicting {
+            let sources = vec![
+                (
+                    CocoDataset {
+                        categories: vec![category.clone()],
+                        ..Default::default()
+                    },
+                    Some("train".to_string()),
+                    None,
+                ),
+                (
+                    CocoDataset {
+                        categories: vec![conflicting_category],
+                        ..Default::default()
+                    },
+                    Some("val".to_string()),
+                    None,
+                ),
+            ];
+
+            let error = collect_compatible_categories(&sources).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("metadata field '{field}'")),
+                "unexpected error for {field}: {error}"
+            );
+        }
     }
 
     // =========================================================================
