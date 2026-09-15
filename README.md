@@ -393,6 +393,9 @@ edgefirst-client coco-to-arrow ~/Datasets/COCO \
 edgefirst-client validate-snapshot coco-parquet
 ```
 
+`visdrone-to-arrow` converts VisDrone2019 DET and VID splits into an offline
+EdgeFirst dataset.
+
 For one COCO JSON file, assign its split explicitly with `--group train` or
 `--group val`. See [CLI.md](CLI.md#coco-interchange),
 [DATASET_FORMAT.md](DATASET_FORMAT.md), and

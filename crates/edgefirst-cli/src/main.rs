@@ -695,6 +695,41 @@ enum Command {
         #[clap(long, requires = "images")]
         link: bool,
     },
+    /// Convert VisDrone2019 DET and VID splits to the EdgeFirst Dataset Format.
+    ///
+    /// Each SPLIT_DIR is an extracted VisDrone2019 split: a DET split holds
+    /// annotations/ and images/, a VID split holds annotations/ and
+    /// sequences/. Several splits combine into one output; the group is
+    /// inferred from a directory name ending in -train, -val, -test-dev or
+    /// -test-challenge unless --group is given. The output extension selects
+    /// Arrow IPC (.arrow) or Parquet (.parquet).
+    ///
+    /// Examples:
+    ///   edgefirst-client visdrone-to-arrow VisDrone2019-DET-train VisDrone2019-DET-val -o visdrone-det/visdrone-det.arrow --images
+    ///   edgefirst-client visdrone-to-arrow testdev -o testdev/testdev.parquet --group test-dev --images
+    VisdroneToArrow {
+        /// One or more extracted VisDrone2019 split directories
+        #[clap(required = true)]
+        split_dirs: Vec<PathBuf>,
+
+        /// Output EdgeFirst file path (.arrow or .parquet)
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Group name for all samples; overrides split inference
+        #[clap(long)]
+        group: Option<String>,
+
+        /// Stage the split images next to the output, producing a complete
+        /// offline dataset (annotation file + sibling image folder)
+        #[clap(long)]
+        images: bool,
+
+        /// Symlink staged images instead of copying (Unix only; requires
+        /// --images)
+        #[clap(long, requires = "images")]
+        link: bool,
+    },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
     /// Reads an EdgeFirst Arrow file and converts it to COCO JSON format.
@@ -4870,6 +4905,65 @@ async fn handle_coco_to_arrow(
     Ok(())
 }
 
+/// Handle VisDrone to Arrow conversion.
+async fn handle_visdrone_to_arrow(
+    split_dirs: Vec<PathBuf>,
+    output: PathBuf,
+    group: Option<String>,
+    images: bool,
+    link: bool,
+) -> Result<(), Error> {
+    use edgefirst_client::visdrone::{VisDroneToArrowOptions, visdrone_to_arrow};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let output_format = if output.extension().is_some_and(|ext| ext == "parquet") {
+        "Parquet"
+    } else {
+        "Arrow IPC"
+    };
+    println!("Converting VisDrone2019 to EdgeFirst {output_format} format...");
+    for dir in &split_dirs {
+        println!("  Input:  {:?}", dir);
+    }
+    println!("  Output: {:?}", output);
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+    let options = VisDroneToArrowOptions {
+        group,
+        stage_images: images,
+        link_images: link,
+        ..Default::default()
+    };
+
+    let output_clone = output.clone();
+    let task = tokio::spawn(async move {
+        visdrone_to_arrow(&split_dirs, &output_clone, &options, Some(tx)).await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let rows = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Converted {rows} rows to {output_format} format");
+    if images {
+        println!("✓ Image staging complete (see log output above for counts)");
+    }
+    Ok(())
+}
+
 /// Handle Arrow to COCO conversion.
 async fn handle_arrow_to_coco(
     arrow_path: PathBuf,
@@ -5903,6 +5997,22 @@ async fn main() -> Result<(), Error> {
             )
             .await;
         }
+        Command::VisdroneToArrow {
+            split_dirs,
+            output,
+            group,
+            images,
+            link,
+        } => {
+            return handle_visdrone_to_arrow(
+                split_dirs.clone(),
+                output.clone(),
+                group.clone(),
+                *images,
+                *link,
+            )
+            .await;
+        }
         Command::ArrowToCoco {
             arrow_path,
             output,
@@ -6319,6 +6429,7 @@ async fn main() -> Result<(), Error> {
         Command::GenerateArrow { .. } => unreachable!(),
         Command::ValidateSnapshot { .. } => unreachable!(),
         Command::CocoToArrow { .. } => unreachable!(),
+        Command::VisdroneToArrow { .. } => unreachable!(),
         Command::ArrowToCoco { .. } => unreachable!(),
         #[cfg(feature = "polars")]
         Command::Migrate { .. } => unreachable!(),

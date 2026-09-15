@@ -1250,6 +1250,88 @@ edgefirst-client migrate dataset.arrow
 edgefirst-client migrate dataset.arrow --output migrated.arrow
 ```
 
+## VISDRONE INTERCHANGE
+
+Convert the VisDrone2019 aerial detection benchmark (DET still images and VID
+video sequences) into the EdgeFirst Dataset Format. The converter is offline
+and needs no Studio credentials. Extract the official archives first; note that
+`VisDrone2019-DET-test-dev.zip` has no top-level folder, so extract it into a
+directory of your choosing and pass `--group test-dev`.
+
+### visdrone-to-arrow
+
+**edgefirst-client visdrone-to-arrow** [*OPTIONS*] **\--output** *OUTPUT* *SPLIT_DIR*...
+
+**Arguments:**
+
+*SPLIT_DIR*
+:   One or more extracted split directories. A DET split contains
+    `annotations/<name>.txt` and `images/<name>.jpg`; a VID split contains
+    `annotations/<seq>.txt` and `sequences/<seq>/0000001.jpg`. DET and VID
+    splits may be combined into one output.
+
+**Options:**
+
+**-o, \--output** *OUTPUT*
+:   Output annotation file (required). `.parquet` writes Apache Parquet, anything else writes Arrow IPC. File metadata carries `schema_version`, `labels` (the 12 VisDrone categories in id order) and `category_metadata`.
+
+**\--group** *GROUP*
+:   Group applied to every sample. When omitted, the group is inferred from
+    each directory name ending in `-train`, `-val`, `-test-dev` or
+    `-test-challenge`, and conversion fails for any other name.
+
+**\--images**
+:   Stage the split images into `<dir>/<stem>/` next to the output. DET
+    images keep their names; VID frames are renamed to
+    `<seq>/<seq>_<frame>.camera.jpeg` so `validate-snapshot` and
+    `upload-dataset` resolve them.
+
+**\--link**
+:   Symlink staged images instead of copying (Unix only; requires `--images`).
+
+**Mapping:**
+
+| VisDrone | EdgeFirst |
+|---|---|
+| `bbox_left, bbox_top, bbox_width, bbox_height` | `box2d` normalized `[cx, cy, w, h]` |
+| `object_category` 0..11 | `label`, `label_index` (0 `ignored regions` and 11 `others` are kept) |
+| `score` | not stored: it is 0 exactly when the category is 0 or 11 |
+| `truncation`, `occlusion` | `truncation`, `occlusion` columns |
+| VID `frame_index`, sequence | `frame`, `name` = sequence |
+| VID `target_id` | `object_id` = `<seq>/<target_id>` |
+
+**Examples:**
+
+```bash
+# DET train + val into one offline dataset
+edgefirst-client visdrone-to-arrow VisDrone2019-DET-train VisDrone2019-DET-val \
+  -o visdrone-det/visdrone-det.arrow --images
+edgefirst-client validate-snapshot visdrone-det
+
+# test-dev, extracted into a folder without a split suffix
+edgefirst-client visdrone-to-arrow testdev -o visdrone-testdev/visdrone-testdev.parquet \
+  --group test-dev --images
+
+# VID val as a sequence dataset
+edgefirst-client visdrone-to-arrow VisDrone2019-VID-val -o visdrone-vid/visdrone-vid.arrow --images
+```
+
+Drop the ignored regions and `others` for training with Polars:
+
+```python
+import polars as pl
+
+df = pl.read_ipc("visdrone-det/visdrone-det.arrow")
+train = df.filter((pl.col("group") == "train") & ~pl.col("label_index").is_in([0, 11]))
+```
+
+**Studio notes (first pass):** `upload-dataset` publishes the converted
+dataset. Labels are created with their VisDrone indices, groups follow the
+split names, VID frames become Studio sequences and `object_id` is stored as
+`object_reference`, so track ids survive. `truncation` and `occlusion` are not
+stored by Studio yet (DE-2952, DE-2953); keep the Arrow file as the source of
+truth. Version tag restore drops per-annotation attributes (DE-2954).
+
 ## TRAINING
 
 ### experiments
