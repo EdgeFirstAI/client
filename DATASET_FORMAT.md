@@ -450,8 +450,8 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     # ── Annotation Metadata (optional) ────────────────
     ('iscrowd', Boolean),  # OPTIONAL - true = crowd region, false or absent = single instance (COCO)
     ('category_frequency', Categorical(ordering='physical')),  # OPTIONAL - "f", "c", "r" (LVIS)
-    ('truncation', UInt8),  # OPTIONAL - source truncation flag (VisDrone 0..1, KITTI truncated)
-    ('occlusion', UInt8),  # OPTIONAL - source occlusion flag (VisDrone 0..2, KITTI occluded)
+    ('truncation', UInt32),  # OPTIONAL - source truncation flag (VisDrone 0..1, KITTI truncated)
+    ('occlusion', UInt32),  # OPTIONAL - source occlusion flag (VisDrone 0..2, KITTI occluded)
 
     # ── Sample Metadata (optional) ─────────────────────
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
@@ -946,7 +946,7 @@ For a dataset with labels `[person, car, tree]` imported from COCO, `label_index
 
 #### truncation / occlusion (NEW in 2026.04, client v2.15.0)
 
-**Type**: `UInt8` (nullable), annotation-level
+**Type**: `UInt32` (nullable), annotation-level
 **Description**: Source dataset flags describing how much of the object is cut off by the image border (`truncation`) or hidden by other objects (`occlusion`).
 
 **VisDrone values**: `truncation` 0 = none, 1 = 1 to 50%. `occlusion` 0 = none, 1 = 1 to 50%, 2 = over 50%.
@@ -1760,7 +1760,7 @@ This version introduces significant changes to the annotation schema including n
 
 **Dataset Attribute Extensions** (client v2.15.0):
 
-- **`truncation` / `occlusion` columns** (`UInt8`, optional): Source flags from VisDrone2019 (and mappable from KITTI). Serialized on the JSON wire as a nested `attributes` object on each annotation.
+- **`truncation` / `occlusion` columns** (`UInt32`, optional): Source flags from VisDrone2019 (and mappable from KITTI). Serialized on the JSON wire as a nested `attributes` object on each annotation.
 
 - **`neg_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories verified as absent. From LVIS federated annotation protocol.
 - **`not_exhaustive_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories with possibly incomplete annotation. From LVIS federated annotation protocol.

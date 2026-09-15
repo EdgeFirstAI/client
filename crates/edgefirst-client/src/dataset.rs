@@ -2182,8 +2182,8 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
 /// - `degradation`: Image degradation (String)
 /// - `iscrowd`: COCO crowd flag (Boolean)
 /// - `category_frequency`: LVIS frequency group (Categorical)
-/// - `truncation`: Source truncation flag, VisDrone 0..1 (UInt8)
-/// - `occlusion`: Source occlusion flag, VisDrone 0..2 (UInt8)
+/// - `truncation`: Source truncation flag, VisDrone 0..1 (UInt32)
+/// - `occlusion`: Source occlusion flag, VisDrone 0..2 (UInt32)
 /// - `neg_label_indices`: Verified-absent label indices (List<UInt32>)
 /// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>)
 /// - `timing`: Pipeline timing (Struct{load, preprocess, inference, decode} of Int64)
@@ -2469,8 +2469,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
             ))?
             .into();
 
-    // Source attribute columns (VisDrone / KITTI style flags). Logical UInt8;
-    // Polars 0.54 does not implement UInt8 chunked arrays, so store as UInt32.
+    // Source attribute columns (VisDrone / KITTI style flags). Stored as UInt32
+    // (the schema type); values are small integers held in u8 on the Annotation.
     let truncations_u32: Vec<Option<u32>> = truncations.iter().map(|o| o.map(u32::from)).collect();
     let occlusions_u32: Vec<Option<u32>> = occlusions.iter().map(|o| o.map(u32::from)).collect();
     let truncations_col: Column = Series::new("truncation".into(), truncations_u32).into();
