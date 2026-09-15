@@ -64,6 +64,7 @@ pub mod instrument;
 mod mask;
 mod retry;
 mod storage;
+pub mod visdrone;
 
 pub use crate::{
     api::{
