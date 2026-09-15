@@ -2617,6 +2617,22 @@ class Annotation:
         ...
 
     @property
+    def truncation(self) -> Optional[int]:
+        """Source truncation flag (VisDrone: 0 none, 1 = 1..50%)."""
+        ...
+
+    @truncation.setter
+    def truncation(self, value: Optional[int]) -> None: ...
+
+    @property
+    def occlusion(self) -> Optional[int]:
+        """Source occlusion flag (VisDrone: 0 none, 1 = 1..50%, 2 > 50%)."""
+        ...
+
+    @occlusion.setter
+    def occlusion(self, value: Optional[int]) -> None: ...
+
+    @property
     def box2d(self) -> Optional[Box2d]:
         """
         The 2D bounding box associated with this annotation, if available.

@@ -450,6 +450,8 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     # ── Annotation Metadata (optional) ────────────────
     ('iscrowd', Boolean),  # OPTIONAL - true = crowd region, false or absent = single instance (COCO)
     ('category_frequency', Categorical(ordering='physical')),  # OPTIONAL - "f", "c", "r" (LVIS)
+    ('truncation', UInt8),  # OPTIONAL - source truncation flag (VisDrone 0..1, KITTI truncated)
+    ('occlusion', UInt8),  # OPTIONAL - source occlusion flag (VisDrone 0..2, KITTI occluded)
 
     # ── Sample Metadata (optional) ─────────────────────
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
@@ -941,6 +943,19 @@ For a dataset with labels `[person, car, tree]` imported from COCO, `label_index
 - Long-tail distribution analysis
 - Oversampling rare categories during training
 - Filtering: `df.filter(pl.col("category_frequency") == "r")` to analyze rare-class performance
+
+#### truncation / occlusion (NEW in 2026.04, client v2.15.0)
+
+**Type**: `UInt8` (nullable), annotation-level
+**Description**: Source dataset flags describing how much of the object is cut off by the image border (`truncation`) or hidden by other objects (`occlusion`).
+
+**VisDrone values**: `truncation` 0 = none, 1 = 1 to 50%. `occlusion` 0 = none, 1 = 1 to 50%, 2 = over 50%.
+
+**KITTI values**: `truncated` is a float 0..1 in the source; store `round(truncated * 100)` clipped to 0..100. `occluded` is 0..3 and is stored as is.
+
+**JSON representation**: nested object `"attributes": {"truncation": 1, "occlusion": 2}`, omitted when both are absent.
+
+**Studio compatibility**: EdgeFirst Studio does not store these fields yet (DE-2952, DE-2953). `upload-dataset` sends them and warns that they are not persisted; the Arrow file remains the source of truth until the second pass in DE-2960.
 
 ---
 
@@ -1742,6 +1757,11 @@ This version introduces significant changes to the annotation schema including n
 
 - **`iscrowd` column** (`Boolean`, optional): Crowd region flag from COCO annotations (`true` = crowd, `false` or absent = single instance). Absent for LVIS-sourced data.
 - **`category_frequency` column** (`Categorical`, optional): Long-tail frequency group (`"f"`, `"c"`, `"r"`) from LVIS. Enables disaggregated AP metrics (AP_r/AP_c/AP_f).
+
+**Dataset Attribute Extensions** (client v2.15.0):
+
+- **`truncation` / `occlusion` columns** (`UInt8`, optional): Source flags from VisDrone2019 (and mappable from KITTI). Serialized on the JSON wire as a nested `attributes` object on each annotation.
+
 - **`neg_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories verified as absent. From LVIS federated annotation protocol.
 - **`not_exhaustive_label_indices` column** (`List(UInt32)`, optional): Per-image list of `label_index` values for categories with possibly incomplete annotation. From LVIS federated annotation protocol.
 - **`category_metadata`** (file-level metadata): JSON-encoded per-label reference data (WordNet synset, synonyms, definition) from LVIS categories.

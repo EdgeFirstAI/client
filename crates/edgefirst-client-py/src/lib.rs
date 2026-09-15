@@ -8812,6 +8812,26 @@ impl Annotation {
         self.0.set_category_frequency(category_frequency);
     }
 
+    #[getter]
+    pub fn truncation(&self) -> Option<u8> {
+        self.0.truncation()
+    }
+
+    #[setter]
+    pub fn set_truncation(&mut self, value: Option<u8>) {
+        self.0.set_truncation(value);
+    }
+
+    #[getter]
+    pub fn occlusion(&self) -> Option<u8> {
+        self.0.occlusion()
+    }
+
+    #[setter]
+    pub fn set_occlusion(&mut self, value: Option<u8>) {
+        self.0.set_occlusion(value);
+    }
+
     /// Sets the 2D bounding box for this annotation.
     pub fn set_box2d(&mut self, box2d: Option<&Box2d>) {
         self.0.set_box2d(box2d.map(|b| b.0.clone()));
