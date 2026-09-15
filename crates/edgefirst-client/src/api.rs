@@ -721,8 +721,10 @@ pub struct ServerAnnotation {
     pub w: f64,
     /// Bounding box height (normalized 0-1)
     pub h: f64,
-    /// Confidence score (0-1)
-    pub score: f64,
+    /// Confidence score (0-1). `None` for ground truth without a score; the
+    /// server stores absent scores as 0 and omits them on read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
     /// Polygon data as JSON string (for segmentation)
     #[serde(skip_serializing_if = "String::is_empty")]
     pub polygon: String,

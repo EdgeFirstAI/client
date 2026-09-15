@@ -2751,7 +2751,7 @@ class ServerAnnotation:
         y: float,
         w: float,
         h: float,
-        score: float,
+        score: Optional[float],
         image_id: int,
         annotation_set_id: int,
         label_id: Optional[int] = None,
@@ -2767,7 +2767,7 @@ class ServerAnnotation:
             y: Bounding box Y coordinate (normalized 0-1, left/top origin).
             w: Bounding box width (normalized 0-1).
             h: Bounding box height (normalized 0-1).
-            score: Confidence score (0-1).
+            score: Confidence score (0-1), or None for ground truth without a score.
             image_id: Image/sample ID in the database.
             annotation_set_id: Annotation set ID.
             label_id: Label ID. This is the only field the server's

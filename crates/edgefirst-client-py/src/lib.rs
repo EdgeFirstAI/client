@@ -9031,7 +9031,7 @@ impl ServerAnnotation {
         y: f64,
         w: f64,
         h: f64,
-        score: f64,
+        score: Option<f64>,
         image_id: u64,
         annotation_set_id: u64,
         label_id: Option<u64>,
