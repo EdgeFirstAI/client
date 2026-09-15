@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `import-coco --update` sends the COCO annotation score only when the source
+  has one instead of a fixed 1.0; `ServerAnnotation.score` is now optional.
+- `download-annotations` and `samples_dataframe` now read Studio's empty
+  `object_reference` as null instead of an empty `object_id` string.
 - `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as
   the format specification documents, falling back to the older zero-padded
   `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were
