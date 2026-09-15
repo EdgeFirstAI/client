@@ -1755,7 +1755,7 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             sequence_name: raw.sequence_name,
             frame_number: raw.frame_number,
             group: raw.group,
-            object_id: raw.object_id,
+            object_id: raw.object_id.filter(|s| !s.is_empty()),
             label_name: raw.label_name,
             label_index: raw.label_index,
             iscrowd: raw.iscrowd,
@@ -3231,6 +3231,17 @@ mod tests {
     #[test]
     fn test_annotation_object_id_alias() {
         assert_eq!(annotation_object_id_alias(), "object_id");
+    }
+
+    #[test]
+    fn empty_object_reference_deserializes_as_none() {
+        // Studio returns "" for annotations stored without an object reference.
+        let ann: Annotation = serde_json::from_str(r#"{"object_reference":""}"#).unwrap();
+        assert_eq!(ann.object_id(), None);
+        let ann: Annotation = serde_json::from_str(r#"{"object_id":""}"#).unwrap();
+        assert_eq!(ann.object_id(), None);
+        let ann: Annotation = serde_json::from_str(r#"{"object_id":"seq/7"}"#).unwrap();
+        assert_eq!(ann.object_id().map(String::as_str), Some("seq/7"));
     }
 
     #[test]
