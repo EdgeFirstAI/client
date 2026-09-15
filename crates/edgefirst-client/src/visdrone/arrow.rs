@@ -92,8 +92,8 @@ fn box_to_annotation(bbox: &VisDroneBox, width: u32, height: u32) -> Annotation 
     ann
 }
 
-/// Warn once per split when the `score == 0 <=> category in {0, 11}`
-/// invariant does not hold, since the score is not stored.
+/// Warn when the `score == 0 <=> category in {0, 11}` invariant does not hold
+/// (once per DET image or VID sequence), since the score is not stored.
 fn check_score_invariant(split: &Path, boxes: impl Iterator<Item = (u8, u8)>) {
     let violations = boxes
         .filter(|(score, category)| (*score == 0) != matches!(category, 0 | 11))
@@ -221,8 +221,8 @@ async fn det_split_samples(
 }
 
 /// Convert one VID split directory. One `Sample` per row, plus a placeholder
-/// per frame image with no rows. Rows for frames without an image are
-/// converted and reported as missing by staging.
+/// per frame image with no rows. Rows for frames without an image use the
+/// first frame's size and are not staged, so `validate-snapshot` reports them.
 async fn vid_split_samples(
     split: &Path,
     group: Option<&str>,

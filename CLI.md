@@ -1336,6 +1336,8 @@ split names, VID frames become Studio sequences and `object_id` is stored as
 stored by Studio yet (DE-2952, DE-2953); keep the Arrow file as the source of
 truth. Version tag restore drops per-annotation attributes (DE-2954).
 
+**Source fidelity:** boxes are converted exactly as written in the VisDrone text files. A few extend past the image edge (34 boxes across the six official splits) and a few have zero height (3 boxes); they are kept, not clipped or dropped, so evaluation against the official protocol stays exact. Filter them in Polars if a trainer rejects them.
+
 ## TRAINING
 
 ### experiments
