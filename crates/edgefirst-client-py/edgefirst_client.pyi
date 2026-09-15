@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, overload
 
 from polars import DataFrame
 
@@ -7934,6 +7934,30 @@ def coco_to_arrow(
     Returns:
         Number of EdgeFirst rows written, including placeholder rows for
         unannotated images.
+    """
+    ...
+
+def visdrone_to_arrow(
+    split_dirs: Sequence[Union[str, Path]],
+    output_path: Union[str, Path],
+    group: Optional[str] = None,
+    progress: Optional[Progress] = None,
+    stage_images: bool = False,
+    link_images: bool = False,
+) -> int:
+    """
+    Convert VisDrone2019 DET and VID splits to an offline EdgeFirst dataset.
+
+    Each entry of ``split_dirs`` is an extracted split directory. The group
+    is inferred from a directory name ending in ``-train``, ``-val``,
+    ``-test-dev`` or ``-test-challenge`` unless ``group`` is given. VisDrone
+    categories 0 (ignored regions) and 11 (others) are kept with their source
+    indices; ``truncation`` and ``occlusion`` become columns. VID rows carry
+    ``frame`` and ``object_id`` (``<seq>/<target_id>``).
+
+    Returns:
+        Number of rows written, including placeholder rows for images and
+        frames without boxes.
     """
     ...
 

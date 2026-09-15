@@ -95,6 +95,7 @@ Verify both install paths (PyPI wheel and maturin develop) before releasing.
 | [06_create_annotations](06_create_annotations.py) | `upload-dataset` (reference) | `populate_samples` |
 | [07_manage_labels](07_manage_labels.py) | `dataset ds-145f --labels` | `add_label`, `label.set_index` |
 | [08_coco_conversion](08_coco_conversion.py) | `coco-to-arrow`, `validate-snapshot` | `coco_to_arrow`, `polars.read_ipc` / `read_parquet` |
+| [09_visdrone_conversion](09_visdrone_conversion.py) | `visdrone-to-arrow`, `validate-snapshot` | `visdrone_to_arrow`, `polars.read_ipc` / `read_parquet` |
 
 [05_download_dataset](05_download_dataset.py) writes a flat YOLO/Darknet layout —
 images and labels mirror each other per group:
