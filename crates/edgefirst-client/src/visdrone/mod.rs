@@ -42,8 +42,17 @@
 
 mod reader;
 
+#[cfg(feature = "polars")]
+mod arrow;
+
 pub use reader::{
     CATEGORIES, SplitKind, VisDroneBox, VisDroneVidRow, category_name, detect_split_kind,
     infer_group_from_dir_name, parse_det_line, parse_vid_line, read_det_annotations,
     read_vid_annotations,
 };
+
+#[cfg(feature = "polars")]
+pub use arrow::{VisDroneToArrowOptions, visdrone_to_arrow};
+
+#[cfg(all(test, feature = "polars"))]
+mod tests;
