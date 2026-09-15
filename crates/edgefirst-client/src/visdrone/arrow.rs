@@ -5,7 +5,7 @@
 
 use super::reader::{
     CATEGORIES, SplitKind, VisDroneBox, category_name, detect_split_kind,
-    infer_group_from_dir_name, read_det_annotations,
+    infer_group_from_dir_name, read_det_annotations, read_vid_annotations,
 };
 use crate::{
     Annotation, Box2d, Error, Progress, Sample,
@@ -220,18 +220,148 @@ async fn det_split_samples(
     Ok((all, staged))
 }
 
+/// Convert one VID split directory. One `Sample` per row, plus a placeholder
+/// per frame image with no rows. Rows for frames without an image are
+/// converted and reported as missing by staging.
 async fn vid_split_samples(
     split: &Path,
-    _group: Option<&str>,
-    _max_workers: usize,
-    _progress: &Option<Sender<Progress>>,
-    _counter: &Arc<std::sync::atomic::AtomicUsize>,
-    _total: usize,
+    group: Option<&str>,
+    max_workers: usize,
+    progress: &Option<Sender<Progress>>,
+    counter: &Arc<std::sync::atomic::AtomicUsize>,
+    total: usize,
 ) -> Result<(Vec<Sample>, Vec<StagedFile>), Error> {
-    Err(Error::UnsupportedFormat(format!(
-        "VID split not yet supported: {}",
-        split.display()
-    )))
+    let seq_root = split.join("sequences");
+    let ann_dir = split.join("annotations");
+
+    let mut sequences: Vec<PathBuf> = std::fs::read_dir(&seq_root)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    sequences.sort();
+
+    let mut all_samples = Vec::new();
+    let mut all_staged = Vec::new();
+
+    for seq_dir in sequences {
+        let seq_name = seq_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                Error::InvalidParameters(format!("Bad sequence name {}", seq_dir.display()))
+            })?
+            .to_string();
+
+        // Frame images keyed by 1-based index parsed from the file stem.
+        let mut frames: Vec<(u32, PathBuf)> = std::fs::read_dir(&seq_dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter_map(|p| {
+                let idx = p.file_stem()?.to_str()?.parse::<u32>().ok()?;
+                Some((idx, p))
+            })
+            .collect();
+        frames.sort();
+
+        let ann_path = ann_dir.join(format!("{seq_name}.txt"));
+        let rows = if ann_path.is_file() {
+            tokio::task::spawn_blocking(move || read_vid_annotations(&ann_path)).await??
+        } else {
+            log::warn!(
+                "{}: no annotation file for sequence {seq_name}",
+                split.display()
+            );
+            Vec::new()
+        };
+        check_score_invariant(split, rows.iter().map(|r| (r.bbox.score, r.bbox.category)));
+
+        // Sizes per frame, read in parallel (all frames of a sequence share a
+        // size in VisDrone, but reading each header is cheap and robust).
+        let sem = Arc::new(Semaphore::new(max_workers));
+        let mut size_tasks = Vec::with_capacity(frames.len());
+        for (idx, path) in &frames {
+            let sem = sem.clone();
+            let path = path.clone();
+            let idx = *idx;
+            let progress = progress.clone();
+            let counter = counter.clone();
+            size_tasks.push(tokio::task::spawn(async move {
+                let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
+                let size = tokio::task::spawn_blocking(move || image_size(&path)).await??;
+                let done = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if let Some(p) = &progress {
+                    let _ = p
+                        .send(Progress {
+                            current: done,
+                            total,
+                            status: None,
+                        })
+                        .await;
+                }
+                Ok::<_, Error>((idx, size))
+            }));
+        }
+        let mut sizes: std::collections::HashMap<u32, (u32, u32)> =
+            std::collections::HashMap::new();
+        for task in size_tasks {
+            let (idx, size) = task.await??;
+            sizes.insert(idx, size);
+        }
+        let fallback_size = frames.first().and_then(|(i, _)| sizes.get(i).copied());
+
+        let mut frames_with_rows = std::collections::HashSet::new();
+        for row in &rows {
+            let (width, height) = match sizes.get(&row.frame).copied().or(fallback_size) {
+                Some(s) => s,
+                None => {
+                    log::warn!(
+                        "{seq_name}: frame {} has no image and no fallback size; row skipped",
+                        row.frame
+                    );
+                    continue;
+                }
+            };
+            frames_with_rows.insert(row.frame);
+            let mut ann = box_to_annotation(&row.bbox, width, height);
+            ann.set_name(Some(seq_name.clone()));
+            ann.set_sequence_name(Some(seq_name.clone()));
+            ann.set_frame_number(Some(row.frame));
+            ann.set_object_id(Some(format!("{seq_name}/{}", row.target)));
+            ann.set_group(group.map(String::from));
+            all_samples.push(Sample {
+                image_name: Some(format!("{seq_name}_{}.camera.jpeg", row.frame)),
+                sequence_name: Some(seq_name.clone()),
+                frame_number: Some(row.frame),
+                width: Some(width),
+                height: Some(height),
+                group: group.map(String::from),
+                annotations: vec![ann],
+                ..Default::default()
+            });
+        }
+
+        for (idx, path) in &frames {
+            if !frames_with_rows.contains(idx) {
+                let (width, height) = sizes[idx];
+                all_samples.push(Sample {
+                    image_name: Some(format!("{seq_name}_{idx}.camera.jpeg")),
+                    sequence_name: Some(seq_name.clone()),
+                    frame_number: Some(*idx),
+                    width: Some(width),
+                    height: Some(height),
+                    group: group.map(String::from),
+                    ..Default::default()
+                });
+            }
+            all_staged.push(StagedFile {
+                src: path.clone(),
+                dest: PathBuf::from(&seq_name).join(format!("{seq_name}_{idx}.camera.jpeg")),
+            });
+        }
+    }
+
+    Ok((all_samples, all_staged))
 }
 
 /// File-level metadata: schema version, ordered labels, and per-label ids.
