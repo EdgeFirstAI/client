@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `visdrone-to-arrow` converts extracted VisDrone2019-DET and VisDrone2019-VID
+  splits into one offline EdgeFirst dataset (Arrow or Parquet, with `--images`
+  staging). Multiple split directories merge into one file with a `group`
+  column (`train`, `val`, `test-dev`, …); DET and VID splits can be combined
+  into a mixed dataset (flat images plus sequence subfolders). VisDrone
+  categories keep their source indices, including `ignored regions` (0) and
+  `others` (11); the redundant `score` flag is not stored. VID sequences
+  become `name`/`frame` rows with `object_id = <seq>/<target_id>`, which
+  survives `upload-dataset` as Studio's `object_reference`. Python:
+  `edgefirst_client.visdrone_to_arrow`.
+- New optional annotation columns `truncation` and `occlusion` (stored as
+  `UInt32` in Polars), serialized as a nested `attributes` object in JSON.
+  Studio does not persist them yet (DE-2952, DE-2953); `upload-dataset`
+  warns which optional columns are not stored.
+
+### Fixed
+
+- `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as
+  the format specification documents, falling back to the older zero-padded
+  `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were
+  previously reported missing.
+- `upload-dataset` now carries `iscrowd`, `category_frequency`, `truncation`,
+  `occlusion`, and the per-geometry score columns from Arrow into the upload
+  payload.
+
 ## [2.14.0] - 2026-09-03
 
 ### Added
