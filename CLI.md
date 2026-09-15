@@ -1314,6 +1314,10 @@ edgefirst-client visdrone-to-arrow testdev -o visdrone-testdev/visdrone-testdev.
 
 # VID val as a sequence dataset
 edgefirst-client visdrone-to-arrow VisDrone2019-VID-val -o visdrone-vid/visdrone-vid.arrow --images
+
+# DET val + VID train in one offline dataset (mixed splits)
+edgefirst-client visdrone-to-arrow VisDrone2019-DET-val VisDrone2019-VID-train \
+  -o visdrone-mixed/visdrone-mixed.arrow --images
 ```
 
 Drop the ignored regions and `others` for training with Polars:

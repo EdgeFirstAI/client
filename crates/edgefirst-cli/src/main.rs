@@ -2371,6 +2371,44 @@ fn parse_annotations_from_arrow(
                     annotation.set_object_id(Some(obj_id.clone()));
                 }
 
+                // Optional annotation columns (2026.04). Studio does not
+                // persist all of them yet; see DE-2952/DE-2953. They are
+                // carried so the payload is complete once the server does.
+                let u8_at = |col: &str| {
+                    df.column(col).ok().and_then(|c| {
+                        c.u8()
+                            .ok()
+                            .and_then(|s| s.get(idx))
+                            .or_else(|| c.u32().ok().and_then(|s| s.get(idx)).map(|v| v as u8))
+                    })
+                };
+                annotation.set_truncation(u8_at("truncation"));
+                annotation.set_occlusion(u8_at("occlusion"));
+
+                annotation.set_iscrowd(
+                    df.column("iscrowd")
+                        .ok()
+                        .and_then(|c| c.bool().ok())
+                        .and_then(|s| s.get(idx)),
+                );
+                annotation.set_category_frequency(
+                    df.column("category_frequency")
+                        .ok()
+                        .and_then(|c| c.cast(&DataType::String).ok())
+                        .and_then(|c| c.str().ok().and_then(|s| s.get(idx).map(String::from))),
+                );
+
+                let f32_at = |col: &str| {
+                    df.column(col)
+                        .ok()
+                        .and_then(|c| c.f32().ok())
+                        .and_then(|s| s.get(idx))
+                };
+                annotation.set_box2d_score(f32_at("box2d_score"));
+                annotation.set_box3d_score(f32_at("box3d_score"));
+                annotation.set_polygon_score(f32_at("polygon_score"));
+                annotation.set_mask_score(f32_at("mask_score"));
+
                 // Try to extract each geometry type - samples can have multiple
                 if let Some(box2d) = parse_box2d_from_dataframe(&df, idx)? {
                     annotation.set_box2d(Some(box2d));
@@ -3167,6 +3205,34 @@ async fn handle_upload_dataset(
 
     #[cfg(feature = "profiling")]
     drop(_prep_span);
+
+    // Studio's samples.populate2 stores label, label_index, object_reference,
+    // box2d, box3d and polygon. Tell the user which optional columns in this
+    // file will not survive the upload (tracked in DE-2952 / DE-2953).
+    if let Some(arrow_path) = &annotations {
+        let (df, _) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
+        const NOT_PERSISTED: [&str; 8] = [
+            "truncation",
+            "occlusion",
+            "iscrowd",
+            "category_frequency",
+            "box2d_score",
+            "box3d_score",
+            "polygon_score",
+            "mask_score",
+        ];
+        let present: Vec<&str> = NOT_PERSISTED
+            .iter()
+            .copied()
+            .filter(|c| df.column(c).is_ok())
+            .collect();
+        if !present.is_empty() {
+            println!(
+                "⚠ Studio does not yet store these annotation columns; keep the Arrow file as the source of truth: {}",
+                present.join(", ")
+            );
+        }
+    }
 
     if samples.is_empty() {
         return Err(Error::InvalidParameters(
@@ -7624,6 +7690,45 @@ mod tests {
             );
 
             std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn parse_annotations_from_arrow_reads_optional_annotation_columns() {
+            use edgefirst_client::{Annotation, Box2d, Sample, samples_dataframe};
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let images = temp.path().join("images");
+            std::fs::create_dir_all(&images).unwrap();
+            std::fs::write(images.join("img.jpg"), b"\xFF\xD8\xFF\xD9").unwrap();
+
+            let mut ann = Annotation::new();
+            ann.set_name(Some("img".into()));
+            ann.set_label(Some("car".into()));
+            ann.set_label_index(Some(4));
+            ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+            ann.set_truncation(Some(1));
+            ann.set_occlusion(Some(2));
+            ann.set_iscrowd(Some(true));
+            ann.set_box2d_score(Some(0.5));
+            let sample = Sample {
+                image_name: Some("img.jpg".into()),
+                width: Some(100),
+                height: Some(100),
+                annotations: vec![ann],
+                ..Default::default()
+            };
+            let mut df = samples_dataframe(&[sample]).unwrap();
+            let arrow = temp.path().join("ds.arrow");
+            edgefirst_client::coco::write_dataset(&mut df, &arrow, Default::default()).unwrap();
+
+            let pb = indicatif::ProgressBar::hidden();
+            let samples = parse_annotations_from_arrow(&Some(arrow), &images, true, &pb).unwrap();
+            assert_eq!(samples.len(), 1);
+            let parsed = &samples[0].annotations[0];
+            assert_eq!(parsed.truncation(), Some(1));
+            assert_eq!(parsed.occlusion(), Some(2));
+            assert_eq!(parsed.iscrowd(), Some(true));
+            assert_eq!(parsed.box2d_score(), Some(0.5));
         }
     }
 }
