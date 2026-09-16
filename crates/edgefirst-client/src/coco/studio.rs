@@ -1050,7 +1050,7 @@ fn convert_coco_annotation_to_server(
         y: box2d.top() as f64,
         w: box2d.width() as f64,
         h: box2d.height() as f64,
-        score: 1.0,
+        score: coco_ann.score,
         polygon,
         image_id,
         annotation_set_id,

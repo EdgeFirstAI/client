@@ -1128,6 +1128,7 @@ dependencies = [
  "directories",
  "edgefirst-client",
  "env_logger",
+ "image",
  "indicatif",
  "inquire",
  "log",

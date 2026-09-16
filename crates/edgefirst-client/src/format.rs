@@ -290,6 +290,141 @@ pub fn resolve_arrow_files(arrow_path: &Path) -> Result<HashMap<String, PathBuf>
     Ok(result)
 }
 
+/// Outcome of staging sensor files into an annotation file's sibling
+/// container directory. See [`stage_files`].
+#[derive(Debug, Default)]
+pub struct StageReport {
+    /// Files copied or linked, or already present from a prior run.
+    pub staged: usize,
+    /// Destination paths whose source file did not exist.
+    pub missing: Vec<String>,
+    /// Destination paths whose copy or link failed (details logged as warnings).
+    pub failed: Vec<String>,
+    /// Destinations claimed by a different source earlier in this run and skipped.
+    pub collisions: usize,
+}
+
+/// Stage `(source, relative destination)` pairs into the sibling container of
+/// `output_path`: for `<dir>/<stem>.arrow` the container is `<dir>/<stem>/`.
+///
+/// Intermediate directories under the container are created, so sequence
+/// layouts such as `seq/seq_1.camera.jpeg` work. Existing destinations are
+/// left untouched (idempotent re-runs). Two different sources mapping to the
+/// same destination within one run are counted as a collision and only the
+/// first is staged. `link` symlinks on Unix and copies elsewhere.
+pub fn stage_files(output_path: &Path, files: &[(PathBuf, PathBuf)], link: bool) -> StageReport {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("dataset");
+    let container = parent.join(stem);
+
+    let mut report = StageReport::default();
+    if let Err(e) = std::fs::create_dir_all(&container) {
+        log::warn!(
+            "Failed to create image staging directory {}: {}",
+            container.display(),
+            e
+        );
+        report.missing = files
+            .iter()
+            .map(|(_, d)| d.to_string_lossy().into_owned())
+            .collect();
+        return report;
+    }
+
+    let mut claimed: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for (src, rel) in files {
+        let dest = container.join(rel);
+        let rel_str = rel.to_string_lossy().into_owned();
+
+        if let Some(prev) = claimed.get(rel) {
+            if prev == src {
+                report.staged += 1;
+            } else {
+                log::warn!(
+                    "Destination '{}' collision: already staged from '{}'; skipping '{}'",
+                    rel_str,
+                    prev.display(),
+                    src.display()
+                );
+                report.collisions += 1;
+            }
+            continue;
+        }
+
+        if dest.symlink_metadata().is_ok() {
+            if src.exists() && staged_sources_match(src, &dest) {
+                report.staged += 1;
+                claimed.insert(rel.clone(), src.clone());
+            } else if src.exists() {
+                log::warn!(
+                    "Destination '{}' collision: already present; skipping '{}'",
+                    rel_str,
+                    src.display()
+                );
+                report.collisions += 1;
+            } else {
+                report.staged += 1;
+                claimed.insert(rel.clone(), src.clone());
+            }
+            continue;
+        }
+
+        if !src.exists() {
+            report.missing.push(rel_str);
+            continue;
+        }
+
+        let result = dest
+            .parent()
+            .map(std::fs::create_dir_all)
+            .unwrap_or(Ok(()))
+            .and_then(|_| {
+                if link {
+                    stage_via_link(src, &dest)
+                } else {
+                    std::fs::copy(src, &dest).map(|_| ())
+                }
+            });
+
+        match result {
+            Ok(()) => {
+                report.staged += 1;
+                claimed.insert(rel.clone(), src.clone());
+            }
+            Err(e) => {
+                log::warn!("Failed to stage '{}': {}", rel_str, e);
+                report.failed.push(rel_str);
+            }
+        }
+    }
+    report
+}
+
+#[cfg(unix)]
+fn stage_via_link(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let canonical = src.canonicalize()?;
+    std::os::unix::fs::symlink(canonical, dest)
+}
+
+#[cfg(not(unix))]
+fn stage_via_link(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dest).map(|_| ())
+}
+
+/// True when `dest` already holds the same bytes as `src` (idempotent re-stage).
+fn staged_sources_match(src: &Path, dest: &Path) -> bool {
+    if src == dest {
+        return true;
+    }
+    match (std::fs::read(src), std::fs::read(dest)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Information about a resolved sample file.
 #[derive(Debug, Clone)]
 pub struct ResolvedFile {
@@ -386,7 +521,7 @@ pub fn resolve_files_with_container(
 
         // Build expected path and try to find actual file
         let expected_path = if let Some(frame_num) = frame {
-            PathBuf::from(&name).join(format!("{}_{:03}.camera.jpeg", name, frame_num))
+            PathBuf::from(&name).join(format!("{}_{}.camera.jpeg", name, frame_num))
         } else {
             PathBuf::from(format!("{}.camera.jpeg", name))
         };
@@ -441,24 +576,28 @@ fn find_matching_file(
     name: &str,
     frame: Option<u64>,
 ) -> Option<PathBuf> {
-    let search_key = match frame {
-        Some(f) => format!("{}_{:03}", name, f).to_lowercase(),
-        None => name.to_lowercase(),
+    // The documented layout is `{name}_{frame}` (DATASET_FORMAT.md, File
+    // Naming Conventions). Older exports zero-padded the frame to three
+    // digits, so try that second for compatibility.
+    let candidates: Vec<String> = match frame {
+        Some(f) => vec![
+            format!("{}_{}", name, f).to_lowercase(),
+            format!("{}_{:03}", name, f).to_lowercase(),
+        ],
+        None => vec![name.to_lowercase()],
     };
 
-    // Try exact filename match first
-    for ext in IMAGE_EXTENSIONS {
-        let key = format!("{}.{}", search_key, ext);
-        if let Some(path) = index.get(&key) {
+    for search_key in &candidates {
+        for ext in IMAGE_EXTENSIONS {
+            let key = format!("{}.{}", search_key, ext);
+            if let Some(path) = index.get(&key) {
+                return Some(path.clone());
+            }
+        }
+        if let Some(path) = index.get(search_key) {
             return Some(path.clone());
         }
     }
-
-    // Try stem match
-    if let Some(path) = index.get(&search_key) {
-        return Some(path.clone());
-    }
-
     None
 }
 
@@ -1132,6 +1271,66 @@ mod tests {
         let display = format!("{}", issue);
         assert!(display.contains("test"));
         assert!(display.contains("test.jpg"));
+    }
+
+    #[test]
+    fn stage_files_copies_into_nested_destinations_and_reports() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.jpg"), b"a").unwrap();
+        std::fs::write(src_dir.join("b.jpg"), b"b").unwrap();
+        let output = dir.path().join("ds").join("ds.arrow");
+
+        let files = vec![
+            (src_dir.join("a.jpg"), PathBuf::from("a.jpg")),
+            (
+                src_dir.join("b.jpg"),
+                PathBuf::from("seq").join("seq_1.camera.jpeg"),
+            ),
+            (src_dir.join("missing.jpg"), PathBuf::from("missing.jpg")),
+            (src_dir.join("a.jpg"), PathBuf::from("a.jpg")),
+        ];
+        let report = stage_files(&output, &files, false);
+        assert_eq!(report.staged, 3, "two distinct files plus one repeat");
+        assert_eq!(report.missing, vec!["missing.jpg".to_string()]);
+        assert_eq!(report.collisions, 0);
+        assert!(dir.path().join("ds").join("ds").join("a.jpg").is_file());
+        assert!(
+            dir.path()
+                .join("ds")
+                .join("ds")
+                .join("seq")
+                .join("seq_1.camera.jpeg")
+                .is_file()
+        );
+
+        // Same destination from a different source is a collision.
+        let files = vec![(src_dir.join("b.jpg"), PathBuf::from("a.jpg"))];
+        let report = stage_files(&output, &files, false);
+        assert_eq!(report.collisions, 1);
+        assert_eq!(
+            std::fs::read(dir.path().join("ds").join("ds").join("a.jpg")).unwrap(),
+            b"a"
+        );
+    }
+
+    #[test]
+    fn find_matching_file_prefers_unpadded_frame_then_padded() {
+        let mut index = HashMap::new();
+        index.insert("seq_5.camera.jpeg".to_string(), PathBuf::from("u"));
+        index.insert("seq_5".to_string(), PathBuf::from("u"));
+        index.insert("seq_007.camera.jpeg".to_string(), PathBuf::from("p"));
+        index.insert("seq_007".to_string(), PathBuf::from("p"));
+        assert_eq!(
+            find_matching_file(&index, "seq", Some(5)),
+            Some(PathBuf::from("u"))
+        );
+        assert_eq!(
+            find_matching_file(&index, "seq", Some(7)),
+            Some(PathBuf::from("p"))
+        );
+        assert_eq!(find_matching_file(&index, "seq", Some(9)), None);
     }
 
     // =========================================================================

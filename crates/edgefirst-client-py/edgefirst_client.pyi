@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, overload
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, overload
 
 from polars import DataFrame
 
@@ -2617,6 +2617,22 @@ class Annotation:
         ...
 
     @property
+    def truncation(self) -> Optional[int]:
+        """Source truncation flag (VisDrone: 0 none, 1 = 1..50%)."""
+        ...
+
+    @truncation.setter
+    def truncation(self, value: Optional[int]) -> None: ...
+
+    @property
+    def occlusion(self) -> Optional[int]:
+        """Source occlusion flag (VisDrone: 0 none, 1 = 1..50%, 2 > 50%)."""
+        ...
+
+    @occlusion.setter
+    def occlusion(self, value: Optional[int]) -> None: ...
+
+    @property
     def box2d(self) -> Optional[Box2d]:
         """
         The 2D bounding box associated with this annotation, if available.
@@ -2735,7 +2751,7 @@ class ServerAnnotation:
         y: float,
         w: float,
         h: float,
-        score: float,
+        score: Optional[float],
         image_id: int,
         annotation_set_id: int,
         label_id: Optional[int] = None,
@@ -2751,7 +2767,7 @@ class ServerAnnotation:
             y: Bounding box Y coordinate (normalized 0-1, left/top origin).
             w: Bounding box width (normalized 0-1).
             h: Bounding box height (normalized 0-1).
-            score: Confidence score (0-1).
+            score: Confidence score (0-1), or None for ground truth without a score.
             image_id: Image/sample ID in the database.
             annotation_set_id: Annotation set ID.
             label_id: Label ID. This is the only field the server's
@@ -7918,6 +7934,30 @@ def coco_to_arrow(
     Returns:
         Number of EdgeFirst rows written, including placeholder rows for
         unannotated images.
+    """
+    ...
+
+def visdrone_to_arrow(
+    split_dirs: Sequence[Union[str, Path]],
+    output_path: Union[str, Path],
+    group: Optional[str] = None,
+    progress: Optional[Progress] = None,
+    stage_images: bool = False,
+    link_images: bool = False,
+) -> int:
+    """
+    Convert VisDrone2019 DET and VID splits to an offline EdgeFirst dataset.
+
+    Each entry of ``split_dirs`` is an extracted split directory. The group
+    is inferred from a directory name ending in ``-train``, ``-val``,
+    ``-test-dev`` or ``-test-challenge`` unless ``group`` is given. VisDrone
+    categories 0 (ignored regions) and 11 (others) are kept with their source
+    indices; ``truncation`` and ``occlusion`` become columns. VID rows carry
+    ``frame`` and ``object_id`` (``<seq>/<target_id>``).
+
+    Returns:
+        Number of rows written, including placeholder rows for images and
+        frames without boxes.
     """
     ...
 

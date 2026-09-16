@@ -1597,6 +1597,28 @@ fn parse_polygon_value(value: &serde_json::Value) -> Vec<Vec<(f32, f32)>> {
     result
 }
 
+/// Per-annotation source attributes carried by some detection datasets.
+///
+/// VisDrone: `truncation` 0 = none, 1 = 1..50%; `occlusion` 0 = none,
+/// 1 = 1..50%, 2 = over 50%. KITTI `truncated`/`occluded` map to the same
+/// two fields. Absent for datasets without these flags.
+///
+/// Serialized as a nested `attributes` object so the wire shape matches the
+/// `samples.populate2` contract requested in DE-2952.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnnotationAttributes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion: Option<u8>,
+}
+
+impl AnnotationAttributes {
+    fn is_empty(&self) -> bool {
+        self.truncation.is_none() && self.occlusion.is_none()
+    }
+}
+
 /// Helper struct for deserializing annotations from the server.
 ///
 /// The server sends bounding box coordinates as flat fields (x, y, w, h) at the
@@ -1623,6 +1645,8 @@ struct AnnotationRaw {
     iscrowd: Option<bool>,
     #[serde(default)]
     category_frequency: Option<String>,
+    #[serde(default)]
+    attributes: Option<AnnotationAttributes>,
     // Nested box2d format (if server sends it this way)
     #[serde(default)]
     box2d: Option<Box2d>,
@@ -1675,6 +1699,9 @@ pub struct Annotation {
     /// LVIS frequency group: "f" (frequent), "c" (common), "r" (rare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category_frequency: Option<String>,
+    /// Source attributes (truncation, occlusion). See [`AnnotationAttributes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<AnnotationAttributes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     box2d: Option<Box2d>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1728,11 +1755,12 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             sequence_name: raw.sequence_name,
             frame_number: raw.frame_number,
             group: raw.group,
-            object_id: raw.object_id,
+            object_id: raw.object_id.filter(|s| !s.is_empty()),
             label_name: raw.label_name,
             label_index: raw.label_index,
             iscrowd: raw.iscrowd,
             category_frequency: raw.category_frequency,
+            attributes: raw.attributes.filter(|a| !a.is_empty()),
             box2d,
             box3d: raw.box3d,
             polygon: raw.polygon,
@@ -1764,6 +1792,7 @@ impl Annotation {
             label_index: None,
             iscrowd: None,
             category_frequency: None,
+            attributes: None,
             box2d: None,
             box3d: None,
             polygon: None,
@@ -1853,6 +1882,42 @@ impl Annotation {
 
     pub fn set_category_frequency(&mut self, category_frequency: Option<String>) {
         self.category_frequency = category_frequency;
+    }
+
+    pub fn attributes(&self) -> Option<&AnnotationAttributes> {
+        self.attributes.as_ref()
+    }
+
+    pub fn truncation(&self) -> Option<u8> {
+        self.attributes.as_ref().and_then(|a| a.truncation)
+    }
+
+    pub fn set_truncation(&mut self, truncation: Option<u8>) {
+        self.attributes
+            .get_or_insert_with(Default::default)
+            .truncation = truncation;
+        self.drop_empty_attributes();
+    }
+
+    pub fn occlusion(&self) -> Option<u8> {
+        self.attributes.as_ref().and_then(|a| a.occlusion)
+    }
+
+    pub fn set_occlusion(&mut self, occlusion: Option<u8>) {
+        self.attributes
+            .get_or_insert_with(Default::default)
+            .occlusion = occlusion;
+        self.drop_empty_attributes();
+    }
+
+    fn drop_empty_attributes(&mut self) {
+        if self
+            .attributes
+            .as_ref()
+            .is_some_and(AnnotationAttributes::is_empty)
+        {
+            self.attributes = None;
+        }
     }
 
     pub fn box2d(&self) -> Option<&Box2d> {
@@ -2117,6 +2182,8 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
 /// - `degradation`: Image degradation (String)
 /// - `iscrowd`: COCO crowd flag (Boolean)
 /// - `category_frequency`: LVIS frequency group (Categorical)
+/// - `truncation`: Source truncation flag, VisDrone 0..1 (UInt32)
+/// - `occlusion`: Source occlusion flag, VisDrone 0..2 (UInt32)
 /// - `neg_label_indices`: Verified-absent label indices (List<UInt32>)
 /// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>)
 /// - `timing`: Pipeline timing (Struct{load, preprocess, inference, decode} of Int64)
@@ -2161,6 +2228,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let mut degradations: Vec<Option<String>> = Vec::new();
     let mut iscrowds: Vec<Option<bool>> = Vec::new();
     let mut category_frequencies: Vec<Option<String>> = Vec::new();
+    let mut truncations: Vec<Option<u8>> = Vec::new();
+    let mut occlusions: Vec<Option<u8>> = Vec::new();
     let mut neg_label_indices_vec: Vec<Option<Vec<u32>>> = Vec::new();
     let mut not_exhaustive_label_indices_vec: Vec<Option<Vec<u32>>> = Vec::new();
     let mut timing_load: Vec<Option<i64>> = Vec::new();
@@ -2234,6 +2303,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
             mask_scores.push(None);
             iscrowds.push(None);
             category_frequencies.push(None);
+            truncations.push(None);
+            occlusions.push(None);
             push_sample_fields!();
         } else {
             // One row per annotation
@@ -2271,6 +2342,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                 mask_scores.push(ann.mask_score());
                 iscrowds.push(ann.iscrowd);
                 category_frequencies.push(ann.category_frequency.clone());
+                truncations.push(ann.truncation());
+                occlusions.push(ann.occlusion());
                 push_sample_fields!();
             }
         }
@@ -2396,6 +2469,13 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
             ))?
             .into();
 
+    // Source attribute columns (VisDrone / KITTI style flags). Stored as UInt32
+    // (the schema type); values are small integers held in u8 on the Annotation.
+    let truncations_u32: Vec<Option<u32>> = truncations.iter().map(|o| o.map(u32::from)).collect();
+    let occlusions_u32: Vec<Option<u32>> = occlusions.iter().map(|o| o.map(u32::from)).collect();
+    let truncations_col: Column = Series::new("truncation".into(), truncations_u32).into();
+    let occlusions_col: Column = Series::new("occlusion".into(), occlusions_u32).into();
+
     let neg_label_indices_series: Vec<Option<Series>> = neg_label_indices_vec
         .into_iter()
         .map(|opt_vec| opt_vec.map(|vec| Series::new("neg_label_indices".into(), vec)))
@@ -2453,6 +2533,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         degradations_col,
         iscrowds_col,
         category_frequencies_col,
+        truncations_col,
+        occlusions_col,
         neg_label_indices_col,
         not_exhaustive_label_indices_col,
         timing_col,
@@ -3149,6 +3231,17 @@ mod tests {
     #[test]
     fn test_annotation_object_id_alias() {
         assert_eq!(annotation_object_id_alias(), "object_id");
+    }
+
+    #[test]
+    fn empty_object_reference_deserializes_as_none() {
+        // Studio returns "" for annotations stored without an object reference.
+        let ann: Annotation = serde_json::from_str(r#"{"object_reference":""}"#).unwrap();
+        assert_eq!(ann.object_id(), None);
+        let ann: Annotation = serde_json::from_str(r#"{"object_id":""}"#).unwrap();
+        assert_eq!(ann.object_id(), None);
+        let ann: Annotation = serde_json::from_str(r#"{"object_id":"seq/7"}"#).unwrap();
+        assert_eq!(ann.object_id().map(String::as_str), Some("seq/7"));
     }
 
     #[test]
@@ -4683,5 +4776,71 @@ mod versioning_deser_tests {
         assert_eq!(dataset.tag_id(), None);
         assert_eq!(dataset.tag(), "");
         assert_eq!(dataset.tag_description(), "");
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn samples_dataframe_writes_truncation_and_occlusion_columns() {
+        use polars::prelude::DataType;
+
+        let mut ann = Annotation::new();
+        ann.set_name(Some("img".to_string()));
+        ann.set_label(Some("car".to_string()));
+        ann.set_label_index(Some(4));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+        ann.set_truncation(Some(1));
+        ann.set_occlusion(Some(2));
+
+        let sample = Sample {
+            image_name: Some("img.jpg".to_string()),
+            width: Some(100),
+            height: Some(100),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+        let truncation = df.column("truncation").unwrap();
+        let occlusion = df.column("occlusion").unwrap();
+        assert_eq!(truncation.dtype(), &DataType::UInt32);
+        assert_eq!(occlusion.dtype(), &DataType::UInt32);
+        assert_eq!(truncation.u32().unwrap().get(0), Some(1));
+        assert_eq!(occlusion.u32().unwrap().get(0), Some(2));
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn samples_dataframe_drops_attribute_columns_when_absent() {
+        let mut ann = Annotation::new();
+        ann.set_name(Some("img".to_string()));
+        ann.set_label(Some("car".to_string()));
+        ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+        let sample = Sample {
+            image_name: Some("img.jpg".to_string()),
+            annotations: vec![ann],
+            ..Default::default()
+        };
+        let df = samples_dataframe(&[sample]).unwrap();
+        assert!(df.column("truncation").is_err());
+        assert!(df.column("occlusion").is_err());
+    }
+
+    #[test]
+    fn annotation_attributes_serde_round_trip() {
+        let mut ann = Annotation::new();
+        ann.set_label(Some("car".to_string()));
+        ann.set_truncation(Some(0));
+        ann.set_occlusion(Some(1));
+        let json = serde_json::to_value(&ann).unwrap();
+        assert_eq!(json["attributes"]["truncation"], 0);
+        assert_eq!(json["attributes"]["occlusion"], 1);
+
+        let back: Annotation = serde_json::from_value(json).unwrap();
+        assert_eq!(back.truncation(), Some(0));
+        assert_eq!(back.occlusion(), Some(1));
+
+        let plain = Annotation::new();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("attributes").is_none());
     }
 }

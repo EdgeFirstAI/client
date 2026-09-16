@@ -695,6 +695,41 @@ enum Command {
         #[clap(long, requires = "images")]
         link: bool,
     },
+    /// Convert VisDrone2019 DET and VID splits to the EdgeFirst Dataset Format.
+    ///
+    /// Each SPLIT_DIR is an extracted VisDrone2019 split: a DET split holds
+    /// annotations/ and images/, a VID split holds annotations/ and
+    /// sequences/. Several splits combine into one output; the group is
+    /// inferred from a directory name ending in -train, -val, -test-dev or
+    /// -test-challenge unless --group is given. The output extension selects
+    /// Arrow IPC (.arrow) or Parquet (.parquet).
+    ///
+    /// Examples:
+    ///   edgefirst-client visdrone-to-arrow VisDrone2019-DET-train VisDrone2019-DET-val -o visdrone-det/visdrone-det.arrow --images
+    ///   edgefirst-client visdrone-to-arrow testdev -o testdev/testdev.parquet --group test-dev --images
+    VisdroneToArrow {
+        /// One or more extracted VisDrone2019 split directories
+        #[clap(required = true)]
+        split_dirs: Vec<PathBuf>,
+
+        /// Output EdgeFirst file path (.arrow or .parquet)
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Group name for all samples; overrides split inference
+        #[clap(long)]
+        group: Option<String>,
+
+        /// Stage the split images next to the output, producing a complete
+        /// offline dataset (annotation file + sibling image folder)
+        #[clap(long)]
+        images: bool,
+
+        /// Symlink staged images instead of copying (Unix only; requires
+        /// --images)
+        #[clap(long, requires = "images")]
+        link: bool,
+    },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
     /// Reads an EdgeFirst Arrow file and converts it to COCO JSON format.
@@ -2172,6 +2207,11 @@ fn parse_annotations_from_arrow(
             .ok()
             .and_then(|c| c.cast(&DataType::String).ok());
         let label_str = label_col.as_ref().and_then(|c| c.str().ok());
+        let category_frequency_col = df
+            .column("category_frequency")
+            .ok()
+            .and_then(|c| c.cast(&DataType::String).ok());
+        let category_frequency_str = category_frequency_col.as_ref().and_then(|c| c.str().ok());
 
         // Process each row in the DataFrame
         for idx in 0..total_rows {
@@ -2335,6 +2375,45 @@ fn parse_annotations_from_arrow(
                 if let Some(ref obj_id) = object_id {
                     annotation.set_object_id(Some(obj_id.clone()));
                 }
+
+                // Optional annotation columns (2026.04). Studio does not
+                // persist all of them yet; see DE-2952/DE-2953. They are
+                // carried so the payload is complete once the server does.
+                // `truncation`/`occlusion` are UInt32 columns holding u8-range
+                // flags; anything wider is omitted rather than wrapped.
+                let u8_at = |col: &str| {
+                    df.column(col).ok().and_then(|c| {
+                        c.u8().ok().and_then(|s| s.get(idx)).or_else(|| {
+                            c.u32()
+                                .ok()
+                                .and_then(|s| s.get(idx))
+                                .and_then(|v| u8::try_from(v).ok())
+                        })
+                    })
+                };
+                annotation.set_truncation(u8_at("truncation"));
+                annotation.set_occlusion(u8_at("occlusion"));
+
+                annotation.set_iscrowd(
+                    df.column("iscrowd")
+                        .ok()
+                        .and_then(|c| c.bool().ok())
+                        .and_then(|s| s.get(idx)),
+                );
+                annotation.set_category_frequency(
+                    category_frequency_str.and_then(|s| s.get(idx).map(String::from)),
+                );
+
+                let f32_at = |col: &str| {
+                    df.column(col)
+                        .ok()
+                        .and_then(|c| c.f32().ok())
+                        .and_then(|s| s.get(idx))
+                };
+                annotation.set_box2d_score(f32_at("box2d_score"));
+                annotation.set_box3d_score(f32_at("box3d_score"));
+                annotation.set_polygon_score(f32_at("polygon_score"));
+                annotation.set_mask_score(f32_at("mask_score"));
 
                 // Try to extract each geometry type - samples can have multiple
                 if let Some(box2d) = parse_box2d_from_dataframe(&df, idx)? {
@@ -3132,6 +3211,34 @@ async fn handle_upload_dataset(
 
     #[cfg(feature = "profiling")]
     drop(_prep_span);
+
+    // Studio's samples.populate2 stores label, label_index, object_reference,
+    // box2d, box3d and polygon. Tell the user which optional columns in this
+    // file will not survive the upload (tracked in DE-2952 / DE-2953).
+    if let Some(arrow_path) = &annotations {
+        let (df, _) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
+        const NOT_PERSISTED: [&str; 8] = [
+            "truncation",
+            "occlusion",
+            "iscrowd",
+            "category_frequency",
+            "box2d_score",
+            "box3d_score",
+            "polygon_score",
+            "mask_score",
+        ];
+        let present: Vec<&str> = NOT_PERSISTED
+            .iter()
+            .copied()
+            .filter(|c| df.column(c).is_ok())
+            .collect();
+        if !present.is_empty() {
+            println!(
+                "⚠ Studio does not yet store these annotation columns; keep the Arrow file as the source of truth: {}",
+                present.join(", ")
+            );
+        }
+    }
 
     if samples.is_empty() {
         return Err(Error::InvalidParameters(
@@ -4870,6 +4977,65 @@ async fn handle_coco_to_arrow(
     Ok(())
 }
 
+/// Handle VisDrone to Arrow conversion.
+async fn handle_visdrone_to_arrow(
+    split_dirs: Vec<PathBuf>,
+    output: PathBuf,
+    group: Option<String>,
+    images: bool,
+    link: bool,
+) -> Result<(), Error> {
+    use edgefirst_client::visdrone::{VisDroneToArrowOptions, visdrone_to_arrow};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let output_format = if output.extension().is_some_and(|ext| ext == "parquet") {
+        "Parquet"
+    } else {
+        "Arrow IPC"
+    };
+    println!("Converting VisDrone2019 to EdgeFirst {output_format} format...");
+    for dir in &split_dirs {
+        println!("  Input:  {:?}", dir);
+    }
+    println!("  Output: {:?}", output);
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+    let options = VisDroneToArrowOptions {
+        group,
+        stage_images: images,
+        link_images: link,
+        ..Default::default()
+    };
+
+    let output_clone = output.clone();
+    let task = tokio::spawn(async move {
+        visdrone_to_arrow(&split_dirs, &output_clone, &options, Some(tx)).await
+    });
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let rows = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Converted {rows} rows to {output_format} format");
+    if images {
+        println!("✓ Image staging complete (see log output above for counts)");
+    }
+    Ok(())
+}
+
 /// Handle Arrow to COCO conversion.
 async fn handle_arrow_to_coco(
     arrow_path: PathBuf,
@@ -5903,6 +6069,22 @@ async fn main() -> Result<(), Error> {
             )
             .await;
         }
+        Command::VisdroneToArrow {
+            split_dirs,
+            output,
+            group,
+            images,
+            link,
+        } => {
+            return handle_visdrone_to_arrow(
+                split_dirs.clone(),
+                output.clone(),
+                group.clone(),
+                *images,
+                *link,
+            )
+            .await;
+        }
         Command::ArrowToCoco {
             arrow_path,
             output,
@@ -6319,6 +6501,7 @@ async fn main() -> Result<(), Error> {
         Command::GenerateArrow { .. } => unreachable!(),
         Command::ValidateSnapshot { .. } => unreachable!(),
         Command::CocoToArrow { .. } => unreachable!(),
+        Command::VisdroneToArrow { .. } => unreachable!(),
         Command::ArrowToCoco { .. } => unreachable!(),
         #[cfg(feature = "polars")]
         Command::Migrate { .. } => unreachable!(),
@@ -7513,6 +7696,82 @@ mod tests {
             );
 
             std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn parse_annotations_from_arrow_reads_optional_annotation_columns() {
+            use edgefirst_client::{Annotation, Box2d, Sample, samples_dataframe};
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let images = temp.path().join("images");
+            std::fs::create_dir_all(&images).unwrap();
+            std::fs::write(images.join("img.jpg"), b"\xFF\xD8\xFF\xD9").unwrap();
+
+            let mut ann = Annotation::new();
+            ann.set_name(Some("img".into()));
+            ann.set_label(Some("car".into()));
+            ann.set_label_index(Some(4));
+            ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+            ann.set_truncation(Some(1));
+            ann.set_occlusion(Some(2));
+            ann.set_iscrowd(Some(true));
+            ann.set_box2d_score(Some(0.5));
+            let sample = Sample {
+                image_name: Some("img.jpg".into()),
+                width: Some(100),
+                height: Some(100),
+                annotations: vec![ann],
+                ..Default::default()
+            };
+            let mut df = samples_dataframe(&[sample]).unwrap();
+            let arrow = temp.path().join("ds.arrow");
+            edgefirst_client::coco::write_dataset(&mut df, &arrow, Default::default()).unwrap();
+
+            let pb = indicatif::ProgressBar::hidden();
+            let samples = parse_annotations_from_arrow(&Some(arrow), &images, true, &pb).unwrap();
+            assert_eq!(samples.len(), 1);
+            let parsed = &samples[0].annotations[0];
+            assert_eq!(parsed.truncation(), Some(1));
+            assert_eq!(parsed.occlusion(), Some(2));
+            assert_eq!(parsed.iscrowd(), Some(true));
+            assert_eq!(parsed.box2d_score(), Some(0.5));
+        }
+
+        #[test]
+        fn parse_annotations_from_arrow_omits_attributes_outside_u8_range() {
+            use edgefirst_client::{Annotation, Box2d, Sample, samples_dataframe};
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let images = temp.path().join("images");
+            std::fs::create_dir_all(&images).unwrap();
+            std::fs::write(images.join("img.jpg"), b"\xFF\xD8\xFF\xD9").unwrap();
+
+            let mut ann = Annotation::new();
+            ann.set_name(Some("img".into()));
+            ann.set_label(Some("car".into()));
+            ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+            ann.set_truncation(Some(1));
+            ann.set_occlusion(Some(2));
+            let sample = Sample {
+                image_name: Some("img.jpg".into()),
+                width: Some(100),
+                height: Some(100),
+                annotations: vec![ann],
+                ..Default::default()
+            };
+            let mut df = samples_dataframe(&[sample]).unwrap();
+            // A UInt32 column can hold values the u8 attribute cannot; 256
+            // must not wrap to 0.
+            df.with_column(Column::new("truncation".into(), &[256u32]))
+                .unwrap();
+            let arrow = temp.path().join("ds.arrow");
+            edgefirst_client::coco::write_dataset(&mut df, &arrow, Default::default()).unwrap();
+
+            let pb = indicatif::ProgressBar::hidden();
+            let samples = parse_annotations_from_arrow(&Some(arrow), &images, true, &pb).unwrap();
+            let parsed = &samples[0].annotations[0];
+            assert_eq!(parsed.truncation(), None);
+            assert_eq!(parsed.occlusion(), Some(2));
         }
     }
 }

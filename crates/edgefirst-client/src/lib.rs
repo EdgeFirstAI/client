@@ -64,6 +64,7 @@ pub mod instrument;
 mod mask;
 mod retry;
 mod storage;
+pub mod visdrone;
 
 pub use crate::{
     api::{
@@ -81,8 +82,8 @@ pub use crate::{
     },
     client::{Client, Progress},
     dataset::{
-        Annotation, AnnotationSet, AnnotationType, Box2d, Box3d, Dataset, FileType, GpsData, Group,
-        ImuData, Label, Location, Polygon, Sample, SampleFile, Timing,
+        Annotation, AnnotationAttributes, AnnotationSet, AnnotationType, Box2d, Box3d, Dataset,
+        FileType, GpsData, Group, ImuData, Label, Location, Polygon, Sample, SampleFile, Timing,
     },
     error::Error,
     mask::MaskData,
