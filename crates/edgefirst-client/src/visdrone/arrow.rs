@@ -32,7 +32,7 @@ pub struct VisDroneToArrowOptions {
     pub stage_images: bool,
     /// Symlink staged images instead of copying (Unix only; copies elsewhere).
     pub link_images: bool,
-    /// Parallel JPEG header reads.
+    /// Parallel JPEG header reads. Must be at least 1.
     pub max_workers: usize,
 }
 
@@ -47,13 +47,16 @@ impl Default for VisDroneToArrowOptions {
     }
 }
 
+/// Default worker count: `MAX_VISDRONE_WORKERS` when set to a positive
+/// integer, otherwise half the CPUs clamped to 2..=8.
 fn max_workers() -> usize {
     std::env::var("MAX_VISDRONE_WORKERS")
         .ok()
         .and_then(|v| v.parse().ok())
+        .filter(|&v: &usize| v > 0)
         .unwrap_or_else(|| {
             let cpus = std::thread::available_parallelism()
-                .map(|n| n.get())
+                .map(std::num::NonZeroUsize::get)
                 .unwrap_or(4);
             (cpus / 2).clamp(2, 8)
         })
@@ -71,6 +74,49 @@ fn image_size(path: &Path) -> Result<(u32, u32), Error> {
         Error::InvalidParameters(format!("Cannot read image size of {}: {e}", path.display()))
     })?;
     Ok((size.width as u32, size.height as u32))
+}
+
+/// Sorted image files (`jpg`, `jpeg`, `png`) directly inside `dir`.
+fn list_images(dir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|e| {
+                e.eq_ignore_ascii_case("jpg")
+                    || e.eq_ignore_ascii_case("jpeg")
+                    || e.eq_ignore_ascii_case("png")
+            })
+        })
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// Sorted sequence directories directly inside `root`.
+fn list_sequences(root: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    Ok(dirs)
+}
+
+/// Frame images inside a sequence directory keyed by the 1-based index
+/// parsed from the file stem, sorted by index.
+fn list_frames(seq_dir: &Path) -> Result<Vec<(u32, PathBuf)>, Error> {
+    let mut frames: Vec<(u32, PathBuf)> = std::fs::read_dir(seq_dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter_map(|p| {
+            let idx = p.file_stem()?.to_str()?.parse::<u32>().ok()?;
+            Some((idx, p))
+        })
+        .collect();
+    frames.sort();
+    Ok(frames)
 }
 
 /// Normalize a VisDrone pixel box into an EdgeFirst annotation. Label,
@@ -119,18 +165,7 @@ async fn det_split_samples(
     let images_dir = split.join("images");
     let ann_dir = split.join("annotations");
 
-    let mut image_paths: Vec<PathBuf> = std::fs::read_dir(&images_dir)?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().is_some_and(|e| {
-                e.eq_ignore_ascii_case("jpg")
-                    || e.eq_ignore_ascii_case("jpeg")
-                    || e.eq_ignore_ascii_case("png")
-            })
-        })
-        .collect();
-    image_paths.sort();
+    let image_paths = tokio::task::spawn_blocking(move || list_images(&images_dir)).await??;
 
     let sem = Arc::new(Semaphore::new(max_workers));
     let mut tasks = Vec::with_capacity(image_paths.len());
@@ -145,7 +180,7 @@ async fn det_split_samples(
             let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
             let stem = path
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .ok_or_else(|| {
                     Error::InvalidParameters(format!("Bad image name {}", path.display()))
                 })?
@@ -221,8 +256,9 @@ async fn det_split_samples(
 }
 
 /// Convert one VID split directory. One `Sample` per row, plus a placeholder
-/// per frame image with no rows. Rows for frames without an image use the
-/// first frame's size and are not staged, so `validate-snapshot` reports them.
+/// per frame image with no rows. Rows whose frame has no image are skipped
+/// with a warning, like DET annotation files without an image, so every row
+/// written has a staged image of known size.
 async fn vid_split_samples(
     split: &Path,
     group: Option<&str>,
@@ -234,12 +270,7 @@ async fn vid_split_samples(
     let seq_root = split.join("sequences");
     let ann_dir = split.join("annotations");
 
-    let mut sequences: Vec<PathBuf> = std::fs::read_dir(&seq_root)?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    sequences.sort();
+    let sequences = tokio::task::spawn_blocking(move || list_sequences(&seq_root)).await??;
 
     let mut all_samples = Vec::new();
     let mut all_staged = Vec::new();
@@ -247,22 +278,17 @@ async fn vid_split_samples(
     for seq_dir in sequences {
         let seq_name = seq_dir
             .file_name()
-            .and_then(|s| s.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .ok_or_else(|| {
                 Error::InvalidParameters(format!("Bad sequence name {}", seq_dir.display()))
             })?
             .to_string();
 
-        // Frame images keyed by 1-based index parsed from the file stem.
-        let mut frames: Vec<(u32, PathBuf)> = std::fs::read_dir(&seq_dir)?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter_map(|p| {
-                let idx = p.file_stem()?.to_str()?.parse::<u32>().ok()?;
-                Some((idx, p))
-            })
-            .collect();
-        frames.sort();
+        let frames = tokio::task::spawn_blocking({
+            let seq_dir = seq_dir.clone();
+            move || list_frames(&seq_dir)
+        })
+        .await??;
 
         let ann_path = ann_dir.join(format!("{seq_name}.txt"));
         let rows = if ann_path.is_file() {
@@ -308,19 +334,12 @@ async fn vid_split_samples(
             let (idx, size) = task.await??;
             sizes.insert(idx, size);
         }
-        let fallback_size = frames.first().and_then(|(i, _)| sizes.get(i).copied());
-
         let mut frames_with_rows = std::collections::HashSet::new();
+        let mut missing_frames = std::collections::BTreeSet::new();
         for row in &rows {
-            let (width, height) = match sizes.get(&row.frame).copied().or(fallback_size) {
-                Some(s) => s,
-                None => {
-                    log::warn!(
-                        "{seq_name}: frame {} has no image and no fallback size; row skipped",
-                        row.frame
-                    );
-                    continue;
-                }
+            let Some((width, height)) = sizes.get(&row.frame).copied() else {
+                missing_frames.insert(row.frame);
+                continue;
             };
             frames_with_rows.insert(row.frame);
             let mut ann = box_to_annotation(&row.bbox, width, height);
@@ -339,6 +358,19 @@ async fn vid_split_samples(
                 annotations: vec![ann],
                 ..Default::default()
             });
+        }
+
+        if !missing_frames.is_empty() {
+            let skipped = rows
+                .iter()
+                .filter(|r| missing_frames.contains(&r.frame))
+                .count();
+            log::warn!(
+                "{}: sequence {seq_name} has {skipped} annotation rows for {} frames without an image ({:?}); rows skipped",
+                split.display(),
+                missing_frames.len(),
+                missing_frames
+            );
         }
 
         for (idx, path) in &frames {
@@ -393,13 +425,17 @@ fn build_metadata() -> BTreeMap<PlSmallStr, PlSmallStr> {
 fn count_images(split: &Path, kind: SplitKind) -> usize {
     match kind {
         SplitKind::Det => std::fs::read_dir(split.join("images"))
-            .map(|d| d.count())
+            .map(Iterator::count)
             .unwrap_or(0),
         SplitKind::Vid => std::fs::read_dir(split.join("sequences"))
             .map(|d| {
                 d.filter_map(Result::ok)
                     .filter(|e| e.path().is_dir())
-                    .map(|e| std::fs::read_dir(e.path()).map(|f| f.count()).unwrap_or(0))
+                    .map(|e| {
+                        std::fs::read_dir(e.path())
+                            .map(Iterator::count)
+                            .unwrap_or(0)
+                    })
                     .sum()
             })
             .unwrap_or(0),
@@ -423,6 +459,11 @@ pub async fn visdrone_to_arrow<P: AsRef<Path>>(
     if inputs.is_empty() {
         return Err(Error::InvalidParameters(
             "No VisDrone split directories given".into(),
+        ));
+    }
+    if options.max_workers == 0 {
+        return Err(Error::InvalidParameters(
+            "max_workers must be at least 1".into(),
         ));
     }
 

@@ -229,6 +229,63 @@ async fn vid_split_converts_frames_tracks_and_placeholders() {
 }
 
 #[tokio::test]
+async fn zero_workers_is_rejected() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_det_split(dir.path());
+    let output = dir.path().join("out").join("out.arrow");
+    let options = VisDroneToArrowOptions {
+        max_workers: 0,
+        ..Default::default()
+    };
+    let err = visdrone_to_arrow(&[split], &output, &options, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, crate::Error::InvalidParameters(_)), "{err:?}");
+    assert!(!output.exists());
+}
+
+#[tokio::test]
+async fn vid_rows_for_frames_without_an_image_are_skipped() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_vid_split(dir.path());
+    // Frame 2 has two rows but no image; frame 3 keeps its placeholder.
+    std::fs::remove_file(
+        split
+            .join("sequences")
+            .join("uav0000001_00000_v")
+            .join("0000002.jpg"),
+    )
+    .unwrap();
+    let output = dir.path().join("vid").join("vid.arrow");
+    let options = VisDroneToArrowOptions {
+        stage_images: true,
+        ..Default::default()
+    };
+
+    let rows = visdrone_to_arrow(&[split], &output, &options, None)
+        .await
+        .unwrap();
+    assert_eq!(rows, 3, "two boxes on frame 1 plus the frame 3 placeholder");
+
+    let (df, _) = read_dataset_dataframe(&output).unwrap();
+    let frames = df.column("frame").unwrap().u32().unwrap();
+    let mut seen: Vec<u32> = frames.into_no_null_iter().collect();
+    seen.sort();
+    assert_eq!(seen, vec![1, 1, 3]);
+
+    let container = dir
+        .path()
+        .join("vid")
+        .join("vid")
+        .join("uav0000001_00000_v");
+    assert!(container.join("uav0000001_00000_v_1.camera.jpeg").is_file());
+    assert!(!container.join("uav0000001_00000_v_2.camera.jpeg").exists());
+    assert!(container.join("uav0000001_00000_v_3.camera.jpeg").is_file());
+    let issues = crate::format::validate_dataset_structure(&dir.path().join("vid")).unwrap();
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+#[tokio::test]
 async fn det_and_vid_splits_combine_into_one_file() {
     let dir = tempfile::TempDir::new().unwrap();
     let det = make_det_split(dir.path());
