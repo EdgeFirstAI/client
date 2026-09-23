@@ -28,7 +28,7 @@ use std::{
 use tokio::sync::{Semaphore, mpsc::Sender};
 
 /// Schema version written into Arrow IPC file metadata.
-pub const SCHEMA_VERSION: &str = "2026.04";
+pub const SCHEMA_VERSION: &str = "2026.10";
 
 /// Polygon rings for a single row: each ring is a vec of `(x, y)` coordinate pairs.
 type PolygonRings = Vec<Vec<(f32, f32)>>;
@@ -107,6 +107,9 @@ fn max_workers() -> usize {
 ///
 /// This is a high-performance async conversion that uses parallel workers
 /// for parsing and transforming annotations.
+///
+/// COCO `iscrowd = 1` becomes `ignore = true`; the label and index are kept.
+/// The deprecated `iscrowd` column is written as a mirror of `ignore`.
 ///
 /// # Arguments
 /// * `coco_path` - Path to COCO annotation JSON/ZIP or a standard extracted
@@ -711,7 +714,7 @@ fn convert_image_annotations(
             annotation.set_polygon(polygon);
             annotation.set_mask(mask);
             annotation.set_group(group.map(String::from));
-            annotation.set_iscrowd(Some(ann.iscrowd != 0));
+            annotation.set_ignore(Some(ann.iscrowd != 0));
             annotation.set_category_frequency(index.frequency(ann.category_id).map(String::from));
 
             // Map COCO score to appropriate geometry score field
@@ -774,8 +777,18 @@ fn sample_name_from_filename(filename: &str) -> String {
 ///
 /// Reads an Arrow file and produces COCO JSON output. LVIS extension fields
 /// are preserved when present in the Arrow file: `neg_category_ids`,
-/// `not_exhaustive_category_ids`, category `frequency`, annotation `iscrowd`,
-/// `supercategory`, and category metadata (`synset`, `synonyms`, `def`).
+/// `not_exhaustive_category_ids`, category `frequency`, `supercategory`, and
+/// category metadata (`synset`, `synonyms`, `def`).
+///
+/// COCO `iscrowd` is written from the `ignore` column (falling back to a
+/// legacy `iscrowd` column). Rows flagged `exclude`, and unlabelled `ignore`
+/// rows, have no COCO equivalent: they are skipped, a single warning gives
+/// the count, and `exclude` rows create no category.
+///
+/// COCO `category_id` is taken from `label_index` verbatim when present, so a
+/// dataset indexed from 0 (for example a default VisDrone conversion, where
+/// `pedestrian` is 0) produces `category_id` 0. Some COCO consumers reserve 0
+/// for background.
 ///
 /// # Arguments
 /// * `arrow_path` - Path to EdgeFirst Arrow file
@@ -784,7 +797,7 @@ fn sample_name_from_filename(filename: &str) -> String {
 /// * `progress` - Optional progress channel
 ///
 /// # Returns
-/// Number of annotations converted
+/// Number of annotations converted; skipped rows are not counted
 pub async fn arrow_to_coco<P: AsRef<Path>>(
     arrow_path: P,
     output_path: P,
@@ -911,25 +924,13 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .ok()
         .and_then(|c| extract_all_sizes(c).ok());
 
-    // Extract iscrowd column (optional, Boolean in 2026.04, UInt32 in older schemas)
-    let iscrowds: Vec<u8> = df
-        .column("iscrowd")
-        .ok()
-        .map(|c| {
-            // Try Boolean first (2026.04 schema), then fall back to UInt32 (older schemas)
-            if let Ok(bool_ca) = c.bool() {
-                bool_ca
-                    .iter()
-                    .map(|v| if v.unwrap_or(false) { 1 } else { 0 })
-                    .collect()
-            } else {
-                c.u32()
-                    .ok()
-                    .map(|s| s.iter().map(|v| v.unwrap_or(0) as u8).collect())
-                    .unwrap_or_else(|| vec![0; total_rows])
-            }
-        })
-        .unwrap_or_else(|| vec![0; total_rows]);
+    let ignores: Vec<bool> = crate::format::ignore_flags(&df)
+        .map(|v| v.into_iter().map(|f| f.unwrap_or(false)).collect())
+        .unwrap_or_else(|| vec![false; total_rows]);
+    let excludes: Vec<bool> = crate::format::flag_column(&df, "exclude")
+        .map(|v| v.into_iter().map(|f| f.unwrap_or(false)).collect())
+        .unwrap_or_else(|| vec![false; total_rows]);
+    let mut skipped_flagged = 0usize;
 
     // Extract category_frequency column (optional, Categorical/String)
     let category_frequencies: Vec<Option<String>> = df
@@ -1028,7 +1029,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             image_dimensions.insert(name.clone(), (width, height));
         }
 
-        if !label.is_empty() && !category_ids.contains_key(label) {
+        if !excludes[i] && !label.is_empty() && !category_ids.contains_key(label) {
             let id = if let Some(Some(idx)) = label_indices.get(i) {
                 builder.add_category_with_id(*idx as u32, label, None)
             } else {
@@ -1047,6 +1048,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
 
         let name = &names[i];
         let label = &labels[i];
+
+        // COCO needs a category, and has no notion of an out-of-set object.
+        if excludes[i] || (ignores[i] && label.is_empty()) {
+            skipped_flagged += 1;
+            continue;
+        }
 
         // Skip sentinel rows (empty label = image with neg/exhaustive data but no annotations)
         if label.is_empty() {
@@ -1135,7 +1142,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             .map(|s| s as f64);
 
         if let Some(bbox) = bbox {
-            let iscrowd = iscrowds[i];
+            let iscrowd = u8::from(ignores[i]);
             let ann_id = builder.add_annotation_with_id(
                 object_id_u64s[i],
                 image_id,
@@ -1164,6 +1171,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                 .await;
             last_progress_update = i;
         }
+    }
+
+    if skipped_flagged > 0 {
+        log::warn!(
+            "{skipped_flagged} ignore/exclude rows have no COCO equivalent (unlabelled or excluded) and were skipped"
+        );
     }
 
     // Send final progress event (may not have fired if last rows were filtered)
@@ -1889,6 +1902,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_coco_to_arrow_maps_iscrowd_to_ignore_keeping_label() {
+        let temp_dir = TempDir::new().unwrap();
+        let coco_json = r#"{
+            "images": [
+                {"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 5, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 1},
+                {"id": 2, "image_id": 1, "category_id": 5, "bbox": [200, 20, 50, 40], "area": 2000, "iscrowd": 0}
+            ],
+            "categories": [
+                {"id": 5, "name": "person", "supercategory": "human"}
+            ]
+        }"#;
+        let coco_path = temp_dir.path().join("crowd.json");
+        std::fs::write(&coco_path, coco_json).unwrap();
+        let arrow_path = temp_dir.path().join("crowd.arrow");
+        coco_to_arrow(
+            &coco_path,
+            &arrow_path,
+            &CocoToArrowOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (df, _) = crate::format::read_dataset_dataframe(&arrow_path).unwrap();
+        let df = df
+            .sort(["object_id"], SortMultipleOptions::default())
+            .unwrap();
+        let bools = |name: &str| -> Vec<Option<bool>> {
+            df.column(name).unwrap().bool().unwrap().iter().collect()
+        };
+        assert_eq!(bools("ignore"), vec![Some(true), Some(false)]);
+        assert_eq!(bools("iscrowd"), bools("ignore"), "iscrowd mirrors ignore");
+        let labels: Vec<Option<String>> = df
+            .column("label")
+            .unwrap()
+            .cast(&DataType::String)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|v| v.map(String::from))
+            .collect();
+        assert_eq!(labels, vec![Some("person".into()), Some("person".into())]);
+        let indices: Vec<Option<u64>> = df
+            .column("label_index")
+            .unwrap()
+            .cast(&DataType::UInt64)
+            .unwrap()
+            .u64()
+            .unwrap()
+            .iter()
+            .collect();
+        assert_eq!(indices, vec![Some(5), Some(5)]);
+    }
+
+    #[tokio::test]
     async fn test_arrow_to_coco_roundtrip() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -2089,7 +2161,7 @@ mod tests {
         assert_eq!(
             meta.get(&PlSmallStr::from("schema_version")),
             Some(&PlSmallStr::from(SCHEMA_VERSION)),
-            "schema_version metadata should be '2026.04'"
+            "schema_version metadata should be '2026.10'"
         );
 
         // category_metadata is always present when there are categories
@@ -2514,7 +2586,7 @@ mod tests {
         assert_eq!(
             get("schema_version").as_deref(),
             Some(SCHEMA_VERSION),
-            "schema_version metadata should be '2026.04'"
+            "schema_version metadata should be '2026.10'"
         );
         assert!(get("labels").is_some(), "labels metadata should be present");
         assert!(
@@ -2902,6 +2974,64 @@ mod tests {
             std::fs::read(&dest).unwrap(),
             b"train-data",
             "the destination must retain the first-staged source's bytes, never the second's"
+        );
+    }
+
+    #[tokio::test]
+    async fn arrow_to_coco_maps_ignore_and_skips_unexpressible_flagged_rows() {
+        let dir = TempDir::new().unwrap();
+        let mk = |label: Option<&str>, idx: Option<u64>| {
+            let mut a = Annotation::new();
+            a.set_name(Some("img".into()));
+            a.set_label(label.map(String::from));
+            a.set_label_index(idx);
+            a.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+            a
+        };
+        let plain = mk(Some("car"), Some(1));
+        let mut crowd = mk(Some("person"), Some(2));
+        crowd.set_ignore(Some(true));
+        let mut region = mk(None, None);
+        region.set_ignore(Some(true));
+        let mut other = mk(Some("others"), Some(3));
+        other.set_exclude(Some(true));
+        let sample = Sample {
+            image_name: Some("img.jpg".into()),
+            width: Some(100),
+            height: Some(100),
+            annotations: vec![plain, crowd, region, other],
+            ..Default::default()
+        };
+        let arrow = dir.path().join("ds.arrow");
+        let mut df = crate::samples_dataframe(&[sample]).unwrap();
+        write_dataset(&mut df, &arrow, Default::default()).unwrap();
+        let out = dir.path().join("coco.json");
+        let written = arrow_to_coco(&arrow, &out, &ArrowToCocoOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            written, 2,
+            "plain + labelled ignore; unlabelled ignore and exclude skipped"
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let crowd_flags: Vec<i64> = json["annotations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["iscrowd"].as_i64().unwrap())
+            .collect();
+        assert_eq!(crowd_flags.iter().filter(|&&c| c == 1).count(), 1);
+        let names: Vec<&str> = json["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            !names.contains(&"others"),
+            "excluded rows create no category: {names:?}"
         );
     }
 }

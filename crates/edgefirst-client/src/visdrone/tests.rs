@@ -37,30 +37,34 @@ async fn det_split_converts_boxes_labels_and_placeholders() {
     let rows = visdrone_to_arrow(&[split], &output, &VisDroneToArrowOptions::default(), None)
         .await
         .unwrap();
-    assert_eq!(rows, 4, "three boxes plus one placeholder");
+    assert_eq!(
+        rows, 3,
+        "two real boxes plus one placeholder; ignored region dropped"
+    );
 
     let (df, metadata) = read_dataset_dataframe(&output).unwrap();
     assert_eq!(
         metadata.get("schema_version").map(String::as_str),
-        Some("2026.04")
+        Some(crate::coco::SCHEMA_VERSION)
     );
     let labels: Vec<String> = serde_json::from_str(metadata.get("labels").unwrap()).unwrap();
-    assert_eq!(labels.len(), 12);
-    assert_eq!(labels[0], "ignored regions");
-    assert_eq!(labels[11], "others");
+    assert_eq!(labels.len(), 10);
+    assert_eq!(labels[0], "pedestrian");
+    assert_eq!(labels[9], "motor");
+    assert!(df.column("ignore").is_err() && df.column("exclude").is_err());
 
     let names = df.column("name").unwrap().str().unwrap();
     let a_rows: Vec<usize> = (0..df.height())
         .filter(|&i| names.get(i) == Some("img_a"))
         .collect();
-    assert_eq!(a_rows.len(), 3);
+    assert_eq!(a_rows.len(), 2);
 
     let label_index = df.column("label_index").unwrap().u64().unwrap();
-    assert_eq!(label_index.get(a_rows[0]), Some(4));
+    assert_eq!(label_index.get(a_rows[0]), Some(3), "car, category 4 -> 3");
     assert_eq!(
         label_index.get(a_rows[1]),
         Some(0),
-        "ignored region kept with index 0"
+        "pedestrian, category 1 -> 0"
     );
 
     let boxes = df.column("box2d").unwrap().array().unwrap();
@@ -77,8 +81,8 @@ async fn det_split_converts_boxes_labels_and_placeholders() {
 
     let truncation = df.column("truncation").unwrap().u32().unwrap();
     let occlusion = df.column("occlusion").unwrap().u32().unwrap();
-    assert_eq!(truncation.get(a_rows[2]), Some(1));
-    assert_eq!(occlusion.get(a_rows[2]), Some(2));
+    assert_eq!(truncation.get(a_rows[1]), Some(1));
+    assert_eq!(occlusion.get(a_rows[1]), Some(2));
 
     let groups = df.column("group").unwrap().cast(&DataType::String).unwrap();
     assert_eq!(
@@ -101,6 +105,56 @@ async fn det_split_converts_boxes_labels_and_placeholders() {
         .collect();
     assert_eq!(b_size, vec![100, 50]);
     assert!(df.column("label").unwrap().is_null().get(b_row).unwrap());
+}
+
+#[tokio::test]
+async fn det_keep_ignored_flags_rows_without_labels() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_det_split(dir.path());
+    let output = dir.path().join("out").join("out.arrow");
+    let options = VisDroneToArrowOptions {
+        keep_ignored: true,
+        ..Default::default()
+    };
+    let rows = visdrone_to_arrow(&[split], &output, &options, None)
+        .await
+        .unwrap();
+    assert_eq!(rows, 4);
+
+    let (df, metadata) = read_dataset_dataframe(&output).unwrap();
+    let labels: Vec<String> = serde_json::from_str(metadata.get("labels").unwrap()).unwrap();
+    assert_eq!(labels.len(), 10, "flagged rows are not classes");
+    let ignore = df.column("ignore").unwrap().bool().unwrap();
+    let label = df.column("label").unwrap();
+    let label_index = df.column("label_index").unwrap().u64().unwrap();
+    let flagged: Vec<usize> = (0..df.height())
+        .filter(|&i| ignore.get(i) == Some(true))
+        .collect();
+    assert_eq!(flagged.len(), 1);
+    assert!(label.is_null().get(flagged[0]).unwrap());
+    assert_eq!(label_index.get(flagged[0]), None);
+}
+
+#[tokio::test]
+async fn det_image_with_only_ignored_rows_keeps_a_placeholder() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_det_split(dir.path());
+    std::fs::write(
+        split.join("annotations").join("img_b.txt"),
+        "0,0,10,10,0,0,0,0\n0,0,5,5,0,11,0,0\n",
+    )
+    .unwrap();
+    let output = dir.path().join("out").join("out.arrow");
+    visdrone_to_arrow(&[split], &output, &VisDroneToArrowOptions::default(), None)
+        .await
+        .unwrap();
+    let (df, _) = read_dataset_dataframe(&output).unwrap();
+    let names = df.column("name").unwrap().str().unwrap();
+    let b: Vec<usize> = (0..df.height())
+        .filter(|&i| names.get(i) == Some("img_b"))
+        .collect();
+    assert_eq!(b.len(), 1);
+    assert!(df.column("label").unwrap().is_null().get(b[0]).unwrap());
 }
 
 #[tokio::test]
@@ -182,7 +236,7 @@ async fn vid_split_converts_frames_tracks_and_placeholders() {
     let rows = visdrone_to_arrow(&[split], &output, &options, None)
         .await
         .unwrap();
-    assert_eq!(rows, 5, "four boxes plus one placeholder for frame 3");
+    assert_eq!(rows, 4, "three real boxes plus one placeholder for frame 3");
 
     let (df, _) = read_dataset_dataframe(&output).unwrap();
     let names = df.column("name").unwrap().str().unwrap();
@@ -203,7 +257,6 @@ async fn vid_split_converts_frames_tracks_and_placeholders() {
             (1, Some("uav0000001_00000_v/0"), Some("car")),
             (1, Some("uav0000001_00000_v/7"), Some("pedestrian")),
             (2, Some("uav0000001_00000_v/7"), Some("people")),
-            (2, Some("uav0000001_00000_v/9"), Some("ignored regions")),
             (3, None, None),
         ]
     );
@@ -226,6 +279,30 @@ async fn vid_split_converts_frames_tracks_and_placeholders() {
     }
     let issues = crate::format::validate_dataset_structure(&dir.path().join("vid")).unwrap();
     assert!(issues.is_empty(), "{issues:?}");
+}
+
+#[tokio::test]
+async fn vid_frame_with_only_ignored_row_keeps_a_placeholder() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_vid_split(dir.path());
+    let ann_path = split.join("annotations").join("uav0000001_00000_v.txt");
+    let mut text = std::fs::read_to_string(&ann_path).unwrap();
+    text.push_str("3,5,0,0,10,10,0,0,0,0\r\n");
+    std::fs::write(&ann_path, text).unwrap();
+
+    let output = dir.path().join("vid").join("vid.arrow");
+    visdrone_to_arrow(&[split], &output, &VisDroneToArrowOptions::default(), None)
+        .await
+        .unwrap();
+
+    let (df, _) = read_dataset_dataframe(&output).unwrap();
+    let frames = df.column("frame").unwrap().u32().unwrap();
+    let labels = df.column("label").unwrap();
+    let frame_3: Vec<usize> = (0..df.height())
+        .filter(|&i| frames.get(i) == Some(3))
+        .collect();
+    assert_eq!(frame_3.len(), 1, "frame 3 appears exactly once");
+    assert!(labels.is_null().get(frame_3[0]).unwrap());
 }
 
 #[tokio::test]
@@ -299,14 +376,85 @@ async fn det_and_vid_splits_combine_into_one_file() {
     )
     .await
     .unwrap();
-    assert_eq!(rows, 9);
+    assert_eq!(rows, 7);
     let (df, _) = read_dataset_dataframe(&output).unwrap();
     let groups = df.column("group").unwrap().cast(&DataType::String).unwrap();
     let set: std::collections::BTreeSet<_> = groups.str().unwrap().iter().flatten().collect();
     assert_eq!(set, std::collections::BTreeSet::from(["train", "val"]));
     assert_eq!(
         df.column("frame").unwrap().null_count(),
-        4,
+        3,
         "DET rows have null frames"
     );
+}
+
+#[tokio::test]
+async fn det_keep_ignored_flags_others_as_exclude() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_det_split(dir.path());
+    std::fs::write(
+        split.join("annotations").join("img_b.txt"),
+        "5,5,20,10,0,11,0,0\n",
+    )
+    .unwrap();
+    let output = dir.path().join("out").join("out.arrow");
+    let options = VisDroneToArrowOptions {
+        keep_ignored: true,
+        ..Default::default()
+    };
+    visdrone_to_arrow(&[split], &output, &options, None)
+        .await
+        .unwrap();
+
+    let (df, _) = read_dataset_dataframe(&output).unwrap();
+    let names = df.column("name").unwrap().str().unwrap();
+    let exclude = df.column("exclude").unwrap().bool().unwrap();
+    let ignore = df.column("ignore").unwrap().bool().unwrap();
+    let label = df.column("label").unwrap();
+    let label_index = df.column("label_index").unwrap().u64().unwrap();
+    let b: Vec<usize> = (0..df.height())
+        .filter(|&i| names.get(i) == Some("img_b"))
+        .collect();
+    assert_eq!(b.len(), 1, "category 11 row is kept, not a placeholder");
+    assert_eq!(exclude.get(b[0]), Some(true));
+    assert_ne!(ignore.get(b[0]), Some(true));
+    assert!(label.is_null().get(b[0]).unwrap());
+    assert_eq!(label_index.get(b[0]), None);
+    let excluded = (0..df.height())
+        .filter(|&i| exclude.get(i) == Some(true))
+        .count();
+    assert_eq!(excluded, 1);
+}
+
+#[tokio::test]
+async fn vid_keep_ignored_flags_ignored_region_without_label() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let split = make_vid_split(dir.path());
+    let output = dir.path().join("vid").join("vid.arrow");
+    let options = VisDroneToArrowOptions {
+        keep_ignored: true,
+        ..Default::default()
+    };
+    let rows = visdrone_to_arrow(&[split], &output, &options, None)
+        .await
+        .unwrap();
+    assert_eq!(rows, 5, "three real boxes, the ignored region, frame 3");
+
+    let (df, _) = read_dataset_dataframe(&output).unwrap();
+    let frames = df.column("frame").unwrap().u32().unwrap();
+    let ignore = df.column("ignore").unwrap().bool().unwrap();
+    let label = df.column("label").unwrap();
+    let label_index = df.column("label_index").unwrap().u64().unwrap();
+    let flagged: Vec<usize> = (0..df.height())
+        .filter(|&i| ignore.get(i) == Some(true))
+        .collect();
+    assert_eq!(flagged.len(), 1);
+    assert_eq!(frames.get(flagged[0]), Some(2));
+    assert!(label.is_null().get(flagged[0]).unwrap());
+    assert_eq!(label_index.get(flagged[0]), None);
+}
+
+#[test]
+fn class_categories_are_categories_one_to_ten() {
+    assert_eq!(super::CLASS_CATEGORIES[..], super::CATEGORIES[1..11]);
 }

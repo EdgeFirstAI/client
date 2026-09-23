@@ -114,6 +114,10 @@ impl Default for CocoExportOptions {
 /// * `options` - Import options
 /// * `progress` - Optional progress channel
 ///
+/// COCO crowd annotations (`iscrowd != 0`) map to the `ignore` flag, which
+/// Studio does not store yet, so they are not uploaded; one warning gives the
+/// count. Categories used only by crowd annotations are not created.
+///
 /// # Returns
 /// Import result with counts of total, skipped, and imported samples
 ///
@@ -294,10 +298,14 @@ async fn upload_images_in_batches<'a>(
     images_dir: &Path,
 ) -> Result<usize, Error> {
     let mut imported = 0;
+    let mut dropped_flagged = 0;
     let to_import = images.len();
 
     for batch in images.chunks(ctx.options.batch_size) {
-        let samples = convert_batch_to_samples(batch, index, images_dir, ctx.options)?;
+        let mut samples = convert_batch_to_samples(batch, index, images_dir, ctx.options)?;
+        // Filtered here so the whole import reports one total, rather than
+        // populate_samples warning once per batch.
+        dropped_flagged += crate::drop_flagged_annotations(&mut samples);
 
         ctx.client
             .populate_samples_with_concurrency(
@@ -313,6 +321,7 @@ async fn upload_images_in_batches<'a>(
         send_progress(ctx.progress, imported, to_import).await;
     }
 
+    crate::dataset::warn_flagged_not_uploaded(dropped_flagged);
     Ok(imported)
 }
 
@@ -554,13 +563,11 @@ fn merge_coco_datasets(target: &mut CocoDataset, source: CocoDataset) {
 
 /// Convert a COCO image and its annotations to an EdgeFirst Sample for Studio upload.
 ///
-/// LVIS extension fields (`iscrowd`, `category_frequency`, `neg_label_indices`,
-/// `not_exhaustive_label_indices`) are set on the returned Sample/Annotations when
-/// present in the source data. However, Studio's backend currently drops these fields
-/// during import because it re-marshals annotations through typed Go structs (see
-/// DE-2509). These fields will round-trip correctly once the backend adds JSONB
-/// pass-through support. Until then, they are harmlessly omitted from the stored data
-/// via `skip_serializing_if = "Option::is_none"`.
+/// COCO `iscrowd != 0` becomes `ignore = true` with the label kept; callers drop
+/// these annotations before upload. LVIS extension fields (`category_frequency`,
+/// `neg_label_indices`, `not_exhaustive_label_indices`) are set on the returned
+/// Sample/Annotations when present in the source data; Studio does not store
+/// them yet.
 fn convert_coco_image_to_sample(
     image: &CocoImage,
     index: &CocoIndex,
@@ -601,7 +608,7 @@ fn convert_coco_image_to_sample(
                 ann.set_box2d(Some(box2d));
                 ann.set_polygon(polygon);
                 ann.set_group(group.map(String::from));
-                ann.set_iscrowd(Some(coco_ann.iscrowd != 0));
+                ann.set_ignore(Some(coco_ann.iscrowd != 0));
                 ann.set_category_frequency(index.frequency(coco_ann.category_id).map(String::from));
                 Some(ann)
             }
@@ -1060,8 +1067,19 @@ fn convert_coco_annotation_to_server(
     (server_ann, missing_label)
 }
 
+/// Annotations and group change computed for one COCO image during update.
+struct ImageUpdate {
+    sample_id: crate::SampleID,
+    annotations: Vec<crate::api::ServerAnnotation>,
+    group_update: Option<String>,
+    missing_labels: usize,
+    /// Crowd annotations left out because Studio cannot store the `ignore`
+    /// flag they map to.
+    skipped_flagged: usize,
+}
+
 /// Process a single COCO image for update, returning annotations and group
-/// update info.
+/// update info. Returns `None` when the image has no matching Studio sample.
 fn process_image_for_update(
     coco_image: &CocoImage,
     sample_info: &std::collections::HashMap<String, (crate::SampleID, u32, u32, Option<String>)>,
@@ -1069,12 +1087,7 @@ fn process_image_for_update(
     label_map: &std::collections::HashMap<String, u64>,
     annotation_set_id: u64,
     include_masks: bool,
-) -> Option<(
-    crate::SampleID,
-    Vec<crate::api::ServerAnnotation>,
-    Option<String>,
-    usize,
-)> {
+) -> Option<ImageUpdate> {
     let sample_name = extract_sample_name(&coco_image.file_name);
     let expected_group = super::reader::infer_group_from_folder(&coco_image.file_name);
 
@@ -1094,8 +1107,13 @@ fn process_image_for_update(
     // Convert all annotations for this image
     let mut annotations = Vec::new();
     let mut missing_label_count = 0;
+    let mut skipped_flagged = 0;
 
     for coco_ann in coco_index.annotations_for_image(coco_image.id) {
+        if coco_ann.iscrowd != 0 {
+            skipped_flagged += 1;
+            continue;
+        }
         let (server_ann, missing) = convert_coco_annotation_to_server(
             coco_ann,
             coco_index,
@@ -1111,7 +1129,13 @@ fn process_image_for_update(
         annotations.push(server_ann);
     }
 
-    Some((sample_id, annotations, group_update, missing_label_count))
+    Some(ImageUpdate {
+        sample_id,
+        annotations,
+        group_update,
+        missing_labels: missing_label_count,
+        skipped_flagged,
+    })
 }
 
 /// Update sample groups in bulk.
@@ -1200,6 +1224,10 @@ async fn update_sample_groups(
 /// * `options` - Update options
 /// * `progress` - Optional progress channel
 ///
+/// COCO crowd annotations (`iscrowd != 0`) map to the `ignore` flag, which
+/// Studio does not store yet, so they are not uploaded; one warning gives the
+/// count.
+///
 /// # Returns
 /// Update result with counts of updated and not-found samples.
 pub async fn update_coco_annotations(
@@ -1264,6 +1292,7 @@ pub async fn update_coco_annotations(
     let mut samples_needing_group_update: Vec<(SampleID, String)> = Vec::new();
     let mut not_found = 0;
     let mut missing_label_count = 0;
+    let mut skipped_flagged = 0;
 
     for coco_image in &dataset.images {
         match process_image_for_update(
@@ -1274,12 +1303,13 @@ pub async fn update_coco_annotations(
             annotation_set_id_u64,
             options.include_masks,
         ) {
-            Some((sample_id, annotations, group_update, missing_labels)) => {
-                sample_ids_to_update.push(sample_id);
-                server_annotations.extend(annotations);
-                missing_label_count += missing_labels;
-                if let Some(group) = group_update {
-                    samples_needing_group_update.push((sample_id, group));
+            Some(update) => {
+                sample_ids_to_update.push(update.sample_id);
+                server_annotations.extend(update.annotations);
+                missing_label_count += update.missing_labels;
+                skipped_flagged += update.skipped_flagged;
+                if let Some(group) = update.group_update {
+                    samples_needing_group_update.push((update.sample_id, group));
                 }
             }
             None => {
@@ -1306,6 +1336,7 @@ pub async fn update_coco_annotations(
             missing_label_count
         );
     }
+    crate::dataset::warn_flagged_not_uploaded(skipped_flagged);
 
     if to_update == 0 {
         return Ok(CocoUpdateResult {
@@ -1473,6 +1504,20 @@ fn compute_bbox_from_polygon(
     }
 }
 
+/// Remove crowd annotations (`iscrowd != 0`), which import never uploads, and
+/// the categories used only by them, which import never creates. Returns the
+/// number of annotations removed.
+fn exclude_crowd_annotations(dataset: &mut CocoDataset) -> usize {
+    let used_before: HashSet<u32> = dataset.annotations.iter().map(|a| a.category_id).collect();
+    let before = dataset.annotations.len();
+    dataset.annotations.retain(|a| a.iscrowd == 0);
+    let used_after: HashSet<u32> = dataset.annotations.iter().map(|a| a.category_id).collect();
+    dataset
+        .categories
+        .retain(|c| !used_before.contains(&c.id) || used_after.contains(&c.id));
+    before - dataset.annotations.len()
+}
+
 /// Verify a COCO dataset import against Studio data.
 ///
 /// Compares the local COCO dataset against what's stored in Studio to verify:
@@ -1490,6 +1535,11 @@ fn compute_bbox_from_polygon(
 /// * `annotation_set_id` - Annotation set in Studio to verify against
 /// * `options` - Verification options
 /// * `progress` - Optional progress channel
+///
+/// COCO crowd annotations (`iscrowd != 0`) map to the `ignore` flag, which
+/// Studio does not store yet, so import does not upload them. They are left
+/// out of the expected annotation count, and categories used only by crowd
+/// annotations are left out of the category comparison.
 ///
 /// # Returns
 /// Verification result with detailed comparison metrics.
@@ -1513,7 +1563,7 @@ pub async fn verify_coco_import(
 
     // Read local COCO dataset
     log::info!("Reading local COCO dataset from {:?}", coco_path);
-    let (coco_dataset, inferred_group) = if coco_path.is_dir() {
+    let (mut coco_dataset, inferred_group) = if coco_path.is_dir() {
         // Read all annotation files and merge into one dataset
         let datasets = read_coco_directory(coco_path, &CocoReadOptions::default())?;
         log::info!("Found {} annotation files in directory", datasets.len());
@@ -1548,10 +1598,13 @@ pub async fn verify_coco_import(
         .map(|g| vec![g.clone()])
         .unwrap_or_default();
 
+    let crowd_skipped = exclude_crowd_annotations(&mut coco_dataset);
+
     log::info!(
-        "Local COCO: {} images, {} annotations",
+        "Local COCO: {} images, {} annotations ({} crowd annotations excluded, not uploaded to Studio)",
         coco_dataset.images.len(),
-        coco_dataset.annotations.len()
+        coco_dataset.annotations.len(),
+        crowd_skipped
     );
 
     // Fetch samples from Studio with annotations
@@ -2048,6 +2101,81 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_coco_image_to_sample_maps_crowd_to_ignore() {
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "test.jpg".to_string(),
+            ..Default::default()
+        };
+        let ann = |id: u64, iscrowd: u8| CocoAnnotation {
+            id,
+            image_id: 1,
+            category_id: 3,
+            bbox: [100.0, 50.0, 200.0, 150.0],
+            area: 30000.0,
+            iscrowd,
+            segmentation: None,
+            score: None,
+        };
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 3,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![ann(1, 1), ann(2, 0)],
+            ..Default::default()
+        };
+        let index = CocoIndex::from_dataset(&dataset);
+        let sample =
+            convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), false, false, None)
+                .unwrap();
+
+        let flags: Vec<Option<bool>> = sample.annotations.iter().map(|a| a.ignore()).collect();
+        assert_eq!(flags, vec![Some(true), Some(false)]);
+        for a in &sample.annotations {
+            assert_eq!(a.label(), Some(&"person".to_string()), "label kept");
+            assert_eq!(a.label_index(), Some(3));
+        }
+    }
+
+    #[test]
+    fn exclude_crowd_annotations_drops_crowd_only_categories() {
+        let ann = |id: u64, category_id: u32, iscrowd: u8| CocoAnnotation {
+            id,
+            image_id: 1,
+            category_id,
+            bbox: [0.0, 0.0, 10.0, 10.0],
+            area: 100.0,
+            iscrowd,
+            segmentation: None,
+            score: None,
+        };
+        let cat = |id: u32, name: &str| CocoCategory {
+            id,
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let mut dataset = CocoDataset {
+            categories: vec![cat(1, "person"), cat(2, "crowdonly"), cat(3, "unused")],
+            annotations: vec![ann(1, 1, 0), ann(2, 1, 1), ann(3, 2, 1)],
+            ..Default::default()
+        };
+
+        assert_eq!(exclude_crowd_annotations(&mut dataset), 2);
+        assert_eq!(dataset.annotations.len(), 1);
+        let names: Vec<&str> = dataset.categories.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["person", "unused"],
+            "crowd-only category dropped; categories never used are left as before"
+        );
+    }
+
+    #[test]
     fn test_convert_coco_image_to_sample_no_annotations() {
         let image = CocoImage {
             id: 1,
@@ -2336,6 +2464,61 @@ mod tests {
         let result = read_coco_dataset_for_update(Path::new("/nonexistent_dir"));
         // Directory doesn't exist, so is_dir() returns false, and it's not .json
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // process_image_for_update tests
+    // =========================================================================
+
+    #[test]
+    fn process_image_for_update_skips_crowd_annotations() {
+        use crate::SampleID;
+        use std::collections::HashMap;
+
+        let image = CocoImage {
+            id: 7,
+            width: 640,
+            height: 480,
+            file_name: "img7.jpg".to_string(),
+            ..Default::default()
+        };
+        let ann = |id: u64, iscrowd: u8| CocoAnnotation {
+            id,
+            image_id: 7,
+            category_id: 1,
+            bbox: [10.0, 20.0, 30.0, 40.0],
+            area: 1200.0,
+            iscrowd,
+            segmentation: None,
+            score: None,
+        };
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![ann(1, 0), ann(2, 1), ann(3, 0)],
+            ..Default::default()
+        };
+        let index = CocoIndex::from_dataset(&dataset);
+        let mut sample_info = HashMap::new();
+        sample_info.insert("img7".to_string(), (SampleID::from(70), 640, 480, None));
+        let label_map = HashMap::from([("person".to_string(), 5u64)]);
+
+        let update =
+            process_image_for_update(&image, &sample_info, &index, &label_map, 9, false).unwrap();
+
+        assert_eq!(update.sample_id, SampleID::from(70));
+        assert_eq!(update.missing_labels, 0);
+        assert_eq!(
+            update.annotations.len(),
+            2,
+            "crowd row must not be uploaded"
+        );
+        assert_eq!(update.skipped_flagged, 1);
+        assert!(update.annotations.iter().all(|a| a.label_id == Some(5)));
     }
 
     // =========================================================================

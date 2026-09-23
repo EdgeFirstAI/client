@@ -19,9 +19,15 @@
 //!
 //! ## Mapping
 //!
-//! - `category` 0..11 becomes `label` (see [`CATEGORIES`]) and `label_index`.
-//! - `score` is not stored: it is 0 exactly when the category is 0
-//!   (`ignored regions`) or 11 (`others`).
+//! - `category` 1..=10 becomes `label` (see [`CLASS_CATEGORIES`]) with
+//!   `label_index = category - 1`, matching the Ultralytics VisDrone mapping.
+//! - Categories 0 (`ignored regions`) and 11 (`others`) are dropped by
+//!   default. With `keep_ignored` they are kept without a label, flagged
+//!   `ignore` and `exclude` respectively.
+//! - The file metadata `labels` lists [`CLASS_CATEGORIES`].
+//! - An image or frame whose rows are all dropped is still emitted as a
+//!   sample with no annotations.
+//! - `score` is not stored: it is 0 exactly when the category is 0 or 11.
 //! - `truncation` and `occlusion` become the `truncation` and `occlusion`
 //!   columns.
 //! - VID sequences become `name` = sequence, `frame` = frame index, and
@@ -46,9 +52,9 @@ mod reader;
 mod arrow;
 
 pub use reader::{
-    CATEGORIES, SplitKind, VisDroneBox, VisDroneVidRow, category_name, detect_split_kind,
-    infer_group_from_dir_name, parse_det_line, parse_vid_line, read_det_annotations,
-    read_vid_annotations,
+    CATEGORIES, CLASS_CATEGORIES, SplitKind, VisDroneBox, VisDroneVidRow, category_name,
+    detect_split_kind, infer_group_from_dir_name, parse_det_line, parse_vid_line,
+    read_det_annotations, read_vid_annotations,
 };
 
 #[cfg(feature = "polars")]

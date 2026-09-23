@@ -58,7 +58,7 @@ fn det_and_vid_splits_to_arrow_and_parquet() {
         assert_eq!(df.height(), 3);
         assert_eq!(
             metadata.get("schema_version").map(String::as_str),
-            Some("2026.04")
+            Some(edgefirst_client::coco::SCHEMA_VERSION)
         );
         let groups = df.column("group").unwrap().cast(&DataType::String).unwrap();
         let groups: std::collections::BTreeSet<_> =
@@ -121,4 +121,86 @@ fn group_is_required_for_unnamed_split() {
         ])
         .assert()
         .success();
+}
+
+#[test]
+fn keep_ignored_flags_rows_without_labels() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let split = temp.path().join("VisDrone2019-DET-val");
+    write_jpeg(&split.join("images").join("a.jpg"), 200, 100);
+    std::fs::create_dir_all(split.join("annotations")).unwrap();
+    std::fs::write(
+        split.join("annotations").join("a.txt"),
+        "10,20,40,10,1,4,0,1\r\n0,0,200,100,0,0,0,0\r\n50,50,20,20,0,11,0,0\r\n",
+    )
+    .unwrap();
+
+    let default_output = temp.path().join("default").join("default.arrow");
+    edgefirst_cmd()
+        .args([
+            "visdrone-to-arrow",
+            split.to_str().unwrap(),
+            "-o",
+            default_output.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Converted 1 rows"));
+    let (df, _) = edgefirst_client::format::read_dataset_dataframe(&default_output).unwrap();
+    assert!(df.column("ignore").is_err());
+    assert!(df.column("exclude").is_err());
+    let index = df
+        .column("label_index")
+        .unwrap()
+        .cast(&DataType::UInt64)
+        .unwrap();
+    assert_eq!(
+        index.u64().unwrap().get(0),
+        Some(3),
+        "car is category 4, index 3"
+    );
+
+    let output = temp.path().join("out").join("out.arrow");
+    edgefirst_cmd()
+        .args([
+            "visdrone-to-arrow",
+            split.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--keep-ignored",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Converted 3 rows"));
+
+    let (df, _) = edgefirst_client::format::read_dataset_dataframe(&output).unwrap();
+    let flags = |name: &str| -> Vec<Option<bool>> {
+        df.column(name).unwrap().bool().unwrap().iter().collect()
+    };
+    let label = df.column("label").unwrap().cast(&DataType::String).unwrap();
+    let label: Vec<Option<&str>> = label.str().unwrap().iter().collect();
+    let index = df
+        .column("label_index")
+        .unwrap()
+        .cast(&DataType::UInt64)
+        .unwrap();
+    let index: Vec<Option<u64>> = index.u64().unwrap().iter().collect();
+
+    let rows: Vec<_> = flags("ignore")
+        .into_iter()
+        .zip(flags("exclude"))
+        .zip(label)
+        .zip(index)
+        .map(|(((i, e), l), x)| (i, e, l, x))
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.contains(&(None, None, Some("car"), Some(3))));
+    assert!(
+        rows.contains(&(Some(true), None, None, None)),
+        "ignored region: {rows:?}"
+    );
+    assert!(
+        rows.contains(&(None, Some(true), None, None)),
+        "others: {rows:?}"
+    );
 }

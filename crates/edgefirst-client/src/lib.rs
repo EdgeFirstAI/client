@@ -94,6 +94,8 @@ pub use crate::{
 #[cfg(feature = "profiling")]
 pub use crate::client::upload_stats;
 
+pub use crate::dataset::drop_flagged_annotations;
+
 #[cfg(feature = "polars")]
 pub use crate::dataset::samples_dataframe;
 

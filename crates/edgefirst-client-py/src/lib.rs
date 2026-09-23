@@ -30,6 +30,21 @@ fn warn_uid_deprecated(py: Python<'_>, type_name: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Emit a `DeprecationWarning` pointing a renamed attribute at its replacement.
+fn warn_renamed_deprecated(py: Python<'_>, old: &str, new: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    warnings.call_method1(
+        "warn",
+        (
+            format!(
+                "Annotation.{old} is deprecated and will be removed in a future version. Use Annotation.{new} instead."
+            ),
+            py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
+    Ok(())
+}
+
 /// Emit a deprecation warning for methods that take client as a parameter.
 ///
 /// This function calls Python's warnings.warn() to notify users that passing
@@ -7052,6 +7067,12 @@ impl Client {
     /// Returns:
     ///     List of SamplesPopulateResult objects with UUIDs and presigned URLs
     ///
+    /// Note:
+    ///     Annotations with `ignore` or `exclude` set to True are removed
+    ///     before upload, because EdgeFirst Studio does not store these
+    ///     flags yet. Labels used only by removed annotations are not
+    ///     created. A single warning with the count is logged.
+    ///
     /// Example:
     ///     ```python
     ///     from edgefirst_client import Client, Sample, SampleFile, Annotation,
@@ -7145,6 +7166,11 @@ impl Client {
     /// * `annotation_set_id` - Optional annotation set (vs. required in `populate_samples`)
     /// * `progress` - Optional progress callback with `(current, total)` or `(current, total, status)`
     /// * `concurrency` - Max parallel S3 uploads. `None` uses the default (32)
+    ///
+    /// Annotations with `ignore` or `exclude` set to True are removed before
+    /// upload, because EdgeFirst Studio does not store these flags yet.
+    /// Labels used only by removed annotations are not created. A single
+    /// warning with the count is logged.
     #[pyo3(signature = (dataset_id, samples, annotation_set_id = None, progress = None, concurrency = None))]
     pub fn populate_samples_with_concurrency<'py>(
         &self,
@@ -8866,9 +8892,37 @@ impl Annotation {
         Ok(())
     }
 
-    /// Sets the iscrowd flag for this annotation.
-    pub fn set_iscrowd(&mut self, iscrowd: Option<bool>) {
-        self.0.set_iscrowd(iscrowd);
+    /// Sets the ignore flag (don't-care region) for this annotation.
+    pub fn set_ignore(&mut self, ignore: Option<bool>) {
+        self.0.set_ignore(ignore);
+    }
+
+    /// Sets the exclude flag (object outside the class set) for this annotation.
+    pub fn set_exclude(&mut self, exclude: Option<bool>) {
+        self.0.set_exclude(exclude);
+    }
+
+    #[setter(ignore)]
+    pub fn set_ignore_property(&mut self, value: Option<bool>) {
+        self.0.set_ignore(value);
+    }
+
+    #[setter(exclude)]
+    pub fn set_exclude_property(&mut self, value: Option<bool>) {
+        self.0.set_exclude(value);
+    }
+
+    /// True when the annotation is flagged `ignore` or `exclude`. Flagged
+    /// annotations are not uploaded by `populate_samples`.
+    pub fn is_flagged(&self) -> bool {
+        self.0.is_flagged()
+    }
+
+    /// Deprecated alias of `set_ignore`.
+    pub fn set_iscrowd(&mut self, py: Python<'_>, iscrowd: Option<bool>) -> PyResult<()> {
+        warn_renamed_deprecated(py, "set_iscrowd", "set_ignore")?;
+        self.0.set_ignore(iscrowd);
+        Ok(())
     }
 
     /// Sets the 2D bounding box confidence score.
@@ -8957,10 +9011,27 @@ impl Annotation {
         self.0.mask().map(|m| m.as_bytes().to_vec())
     }
 
-    /// Whether this annotation marks a crowd region.
+    /// Whether this annotation is a don't-care region that loss and
+    /// evaluation should mask. With a label it applies to that class only;
+    /// without one it applies to every class.
     #[getter]
-    pub fn iscrowd(&self) -> Option<bool> {
-        self.0.iscrowd()
+    pub fn ignore(&self) -> Option<bool> {
+        self.0.ignore()
+    }
+
+    /// Whether this annotation is a real object outside the class set:
+    /// trainers leave it out, and a detection matching it is not a false
+    /// positive.
+    #[getter]
+    pub fn exclude(&self) -> Option<bool> {
+        self.0.exclude()
+    }
+
+    /// Deprecated alias of `ignore`.
+    #[getter]
+    pub fn iscrowd(&self, py: Python<'_>) -> PyResult<Option<bool>> {
+        warn_renamed_deprecated(py, "iscrowd", "ignore")?;
+        Ok(self.0.ignore())
     }
 
     /// Confidence score for the 2D bounding box.
@@ -9943,8 +10014,9 @@ pub fn is_polars_enabled() -> bool {
 /// `Client.add_labels(dataset_id, names, indices)`.
 ///
 /// Annotations without a label_index contribute None at the matching
-/// position. Raises an error if the same label name maps to conflicting
-/// indices across the samples.
+/// position. Annotations flagged `ignore` or `exclude` are skipped, matching
+/// what `populate_samples` uploads. Raises an error if the same label name
+/// maps to conflicting indices across the samples.
 ///
 /// Args:
 ///     samples: Samples whose annotations should be scanned for labels.
@@ -9984,6 +10056,8 @@ pub fn collect_labels_from_samples(
 ///   producing a complete offline dataset next to `output_path`
 /// * `link_images` - Symlink staged images instead of copying (default:
 ///   False)
+///
+/// COCO `iscrowd = 1` becomes `ignore = True`; the label and index are kept.
 ///
 /// # Returns
 /// Number of EdgeFirst rows written (including unannotated image placeholders)
@@ -10059,12 +10133,13 @@ fn coco_to_arrow_sync(
 /// * `progress` - Optional callback function(current, total, status)
 /// * `stage_images` - Stage images next to the output (default: False)
 /// * `link_images` - Symlink instead of copy on Unix (default: False)
+/// * `keep_ignored` - Keep categories 0 and 11 flagged ignore/exclude (default: False)
 ///
 /// # Returns
 /// Number of rows written, including placeholders for unannotated images
 #[cfg(feature = "polars")]
 #[pyfunction]
-#[pyo3(signature = (split_dirs, output_path, group = None, progress = None, stage_images = false, link_images = false))]
+#[pyo3(signature = (split_dirs, output_path, group = None, progress = None, stage_images = false, link_images = false, keep_ignored = false))]
 pub fn visdrone_to_arrow(
     split_dirs: Vec<PathBuf>,
     output_path: PathBuf,
@@ -10072,6 +10147,7 @@ pub fn visdrone_to_arrow(
     progress: Option<Py<PyAny>>,
     stage_images: bool,
     link_images: bool,
+    keep_ignored: bool,
 ) -> Result<usize, Error> {
     use edgefirst_client::visdrone::VisDroneToArrowOptions;
 
@@ -10079,6 +10155,7 @@ pub fn visdrone_to_arrow(
         group,
         stage_images,
         link_images,
+        keep_ignored,
         ..Default::default()
     };
 
@@ -10129,8 +10206,14 @@ fn visdrone_to_arrow_sync(
 /// * `groups` - Filter by group names (empty list = all)
 /// * `progress` - Optional callback function(current, total) for progress
 ///
+/// COCO `iscrowd` is written from the `ignore` column (falling back to a
+/// legacy `iscrowd` column). Rows flagged `exclude`, and unlabelled `ignore`
+/// rows, have no COCO equivalent: they are skipped with one logged warning,
+/// and `exclude` rows create no category. COCO `category_id` is taken from
+/// `label_index` when present.
+///
 /// # Returns
-/// Number of annotations converted
+/// Number of annotations converted; skipped rows are not counted
 #[cfg(feature = "polars")]
 #[pyfunction]
 #[pyo3(signature = (arrow_path, output_path, include_masks = true, groups = vec![], progress = None))]

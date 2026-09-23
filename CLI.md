@@ -491,6 +491,8 @@ retrying 50 samples) with progress tracking. Batch concurrency defaults to 4 and
 configurable via **EDGEFIRST_UPLOAD_BATCHES**. Arrow files must conform to the
 EdgeFirst Dataset Format.
 
+**Note:** Annotations flagged `ignore` or `exclude` are dropped before upload and reported once as `⚠ Skipping N annotations flagged ignore/exclude: Studio does not support these flags yet`, since EdgeFirst Studio does not store these flags yet.
+
 ### update-dimensions
 
 Backfill missing image width/height metadata for an existing dataset. Useful for datasets uploaded before the client started extracting image dimensions at upload time, or for samples where dimensions could not be determined.
@@ -914,7 +916,7 @@ The command will:
 
 1. Scan the folder recursively for image files (JPEG, PNG)
 2. Optionally detect sequence patterns (name_frame.ext)
-3. Create an Arrow file with the current 2026.04 schema and null annotations
+3. Create an Arrow file with the current 2026.10 schema and null annotations
 
 **Arguments:**
 
@@ -1067,6 +1069,8 @@ Every image in each COCO `images` array produces at least one row. An image
 with no annotations is emitted as a placeholder row with a null label,
 preserving the image and its `group` so splits cover the full image set.
 
+COCO crowd annotations (`iscrowd: 1`) are written with `ignore = true`, keeping their label and index; the deprecated `iscrowd` column is written as a mirror.
+
 Load and filter the resulting groups with Polars:
 
 ```python
@@ -1112,6 +1116,10 @@ edgefirst-client arrow-to-coco dataset.arrow -o instances.json
 # Export only the train and val splits, pretty-printed
 edgefirst-client arrow-to-coco dataset.arrow -o instances.json --groups train,val --pretty
 ```
+
+**Note:** COCO `iscrowd` is written from the `ignore` column (or a legacy `iscrowd` column). Rows flagged `exclude`, and `ignore` rows without a label, have no COCO equivalent and are skipped; one warning gives the count. `exclude` rows do not create a COCO category.
+
+**Category ids:** COCO `category_id` is taken from `label_index` when present, unchanged. A dataset indexed from 0, such as a default `visdrone-to-arrow` conversion (`pedestrian` = 0), therefore produces `category_id` 0. Some COCO tools reserve 0 for background; remap the ids if your consumer does.
 
 ### import-coco
 
@@ -1183,6 +1191,8 @@ edgefirst-client import-coco ./coco --dataset ds-123 --verify
 
 **Note:** **\--group** matches against the group EdgeFirst derives from each image's path; standard COCO files reference images by bare filename (e.g. `000000397133.jpg`) and therefore carry no detectable group, so passing a value that does not match excludes those images. To assign a split to images that have none, convert with `coco-to-arrow --group` and upload with `upload-dataset`.
 
+**Note:** COCO crowd annotations (`iscrowd: 1`) map to the `ignore` flag, which EdgeFirst Studio does not store yet. Import and **\--update** skip them and log one warning with the count, and **\--verify** leaves them out of the expected COCO annotation count.
+
 ### export-coco
 
 Export an EdgeFirst Studio dataset to COCO format. Downloads samples and annotations from Studio and converts them to COCO JSON, optionally bundling the images into a ZIP archive.
@@ -1226,7 +1236,11 @@ edgefirst-client export-coco ds-123 as-456 -o coco.zip --images --groups train,v
 
 ### migrate
 
-Migrate an Arrow file from the 2025.10 schema to the 2026.04 schema. Converts the legacy NaN-separated `mask` column (`List(Float32)`) to the new nested `polygon` column (`List(List(Float32))`) and sets the `schema_version` metadata.
+Migrate an Arrow file from an older schema to the current 2026.10 schema. Files already at 2026.10 are left unchanged.
+
+- From 2025.10: converts the legacy NaN-separated `mask` column (`List(Float32)`) to the nested `polygon` column (`List(List(Float32))`). A Binary raster `mask` column is left unchanged.
+- From 2026.04: adds the `ignore` column from the deprecated `iscrowd` column and keeps `iscrowd` as a mirror.
+- In both cases, sets the `schema_version` metadata to 2026.10.
 
 **edgefirst-client migrate** [*OPTIONS*] *INPUT*
 
@@ -1273,7 +1287,7 @@ directory of your choosing and pass `--group test-dev`.
 **Options:**
 
 **-o, \--output** *OUTPUT*
-:   Output annotation file (required). `.parquet` writes Apache Parquet, anything else writes Arrow IPC. File metadata carries `schema_version`, `labels` (the 12 VisDrone categories in id order) and `category_metadata`.
+:   Output annotation file (required). `.parquet` writes Apache Parquet, anything else writes Arrow IPC. File metadata carries `schema_version`, `labels` (the ten VisDrone object classes in `label_index` order) and `category_metadata`.
 
 **\--group** *GROUP*
 :   Group applied to every sample. When omitted, the group is inferred from
@@ -1289,12 +1303,19 @@ directory of your choosing and pass `--group test-dev`.
 **\--link**
 :   Symlink staged images instead of copying (Unix only; requires `--images`).
 
+**\--keep-ignored**
+:   Keep VisDrone category 0 (`ignored regions`) and 11 (`others`) instead of dropping them. Category 0 becomes an unlabelled row flagged `ignore=true`; category 11 becomes an unlabelled row flagged `exclude=true`. Neither gets a `label` or `label_index`. Python: `keep_ignored=True`.
+
 **Mapping:**
+
+By default, categories 0 (`ignored regions`) and 11 (`others`) are dropped; the remaining ten classes are indexed `label_index = object_category - 1` (`pedestrian` = 0 … `motor` = 9), matching the Ultralytics VisDrone mapping. With `--keep-ignored`, categories 0 and 11 are kept as unlabelled rows flagged `ignore`/`exclude` (see below) instead of being dropped.
 
 | VisDrone | EdgeFirst |
 |---|---|
 | `bbox_left, bbox_top, bbox_width, bbox_height` | `box2d` normalized `[cx, cy, w, h]` |
-| `object_category` 0..11 | `label`, `label_index` (0 `ignored regions` and 11 `others` are kept) |
+| `object_category` 1..10 | `label`, `label_index = object_category - 1` |
+| `object_category` 0 (`ignored regions`) | dropped by default; with `--keep-ignored`, an unlabelled row with `ignore = true` |
+| `object_category` 11 (`others`) | dropped by default; with `--keep-ignored`, an unlabelled row with `exclude = true` |
 | `score` | not stored: it is 0 exactly when the category is 0 or 11 |
 | `truncation`, `occlusion` | `truncation`, `occlusion` columns |
 | VID `frame_index`, sequence | `frame`, `name` = sequence |
@@ -1320,21 +1341,25 @@ edgefirst-client visdrone-to-arrow VisDrone2019-DET-val VisDrone2019-VID-train \
   -o visdrone-mixed/visdrone-mixed.arrow --images
 ```
 
-Drop the ignored regions and `others` for training with Polars:
+Ignored regions and `others` are already dropped by default; filter to the train group directly with Polars:
 
 ```python
 import polars as pl
 
 df = pl.read_ipc("visdrone-det/visdrone-det.arrow")
-train = df.filter((pl.col("group") == "train") & ~pl.col("label_index").is_in([0, 11]))
+train = df.filter(pl.col("group") == "train")
 ```
 
-**Studio notes (first pass):** `upload-dataset` publishes the converted
-dataset. Labels are created with their VisDrone indices, groups follow the
-split names, VID frames become Studio sequences and `object_id` is stored as
-`object_reference`, so track ids survive. `truncation` and `occlusion` are not
-stored by Studio yet (DE-2952, DE-2953); keep the Arrow file as the source of
-truth. Version tag restore drops per-annotation attributes (DE-2954).
+Rerun with `--keep-ignored` and filter on the flags instead of `label_index` if those rows are needed:
+
+```python
+df = pl.read_ipc("visdrone-det/visdrone-det.arrow")
+# A split with no ignored regions or no others has no column for that flag.
+flag_cols = [c for c in ("ignore", "exclude") if c in df.columns]
+flagged = df.filter(pl.any_horizontal(flag_cols)) if flag_cols else df.clear()
+```
+
+**Studio notes (first pass):** `upload-dataset` publishes the converted dataset. Labels are created with `label_index` 0–9 (`pedestrian` = 0), groups follow the split names, VID frames become Studio sequences and `object_id` is stored as `object_reference`, so track ids survive. Rows flagged `ignore`/`exclude` (from `--keep-ignored`) are not uploaded, and `truncation` and `occlusion` are not stored by Studio yet; keep the Arrow file as the source of truth. Version tag restore drops per-annotation attributes.
 
 **Source fidelity:** boxes are converted exactly as written in the VisDrone text files. A few extend past the image edge (34 boxes across the six official splits) and a few have zero height (3 boxes); they are kept, not clipped or dropped, so evaluation against the official protocol stays exact. Filter them in Polars if a trainer rejects them.
 
