@@ -1,8 +1,8 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.10
-**Last Updated**: 22 September, 2026
-**Status**: DRAFT (pending review)
+**Last Updated**: 24 September, 2026
+**Status**: Released (EdgeFirst Client v2.15.0)
 
 > **Implementation status:** the SDK has implemented the 2026.04 Arrow schema since client v2.9.0, and 2026.10 is the current format. As of the client v2.14.0, dataset annotation files can also be written and read as Apache Parquet (`.parquet`), selected by output file extension, with the same file-level metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet footer key-value pairs — full parity with Arrow IPC. `validate-snapshot` accepts either format when the annotation filename matches the dataset directory basename. The client writes `schema_version` 2026.10 as of client v2.15.0; see [Migration from 2026.04](#migration-from-202604) for what changed.
 >
@@ -451,7 +451,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     # ── Sample Metadata (optional) ─────────────────────
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
     ('location', Array(Float32, shape=(2,))),  # [lat, lon]
-    ('pose', Array(Float32, shape=(3,))),  # [yaw, pitch, roll]
+    ('pose', Array(Float32, shape=(3,))),  # [roll, pitch, yaw], signed degrees
     ('degradation', String),
     ('neg_label_indices', List(UInt32)),  # OPTIONAL - label_index values verified absent (LVIS)
     ('not_exhaustive_label_indices', List(UInt32)),  # OPTIONAL - label_index values with incomplete annotation (LVIS)
@@ -478,7 +478,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
 - **box3d**: `[cx, cy, cz, w, h, l]` - center coordinates and dimensions
 - **size**: `[width, height]` - image dimensions in pixels
 - **location**: `[lat, lon]` - GPS coordinates (latitude, longitude)
-- **pose**: `[yaw, pitch, roll]` - IMU orientation in degrees
+- **pose**: `[roll, pitch, yaw]` - IMU orientation in signed degrees (see [IMU Orientation](#imu-orientation))
 - **timing**: `Struct{load, preprocess, inference, decode}` - Int64 nanosecond durations
 
 **Characteristics**:
@@ -591,9 +591,8 @@ command and Python API examples.
   "group_name": "train",
   "sensors": {
     "gps": {
-      "latitude": 37.7749,
-      "longitude": -122.4194,
-      "altitude": 10.5
+      "lat": 37.7749,
+      "lon": -122.4194
     },
     "imu": {
       "roll": 0.5,
@@ -1306,7 +1305,7 @@ shape: (3, 13)
 - User-provided coordinates
 
 **DataFrame**: `location` column as `Array(Float32, shape=(2,))` = `[lat, lon]` (new in 2025.10)  
-**JSON**: Nested object with `latitude`, `longitude` fields
+**JSON**: Nested object with `lat`, `lon` fields in decimal degrees
 
 **JSON structure**:
 
@@ -1314,8 +1313,8 @@ shape: (3, 13)
 {
   "sensors": {
     "gps": {
-      "latitude": 37.7749,
-      "longitude": -122.4194
+      "lat": 37.7749,
+      "lon": -122.4194
     }
   }
 }
@@ -1342,10 +1341,22 @@ shape: (3, 13)
 - IMU sensor readings
 - User-provided orientation
 
-**DataFrame**: `pose` column as `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` in degrees  
+**DataFrame**: `pose` column as `Array(Float32, shape=(3,))` = `[roll, pitch, yaw]` in signed degrees  
 **JSON**: Nested object with `roll`, `pitch`, `yaw` fields
 
-**Format**: All values in degrees
+**Format**: Three Euler angles in **signed degrees**, listed in axis order:
+
+| Index | Angle | Axis | Range |
+|-------|-------|------|-------|
+| `pose[0]` | roll | X | −180 to 180 |
+| `pose[1]` | pitch | Y | −90 to 90 |
+| `pose[2]` | yaw | Z | −180 to 180 |
+
+The angles follow the [ROS REP-103](https://www.ros.org/reps/rep-0103.html) convention: rotations about the fixed X, Y, and Z axes, which is equivalent to the intrinsic Z-Y′-X″ (yaw, then pitch, then roll) sequence, so `R = Rz(yaw) · Ry(pitch) · Rx(roll)`. Listing the values by axis (x, y, z) matches ROS 2 (`tf2` `setRPY`/`getRPY`, URDF `rpy`, the `sensor_msgs/Imu` covariance layout), MAVLink `ATTITUDE`, and KITTI OXTS.
+
+The JSON representation uses named fields `{roll, pitch, yaw}` in the `sensors.imu` object, so field order does not matter there.
+
+> **Warning — files written before 2026.10 may have roll and yaw swapped.** Before 2026.10 the `pose` order was not consistent between tools. EdgeFirst Client 2.14 and earlier wrote `[yaw, pitch, roll]`, while the EdgeFirst Publisher wrote `[roll, pitch, yaw]` with each angle wrapped to 0–360. The order cannot be detected from the file, so check which tool produced an older file and swap `pose[0]` and `pose[2]` if needed. See [IMU Pose and GPS Location in Older Files](#imu-pose-and-gps-location-in-older-files).
 
 **JSON structure**:
 
@@ -1364,10 +1375,10 @@ shape: (3, 13)
 **DataFrame structure**:
 
 ```python
-# pose column: Array [yaw, pitch, roll]
-[45.3, -1.2, 0.5]
+# pose column: Array [roll, pitch, yaw], signed degrees
+[0.5, -1.2, 45.3]
 
-# Access: df['pose'][0] = yaw, [1] = pitch, [2] = roll
+# Access: df['pose'][0] = roll, [1] = pitch, [2] = yaw
 ```
 
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
@@ -1621,8 +1632,8 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | 4 | **Mask**: base64 PNG string → `Binary` (PNG bytes) | JSON → DataFrame |
 | 5 | **Box2D**: Check `box2d_format` — convert `ltwh` → `cxcywh` if needed | JSON → DataFrame |
 | 6 | **Box3D**: `{x,y,z,w,h,l}` → `[cx,cy,cz,w,h,l]` | JSON → DataFrame |
-| 7 | **GPS**: `{latitude, longitude}` → `[lat, lon]` | JSON → DataFrame |
-| 8 | **IMU**: `{yaw, pitch, roll}` → `[yaw, pitch, roll]` | JSON → DataFrame |
+| 7 | **GPS**: `{lat, lon}` → `[lat, lon]` | JSON → DataFrame |
+| 8 | **IMU**: `{roll, pitch, yaw}` → `[roll, pitch, yaw]`, signed degrees | JSON → DataFrame |
 | 9 | **Score columns**: Omit entirely for ground truth files | Both |
 | 10 | **`ignore`/`exclude`**: Annotation-level `Boolean` (`true`/`false`), same semantics in both formats; `iscrowd` is accepted as a deprecated alias of `ignore` | JSON → DataFrame |
 | 11 | **`category_frequency`**: Annotation-level, same value in both formats | JSON → DataFrame |
@@ -1640,8 +1651,9 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | Crowd/don't-care flag | `iscrowd: Boolean` (COCO crowd regions only) | `ignore: Boolean` — same COCO source, plus don't-care regions from other formats (e.g. VisDrone `ignored regions`) |
 | Excluded objects | Not represented | `exclude: Boolean` — real objects outside the class set (e.g. VisDrone `others`) |
 | `iscrowd` | Current | **Deprecated** — kept as a mirror of `ignore`, written by the client for compatibility |
+| IMU `pose` | Order not consistent between tools | `[roll, pitch, yaw]` in signed degrees |
 
-This is a non-breaking, additive change: no existing column is removed or changes type.
+No existing column is removed or changes type. The `pose` order is now defined; see [IMU Pose and GPS Location in Older Files](#imu-pose-and-gps-location-in-older-files).
 
 ### Migration Command
 
@@ -1656,11 +1668,60 @@ edgefirst-client migrate dataset.arrow [--output migrated.arrow]
 3. Sets `schema_version = "2026.10"` in file metadata
 4. Writes to `--output` path, or overwrites in-place if not specified
 
-No `exclude` column is synthesized — there is nothing in a 2026.04 file to derive it from.
+No `exclude` column is synthesized — there is nothing in a 2026.04 file to derive it from. The command does not reorder `pose` or `location`; see [IMU Pose and GPS Location in Older Files](#imu-pose-and-gps-location-in-older-files).
 
 ### Readers Need Not Migrate
 
 Files do not need to be migrated to be read: readers prefer the `ignore` column but fall back to `iscrowd` (accepting either `Boolean` or the older integer type) when `ignore` is absent, so 2026.04 files continue to work with the current client without running `migrate`.
+
+### IMU Pose and GPS Location in Older Files
+
+Before 2026.10, the array order of the `pose` column was not consistent between the tools that write EdgeFirst datasets, and some EdgeFirst Publisher releases wrote `location` in the reverse order. The order cannot be detected from the file itself, so check which tool produced an older file:
+
+| Writer | `pose` order | `pose` range | `location` order |
+|--------|--------------|--------------|------------------|
+| EdgeFirst Client 2.14 and earlier (`download-annotations`, `samples_dataframe`, Studio snapshots created through the client) | `[yaw, pitch, roll]` | Signed degrees | `[lat, lon]` |
+| EdgeFirst Publisher 1.10 (Torizon for Maivin 2026.08) | `[roll, pitch, yaw]` | 0–360 degrees | `[lat, lon]` |
+| EdgeFirst Publisher 1.9 and earlier | `[roll, pitch, yaw]` | 0–360 degrees | `[lon, lat]` |
+| 2026.10 files (all writers) | `[roll, pitch, yaw]` | Signed degrees | `[lat, lon]` |
+
+`upload-dataset` reads `pose` as `[roll, pitch, yaw]` and `location` as `[lat, lon]` whatever the file's version, so correct an older file before uploading it. To bring an older file in line with 2026.10, swap roll and yaw for files from the client, convert the 0–360 range to signed degrees for files from the Publisher, and swap latitude and longitude for files from Publisher 1.9 and earlier:
+
+```python
+import polars as pl
+
+df = pl.read_ipc("dataset.arrow")
+
+pose = pl.col("pose")
+location = pl.col("location")
+
+def signed(angle: pl.Expr) -> pl.Expr:
+    """Map an angle in 0..360 degrees to -180..180."""
+    return (angle + 180.0) % 360.0 - 180.0
+
+# EdgeFirst Client 2.14 and earlier: [yaw, pitch, roll] -> [roll, pitch, yaw]
+df = df.with_columns(
+    pl.when(pose.is_not_null())
+    .then(pl.concat_list(pose.arr.get(2), pose.arr.get(1), pose.arr.get(0)).list.to_array(3))
+    .alias("pose")
+)
+
+# EdgeFirst Publisher: 0..360 -> signed degrees (order is already [roll, pitch, yaw])
+df = df.with_columns(
+    pl.when(pose.is_not_null())
+    .then(pl.concat_list(signed(pose.arr.get(0)), signed(pose.arr.get(1)), signed(pose.arr.get(2))).list.to_array(3))
+    .alias("pose")
+)
+
+# EdgeFirst Publisher 1.9 and earlier: [lon, lat] -> [lat, lon]
+df = df.with_columns(
+    pl.when(location.is_not_null())
+    .then(pl.concat_list(location.arr.get(1), location.arr.get(0)).list.to_array(2))
+    .alias("location")
+)
+```
+
+Apply only the steps that match the file's writer. Studio JSON and the Studio API use the named fields `{roll, pitch, yaw}` and `{lat, lon}` and are not affected.
 
 ---
 
@@ -1805,7 +1866,7 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 
 ## Version History
 
-### Version 2026.10 - Current
+### Version 2026.10 - Current (released 24 September, 2026 with client v2.15.0)
 
 **`ignore`/`exclude` Flags and `iscrowd` Deprecation**
 
@@ -1814,7 +1875,8 @@ This version adds two annotation-metadata columns and deprecates the one they re
 - **`ignore` column** (`Boolean`, optional): marks a don't-care region masked out of loss and evaluation. Sourced from COCO `iscrowd=1` and, newly, from VisDrone category 0 (`ignored regions`) via `visdrone-to-arrow --keep-ignored`. `label` and `label_index` are optional — a labelled row applies to that class only, an unlabelled row applies to all classes.
 - **`exclude` column** (`Boolean`, optional): marks a real object outside the dataset's class set. Sourced from VisDrone category 11 (`others`) via `visdrone-to-arrow --keep-ignored`.
 - **`iscrowd` deprecated**: replaced by `ignore`. The client reads `iscrowd` as `ignore` when `ignore` is absent, and writes `iscrowd` as a mirror of `ignore` for now; read and write support will be removed in a future release, with no timeline set.
-- **`edgefirst-client migrate`**: upgrades 2026.04 files by adding `ignore` from `iscrowd` and stamping `schema_version = "2026.10"`.
+- **IMU `pose` order defined**: `pose` is `[roll, pitch, yaw]` in signed degrees following ROS REP-103 (see [IMU Orientation](#imu-orientation)). The client now writes and reads this order; EdgeFirst Client 2.14 and earlier wrote `[yaw, pitch, roll]` (see [IMU Pose and GPS Location in Older Files](#imu-pose-and-gps-location-in-older-files)).
+- **`edgefirst-client migrate`**: upgrades 2026.04 files by adding `ignore` from `iscrowd` and stamping `schema_version = "2026.10"`. It does not reorder `pose` or `location`.
 - **`visdrone-to-arrow`**: drops VisDrone categories 0 and 11 by default and indexes the ten remaining classes 0–9 (`pedestrian` = 0 … `motor` = 9). `--keep-ignored` keeps them as unlabelled rows flagged `ignore`/`exclude` instead.
 - **`arrow-to-coco`**: writes `iscrowd=1` from labelled `ignore` rows; unlabelled `ignore` rows and all `exclude` rows have no COCO equivalent and are skipped with one warning giving the count. `exclude` rows create no COCO category.
 - **Uploads**: `upload-dataset`, `populate_samples`/`populate_samples_with_concurrency`, `import-coco` and `import-coco --update` drop annotations flagged `ignore` or `exclude` (including COCO crowd annotations) and log one warning per upload or import with the count, since EdgeFirst Studio does not store these flags yet.
@@ -1890,7 +1952,7 @@ This version introduces significant changes to the annotation schema including n
 #### Documentation Corrections
 
 - Fixed `box3d` dimension order: authoritative order is `[cx, cy, cz, w, h, l]` (width=X, height=Y, length=Z)
-- Confirmed `pose` array order: `[yaw, pitch, roll]` in degrees
+- Confirmed `pose` array order: `[yaw, pitch, roll]` in degrees (superseded in 2026.10 by `[roll, pitch, yaw]`; see [IMU Orientation](#imu-orientation))
 - Clarified `label_index` semantics: source-faithful, non-contiguous, not alphabetically derived
 
 ---
@@ -1930,7 +1992,7 @@ This version provides a complete formalization of the EdgeFirst Dataset Format, 
 
 - `size`: `Array(UInt32, shape=(2,))` = `[width, height]` - Image dimensions
 - `location`: `Array(Float32, shape=(2,))` = `[lat, lon]` - GPS coordinates
-- `pose`: `Array(Float32, shape=(3,))` = `[yaw, pitch, roll]` - IMU orientation in degrees
+- `pose`: `Array(Float32, shape=(3,))` - IMU orientation in degrees; the client wrote `[yaw, pitch, roll]` until 2026.10 defined `[roll, pitch, yaw]` (see [IMU Pose and GPS Location in Older Files](#imu-pose-and-gps-location-in-older-files))
 - `degradation`: `String` - Visual quality indicator (fog, rain, obstruction, low light)
 
 **Note**: These columns are optional. DataFrames from version 2025.01 without these columns remain fully valid.

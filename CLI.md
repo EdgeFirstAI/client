@@ -2,8 +2,8 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.14.0
-date: 2026-09-03
+footer: edgefirst-client 2.15.0
+date: 2026-09-24
 ---
 
 # NAME

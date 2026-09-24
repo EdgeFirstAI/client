@@ -13,7 +13,17 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    overload,
+)
 
 from polars import DataFrame
 
@@ -2335,7 +2345,13 @@ class GpsData:
         ...
 
 class ImuData:
-    """IMU orientation data for a sample."""
+    """
+    IMU orientation for a sample, in signed degrees.
+
+    The angles follow ROS REP-103: rotations about the fixed X, Y, and Z
+    axes, so ``R = Rz(yaw) · Ry(pitch) · Rx(roll)``. The dataset ``pose``
+    column stores them in axis order as ``[roll, pitch, yaw]``.
+    """
 
     def __init__(self, roll: float, pitch: float, yaw: float) -> None:
         """
@@ -2349,17 +2365,17 @@ class ImuData:
 
     @property
     def roll(self) -> float:
-        """Roll angle in degrees."""
+        """Roll about the X axis in signed degrees (-180 to 180)."""
         ...
 
     @property
     def pitch(self) -> float:
-        """Pitch angle in degrees."""
+        """Pitch about the Y axis in signed degrees (-90 to 90)."""
         ...
 
     @property
     def yaw(self) -> float:
-        """Yaw angle in degrees."""
+        """Yaw about the Z axis in signed degrees (-180 to 180)."""
         ...
 
 class SampleFile:
@@ -2516,7 +2532,7 @@ class Annotation:
         ...
 
     def set_exclude(self, exclude: Optional[bool]) -> None:
-        """Sets the exclude flag (object outside the class set) for this annotation."""
+        """Sets the exclude flag (object outside the class set)."""
         ...
 
     def is_flagged(self) -> bool:
@@ -2646,7 +2662,6 @@ class Annotation:
 
     @truncation.setter
     def truncation(self, value: Optional[int]) -> None: ...
-
     @property
     def occlusion(self) -> Optional[int]:
         """Source occlusion flag (VisDrone: 0 none, 1 = 1..50%, 2 > 50%)."""
@@ -2654,7 +2669,6 @@ class Annotation:
 
     @occlusion.setter
     def occlusion(self, value: Optional[int]) -> None: ...
-
     @property
     def box2d(self) -> Optional[Box2d]:
         """
@@ -2711,7 +2725,6 @@ class Annotation:
 
     @ignore.setter
     def ignore(self, value: Optional[bool]) -> None: ...
-
     @property
     def exclude(self) -> Optional[bool]:
         """
@@ -2726,7 +2739,6 @@ class Annotation:
 
     @exclude.setter
     def exclude(self, value: Optional[bool]) -> None: ...
-
     @property
     def iscrowd(self) -> Optional[bool]:
         """
@@ -2825,7 +2837,8 @@ class ServerAnnotation:
             y: Bounding box Y coordinate (normalized 0-1, left/top origin).
             w: Bounding box width (normalized 0-1).
             h: Bounding box height (normalized 0-1).
-            score: Confidence score (0-1), or None for ground truth without a score.
+            score: Confidence score (0-1), or None for ground truth
+                without a score.
             image_id: Image/sample ID in the database.
             annotation_set_id: Annotation set ID.
             label_id: Label ID. This is the only field the server's
