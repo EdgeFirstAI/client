@@ -1306,7 +1306,12 @@ impl GpsData {
     }
 }
 
-/// IMU orientation data (roll, pitch, yaw in degrees).
+/// IMU orientation as roll, pitch, and yaw in signed degrees.
+///
+/// The angles follow [ROS REP-103](https://www.ros.org/reps/rep-0103.html):
+/// rotations about the fixed X, Y, and Z axes, equivalent to the intrinsic
+/// Z-Y′-X″ sequence, so `R = Rz(yaw) · Ry(pitch) · Rx(roll)`. The dataset
+/// `pose` column stores them in axis order as `[roll, pitch, yaw]`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ImuData {
     pub roll: f64,
@@ -1327,7 +1332,7 @@ impl ImuData {
     /// # Valid Ranges
     /// - Roll: -180.0 to +180.0 degrees
     /// - Pitch: -90.0 to +90.0 degrees (typical gimbal lock range)
-    /// - Yaw: -180.0 to +180.0 degrees (or 0 to 360, normalized)
+    /// - Yaw: -180.0 to +180.0 degrees
     ///
     /// # Examples
     /// ```
@@ -2273,7 +2278,7 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
 /// - `mask_score`: Mask confidence (`Float32`)
 /// - `size`: Image size [width, height] (`Array<UInt32, 2>`)
 /// - `location`: GPS [lat, lon] (`Array<Float32, 2>`)
-/// - `pose`: IMU [yaw, pitch, roll] (`Array<Float32, 3>`)
+/// - `pose`: IMU [roll, pitch, yaw] in signed degrees (`Array<Float32, 3>`)
 /// - `degradation`: Image degradation (`String`)
 /// - `ignore`: don't-care region flag (`Boolean`)
 /// - `exclude`: out-of-class-set flag (`Boolean`)
@@ -2351,7 +2356,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         let pose = sample.location.as_ref().and_then(|loc| {
             loc.imu
                 .as_ref()
-                .map(|imu| vec![imu.yaw as f32, imu.pitch as f32, imu.roll as f32])
+                .map(|imu| vec![imu.roll as f32, imu.pitch as f32, imu.yaw as f32])
         });
 
         let degradation = sample.degradation.clone();
@@ -2847,7 +2852,7 @@ fn validate_gps_coordinates(lat: f64, lon: f64) -> Result<(), String> {
 /// # Valid Ranges
 /// - Roll: -180.0 to +180.0 degrees
 /// - Pitch: -90.0 to +90.0 degrees (typical gimbal lock range)
-/// - Yaw: -180.0 to +180.0 degrees (or 0 to 360, normalized)
+/// - Yaw: -180.0 to +180.0 degrees
 fn validate_imu_orientation(roll: f64, pitch: f64, yaw: f64) -> Result<(), String> {
     if !roll.is_finite() {
         return Err(format!("IMU roll is not finite: {}", roll));
@@ -4643,6 +4648,48 @@ mod tests {
         let row1 = arr.get_as_series(1).unwrap();
         let row1_vals: Vec<u32> = row1.u32().unwrap().into_no_null_iter().collect();
         assert_eq!(row1_vals, vec![640, 480]);
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn test_samples_dataframe_pose_is_roll_pitch_yaw() {
+        let sample = Sample {
+            image_name: Some("img.jpg".to_string()),
+            location: Some(Location {
+                gps: Some(GpsData {
+                    lat: 45.5,
+                    lon: -73.5,
+                }),
+                imu: Some(ImuData {
+                    roll: 10.0,
+                    pitch: -5.0,
+                    yaw: 90.0,
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let df = samples_dataframe(&[sample]).unwrap();
+
+        let pose = df.column("pose").unwrap().array().unwrap();
+        let pose: Vec<f32> = pose
+            .get_as_series(0)
+            .unwrap()
+            .f32()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert_eq!(pose, vec![10.0, -5.0, 90.0]);
+
+        let location = df.column("location").unwrap().array().unwrap();
+        let location: Vec<f32> = location
+            .get_as_series(0)
+            .unwrap()
+            .f32()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert_eq!(location, vec![45.5, -73.5]);
     }
 
     #[cfg(feature = "polars")]

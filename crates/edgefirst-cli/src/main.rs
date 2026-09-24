@@ -1973,7 +1973,7 @@ fn parse_size_from_dataframe(
     }
 }
 
-/// Parse the location [lat, lon] and pose [yaw, pitch, roll] columns from an
+/// Parse the location [lat, lon] and pose [roll, pitch, yaw] columns from an
 /// Arrow DataFrame row into a Location struct.
 #[cfg(feature = "polars")]
 fn parse_location_from_dataframe(
@@ -2022,7 +2022,7 @@ fn parse_location_from_dataframe(
             }
         });
 
-    // Parse pose [yaw, pitch, roll]
+    // Parse pose [roll, pitch, yaw]
     let imu = df
         .column("pose")
         .ok()
@@ -2030,9 +2030,9 @@ fn parse_location_from_dataframe(
         .and_then(|coords| {
             if coords.len() >= 3 {
                 Some(edgefirst_client::ImuData {
-                    yaw: coords[0],
+                    roll: coords[0],
                     pitch: coords[1],
-                    roll: coords[2],
+                    yaw: coords[2],
                 })
             } else {
                 None
@@ -2305,7 +2305,7 @@ fn parse_annotations_from_arrow(
             // Extract optional size [width, height] from Arrow file (2025.10 format)
             let (sample_width, sample_height) = parse_size_from_dataframe(&df, idx);
 
-            // Extract optional location [lat, lon] and pose [yaw, pitch, roll] (2025.10
+            // Extract optional location [lat, lon] and pose [roll, pitch, yaw] (2025.10
             // format)
             let sample_location = parse_location_from_dataframe(&df, idx);
 
@@ -7875,6 +7875,29 @@ mod tests {
             let parsed = &samples[0].annotations[0];
             assert_eq!(parsed.truncation(), None);
             assert_eq!(parsed.occlusion(), Some(2));
+        }
+
+        #[test]
+        fn parse_location_from_dataframe_reads_pose_as_roll_pitch_yaw() {
+            let pose = Series::new("".into(), [10.0f32, -5.0, 90.0]);
+            let location = Series::new("".into(), [45.5f32, -73.5]);
+            let df = DataFrame::new(
+                1,
+                vec![
+                    Series::new("pose".into(), [pose]).into(),
+                    Series::new("location".into(), [location]).into(),
+                ],
+            )
+            .unwrap();
+
+            let parsed = parse_location_from_dataframe(&df, 0).expect("location");
+            let imu = parsed.imu.expect("imu");
+            assert!((imu.roll - 10.0).abs() < 1e-6);
+            assert!((imu.pitch + 5.0).abs() < 1e-6);
+            assert!((imu.yaw - 90.0).abs() < 1e-6);
+            let gps = parsed.gps.expect("gps");
+            assert!((gps.lat - 45.5).abs() < 1e-4);
+            assert!((gps.lon + 73.5).abs() < 1e-4);
         }
     }
 }

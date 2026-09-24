@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The EdgeFirst Dataset Format specification 2026.10 is now released (no longer draft). `migrate` upgrades 2026.04 files by adding `ignore` from `iscrowd`.
 - Uploads (`upload-dataset`, `populate_samples`, `import-coco` and `import-coco --update`) skip annotations flagged `ignore` or `exclude`, including COCO crowd annotations, since Studio does not store these flags yet. One warning per upload or import gives the number skipped, and `import-coco --verify` leaves crowd annotations, and categories used only by them, out of the comparison. `collect_labels_from_samples` skips flagged annotations.
 - `arrow-to-coco` writes `iscrowd` from `ignore` and skips unlabelled `ignore` rows and `exclude` rows, which have no COCO equivalent.
+- `samples_dataframe` and `download-annotations` write the `pose` column as `[roll, pitch, yaw]` in signed degrees (ROS REP-103), as Dataset Format 2026.10 defines, and `upload-dataset` reads it in that order. Client 2.14 and earlier wrote `[yaw, pitch, roll]`; swap `pose[0]` and `pose[2]` in those files before uploading them.
 
 ### Deprecated
 
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `download-annotations` and `samples_dataframe` now read Studio's empty `object_reference` as null instead of an empty `object_id` string.
 - `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as the format specification documents, falling back to the older zero-padded `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were previously reported missing.
 - `upload-dataset` now carries `category_frequency`, `truncation`, `occlusion`, and the per-geometry score columns from Arrow into the upload payload.
+- DATASET_FORMAT.md documents the GPS JSON fields as `lat`/`lon`, matching what the client sends, instead of `latitude`/`longitude`.
 
 ### Security
 

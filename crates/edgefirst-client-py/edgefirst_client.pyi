@@ -2345,7 +2345,13 @@ class GpsData:
         ...
 
 class ImuData:
-    """IMU orientation data for a sample."""
+    """
+    IMU orientation for a sample, in signed degrees.
+
+    The angles follow ROS REP-103: rotations about the fixed X, Y, and Z
+    axes, so ``R = Rz(yaw) · Ry(pitch) · Rx(roll)``. The dataset ``pose``
+    column stores them in axis order as ``[roll, pitch, yaw]``.
+    """
 
     def __init__(self, roll: float, pitch: float, yaw: float) -> None:
         """
@@ -2359,17 +2365,17 @@ class ImuData:
 
     @property
     def roll(self) -> float:
-        """Roll angle in degrees."""
+        """Roll about the X axis in signed degrees (-180 to 180)."""
         ...
 
     @property
     def pitch(self) -> float:
-        """Pitch angle in degrees."""
+        """Pitch about the Y axis in signed degrees (-90 to 90)."""
         ...
 
     @property
     def yaw(self) -> float:
-        """Yaw angle in degrees."""
+        """Yaw about the Z axis in signed degrees (-180 to 180)."""
         ...
 
 class SampleFile:
