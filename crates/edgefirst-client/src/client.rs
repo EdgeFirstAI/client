@@ -1878,13 +1878,20 @@ impl Client {
     /// [`add_labels_with_indices`](Self::add_labels_with_indices).
     ///
     /// Annotations without `label_index` contribute `None` at the matching position.
+    /// Annotations flagged `ignore` or `exclude` are skipped, matching what
+    /// [`populate_samples`](Self::populate_samples) uploads, so labels used
+    /// only by flagged annotations are not collected.
     /// Returns an error if the same label name maps to different indices.
     pub fn collect_labels_from_samples(
         samples: &[Sample],
     ) -> Result<(Vec<String>, Vec<Option<u64>>), Error> {
         let mut specs: HashMap<String, Option<u64>> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
-        for annotation in samples.iter().flat_map(|s| s.annotations()) {
+        for annotation in samples
+            .iter()
+            .flat_map(|s| s.annotations())
+            .filter(|a| !a.is_flagged())
+        {
             let Some(name) = annotation.label() else {
                 continue;
             };
@@ -3362,6 +3369,8 @@ impl Client {
     ///   before `samples.populate2`, so a requested index (including 0 and
     ///   sparse COCO ids) is stored even when the server auto-assigns indices
     ///   during populate.
+    /// - **Annotations flagged ignore or exclude are dropped with a
+    ///   warning**; Studio does not store these flags yet.
     ///
     /// # Arguments
     ///
@@ -3466,6 +3475,9 @@ impl Client {
         use crate::api::SamplesPopulateParams;
         #[cfg(feature = "profiling")]
         use tracing::Instrument as _;
+
+        let mut samples = samples;
+        crate::dataset::warn_flagged_not_uploaded(crate::drop_flagged_annotations(&mut samples));
 
         // Track which files need to be uploaded
         let mut files_to_upload: Vec<(String, String, FileSource, String)> = Vec::new();
@@ -7269,6 +7281,29 @@ mod tests {
         let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
         assert_eq!(names, vec!["ace".to_string()]);
         assert_eq!(indices, vec![Some(12)]);
+    }
+
+    #[test]
+    fn test_collect_labels_from_samples_skips_flagged() {
+        let mut sample = Sample::new();
+        let mut car = Annotation::new();
+        car.set_label(Some("car".to_string()));
+        car.set_label_index(Some(3));
+        let mut crowd = Annotation::new();
+        crowd.set_label(Some("crowd-only".to_string()));
+        crowd.set_label_index(Some(7));
+        crowd.set_ignore(Some(true));
+        let mut other = Annotation::new();
+        other.set_label(Some("others".to_string()));
+        other.set_exclude(Some(true));
+        let mut car_crowd = Annotation::new();
+        car_crowd.set_label(Some("car".to_string()));
+        car_crowd.set_label_index(Some(99));
+        car_crowd.set_ignore(Some(true));
+        sample.annotations = vec![car, crowd, other, car_crowd];
+        let (names, indices) = Client::collect_labels_from_samples(&[sample]).unwrap();
+        assert_eq!(names, vec!["car".to_string()]);
+        assert_eq!(indices, vec![Some(3)]);
     }
 
     #[test]

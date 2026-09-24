@@ -9,34 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `visdrone-to-arrow` converts extracted VisDrone2019-DET and VisDrone2019-VID
-  splits into one offline EdgeFirst dataset (Arrow or Parquet, with `--images`
-  staging). Multiple split directories merge into one file with a `group`
-  column (`train`, `val`, `test-dev`, …); DET and VID splits can be combined
-  into a mixed dataset (flat images plus sequence subfolders). VisDrone
-  categories keep their source indices, including `ignored regions` (0) and
-  `others` (11); the redundant `score` flag is not stored. VID sequences
-  become `name`/`frame` rows with `object_id = <seq>/<target_id>`, which
-  survives `upload-dataset` as Studio's `object_reference`. Python:
-  `edgefirst_client.visdrone_to_arrow`.
-- New optional annotation columns `truncation` and `occlusion` (stored as
-  `UInt32` in Polars), serialized as a nested `attributes` object in JSON.
-  Studio does not persist them yet (DE-2952, DE-2953); `upload-dataset`
-  warns which optional columns are not stored.
+- `visdrone-to-arrow` converts extracted VisDrone2019-DET and VisDrone2019-VID splits into one offline EdgeFirst dataset (Arrow or Parquet, with `--images` staging). Multiple split directories merge into one file with a `group` column (`train`, `val`, `test-dev`, …); DET and VID splits can be combined into a mixed dataset (flat images plus sequence subfolders). VisDrone categories 1–10 get `label_index = category - 1`; categories 0 (`ignored regions`) and 11 (`others`) are dropped by default, so the ten classes are indexed 0–9 (pedestrian = 0), matching the Ultralytics VisDrone mapping; the redundant `score` flag is not stored. VID sequences become `name`/`frame` rows with `object_id = <seq>/<target_id>`, which survives `upload-dataset` as Studio's `object_reference`. Python: `edgefirst_client.visdrone_to_arrow`.
+- New optional annotation columns `truncation` and `occlusion` (stored as `UInt32` in Polars), serialized as a nested `attributes` object in JSON. Studio does not persist them yet; `upload-dataset` warns which optional columns are not stored.
+- `ignore` and `exclude` annotation columns and `Annotation.ignore`/`exclude` accessors (Rust and Python). `ignore` marks a don't-care region; `exclude` marks an object outside the class set. Label and label index are optional on flagged rows.
+- `visdrone-to-arrow --keep-ignored` (Python `keep_ignored=True`) keeps VisDrone ignored regions and others as unlabelled rows flagged `ignore` and `exclude`.
+- `Annotation::is_flagged` (Rust and Python), `drop_flagged_annotations` and `visdrone::CLASS_CATEGORIES` (the ten VisDrone classes in `label_index` order). Python `Annotation.ignore` and `Annotation.exclude` are also writable properties.
+- `format::flag_column` and `format::ignore_flags` read the `ignore`/`exclude` flag columns from a DataFrame, falling back to the deprecated `iscrowd` column for `ignore`.
+
+### Changed
+
+- The EdgeFirst Dataset Format is now 2026.10. `migrate` upgrades 2026.04 files by adding `ignore` from `iscrowd`.
+- Uploads (`upload-dataset`, `populate_samples`, `import-coco` and `import-coco --update`) skip annotations flagged `ignore` or `exclude`, including COCO crowd annotations, since Studio does not store these flags yet. One warning per upload or import gives the number skipped, and `import-coco --verify` leaves crowd annotations, and categories used only by them, out of the comparison. `collect_labels_from_samples` skips flagged annotations.
+- `arrow-to-coco` writes `iscrowd` from `ignore` and skips unlabelled `ignore` rows and `exclude` rows, which have no COCO equivalent.
+
+### Deprecated
+
+- The `iscrowd` column and `Annotation.iscrowd`/`set_iscrowd` (Rust and Python), replaced by `ignore`. The client still reads `iscrowd` and writes it as a mirror of `ignore`; support will be removed in a future release.
 
 ### Fixed
 
-- `import-coco --update` sends the COCO annotation score only when the source
-  has one instead of a fixed 1.0; `ServerAnnotation.score` is now optional.
-- `download-annotations` and `samples_dataframe` now read Studio's empty
-  `object_reference` as null instead of an empty `object_id` string.
-- `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as
-  the format specification documents, falling back to the older zero-padded
-  `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were
-  previously reported missing.
-- `upload-dataset` now carries `iscrowd`, `category_frequency`, `truncation`,
-  `occlusion`, and the per-geometry score columns from Arrow into the upload
-  payload.
+- `import-coco --update` sends the COCO annotation score only when the source has one instead of a fixed 1.0; `ServerAnnotation.score` is now optional.
+- `download-annotations` and `samples_dataframe` now read Studio's empty `object_reference` as null instead of an empty `object_id` string.
+- `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as the format specification documents, falling back to the older zero-padded `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were previously reported missing.
+- `upload-dataset` now carries `category_frequency`, `truncation`, `occlusion`, and the per-geometry score columns from Arrow into the upload payload.
 
 ## [2.14.0] - 2026-09-03
 

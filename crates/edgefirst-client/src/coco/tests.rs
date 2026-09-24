@@ -1398,6 +1398,7 @@ mod integration_tests {
 
         assert_eq!(restored.annotations.len(), 1);
         let ann = &restored.annotations[0];
+        assert_eq!(ann.iscrowd, 1, "crowd flag should survive roundtrip");
         assert!(
             ann.segmentation.is_some(),
             "RLE mask should survive roundtrip"
@@ -1693,8 +1694,8 @@ mod integration_tests {
             custom_meta
                 .get(&PlSmallStr::from("schema_version"))
                 .map(|s| s.to_string()),
-            Some("2026.04".to_string()),
-            "schema_version should be 2026.04"
+            Some(SCHEMA_VERSION.to_string()),
+            "schema_version should be current"
         );
 
         // Verify the mask Binary data is valid PNG

@@ -1,18 +1,10 @@
 # EdgeFirst Dataset Format Specification
 
-**Version**: 2026.04
-**Last Updated**: 3 September, 2026
+**Version**: 2026.10
+**Last Updated**: 22 September, 2026
 **Status**: DRAFT (pending review)
 
-> **Implementation status:** the SDK has implemented the 2026.04 Arrow schema
-> since client v2.9.0 — it is the current format, not a future one. As of the
-> client v2.14.0, dataset annotation files can also be written and read as
-> Apache Parquet (`.parquet`), selected by output file
-> extension, with the same file-level metadata (`schema_version`,
-> `category_metadata`, `labels`) carried as Parquet
-> footer key-value pairs — full parity with Arrow IPC. `validate-snapshot`
-> accepts either format when the annotation filename matches the dataset
-> directory basename.
+> **Implementation status:** the SDK has implemented the 2026.04 Arrow schema since client v2.9.0, and 2026.10 is the current format. As of the client v2.14.0, dataset annotation files can also be written and read as Apache Parquet (`.parquet`), selected by output file extension, with the same file-level metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet footer key-value pairs — full parity with Arrow IPC. `validate-snapshot` accepts either format when the annotation filename matches the dataset directory basename. The client writes `schema_version` 2026.10 as of client v2.15.0; see [Migration from 2026.04](#migration-from-202604) for what changed.
 >
 > Several other items in this specification remain design targets, not yet
 > shipped: the **configurable box-format/mask-interpretation file-level
@@ -51,9 +43,10 @@
    - [Instrumentation](#instrumentation)
 8. [Format Deviations](#format-deviations)
 9. [Conversion Guidelines](#conversion-guidelines)
-10. [Migration from 2025.10](#migration-from-202510)
-11. [Best Practices](#best-practices)
-12. [Version History](#version-history)
+10. [Migration from 2026.04](#migration-from-202604)
+11. [Migration from 2025.10](#migration-from-202510)
+12. [Best Practices](#best-practices)
+13. [Version History](#version-history)
 
 ---
 
@@ -417,9 +410,9 @@ EdgeFirst supports three annotation storage formats optimized for different use 
 
 Both formats share the same logical schema. Arrow IPC is optimized for local performance; Parquet is optimized for transfer and interoperability. Use Arrow for training pipelines, Parquet for distribution.
 
-> **Note**: This schema is defined for the 2026.04 release, and the SDK (since v2.9.0) implements it — 2026.04 is current, not upcoming. Older 2025.10 files are still read transparently; see the [Version History](#version-history) section for that schema and the [Migration from 2025.10](#migration-from-202510) section to upgrade a file. Parquet support is available in client v2.14.0 and later.
+> **Note**: This schema is current through the 2026.10 release. The SDK has implemented the 2026.04 base schema since v2.9.0, and the 2026.10 `ignore`/`exclude` additions are implemented as of client v2.15.0; see the per-field "NEW in 2026.04" / "NEW in 2026.10" tags below for what was added when. Older 2025.10 files are still read transparently; see the [Version History](#version-history) section for that schema and the [Migration from 2025.10](#migration-from-202510) section to upgrade a file. Parquet support is available in client v2.14.0 and later.
 
-**Schema (2026.04)**:
+**Schema (2026.10)**:
 
 ```python
 (
@@ -448,7 +441,9 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('box3d_score', Float32),  # OPTIONAL - confidence (0..1)
 
     # ── Annotation Metadata (optional) ────────────────
-    ('iscrowd', Boolean),  # OPTIONAL - true = crowd region, false or absent = single instance (COCO)
+    ('ignore', Boolean),   # OPTIONAL - true = don't-care region (masked in loss/eval); NEW in 2026.10
+    ('exclude', Boolean),  # OPTIONAL - true = real object outside the class set; NEW in 2026.10
+    ('iscrowd', Boolean),  # DEPRECATED in 2026.10 - mirror of `ignore`, written by the client for compatibility
     ('category_frequency', Categorical(ordering='physical')),  # OPTIONAL - "f", "c", "r" (LVIS)
     ('truncation', UInt32),  # OPTIONAL - source truncation flag (VisDrone 0..1, KITTI truncated)
     ('occlusion', UInt32),  # OPTIONAL - source occlusion flag (VisDrone 0..2, KITTI occluded)
@@ -470,6 +465,8 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     })),
 )
 ```
+
+**Changes from 2026.04**: adds the `ignore` and `exclude` columns; `iscrowd` is deprecated and written as a mirror of `ignore`. See [Migration from 2026.04](#migration-from-202604).
 
 **Changes from 2025.10**: The `mask` column changed from `List(Float32)` (NaN-separated polygon coordinates) to `Binary` (PNG-encoded raster pixels). Polygon data moved to the new `polygon` column as `List(List(Float32))`. The `iscrowd` column changed from `UInt8` to `Boolean`. Score columns, timing struct, Parquet support, COCO/LVIS extension columns (`iscrowd`, `category_frequency`, `neg_label_indices`, `not_exhaustive_label_indices`), and `category_metadata` file-level metadata are new in 2026.04. The `label_index` column now preserves source category IDs (non-contiguous). See [Migration from 2025.10](#migration-from-202510) for details.
 
@@ -674,7 +671,7 @@ All metadata values are strings.
 
 | Key | Values | Default (absent) | Description | Implemented? |
 |-----|--------|-------------------|-------------|--------------|
-| `schema_version` | `"2026.04"` | `"2025.10"` | Format version. Absent = legacy file. | Yes |
+| `schema_version` | `"2026.10"` (current), `"2026.04"` | `"2025.10"` | Format version. Absent = legacy file. | Yes |
 | `box2d_format` | `"cxcywh"`, `"xyxy"`, `"ltwh"` | `"cxcywh"` | Box2D array layout descriptor | No — design only |
 | `box2d_normalized` | `"true"`, `"false"` | `"true"` | Box2D coordinate system | No — design only |
 | `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor | No — design only |
@@ -906,23 +903,65 @@ For a dataset with labels `[person, car, tree]` imported from COCO, `label_index
 
 **Typical values**: `train`, `val`, `test`
 
-#### iscrowd (NEW in 2026.04)
+#### ignore (NEW in 2026.10)
 
 **Type**: `Boolean` (nullable)
-**Description**: Whether this annotation represents a crowd region or a single instance
+**Description**: Marks a don't-care region that should be masked out of loss and evaluation rather than treated as a false negative or false positive
 
 **Values**:
 
-- `true` — Crowd region containing multiple overlapping instances of the same category
-- `false` or absent — Single object instance
+- `true` — Don't-care region
+- `false` or absent — Ordinary annotation
 
-**Source**: COCO `iscrowd` field. LVIS does not use crowd annotations — this column will be absent or null for LVIS-sourced data.
+`label` and `label_index` are optional on a flagged row. A labelled `ignore` row applies to that class only (e.g. a crowd of people should not penalize a `person` detector inside the region); an unlabelled `ignore` row applies to all classes.
+
+**Source**: COCO `iscrowd=1` becomes `ignore=true`. VisDrone category 0 (`ignored regions`) becomes an unlabelled `ignore=true` row when `visdrone-to-arrow --keep-ignored` is passed; by default those rows are dropped.
 
 **Use cases**:
 
-- Evaluation protocols treat crowd regions differently (matched but not penalized as false negatives)
-- Training pipelines may exclude crowd annotations
-- Round-trip fidelity with COCO format
+- Evaluation protocols mask don't-care regions instead of penalizing them as false negatives
+- Training pipelines exclude `ignore` regions from the loss
+- Round-trip fidelity with COCO `iscrowd` and VisDrone's ignored regions
+
+**JSON representation**: `"ignore": true` on the annotation object, omitted when null. On read, `iscrowd` is accepted as an alias of `ignore`.
+
+**Studio compatibility**: EdgeFirst Studio does not store this flag yet. Uploads (`upload-dataset`, `populate_samples`, `import-coco` and `import-coco --update`) drop rows flagged `ignore` and log one warning per upload or import with the count; the Arrow file remains the source of truth.
+
+#### exclude (NEW in 2026.10)
+
+**Type**: `Boolean` (nullable)
+**Description**: Marks a real object that falls outside the dataset's class set. Trainers leave it out of training, and evaluators should not count a detection that matches it as a false positive, nor count the object itself as a missed detection.
+
+**Values**:
+
+- `true` — Real object outside the class set
+- `false` or absent — Ordinary annotation
+
+`label` and `label_index` are optional on a flagged row and are typically absent, since the object has no class in this dataset.
+
+**Source**: VisDrone category 11 (`others`) becomes an unlabelled `exclude=true` row when `visdrone-to-arrow --keep-ignored` is passed; by default those rows are dropped.
+
+**Use cases**:
+
+- Evaluation protocols exclude these regions instead of penalizing a detector for finding a real but unclassified object
+- Round-trip fidelity with VisDrone's `others` category
+
+**JSON representation**: `"exclude": true` on the annotation object, omitted when null.
+
+**Studio compatibility**: EdgeFirst Studio does not store this flag yet. Uploads (`upload-dataset`, `populate_samples`, `import-coco` and `import-coco --update`) drop rows flagged `exclude` and log one warning per upload or import with the count; the Arrow file remains the source of truth.
+
+#### iscrowd (DEPRECATED in 2026.10)
+
+**Type**: `Boolean` (nullable)
+**Description**: Deprecated alias of [`ignore`](#ignore-new-in-202610). Files written by the client carry `iscrowd` as an exact mirror of `ignore`, so it can be `true` on rows that are not COCO crowds (for example unlabelled VisDrone `ignored regions`).
+
+**Values**: Same as `ignore`.
+
+**Source**: Written by the client as a mirror of `ignore`. In 2026.04 files it holds the COCO `iscrowd` field.
+
+**Deprecation**: `iscrowd` is replaced by [`ignore`](#ignore-new-in-202610). The client reads `iscrowd` as `ignore` when `ignore` is absent, and writes `iscrowd` as a mirror of `ignore` for now. Read and write support for `iscrowd` will be removed in a future release; no timeline is set.
+
+**Fallback granularity**: in Arrow/Parquet the fallback is per column: when the file has an `ignore` column, it is used for every row, even rows where it is null, and `iscrowd` is not consulted. In JSON the fallback is per annotation: an annotation object without an `ignore` key (or with `"ignore": null`) takes its `iscrowd` value. Files written by the client always mirror the two, so both readers give the same result for them.
 
 #### category_frequency (NEW in 2026.04)
 
@@ -955,7 +994,7 @@ For a dataset with labels `[person, car, tree]` imported from COCO, `label_index
 
 **JSON representation**: nested object `"attributes": {"truncation": 1, "occlusion": 2}`, omitted when both are absent.
 
-**Studio compatibility**: EdgeFirst Studio does not store these fields yet (DE-2952, DE-2953). `upload-dataset` sends them and warns that they are not persisted; the Arrow file remains the source of truth until the second pass in DE-2960.
+**Studio compatibility**: EdgeFirst Studio does not store these fields yet. `upload-dataset` sends them and warns that they are not persisted; the Arrow file remains the source of truth.
 
 ---
 
@@ -1476,7 +1515,7 @@ In 2026.04, format deviations between JSON and DataFrame are now **explicit and 
 
 ## Conversion Guidelines
 
-> **⚠️ WARNING**: The conversion code below is for **2026.04 schema**. Code written for 2025.10 (NaN-separated masks, `mask: List(Float32)`) will produce **corrupt data** when applied to 2026.04 files. Always check `schema_version` before processing.
+> **⚠️ WARNING**: The conversion code below is for **2026.04 and later**. Code written for 2025.10 (NaN-separated masks, `mask: List(Float32)`) will produce **corrupt data** when applied to 2026.04 files. Always check `schema_version` before processing.
 
 ### Reading Arrow/Parquet Files
 
@@ -1504,7 +1543,7 @@ elif "mask" in df.columns:
         pass
 ```
 
-### JSON → DataFrame (2026.04)
+### JSON → DataFrame (2026.04 and later)
 
 ```python
 import polars as pl
@@ -1529,10 +1568,13 @@ for sample in samples:
             "name": extract_name(sample["image_name"]),
             "frame": sample.get("frame_number"),
             "object_id": ann.get("object_id"),
-            "label": ann["label_name"],
+            "label": ann.get("label_name"),  # optional on ignore/exclude rows
             "label_index": ann.get("label_index"),
             "group": sample.get("group_name"),
         }
+        ignore = ann.get("ignore")
+        row["ignore"] = ignore if ignore is not None else ann.get("iscrowd")  # iscrowd: deprecated alias
+        row["exclude"] = ann.get("exclude")
 
         # Polygon: JSON [[x,y],...] → DataFrame [x,y,x,y,...]
         if ann.get("polygon"):
@@ -1582,10 +1624,43 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 | 7 | **GPS**: `{latitude, longitude}` → `[lat, lon]` | JSON → DataFrame |
 | 8 | **IMU**: `{yaw, pitch, roll}` → `[yaw, pitch, roll]` | JSON → DataFrame |
 | 9 | **Score columns**: Omit entirely for ground truth files | Both |
-| 10 | **`iscrowd`**: Annotation-level `Boolean` (`true`/`false`), same semantics in both formats | JSON → DataFrame |
+| 10 | **`ignore`/`exclude`**: Annotation-level `Boolean` (`true`/`false`), same semantics in both formats; `iscrowd` is accepted as a deprecated alias of `ignore` | JSON → DataFrame |
 | 11 | **`category_frequency`**: Annotation-level, same value in both formats | JSON → DataFrame |
 | 12 | **`neg_label_indices`** / **`not_exhaustive_label_indices`**: Sample-level, repeated per annotation row | JSON → DataFrame |
 | 13 | **`label_index`**: Preserved as-is (source-faithful, non-contiguous) | Both |
+
+---
+
+## Migration from 2026.04
+
+### Changes
+
+| Change | 2026.04 | 2026.10 |
+|--------|---------|---------|
+| Crowd/don't-care flag | `iscrowd: Boolean` (COCO crowd regions only) | `ignore: Boolean` — same COCO source, plus don't-care regions from other formats (e.g. VisDrone `ignored regions`) |
+| Excluded objects | Not represented | `exclude: Boolean` — real objects outside the class set (e.g. VisDrone `others`) |
+| `iscrowd` | Current | **Deprecated** — kept as a mirror of `ignore`, written by the client for compatibility |
+
+This is a non-breaking, additive change: no existing column is removed or changes type.
+
+### Migration Command
+
+```bash
+edgefirst-client migrate dataset.arrow [--output migrated.arrow]
+```
+
+`edgefirst-client migrate` upgrades a 2026.04 file to 2026.10:
+
+1. Adds the `ignore` column from the deprecated `iscrowd` column when `ignore` is not already present, keeping `iscrowd` as a mirror
+2. Leaves the Binary raster `mask` column and all other columns unchanged
+3. Sets `schema_version = "2026.10"` in file metadata
+4. Writes to `--output` path, or overwrites in-place if not specified
+
+No `exclude` column is synthesized — there is nothing in a 2026.04 file to derive it from.
+
+### Readers Need Not Migrate
+
+Files do not need to be migrated to be read: readers prefer the `ignore` column but fall back to `iscrowd` (accepting either `Boolean` or the older integer type) when `ignore` is absent, so 2026.04 files continue to work with the current client without running `migrate`.
 
 ---
 
@@ -1610,33 +1685,36 @@ df.write_ipc("annotations.arrow")  # or df.write_parquet("annotations.parquet")
 edgefirst migrate <input.arrow> [--output <output.arrow>]
 ```
 
-The `edgefirst migrate` command converts 2025.10 Arrow files to 2026.04 format:
+The `edgefirst migrate` command converts 2025.10 Arrow files directly to the current 2026.10 format:
 
-1. Reads the Arrow IPC file and checks `schema_version` — if already `"2026.04"` or later, prints a message and exits
+1. Reads the Arrow IPC file and checks `schema_version` — if already `"2026.10"` or later, prints a message and exits
 2. Reads the 2025.10 `mask: List(Float32)` column with NaN separators
 3. Converts to `polygon: List(List(Float32))` (split on NaN, pair coordinates into rings)
 4. Drops the old `mask` column, adds `polygon` column with converted data
-5. Sets `schema_version = "2026.04"` in file metadata
-6. Writes to `--output` path, or overwrites in-place if not specified
-7. Reports the number of polygon annotations converted
+5. Converts an integer `iscrowd` column to `Boolean` and adds `ignore` from it (see [Migration from 2026.04](#migration-from-202604))
+6. Sets `schema_version = "2026.10"` in file metadata
+7. Writes to `--output` path, or overwrites in-place if not specified
+8. Reports the number of polygon annotations converted
 
-No new columns are synthesized. Columns not present in the original file (scores, timing, LVIS fields) are not added.
+Apart from `ignore`, no new columns are synthesized. Columns not present in the original file (scores, timing, LVIS fields) are not added.
 
 ### Version Detection
 
-**Arrow/Parquet files**:
-- `schema_version` metadata present → use stated version
-- `schema_version` absent + `mask: List(Float32)` → 2025.10
-- `schema_version` absent + `mask: Binary` → 2026.04
-- `polygon` column present → 2026.04
+**Arrow/Parquet files** (the first rule that matches wins):
+
+1. `schema_version` metadata present → use the stated version
+2. `ignore` or `exclude` column present → 2026.10
+3. `polygon` column present, or `mask: Binary` → 2026.04 or later (a 2026.10 file with no flagged rows has no `ignore`/`exclude` columns, because all-null columns are dropped on write)
+4. `mask: List(Float32)` → 2025.10
 
 **JSON files**:
+
 - Top-level is a JSON array `[...]` → 2025.10
-- Top-level is a JSON object with `schema_version` → 2026.04
+- Top-level is a JSON object with `schema_version` → use the stated version
 
 ### External Consumers Warning
 
-Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) should be aware that the `mask` column type changed from `List(Float32)` to `Binary` (PNG bytes). Code that calls `.list()?.cast(&DataType::Float32)` on the mask column will fail on 2026.04 files. In 2026.04, the `mask` column contains raw PNG bytes — use a PNG decoder to read the pixel data. Additionally, `iscrowd` changed from `UInt8` to `Boolean`. Always check column types before interpreting data.
+Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) should be aware that the `mask` column type changed from `List(Float32)` to `Binary` (PNG bytes). Code that calls `.list()?.cast(&DataType::Float32)` on the mask column will fail on 2026.04 files. In 2026.04, the `mask` column contains raw PNG bytes — use a PNG decoder to read the pixel data. Additionally, `iscrowd` changed from `UInt8` to `Boolean`. In 2026.10, read `ignore` rather than `iscrowd`; `iscrowd` is a deprecated mirror. Always check column types before interpreting data.
 
 ---
 
@@ -1727,7 +1805,21 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 
 ## Version History
 
-### Version 2026.04 - Current
+### Version 2026.10 - Current
+
+**`ignore`/`exclude` Flags and `iscrowd` Deprecation**
+
+This version adds two annotation-metadata columns and deprecates the one they replace. It is additive and non-breaking — see [Migration from 2026.04](#migration-from-202604).
+
+- **`ignore` column** (`Boolean`, optional): marks a don't-care region masked out of loss and evaluation. Sourced from COCO `iscrowd=1` and, newly, from VisDrone category 0 (`ignored regions`) via `visdrone-to-arrow --keep-ignored`. `label` and `label_index` are optional — a labelled row applies to that class only, an unlabelled row applies to all classes.
+- **`exclude` column** (`Boolean`, optional): marks a real object outside the dataset's class set. Sourced from VisDrone category 11 (`others`) via `visdrone-to-arrow --keep-ignored`.
+- **`iscrowd` deprecated**: replaced by `ignore`. The client reads `iscrowd` as `ignore` when `ignore` is absent, and writes `iscrowd` as a mirror of `ignore` for now; read and write support will be removed in a future release, with no timeline set.
+- **`edgefirst-client migrate`**: upgrades 2026.04 files by adding `ignore` from `iscrowd` and stamping `schema_version = "2026.10"`.
+- **`visdrone-to-arrow`**: drops VisDrone categories 0 and 11 by default and indexes the ten remaining classes 0–9 (`pedestrian` = 0 … `motor` = 9). `--keep-ignored` keeps them as unlabelled rows flagged `ignore`/`exclude` instead.
+- **`arrow-to-coco`**: writes `iscrowd=1` from labelled `ignore` rows; unlabelled `ignore` rows and all `exclude` rows have no COCO equivalent and are skipped with one warning giving the count. `exclude` rows create no COCO category.
+- **Uploads**: `upload-dataset`, `populate_samples`/`populate_samples_with_concurrency`, `import-coco` and `import-coco --update` drop annotations flagged `ignore` or `exclude` (including COCO crowd annotations) and log one warning per upload or import with the count, since EdgeFirst Studio does not store these flags yet.
+
+### Version 2026.04
 
 **Major Schema Evolution**
 

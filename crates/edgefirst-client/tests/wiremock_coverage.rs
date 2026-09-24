@@ -3241,6 +3241,242 @@ async fn populate_samples_precreates_labels_with_indices() {
     assert_eq!(results[0].uuid, "11111111-1111-1111-1111-111111111111");
 }
 
+/// Records warning-level log messages so a test can assert that a warning
+/// was emitted. Installed once per test binary; other tests' warnings may be
+/// recorded too, so assertions should match on specific message text.
+static CAPTURED_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+struct WarningCapture;
+
+impl log::Log for WarningCapture {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            CAPTURED_WARNINGS
+                .lock()
+                .unwrap()
+                .push(record.args().to_string());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn install_warning_capture() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        log::set_logger(&WarningCapture).expect("no other logger in this test binary");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+}
+
+/// Flagged annotations never reach Studio, including their labels, and one
+/// warning gives the count.
+#[tokio::test]
+#[serial]
+async fn populate_samples_drops_flagged_annotations() {
+    install_warning_capture();
+    CAPTURED_WARNINGS.lock().unwrap().clear();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.add2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!("ok"))))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    struct NoFlaggedRows;
+    impl wiremock::Match for NoFlaggedRows {
+        fn matches(&self, req: &Request) -> bool {
+            let body = String::from_utf8_lossy(&req.body);
+            !body.contains("\"others\"")
+                && !body.contains("\"ignore\"")
+                && !body.contains("\"exclude\"")
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .and(NoFlaggedRows)
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "urls": []
+        }]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut sample = Sample::new();
+    sample.files = vec![SampleFile::with_filename(
+        "image".to_string(),
+        "a.png".to_string(),
+    )];
+    let mut other = Annotation::new();
+    other.set_label(Some("others".into()));
+    other.set_label_index(Some(11));
+    other.set_exclude(Some(true));
+    let mut region = Annotation::new();
+    region.set_ignore(Some(true));
+    sample.annotations = vec![other, region];
+
+    client_for(&server.uri())
+        .populate_samples(
+            DatasetID::from(1u64),
+            Some(AnnotationSetID::from(2u64)),
+            vec![sample],
+            None,
+        )
+        .await
+        .expect("populate2 without flagged rows should succeed");
+
+    let flag_warnings: Vec<String> = CAPTURED_WARNINGS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.contains("flagged ignore/exclude were not uploaded"))
+        .cloned()
+        .collect();
+    assert_eq!(flag_warnings.len(), 1, "warnings: {flag_warnings:?}");
+    assert!(
+        flag_warnings[0].starts_with("2 annotations"),
+        "unexpected warning: {}",
+        flag_warnings[0]
+    );
+}
+
+/// `import_coco_to_studio` does not upload COCO crowd annotations, does not
+/// create categories used only by crowd annotations, and warns once.
+#[tokio::test]
+#[serial]
+async fn import_coco_skips_crowd_annotations_and_their_labels() {
+    install_warning_capture();
+    CAPTURED_WARNINGS.lock().unwrap().clear();
+    let server = MockServer::start().await;
+
+    struct MentionsCrowdOnly;
+    impl wiremock::Match for MentionsCrowdOnly {
+        fn matches(&self, req: &Request) -> bool {
+            String::from_utf8_lossy(&req.body).contains("crowdonly")
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(MentionsCrowdOnly)
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    struct SequentialLabelList {
+        calls: AtomicUsize,
+    }
+    impl Respond for SequentialLabelList {
+        fn respond(&self, _: &Request) -> ResponseTemplate {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                ResponseTemplate::new(200).set_body_json(rpc_result(json!([])))
+            } else {
+                ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+                    "id": 7,
+                    "dataset_id": 1,
+                    "index": 1,
+                    "name": "person",
+                }])))
+            }
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(SequentialLabelList {
+            calls: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.add2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!("ok"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    struct CountBoxes;
+    impl wiremock::Match for CountBoxes {
+        fn matches(&self, req: &Request) -> bool {
+            let body = String::from_utf8_lossy(&req.body);
+            body.matches("\"box2d\"").count() == 1 && !body.contains("\"ignore\":true")
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .and(CountBoxes)
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "urls": []
+        }]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let coco_path = dir.path().join("instances.json");
+    std::fs::write(
+        &coco_path,
+        r#"{
+            "images": [{"id": 1, "width": 640, "height": 480, "file_name": "a.jpg"}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 1, "bbox": [200, 20, 50, 40], "area": 2000, "iscrowd": 1},
+                {"id": 3, "image_id": 1, "category_id": 2, "bbox": [300, 20, 50, 40], "area": 2000, "iscrowd": 1}
+            ],
+            "categories": [
+                {"id": 1, "name": "person"},
+                {"id": 2, "name": "crowdonly"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let options = edgefirst_client::coco::CocoImportOptions {
+        include_masks: false,
+        include_images: false,
+        resume: false,
+        ..Default::default()
+    };
+    let result = edgefirst_client::coco::import_coco_to_studio(
+        &client_for(&server.uri()),
+        &coco_path,
+        DatasetID::from(1u64),
+        AnnotationSetID::from(2u64),
+        &options,
+        None,
+    )
+    .await
+    .expect("import without crowd rows should succeed");
+    assert_eq!(result.imported, 1);
+
+    let flag_warnings: Vec<String> = CAPTURED_WARNINGS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.contains("flagged ignore/exclude were not uploaded"))
+        .cloned()
+        .collect();
+    assert_eq!(flag_warnings.len(), 1, "warnings: {flag_warnings:?}");
+    assert!(
+        flag_warnings[0].starts_with("2 annotations"),
+        "unexpected warning: {}",
+        flag_warnings[0]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // snapshots.create contract
 // ---------------------------------------------------------------------------

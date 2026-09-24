@@ -5675,7 +5675,7 @@ fn test_migrate_command_with_mask_column() {
             "Converted 'mask' column -> 'polygon' column",
         ))
         .stdout(predicates::str::contains(
-            "Migrated to schema version 2026.04",
+            "Migrated to schema version 2026.10",
         ));
 
     assert!(output.exists(), "Migrated Arrow output file should exist");
@@ -5691,8 +5691,8 @@ fn test_migrate_command_with_mask_column() {
         let meta = custom_meta.unwrap();
         assert_eq!(
             meta.get(&PlSmallStr::from("schema_version")),
-            Some(&PlSmallStr::from("2026.04")),
-            "schema_version should be 2026.04"
+            Some(&PlSmallStr::from("2026.10")),
+            "schema_version should be 2026.10"
         );
 
         // Re-open to read DataFrame
@@ -5729,14 +5729,15 @@ fn test_migrate_command_with_mask_column() {
 }
 
 #[test]
-fn test_migrate_command_already_migrated() {
+fn test_migrate_command_old_schema_version_is_migrated() {
     use polars::prelude::*;
     use std::sync::Arc;
 
     let temp_dir = tempfile::TempDir::new().unwrap();
-    let input = temp_dir.path().join("already_migrated.arrow");
+    let input = temp_dir.path().join("old_schema_version.arrow");
 
-    // Create an Arrow file that already has schema_version = "2026.04"
+    // Create an Arrow file at the previous schema version, "2026.04", which
+    // now needs migrating forward to the current schema version.
     {
         let names = Series::new("name".into(), vec!["img1.jpg"]);
         let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
@@ -5754,12 +5755,111 @@ fn test_migrate_command_already_migrated() {
         writer.finish(&mut df).unwrap();
     }
 
-    // Run the migrate command — should detect already-migrated and succeed
+    // Run the migrate command — should migrate the old file forward
     edgefirst_cmd()
         .args(["migrate", input.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicates::str::contains("no migration needed"));
+        .stdout(predicates::str::contains(
+            "Migrated to schema version 2026.10",
+        ));
+}
+
+#[test]
+fn migrate_2026_04_iscrowd_to_ignore() {
+    use polars::prelude::*;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("old.arrow");
+    let mut df = df!(
+        "name" => ["a", "b"],
+        "iscrowd" => [Some(true), Some(false)],
+    )
+    .unwrap();
+    let mut meta = std::collections::BTreeMap::new();
+    meta.insert(
+        PlSmallStr::from("schema_version"),
+        PlSmallStr::from("2026.04"),
+    );
+    edgefirst_client::coco::write_dataset(&mut df, &path, meta).unwrap();
+
+    let out = edgefirst_cmd()
+        .args(["migrate", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (df, meta) = edgefirst_client::format::read_dataset_dataframe(&path).unwrap();
+    assert_eq!(
+        meta.get("schema_version").map(String::as_str),
+        Some("2026.10")
+    );
+    let ignore: Vec<Option<bool>> = df
+        .column("ignore")
+        .unwrap()
+        .bool()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(ignore, vec![Some(true), Some(false)]);
+    assert!(df.column("iscrowd").is_ok(), "iscrowd mirror kept");
+}
+
+#[test]
+fn migrate_2026_04_binary_mask_is_preserved() {
+    use polars::prelude::*;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("raster.arrow");
+    let png_a: &[u8] = b"\x89PNG\r\n\x1a\nraster-a";
+    let png_b: &[u8] = b"\x89PNG\r\n\x1a\nraster-b";
+    let mask = Series::new("mask".into(), vec![Some(png_a), None, Some(png_b)]);
+    assert_eq!(mask.dtype(), &DataType::Binary);
+    let mut df = DataFrame::new_infer_height(vec![
+        Series::new("name".into(), vec!["a", "b", "c"]).into(),
+        mask.into(),
+        Series::new("iscrowd".into(), vec![Some(true), Some(false), None]).into(),
+    ])
+    .unwrap();
+    let mut meta = std::collections::BTreeMap::new();
+    meta.insert(
+        PlSmallStr::from("schema_version"),
+        PlSmallStr::from("2026.04"),
+    );
+    edgefirst_client::coco::write_dataset(&mut df, &path, meta).unwrap();
+
+    let out = edgefirst_cmd()
+        .args(["migrate", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (df, meta) = edgefirst_client::format::read_dataset_dataframe(&path).unwrap();
+    assert_eq!(
+        meta.get("schema_version").map(String::as_str),
+        Some("2026.10")
+    );
+    let mask = df.column("mask").unwrap();
+    assert_eq!(mask.dtype(), &DataType::Binary, "raster mask stays Binary");
+    let bytes: Vec<Option<&[u8]>> = mask.binary().unwrap().iter().collect();
+    assert_eq!(bytes, vec![Some(png_a), None, Some(png_b)]);
+    assert!(df.column("polygon").is_err(), "no polygon column invented");
+    let ignore: Vec<Option<bool>> = df
+        .column("ignore")
+        .unwrap()
+        .bool()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(ignore, vec![Some(true), Some(false), None]);
 }
 
 #[test]
@@ -5791,7 +5891,7 @@ fn test_migrate_command_no_mask_column() {
         .success()
         .stdout(predicates::str::contains("No 'mask' column found"))
         .stdout(predicates::str::contains(
-            "Migrated to schema version 2026.04",
+            "Migrated to schema version 2026.10",
         ));
 
     assert!(output.exists());
@@ -5805,7 +5905,7 @@ fn test_migrate_command_no_mask_column() {
         let meta = custom_meta.unwrap();
         assert_eq!(
             meta.get(&PlSmallStr::from("schema_version")),
-            Some(&PlSmallStr::from("2026.04")),
+            Some(&PlSmallStr::from("2026.10")),
         );
     }
 }
@@ -5832,7 +5932,7 @@ fn test_migrate_command_inplace() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "Migrated to schema version 2026.04",
+            "Migrated to schema version 2026.10",
         ));
 
     // Verify the file was updated in place
@@ -5844,7 +5944,7 @@ fn test_migrate_command_inplace() {
         let meta = custom_meta.unwrap();
         assert_eq!(
             meta.get(&PlSmallStr::from("schema_version")),
-            Some(&PlSmallStr::from("2026.04")),
+            Some(&PlSmallStr::from("2026.10")),
         );
     }
 }
@@ -5869,7 +5969,7 @@ fn test_migrate_coco_to_arrow_roundtrip() {
 
     let arrow_path = temp_dir.path().join("dataset.arrow");
 
-    // Convert COCO to Arrow (produces 2026.04 schema with polygon column)
+    // Convert COCO to Arrow (produces the current schema with polygon column)
     edgefirst_cmd()
         .args([
             "coco-to-arrow",
@@ -5880,7 +5980,7 @@ fn test_migrate_coco_to_arrow_roundtrip() {
         .assert()
         .success();
 
-    // Running migrate on a 2026.04 file should be a no-op
+    // Running migrate on an already-current file should be a no-op
     edgefirst_cmd()
         .args(["migrate", arrow_path.to_str().unwrap()])
         .assert()

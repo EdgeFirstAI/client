@@ -4,7 +4,7 @@
 //! VisDrone2019 to EdgeFirst Arrow IPC or Parquet conversion.
 
 use super::reader::{
-    CATEGORIES, SplitKind, VisDroneBox, category_name, detect_split_kind,
+    CLASS_CATEGORIES, SplitKind, VisDroneBox, category_name, detect_split_kind,
     infer_group_from_dir_name, read_det_annotations, read_vid_annotations,
 };
 use crate::{
@@ -34,6 +34,9 @@ pub struct VisDroneToArrowOptions {
     pub link_images: bool,
     /// Parallel JPEG header reads. Must be at least 1.
     pub max_workers: usize,
+    /// Keep `ignored regions` (flagged `ignore`) and `others` (flagged
+    /// `exclude`) instead of dropping them. Both are written without a label.
+    pub keep_ignored: bool,
 }
 
 impl Default for VisDroneToArrowOptions {
@@ -43,6 +46,7 @@ impl Default for VisDroneToArrowOptions {
             stage_images: false,
             link_images: false,
             max_workers: max_workers(),
+            keep_ignored: false,
         }
     }
 }
@@ -119,14 +123,29 @@ fn list_frames(seq_dir: &Path) -> Result<Vec<(u32, PathBuf)>, Error> {
     Ok(frames)
 }
 
-/// Normalize a VisDrone pixel box into an EdgeFirst annotation. Label,
-/// label_index, truncation and occlusion are set; name/frame/object_id are
-/// the caller's responsibility.
-fn box_to_annotation(bbox: &VisDroneBox, width: u32, height: u32) -> Annotation {
-    let (w, h) = (width as f32, height as f32);
+/// Normalize a VisDrone pixel box into an EdgeFirst annotation, or `None`
+/// when the category is dropped. Classes 1..=10 get `label_index =
+/// category - 1`; categories 0 and 11 are flagged `ignore`/`exclude` without
+/// a label when `keep_ignored` is set. Label, label_index, truncation,
+/// occlusion and flags are set; name/frame/object_id are the caller's
+/// responsibility.
+fn box_to_annotation(
+    bbox: &VisDroneBox,
+    width: u32,
+    height: u32,
+    keep_ignored: bool,
+) -> Option<Annotation> {
     let mut ann = Annotation::new();
-    ann.set_label(category_name(bbox.category).map(String::from));
-    ann.set_label_index(Some(bbox.category as u64));
+    match bbox.category {
+        0 | 11 if !keep_ignored => return None,
+        0 => ann.set_ignore(Some(true)),
+        11 => ann.set_exclude(Some(true)),
+        c => {
+            ann.set_label(category_name(c).map(String::from));
+            ann.set_label_index(Some(u64::from(c) - 1));
+        }
+    }
+    let (w, h) = (width as f32, height as f32);
     ann.set_box2d(Some(Box2d::new(
         bbox.left as f32 / w,
         bbox.top as f32 / h,
@@ -135,7 +154,7 @@ fn box_to_annotation(bbox: &VisDroneBox, width: u32, height: u32) -> Annotation 
     )));
     ann.set_truncation(Some(bbox.truncation));
     ann.set_occlusion(Some(bbox.occlusion));
-    ann
+    Some(ann)
 }
 
 /// Warn when the `score == 0 <=> category in {0, 11}` invariant does not hold
@@ -146,7 +165,7 @@ fn check_score_invariant(split: &Path, boxes: impl Iterator<Item = (u8, u8)>) {
         .count();
     if violations > 0 {
         log::warn!(
-            "{}: {violations} boxes violate the VisDrone score/category rule; the score flag is derived from the label and those rows will be treated by label",
+            "{}: {violations} boxes violate the VisDrone score/category rule; the score is not stored and those rows are handled by category",
             split.display()
         );
     }
@@ -161,6 +180,7 @@ async fn det_split_samples(
     progress: &Option<Sender<Progress>>,
     counter: &Arc<std::sync::atomic::AtomicUsize>,
     total: usize,
+    keep_ignored: bool,
 ) -> Result<(Vec<Sample>, Vec<StagedFile>), Error> {
     let images_dir = split.join("images");
     let ann_dir = split.join("annotations");
@@ -203,18 +223,18 @@ async fn det_split_samples(
 
             let mut samples: Vec<Sample> = boxes
                 .iter()
-                .map(|bbox| {
-                    let mut ann = box_to_annotation(bbox, width, height);
+                .filter_map(|bbox| {
+                    let mut ann = box_to_annotation(bbox, width, height, keep_ignored)?;
                     ann.set_name(Some(stem.clone()));
                     ann.set_group(group.clone());
-                    Sample {
+                    Some(Sample {
                         image_name: Some(file_name.clone()),
                         width: Some(width),
                         height: Some(height),
                         group: group.clone(),
                         annotations: vec![ann],
                         ..Default::default()
-                    }
+                    })
                 })
                 .collect();
             if samples.is_empty() {
@@ -266,6 +286,7 @@ async fn vid_split_samples(
     progress: &Option<Sender<Progress>>,
     counter: &Arc<std::sync::atomic::AtomicUsize>,
     total: usize,
+    keep_ignored: bool,
 ) -> Result<(Vec<Sample>, Vec<StagedFile>), Error> {
     let seq_root = split.join("sequences");
     let ann_dir = split.join("annotations");
@@ -341,8 +362,10 @@ async fn vid_split_samples(
                 missing_frames.insert(row.frame);
                 continue;
             };
+            let Some(mut ann) = box_to_annotation(&row.bbox, width, height, keep_ignored) else {
+                continue;
+            };
             frames_with_rows.insert(row.frame);
-            let mut ann = box_to_annotation(&row.bbox, width, height);
             ann.set_name(Some(seq_name.clone()));
             ann.set_sequence_name(Some(seq_name.clone()));
             ann.set_frame_number(Some(row.frame));
@@ -396,19 +419,20 @@ async fn vid_split_samples(
     Ok((all_samples, all_staged))
 }
 
-/// File-level metadata: schema version, ordered labels, and per-label ids.
+/// File-level metadata: schema version, ordered class labels, and per-label
+/// ids.
 fn build_metadata() -> BTreeMap<PlSmallStr, PlSmallStr> {
     let mut metadata = BTreeMap::new();
     metadata.insert(
         PlSmallStr::from("schema_version"),
         PlSmallStr::from(SCHEMA_VERSION),
     );
-    let labels = serde_json::to_string(&CATEGORIES).unwrap_or_default();
+    let labels = serde_json::to_string(&CLASS_CATEGORIES).unwrap_or_default();
     metadata.insert(
         PlSmallStr::from("labels"),
         PlSmallStr::from(labels.as_str()),
     );
-    let cat_meta: serde_json::Map<String, serde_json::Value> = CATEGORIES
+    let cat_meta: serde_json::Map<String, serde_json::Value> = CLASS_CATEGORIES
         .iter()
         .enumerate()
         .map(|(id, name)| (name.to_string(), serde_json::json!({ "id": id })))
@@ -448,7 +472,8 @@ fn count_images(split: &Path, kind: SplitKind) -> usize {
 /// Each input is a DET split (`annotations/` + `images/`) or a VID split
 /// (`annotations/` + `sequences/`). Both kinds may be mixed in one call.
 /// The output extension selects Arrow IPC or Parquet. Returns the number of
-/// rows written, including placeholder rows for images without boxes.
+/// rows written, including placeholder rows for images without kept boxes
+/// (including images whose boxes were all categories 0/11).
 pub async fn visdrone_to_arrow<P: AsRef<Path>>(
     inputs: &[PathBuf],
     output_path: P,
@@ -506,6 +531,7 @@ pub async fn visdrone_to_arrow<P: AsRef<Path>>(
                     &progress,
                     &counter,
                     total,
+                    options.keep_ignored,
                 )
                 .await?
             }
@@ -517,6 +543,7 @@ pub async fn visdrone_to_arrow<P: AsRef<Path>>(
                     &progress,
                     &counter,
                     total,
+                    options.keep_ignored,
                 )
                 .await?
             }

@@ -704,9 +704,13 @@ enum Command {
     /// -test-challenge unless --group is given. The output extension selects
     /// Arrow IPC (.arrow) or Parquet (.parquet).
     ///
+    /// Categories 0 (ignored regions) and 11 (others) are dropped unless
+    /// --keep-ignored is given; classes 1-10 get label_index 0-9.
+    ///
     /// Examples:
     ///   edgefirst-client visdrone-to-arrow VisDrone2019-DET-train VisDrone2019-DET-val -o visdrone-det/visdrone-det.arrow --images
     ///   edgefirst-client visdrone-to-arrow testdev -o testdev/testdev.parquet --group test-dev --images
+    ///   edgefirst-client visdrone-to-arrow VisDrone2019-DET-val -o val/val.arrow --keep-ignored
     VisdroneToArrow {
         /// One or more extracted VisDrone2019 split directories
         #[clap(required = true)]
@@ -729,11 +733,20 @@ enum Command {
         /// --images)
         #[clap(long, requires = "images")]
         link: bool,
+
+        /// Keep ignored regions and "others" as unlabelled rows flagged
+        /// ignore/exclude instead of dropping them
+        #[clap(long)]
+        keep_ignored: bool,
     },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
     /// Reads an EdgeFirst Arrow file and converts it to COCO JSON format.
     /// Supports bbox and polygon segmentation annotations.
+    ///
+    /// COCO iscrowd is written from the ignore column. Rows flagged exclude,
+    /// and ignore rows without a label, have no COCO equivalent and are
+    /// skipped with one warning. category_id is label_index when present.
     ///
     /// Examples:
     ///   edgefirst arrow-to-coco dataset.arrow -o instances.json
@@ -873,11 +886,17 @@ enum Command {
         #[clap(long)]
         pretty: bool,
     },
-    /// Migrate an Arrow file from 2025.10 to 2026.04 schema.
+    /// Migrate an Arrow file from an older schema to the current 2026.10 schema.
     ///
-    /// Converts the old NaN-separated `mask` column (List(Float32)) to the new
-    /// nested `polygon` column (List(List(Float32))) and sets schema_version
-    /// metadata.
+    /// From 2025.10: converts the old NaN-separated `mask` column
+    /// (List(Float32)) to the nested `polygon` column (List(List(Float32))).
+    /// A Binary raster `mask` column is left unchanged.
+    ///
+    /// From 2026.04: adds the `ignore` column from the deprecated `iscrowd`
+    /// column, keeping `iscrowd` as a mirror.
+    ///
+    /// Sets `schema_version` to 2026.10 in the file metadata. Files already at
+    /// 2026.10 are left unchanged.
     ///
     /// Examples:
     ///   edgefirst migrate dataset.arrow
@@ -2212,6 +2231,8 @@ fn parse_annotations_from_arrow(
             .ok()
             .and_then(|c| c.cast(&DataType::String).ok());
         let category_frequency_str = category_frequency_col.as_ref().and_then(|c| c.str().ok());
+        let ignore_flags = edgefirst_client::format::ignore_flags(&df);
+        let exclude_flags = edgefirst_client::format::flag_column(&df, "exclude");
 
         // Process each row in the DataFrame
         for idx in 0..total_rows {
@@ -2376,9 +2397,11 @@ fn parse_annotations_from_arrow(
                     annotation.set_object_id(Some(obj_id.clone()));
                 }
 
-                // Optional annotation columns (2026.04). Studio does not
-                // persist all of them yet; see DE-2952/DE-2953. They are
-                // carried so the payload is complete once the server does.
+                // Optional annotation columns (2026.04 and later). Studio
+                // does not persist all of them yet. The attribute and score
+                // columns are carried so the payload is complete once the
+                // server does. `ignore`/`exclude` are read so flagged rows
+                // can be dropped before upload.
                 // `truncation`/`occlusion` are UInt32 columns holding u8-range
                 // flags; anything wider is omitted rather than wrapped.
                 let u8_at = |col: &str| {
@@ -2394,12 +2417,8 @@ fn parse_annotations_from_arrow(
                 annotation.set_truncation(u8_at("truncation"));
                 annotation.set_occlusion(u8_at("occlusion"));
 
-                annotation.set_iscrowd(
-                    df.column("iscrowd")
-                        .ok()
-                        .and_then(|c| c.bool().ok())
-                        .and_then(|s| s.get(idx)),
-                );
+                annotation.set_ignore(ignore_flags.as_ref().and_then(|v| v[idx]));
+                annotation.set_exclude(exclude_flags.as_ref().and_then(|v| v[idx]));
                 annotation.set_category_frequency(
                     category_frequency_str.and_then(|s| s.get(idx).map(String::from)),
                 );
@@ -3116,6 +3135,20 @@ fn build_samples_from_directory(
     Ok(samples)
 }
 
+/// Remove annotations flagged `ignore` or `exclude` before upload, returning
+/// the user-facing warning when any were removed. Runs before labels are
+/// collected for pre-creation, so labels used only by flagged annotations are
+/// never created in Studio.
+#[cfg(feature = "polars")]
+fn drop_flagged_for_upload(samples: &mut [edgefirst_client::Sample]) -> Option<String> {
+    let dropped = edgefirst_client::drop_flagged_annotations(samples);
+    (dropped > 0).then(|| {
+        format!(
+            "⚠ Skipping {dropped} annotations flagged ignore/exclude: Studio does not support these flags yet"
+        )
+    })
+}
+
 #[cfg(feature = "polars")]
 #[cfg_attr(feature = "profiling", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
 async fn handle_upload_dataset(
@@ -3213,14 +3246,13 @@ async fn handle_upload_dataset(
     drop(_prep_span);
 
     // Studio's samples.populate2 stores label, label_index, object_reference,
-    // box2d, box3d and polygon. Tell the user which optional columns in this
-    // file will not survive the upload (tracked in DE-2952 / DE-2953).
+    // box2d, box3d and polygon; list which optional columns in this file
+    // will not survive the upload.
     if let Some(arrow_path) = &annotations {
         let (df, _) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
-        const NOT_PERSISTED: [&str; 8] = [
+        const NOT_PERSISTED: [&str; 7] = [
             "truncation",
             "occlusion",
-            "iscrowd",
             "category_frequency",
             "box2d_score",
             "box3d_score",
@@ -3238,6 +3270,10 @@ async fn handle_upload_dataset(
                 present.join(", ")
             );
         }
+    }
+
+    if let Some(warning) = drop_flagged_for_upload(&mut samples) {
+        println!("{warning}");
     }
 
     if samples.is_empty() {
@@ -4754,10 +4790,11 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// Handle Arrow file migration from 2025.10 to 2026.04 schema.
+/// Handle Arrow file migration to the current schema version.
 ///
 /// Converts the old NaN-separated `mask` column to the new nested `polygon`
-/// column and sets `schema_version` metadata.
+/// column, adds the `ignore` Boolean column from a deprecated `iscrowd`
+/// column when missing, and sets `schema_version` metadata.
 #[cfg(feature = "polars")]
 fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> {
     use edgefirst_client::{coco::SCHEMA_VERSION, unflatten_polygon_coordinates};
@@ -4794,10 +4831,13 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
     // metadata. Accepts .arrow/.ipc/.parquet.
     let (df, existing_metadata) = edgefirst_client::format::read_dataset_dataframe(&input)?;
 
-    let has_mask = df.get_column_names().contains(&&PlSmallStr::from("mask"));
+    // Only the 2025.10 NaN-separated List(Float32) mask needs converting. A
+    // Binary mask holds raster PNG bytes (2026.04+) and is left untouched.
+    let mask_dtype = df.column("mask").ok().map(|c| c.dtype().clone());
+    let has_legacy_mask = matches!(mask_dtype, Some(DataType::List(_)));
     let row_count = df.height();
 
-    let mut df = if has_mask {
+    let mut df = if has_legacy_mask {
         // Convert mask column: List(Float32) NaN-separated -> polygon: List(List(Float32))
         let mask_col = df
             .column("mask")
@@ -4875,7 +4915,11 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         );
         df
     } else {
-        println!("  No 'mask' column found, only updating schema_version metadata.");
+        if mask_dtype.is_some() {
+            println!("  'mask' column is not a legacy polygon list, leaving it unchanged.");
+        } else {
+            println!("  No 'mask' column found, no polygon conversion needed.");
+        }
         df
     };
 
@@ -4886,6 +4930,14 @@ fn handle_migrate(input: PathBuf, output: Option<PathBuf>) -> Result<(), Error> 
         let bool_col = col.cast(&DataType::Boolean)?;
         df.replace("iscrowd", bool_col)?;
         println!("  Converted 'iscrowd' column to Boolean type");
+    }
+
+    // Add 'ignore' from the deprecated 'iscrowd' column when missing.
+    if df.column("ignore").is_err()
+        && let Some(flags) = edgefirst_client::format::flag_column(&df, "iscrowd")
+    {
+        df.with_column(Series::new("ignore".into(), flags).into())?;
+        println!("  Added 'ignore' column from deprecated 'iscrowd'");
     }
 
     // Prepare metadata: preserve existing, update schema_version
@@ -4984,6 +5036,7 @@ async fn handle_visdrone_to_arrow(
     group: Option<String>,
     images: bool,
     link: bool,
+    keep_ignored: bool,
 ) -> Result<(), Error> {
     use edgefirst_client::visdrone::{VisDroneToArrowOptions, visdrone_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
@@ -5013,6 +5066,7 @@ async fn handle_visdrone_to_arrow(
         group,
         stage_images: images,
         link_images: link,
+        keep_ignored,
         ..Default::default()
     };
 
@@ -6075,6 +6129,7 @@ async fn main() -> Result<(), Error> {
             group,
             images,
             link,
+            keep_ignored,
         } => {
             return handle_visdrone_to_arrow(
                 split_dirs.clone(),
@@ -6082,6 +6137,7 @@ async fn main() -> Result<(), Error> {
                 group.clone(),
                 *images,
                 *link,
+                *keep_ignored,
             )
             .await;
         }
@@ -6588,6 +6644,40 @@ async fn main() -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "polars")]
+    #[test]
+    fn drop_flagged_for_upload_warns_and_leaves_no_flagged_labels() {
+        use edgefirst_client::{Annotation, Client, Sample};
+
+        let mut car = Annotation::new();
+        car.set_label(Some("car".into()));
+        car.set_label_index(Some(3));
+        let mut region = Annotation::new();
+        region.set_ignore(Some(true));
+        let mut other = Annotation::new();
+        other.set_label(Some("others".into()));
+        other.set_exclude(Some(true));
+        let mut sample = Sample::new();
+        sample.annotations = vec![car, region, other];
+        let mut samples = vec![sample];
+
+        let warning = drop_flagged_for_upload(&mut samples).expect("warning for dropped rows");
+        assert_eq!(
+            warning,
+            "⚠ Skipping 2 annotations flagged ignore/exclude: Studio does not support these flags yet"
+        );
+        assert_eq!(samples[0].annotations.len(), 1);
+        let (names, indices) = Client::collect_labels_from_samples(&samples).unwrap();
+        assert_eq!(names, vec!["car".to_string()]);
+        assert_eq!(indices, vec![Some(3)]);
+
+        assert_eq!(
+            drop_flagged_for_upload(&mut samples),
+            None,
+            "no warning when nothing dropped"
+        );
+    }
+
     use super::*;
 
     // Type aliases for cleaner test function signatures
@@ -7714,7 +7804,8 @@ mod tests {
             ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
             ann.set_truncation(Some(1));
             ann.set_occlusion(Some(2));
-            ann.set_iscrowd(Some(true));
+            ann.set_ignore(Some(true));
+            ann.set_exclude(Some(true));
             ann.set_box2d_score(Some(0.5));
             let sample = Sample {
                 image_name: Some("img.jpg".into()),
@@ -7733,8 +7824,20 @@ mod tests {
             let parsed = &samples[0].annotations[0];
             assert_eq!(parsed.truncation(), Some(1));
             assert_eq!(parsed.occlusion(), Some(2));
-            assert_eq!(parsed.iscrowd(), Some(true));
+            assert_eq!(parsed.ignore(), Some(true));
+            assert_eq!(parsed.exclude(), Some(true));
             assert_eq!(parsed.box2d_score(), Some(0.5));
+
+            // Legacy 2026.04 file: iscrowd only, as UInt32.
+            let legacy = temp.path().join("legacy.arrow");
+            let mut ldf = df.clone();
+            let _ = ldf.drop_in_place("ignore");
+            let _ = ldf.drop_in_place("iscrowd");
+            ldf.with_column(Series::new("iscrowd".into(), [1u32]).into())
+                .unwrap();
+            edgefirst_client::coco::write_dataset(&mut ldf, &legacy, Default::default()).unwrap();
+            let samples = parse_annotations_from_arrow(&Some(legacy), &images, true, &pb).unwrap();
+            assert_eq!(samples[0].annotations[0].ignore(), Some(true));
         }
 
         #[test]

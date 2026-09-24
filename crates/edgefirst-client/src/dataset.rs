@@ -1642,7 +1642,12 @@ struct AnnotationRaw {
     #[serde(default)]
     label_index: Option<u64>,
     #[serde(default)]
+    ignore: Option<bool>,
+    /// Deprecated key for `ignore`, read only when `ignore` is absent or null.
+    #[serde(default)]
     iscrowd: Option<bool>,
+    #[serde(default)]
+    exclude: Option<bool>,
     #[serde(default)]
     category_frequency: Option<String>,
     #[serde(default)]
@@ -1693,9 +1698,14 @@ pub struct Annotation {
     label_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label_index: Option<u64>,
-    /// COCO crowd flag: true = crowd region, false = single instance.
+    /// Don't-care region: loss and evaluation mask it. With a label it applies
+    /// to that class only; without one it applies to every class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    iscrowd: Option<bool>,
+    ignore: Option<bool>,
+    /// Real object outside the class set: left out of training, and
+    /// detections matching it are not false positives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exclude: Option<bool>,
     /// LVIS frequency group: "f" (frequent), "c" (common), "r" (rare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category_frequency: Option<String>,
@@ -1758,7 +1768,8 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             object_id: raw.object_id.filter(|s| !s.is_empty()),
             label_name: raw.label_name,
             label_index: raw.label_index,
-            iscrowd: raw.iscrowd,
+            ignore: raw.ignore.or(raw.iscrowd),
+            exclude: raw.exclude,
             category_frequency: raw.category_frequency,
             attributes: raw.attributes.filter(|a| !a.is_empty()),
             box2d,
@@ -1790,7 +1801,8 @@ impl Annotation {
             object_id: None,
             label_name: None,
             label_index: None,
-            iscrowd: None,
+            ignore: None,
+            exclude: None,
             category_frequency: None,
             attributes: None,
             box2d: None,
@@ -1868,12 +1880,52 @@ impl Annotation {
         self.label_index = label_index;
     }
 
-    pub fn iscrowd(&self) -> Option<bool> {
-        self.iscrowd
+    /// Don't-care flag. `Some(true)` marks a region that loss and evaluation
+    /// should mask. With a label it applies to that class only; without one
+    /// it applies to every class. `None` or `Some(false)` is an ordinary
+    /// annotation. Label and label index are optional when set. Replaces the
+    /// deprecated `iscrowd`.
+    pub fn ignore(&self) -> Option<bool> {
+        self.ignore
     }
 
+    /// Sets the don't-care flag. See [`ignore`](Self::ignore).
+    pub fn set_ignore(&mut self, ignore: Option<bool>) {
+        self.ignore = ignore;
+    }
+
+    /// Out-of-class-set flag. `Some(true)` marks a real object outside the
+    /// class set: trainers leave it out, and a detection matching it is not a
+    /// false positive. Label and label index are optional when set.
+    pub fn exclude(&self) -> Option<bool> {
+        self.exclude
+    }
+
+    /// Sets the out-of-class-set flag. See [`exclude`](Self::exclude).
+    pub fn set_exclude(&mut self, exclude: Option<bool>) {
+        self.exclude = exclude;
+    }
+
+    /// True when the annotation is flagged `ignore` or `exclude`.
+    ///
+    /// Flagged annotations are not uploaded: [`Client::populate_samples`]
+    /// drops them because Studio does not store these flags yet.
+    ///
+    /// [`Client::populate_samples`]: crate::Client::populate_samples
+    pub fn is_flagged(&self) -> bool {
+        self.ignore == Some(true) || self.exclude == Some(true)
+    }
+
+    /// Deprecated alias of [`ignore`](Self::ignore).
+    #[deprecated(since = "2.15.0", note = "use `Annotation::ignore`")]
+    pub fn iscrowd(&self) -> Option<bool> {
+        self.ignore
+    }
+
+    /// Deprecated alias of [`set_ignore`](Self::set_ignore).
+    #[deprecated(since = "2.15.0", note = "use `Annotation::set_ignore`")]
     pub fn set_iscrowd(&mut self, iscrowd: Option<bool>) {
-        self.iscrowd = iscrowd;
+        self.ignore = iscrowd;
     }
 
     pub fn category_frequency(&self) -> Option<&String> {
@@ -2123,6 +2175,49 @@ pub struct Group {
     pub name: String,
 }
 
+/// Remove annotations flagged `ignore` or `exclude`, returning how many were
+/// removed. Studio has no storage for these flags, so uploading them would
+/// turn don't-care regions and out-of-set objects into ordinary boxes.
+///
+/// [`Client::populate_samples`](crate::Client::populate_samples) applies this
+/// automatically; call it directly only to filter samples before other
+/// processing.
+///
+/// # Example
+///
+/// ```rust
+/// use edgefirst_client::{Annotation, Sample, drop_flagged_annotations};
+///
+/// let mut flagged = Annotation::new();
+/// flagged.set_ignore(Some(true));
+/// let mut sample = Sample::new();
+/// sample.annotations = vec![flagged, Annotation::new()];
+/// let mut samples = vec![sample];
+///
+/// assert_eq!(drop_flagged_annotations(&mut samples), 1);
+/// assert_eq!(samples[0].annotations.len(), 1);
+/// ```
+pub fn drop_flagged_annotations(samples: &mut [Sample]) -> usize {
+    samples
+        .iter_mut()
+        .map(|s| {
+            let before = s.annotations.len();
+            s.annotations.retain(|a| !a.is_flagged());
+            before - s.annotations.len()
+        })
+        .sum()
+}
+
+/// Log the single per-upload warning for annotations dropped because they
+/// are flagged `ignore` or `exclude`. Does nothing when `count` is zero.
+pub(crate) fn warn_flagged_not_uploaded(count: usize) {
+    if count > 0 {
+        log::warn!(
+            "{count} annotations flagged ignore/exclude were not uploaded: Studio does not support these flags yet"
+        );
+    }
+}
+
 #[cfg(feature = "polars")]
 fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
     use std::path::Path;
@@ -2154,39 +2249,41 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
     Series::new("".into(), ring_series)
 }
 
-/// Create a DataFrame from a slice of samples with the 2026.04 schema.
+/// Create a DataFrame from a slice of samples with the 2026.10 schema.
 ///
 /// Each annotation in each sample becomes one row. Columns where every value
 /// is null are automatically dropped, so the result only contains columns
 /// that carry data. The `name` column is always present.
 ///
-/// # Schema (2026.04)
+/// # Schema (2026.10)
 ///
 /// - `name`: Sample name (String) - ALWAYS PRESENT
-/// - `frame`: Frame number (UInt32)
-/// - `object_id`: Object tracking ID (String)
-/// - `label`: Object label (Categorical)
-/// - `label_index`: Label index (UInt64)
-/// - `group`: Dataset group (Categorical)
-/// - `polygon`: Segmentation polygon rings (List<List<Float32>>)
-/// - `box2d`: 2D bounding box [cx, cy, w, h] (Array<Float32, 4>)
-/// - `box3d`: 3D bounding box [x, y, z, w, h, l] (Array<Float32, 6>)
-/// - `mask`: PNG-encoded raster mask (Binary)
-/// - `box2d_score`: Box2d confidence (Float32)
-/// - `box3d_score`: Box3d confidence (Float32)
-/// - `polygon_score`: Polygon confidence (Float32)
-/// - `mask_score`: Mask confidence (Float32)
-/// - `size`: Image size [width, height] (Array<UInt32, 2>)
-/// - `location`: GPS [lat, lon] (Array<Float32, 2>)
-/// - `pose`: IMU [yaw, pitch, roll] (Array<Float32, 3>)
-/// - `degradation`: Image degradation (String)
-/// - `iscrowd`: COCO crowd flag (Boolean)
-/// - `category_frequency`: LVIS frequency group (Categorical)
-/// - `truncation`: Source truncation flag, VisDrone 0..1 (UInt32)
-/// - `occlusion`: Source occlusion flag, VisDrone 0..2 (UInt32)
-/// - `neg_label_indices`: Verified-absent label indices (List<UInt32>)
-/// - `not_exhaustive_label_indices`: Incomplete label indices (List<UInt32>)
-/// - `timing`: Pipeline timing (Struct{load, preprocess, inference, decode} of Int64)
+/// - `frame`: Frame number (`UInt32`)
+/// - `object_id`: Object tracking ID (`String`)
+/// - `label`: Object label (`Categorical`)
+/// - `label_index`: Label index (`UInt64`)
+/// - `group`: Dataset group (`Categorical`)
+/// - `polygon`: Segmentation polygon rings (`List<List<Float32>>`)
+/// - `box2d`: 2D bounding box [cx, cy, w, h] (`Array<Float32, 4>`)
+/// - `box3d`: 3D bounding box [x, y, z, w, h, l] (`Array<Float32, 6>`)
+/// - `mask`: PNG-encoded raster mask (`Binary`)
+/// - `box2d_score`: Box2d confidence (`Float32`)
+/// - `box3d_score`: Box3d confidence (`Float32`)
+/// - `polygon_score`: Polygon confidence (`Float32`)
+/// - `mask_score`: Mask confidence (`Float32`)
+/// - `size`: Image size [width, height] (`Array<UInt32, 2>`)
+/// - `location`: GPS [lat, lon] (`Array<Float32, 2>`)
+/// - `pose`: IMU [yaw, pitch, roll] (`Array<Float32, 3>`)
+/// - `degradation`: Image degradation (`String`)
+/// - `ignore`: don't-care region flag (`Boolean`)
+/// - `exclude`: out-of-class-set flag (`Boolean`)
+/// - `iscrowd`: deprecated mirror of `ignore` (`Boolean`)
+/// - `category_frequency`: LVIS frequency group (`Categorical`)
+/// - `truncation`: Source truncation flag, VisDrone 0..1 (`UInt32`)
+/// - `occlusion`: Source occlusion flag, VisDrone 0..2 (`UInt32`)
+/// - `neg_label_indices`: Verified-absent label indices (`List<UInt32>`)
+/// - `not_exhaustive_label_indices`: Incomplete label indices (`List<UInt32>`)
+/// - `timing`: Pipeline timing (`Struct{load, preprocess, inference, decode} of Int64`)
 ///
 /// # Example
 ///
@@ -2226,7 +2323,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let mut locations: Vec<Option<Vec<f32>>> = Vec::new();
     let mut poses: Vec<Option<Vec<f32>>> = Vec::new();
     let mut degradations: Vec<Option<String>> = Vec::new();
-    let mut iscrowds: Vec<Option<bool>> = Vec::new();
+    let mut ignores: Vec<Option<bool>> = Vec::new();
+    let mut excludes: Vec<Option<bool>> = Vec::new();
     let mut category_frequencies: Vec<Option<String>> = Vec::new();
     let mut truncations: Vec<Option<u8>> = Vec::new();
     let mut occlusions: Vec<Option<u8>> = Vec::new();
@@ -2301,7 +2399,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
             box3d_scores.push(None);
             polygon_scores.push(None);
             mask_scores.push(None);
-            iscrowds.push(None);
+            ignores.push(None);
+            excludes.push(None);
             category_frequencies.push(None);
             truncations.push(None);
             occlusions.push(None);
@@ -2340,7 +2439,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                 box3d_scores.push(ann.box3d_score());
                 polygon_scores.push(ann.polygon_score());
                 mask_scores.push(ann.mask_score());
-                iscrowds.push(ann.iscrowd);
+                ignores.push(ann.ignore);
+                excludes.push(ann.exclude);
                 category_frequencies.push(ann.category_frequency.clone());
                 truncations.push(ann.truncation());
                 occlusions.push(ann.occlusion());
@@ -2452,7 +2552,10 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let degradations_col: Column = Series::new("degradation".into(), degradations).into();
 
     // LVIS extension columns
-    let iscrowds_col: Column = Series::new("iscrowd".into(), iscrowds).into();
+    let ignores_col: Column = Series::new("ignore".into(), &ignores).into();
+    let excludes_col: Column = Series::new("exclude".into(), excludes).into();
+    // Deprecated: written alongside `ignore` so readers of 2026.04 files keep working.
+    let iscrowds_col: Column = Series::new("iscrowd".into(), ignores).into();
 
     let category_frequencies_col: Column =
         Series::new("category_frequency".into(), category_frequencies)
@@ -2531,6 +2634,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         locations_col,
         poses_col,
         degradations_col,
+        ignores_col,
+        excludes_col,
         iscrowds_col,
         category_frequencies_col,
         truncations_col,
@@ -4200,7 +4305,7 @@ mod tests {
         ann.set_name(Some("test".to_string()));
         ann.set_label(Some("person".to_string()));
         ann.set_label_index(Some(1));
-        ann.set_iscrowd(Some(false));
+        ann.set_ignore(Some(false));
         ann.set_category_frequency(Some("f".to_string()));
 
         let sample = Sample {
@@ -4216,7 +4321,7 @@ mod tests {
         let df = samples_dataframe(&[sample]).unwrap();
 
         // Verify LVIS columns are present (they have data)
-        assert!(df.column("iscrowd").is_ok(), "iscrowd column missing");
+        assert!(df.column("ignore").is_ok(), "ignore column missing");
         assert!(
             df.column("category_frequency").is_ok(),
             "category_frequency column missing"
@@ -4246,13 +4351,130 @@ mod tests {
         let ann = Annotation::new();
         let json = serde_json::to_string(&ann).unwrap();
         assert!(
-            !json.contains("iscrowd"),
-            "iscrowd should be omitted when None"
+            !json.contains("ignore"),
+            "ignore should be omitted when None"
         );
         assert!(
             !json.contains("category_frequency"),
             "category_frequency should be omitted when None"
         );
+    }
+
+    #[test]
+    fn annotation_ignore_exclude_accessors_and_flagged() {
+        let mut ann = Annotation::new();
+        assert!(!ann.is_flagged());
+        ann.set_ignore(Some(true));
+        assert_eq!(ann.ignore(), Some(true));
+        assert!(ann.is_flagged());
+        ann.set_ignore(Some(false));
+        ann.set_exclude(Some(true));
+        assert_eq!(ann.exclude(), Some(true));
+        assert!(ann.is_flagged());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn annotation_iscrowd_is_deprecated_alias_of_ignore() {
+        let mut ann = Annotation::new();
+        ann.set_iscrowd(Some(true));
+        assert_eq!(ann.ignore(), Some(true));
+        assert_eq!(ann.iscrowd(), Some(true));
+    }
+
+    #[test]
+    fn annotation_serde_ignore_exclude_and_legacy_iscrowd() {
+        let mut ann = Annotation::new();
+        ann.set_ignore(Some(true));
+        ann.set_exclude(Some(true));
+        let json = serde_json::to_string(&ann).unwrap();
+        assert!(json.contains("\"ignore\":true"), "{json}");
+        assert!(json.contains("\"exclude\":true"), "{json}");
+        assert!(!json.contains("iscrowd"), "{json}");
+
+        let legacy: Annotation = serde_json::from_str(r#"{"iscrowd": true}"#).unwrap();
+        assert_eq!(legacy.ignore(), Some(true));
+        let current: Annotation =
+            serde_json::from_str(r#"{"ignore": true, "exclude": false}"#).unwrap();
+        assert_eq!(current.ignore(), Some(true));
+        assert_eq!(current.exclude(), Some(false));
+    }
+
+    #[test]
+    fn annotation_serde_ignore_wins_over_iscrowd_in_either_order() {
+        let a: Annotation = serde_json::from_str(r#"{"ignore": false, "iscrowd": true}"#).unwrap();
+        assert_eq!(a.ignore(), Some(false));
+        let b: Annotation = serde_json::from_str(r#"{"iscrowd": true, "ignore": false}"#).unwrap();
+        assert_eq!(b.ignore(), Some(false));
+        let c: Annotation = serde_json::from_str(r#"{"iscrowd": false}"#).unwrap();
+        assert_eq!(c.ignore(), Some(false));
+        let d: Annotation = serde_json::from_str(r#"{"iscrowd": true, "ignore": null}"#).unwrap();
+        assert_eq!(d.ignore(), Some(true));
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn samples_dataframe_writes_ignore_exclude_and_mirrored_iscrowd() {
+        let mut a = Annotation::new();
+        a.set_name(Some("img".into()));
+        a.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+        a.set_ignore(Some(true));
+        let mut b = a.clone();
+        b.set_ignore(None);
+        b.set_exclude(Some(true));
+        let sample = Sample {
+            image_name: Some("img.jpg".into()),
+            annotations: vec![a, b],
+            ..Default::default()
+        };
+        let df = samples_dataframe(&[sample]).unwrap();
+        let ignore: Vec<Option<bool>> = df
+            .column("ignore")
+            .unwrap()
+            .bool()
+            .unwrap()
+            .iter()
+            .collect();
+        let exclude: Vec<Option<bool>> = df
+            .column("exclude")
+            .unwrap()
+            .bool()
+            .unwrap()
+            .iter()
+            .collect();
+        let iscrowd: Vec<Option<bool>> = df
+            .column("iscrowd")
+            .unwrap()
+            .bool()
+            .unwrap()
+            .iter()
+            .collect();
+        assert_eq!(ignore, vec![Some(true), None]);
+        assert_eq!(exclude, vec![None, Some(true)]);
+        assert_eq!(
+            iscrowd, ignore,
+            "iscrowd mirrors ignore during the deprecation window"
+        );
+    }
+
+    #[test]
+    fn drop_flagged_annotations_removes_ignore_and_exclude_rows() {
+        let mut keep = Annotation::new();
+        keep.set_label(Some("car".into()));
+        let mut crowd = Annotation::new();
+        crowd.set_label(Some("person".into()));
+        crowd.set_ignore(Some(true));
+        let mut other = Annotation::new();
+        other.set_exclude(Some(true));
+        let mut not_flagged = Annotation::new();
+        not_flagged.set_ignore(Some(false));
+        let mut samples = vec![Sample {
+            annotations: vec![keep, crowd, other, not_flagged],
+            ..Default::default()
+        }];
+        assert_eq!(drop_flagged_annotations(&mut samples), 2);
+        assert_eq!(samples[0].annotations.len(), 2);
+        assert!(samples[0].annotations.iter().all(|a| !a.is_flagged()));
     }
 
     #[test]

@@ -2511,8 +2511,31 @@ class Annotation:
         """Set the raster mask (PNG bytes) for this annotation."""
         ...
 
+    def set_ignore(self, ignore: Optional[bool]) -> None:
+        """Sets the ignore flag (don't-care region) for this annotation."""
+        ...
+
+    def set_exclude(self, exclude: Optional[bool]) -> None:
+        """Sets the exclude flag (object outside the class set) for this annotation."""
+        ...
+
+    def is_flagged(self) -> bool:
+        """
+        Whether this annotation is flagged ``ignore`` or ``exclude``.
+
+        Flagged annotations are not uploaded by ``populate_samples``, because
+        EdgeFirst Studio does not store these flags yet.
+        """
+        ...
+
     def set_iscrowd(self, iscrowd: Optional[bool]) -> None:
-        """Set the iscrowd flag for this annotation."""
+        """
+        Sets the ignore flag for this annotation.
+
+        .. deprecated:: 2.15.0
+            Use :meth:`set_ignore` instead. Calling this emits a
+            ``DeprecationWarning``. It will be removed in a future version.
+        """
         ...
 
     def set_box2d_score(self, score: Optional[float]) -> None:
@@ -2674,12 +2697,47 @@ class Annotation:
         ...
 
     @property
-    def iscrowd(self) -> Optional[bool]:
+    def ignore(self) -> Optional[bool]:
         """
-        Whether this annotation marks a crowd region.
+        Whether this annotation is a don't-care region that loss and
+        evaluation should mask. With a label it applies to that class only;
+        without one it applies to every class. Label and label index are
+        optional when set.
 
         Returns:
-            Optional[bool]: The iscrowd flag or None.
+            Optional[bool]: The ignore flag or None.
+        """
+        ...
+
+    @ignore.setter
+    def ignore(self, value: Optional[bool]) -> None: ...
+
+    @property
+    def exclude(self) -> Optional[bool]:
+        """
+        Whether this annotation is a real object outside the class set:
+        trainers leave it out, and a detection matching it is not a false
+        positive. Label and label index are optional when set.
+
+        Returns:
+            Optional[bool]: The exclude flag or None.
+        """
+        ...
+
+    @exclude.setter
+    def exclude(self, value: Optional[bool]) -> None: ...
+
+    @property
+    def iscrowd(self) -> Optional[bool]:
+        """
+        The ignore flag for this annotation.
+
+        .. deprecated:: 2.15.0
+            Use :attr:`ignore` instead. Reading this emits a
+            ``DeprecationWarning``. It will be removed in a future version.
+
+        Returns:
+            Optional[bool]: The ignore flag or None.
         """
         ...
 
@@ -6932,6 +6990,12 @@ class Client:
             List[SamplesPopulateResult]: List of results with UUIDs
                                         and presigned URLs
 
+        Note:
+            Annotations with ``ignore`` or ``exclude`` set to True are removed
+            before upload, because EdgeFirst Studio does not store these flags
+            yet. Labels used only by removed annotations are not created. A
+            single warning with the count is logged.
+
         Example:
             >>> from edgefirst_client import (
             ...     Client, Sample, SampleFile, Annotation, Box2d
@@ -6991,6 +7055,12 @@ class Client:
 
         Returns:
             List[SamplesPopulateResult]: Results with UUIDs and presigned URLs.
+
+        Note:
+            Annotations with ``ignore`` or ``exclude`` set to True are removed
+            before upload, because EdgeFirst Studio does not store these flags
+            yet. Labels used only by removed annotations are not created. A
+            single warning with the count is logged.
 
         Raises:
             Error: If the dataset does not exist or upload fails.
@@ -7931,6 +8001,10 @@ def coco_to_arrow(
     directory named after ``output_path``; ``link_images=True`` uses symlinks
     on Unix.
 
+    COCO crowd annotations (``iscrowd: 1``) are written with ``ignore`` set
+    to true, keeping their label and index; the deprecated ``iscrowd`` column
+    is written as a mirror of ``ignore``.
+
     Returns:
         Number of EdgeFirst rows written, including placeholder rows for
         unannotated images.
@@ -7944,20 +8018,23 @@ def visdrone_to_arrow(
     progress: Optional[Progress] = None,
     stage_images: bool = False,
     link_images: bool = False,
+    keep_ignored: bool = False,
 ) -> int:
     """
     Convert VisDrone2019 DET and VID splits to an offline EdgeFirst dataset.
 
     Each entry of ``split_dirs`` is an extracted split directory. The group
     is inferred from a directory name ending in ``-train``, ``-val``,
-    ``-test-dev`` or ``-test-challenge`` unless ``group`` is given. VisDrone
-    categories 0 (ignored regions) and 11 (others) are kept with their source
-    indices; ``truncation`` and ``occlusion`` become columns. VID rows carry
-    ``frame`` and ``object_id`` (``<seq>/<target_id>``).
+    ``-test-dev`` or ``-test-challenge`` unless ``group`` is given.
+    Categories 1–10 get ``label_index`` 0–9. Categories 0 (ignored regions)
+    and 11 (others) are dropped unless ``keep_ignored`` is true, in which
+    case they are written without a label and flagged ``ignore`` and
+    ``exclude``. ``truncation`` and ``occlusion`` become columns. VID rows
+    carry ``frame`` and ``object_id`` (``<seq>/<target_id>``).
 
     Returns:
         Number of rows written, including placeholder rows for images and
-        frames without boxes.
+        frames without kept boxes.
     """
     ...
 
@@ -7971,11 +8048,19 @@ def arrow_to_coco(
     """
     Convert an EdgeFirst Arrow IPC or Parquet dataset to COCO JSON.
 
+    COCO ``iscrowd`` is written from the ``ignore`` column (falling back to a
+    legacy ``iscrowd`` column). Rows flagged ``exclude``, and ``ignore`` rows
+    without a label, have no COCO equivalent: they are skipped with one
+    logged warning, and ``exclude`` rows create no category. COCO
+    ``category_id`` is taken from ``label_index`` when present, so a dataset
+    indexed from 0 (such as a default VisDrone conversion) produces
+    ``category_id`` 0.
+
     Args:
         groups: Optional group filter, for example ``["train", "val"]``.
 
     Returns:
-        Number of COCO annotations written.
+        Number of COCO annotations written; skipped rows are not counted.
     """
     ...
 
@@ -8019,6 +8104,10 @@ def collect_labels_from_samples(
     """
     Collect parallel label name/index arrays from samples, for use with
     ``Client.add_labels(dataset_id, names, indices)``.
+
+    Annotations flagged ``ignore`` or ``exclude`` are skipped, matching what
+    ``populate_samples`` uploads, so labels used only by flagged annotations
+    are not collected.
 
     Args:
         samples: Samples whose annotations should be scanned for labels.

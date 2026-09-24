@@ -201,6 +201,42 @@ pub fn read_dataset_dataframe(
     }
 }
 
+/// Per-row values of a Boolean flag column such as `ignore` or `exclude`.
+///
+/// Returns `None` when the column is absent. Integer columns (older
+/// `iscrowd`) read non-zero as `true`. A column that is present but cannot be
+/// cast to Boolean (for example a String column) is logged as a warning and
+/// also returns `None`, so callers treat it as absent.
+#[cfg(feature = "polars")]
+pub fn flag_column(df: &polars::prelude::DataFrame, name: &str) -> Option<Vec<Option<bool>>> {
+    use polars::prelude::*;
+
+    let col = df.column(name).ok()?;
+    let values = col
+        .cast(&DataType::Boolean)
+        .ok()
+        .and_then(|c| c.bool().ok().map(|b| b.iter().collect::<Vec<_>>()));
+    if values.is_none() {
+        log::warn!(
+            "column '{name}' has type {} which cannot be read as a Boolean flag; treating it as absent",
+            col.dtype()
+        );
+    }
+    values
+}
+
+/// Per-row `ignore` flags, falling back to the deprecated `iscrowd` column.
+///
+/// The fallback is per column: whenever an `ignore` column is present (and
+/// readable as Boolean) it is used for every row, even rows where it is null,
+/// and `iscrowd` is not consulted. JSON deserialisation of
+/// [`Annotation`](crate::Annotation) instead falls back per annotation.
+/// Returns `None` when neither column is usable; see [`flag_column`].
+#[cfg(feature = "polars")]
+pub fn ignore_flags(df: &polars::prelude::DataFrame) -> Option<Vec<Option<bool>>> {
+    flag_column(df, "ignore").or_else(|| flag_column(df, "iscrowd"))
+}
+
 /// Resolve all file paths referenced by an Arrow annotation file.
 ///
 /// Reads the Arrow file and extracts the `name` and `frame` columns to
@@ -1355,7 +1391,7 @@ mod tests {
         let mut metadata = BTreeMap::new();
         metadata.insert(
             PlSmallStr::from("schema_version"),
-            PlSmallStr::from("2026.04"),
+            PlSmallStr::from(crate::coco::SCHEMA_VERSION),
         );
         ipc_writer.set_custom_schema_metadata(Arc::new(metadata));
         ipc_writer.finish(&mut df).unwrap();
@@ -1366,7 +1402,7 @@ mod tests {
         let meta = read_dataset_metadata(&arrow_path).unwrap();
         assert_eq!(
             meta.get("schema_version").map(|s| s.as_str()),
-            Some("2026.04")
+            Some(crate::coco::SCHEMA_VERSION)
         );
     }
 
@@ -1382,7 +1418,10 @@ mod tests {
         let mut df = DataFrame::new_infer_height(vec![names.into()]).unwrap();
 
         let file = File::create(&parquet_path).unwrap();
-        let kv = vec![("schema_version".to_string(), "2026.04".to_string())];
+        let kv = vec![(
+            "schema_version".to_string(),
+            crate::coco::SCHEMA_VERSION.to_string(),
+        )];
         ParquetWriter::new(file)
             .with_key_value_metadata(Some(KeyValueMetadata::from_static(kv)))
             .finish(&mut df)
@@ -1391,7 +1430,43 @@ mod tests {
         let meta = read_dataset_metadata(&parquet_path).unwrap();
         assert_eq!(
             meta.get("schema_version").map(|s| s.as_str()),
-            Some("2026.04")
+            Some(crate::coco::SCHEMA_VERSION)
         );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn ignore_flags_prefers_ignore_and_falls_back_to_iscrowd() {
+        use polars::prelude::*;
+        let legacy_u32 = df!("iscrowd" => [Some(1u32), Some(0), None]).unwrap();
+        assert_eq!(
+            ignore_flags(&legacy_u32),
+            Some(vec![Some(true), Some(false), None])
+        );
+
+        let legacy_bool = df!("iscrowd" => [Some(true), None]).unwrap();
+        assert_eq!(ignore_flags(&legacy_bool), Some(vec![Some(true), None]));
+
+        let both = df!("ignore" => [Some(false)], "iscrowd" => [Some(true)]).unwrap();
+        assert_eq!(ignore_flags(&both), Some(vec![Some(false)]), "ignore wins");
+
+        let none = df!("label" => ["car"]).unwrap();
+        assert_eq!(ignore_flags(&none), None);
+        assert_eq!(flag_column(&none, "exclude"), None);
+
+        let null_ignore = df!("ignore" => [None::<bool>], "iscrowd" => [Some(true)]).unwrap();
+        assert_eq!(
+            ignore_flags(&null_ignore),
+            Some(vec![None]),
+            "fallback is per column, not per row"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn flag_column_uncastable_is_treated_as_absent() {
+        use polars::prelude::*;
+        let strings = df!("exclude" => ["yes"]).unwrap();
+        assert_eq!(flag_column(&strings, "exclude"), None);
     }
 }

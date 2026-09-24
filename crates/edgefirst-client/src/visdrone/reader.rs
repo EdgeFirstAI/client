@@ -8,6 +8,9 @@ use std::path::Path;
 use crate::Error;
 
 /// VisDrone2019 object categories, indexed by `object_category`.
+///
+/// Converted rows do not use these indices: `label_index` follows
+/// [`CLASS_CATEGORIES`] (`object_category - 1`).
 pub const CATEGORIES: [&str; 12] = [
     "ignored regions",
     "pedestrian",
@@ -21,6 +24,20 @@ pub const CATEGORIES: [&str; 12] = [
     "bus",
     "motor",
     "others",
+];
+
+/// The ten object classes, indexed by `label_index` (`object_category - 1`).
+pub const CLASS_CATEGORIES: [&str; 10] = [
+    "pedestrian",
+    "people",
+    "bicycle",
+    "car",
+    "van",
+    "truck",
+    "tricycle",
+    "awning-tricycle",
+    "bus",
+    "motor",
 ];
 
 /// Category name for a VisDrone `object_category` id, or `None` when out of range.
