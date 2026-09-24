@@ -16,7 +16,9 @@ use super::{
         polygon_to_coco_polygon,
     },
     reader::{CocoReadOptions, CocoReader, read_coco_directory},
-    types::{CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
+    types::{
+        CocoAnnotation, CocoCategory, CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation,
+    },
     writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter},
 };
 use crate::{
@@ -1282,8 +1284,9 @@ pub async fn update_coco_annotations(
     // Build COCO index for efficient annotation lookup
     let coco_index = CocoIndex::from_dataset(&dataset);
 
-    // Ensure all labels exist
-    let label_map = ensure_labels_exist(client, &dataset_id, &dataset.categories).await?;
+    // Ensure labels exist for every category an uploaded annotation can use
+    let label_map =
+        ensure_labels_exist(client, &dataset_id, &categories_to_create(&dataset)).await?;
 
     // Process all images and collect results
     let annotation_set_id_u64: u64 = annotation_set_id.into();
@@ -1508,14 +1511,38 @@ fn compute_bbox_from_polygon(
 /// the categories used only by them, which import never creates. Returns the
 /// number of annotations removed.
 fn exclude_crowd_annotations(dataset: &mut CocoDataset) -> usize {
-    let used_before: HashSet<u32> = dataset.annotations.iter().map(|a| a.category_id).collect();
+    let crowd_only = crowd_only_category_ids(&dataset.annotations);
     let before = dataset.annotations.len();
     dataset.annotations.retain(|a| a.iscrowd == 0);
-    let used_after: HashSet<u32> = dataset.annotations.iter().map(|a| a.category_id).collect();
+    dataset.categories.retain(|c| !crowd_only.contains(&c.id));
+    before - dataset.annotations.len()
+}
+
+/// Categories referenced only by crowd annotations (`iscrowd != 0`).
+/// Categories no annotation references are not included.
+fn crowd_only_category_ids(annotations: &[CocoAnnotation]) -> HashSet<u32> {
+    let non_crowd: HashSet<u32> = annotations
+        .iter()
+        .filter(|a| a.iscrowd == 0)
+        .map(|a| a.category_id)
+        .collect();
+    annotations
+        .iter()
+        .filter(|a| a.iscrowd != 0 && !non_crowd.contains(&a.category_id))
+        .map(|a| a.category_id)
+        .collect()
+}
+
+/// The categories import creates in Studio: every category except those used
+/// only by crowd annotations, which import never uploads.
+fn categories_to_create(dataset: &CocoDataset) -> Vec<CocoCategory> {
+    let crowd_only = crowd_only_category_ids(&dataset.annotations);
     dataset
         .categories
-        .retain(|c| !used_before.contains(&c.id) || used_after.contains(&c.id));
-    before - dataset.annotations.len()
+        .iter()
+        .filter(|c| !crowd_only.contains(&c.id))
+        .cloned()
+        .collect()
 }
 
 /// Verify a COCO dataset import against Studio data.
@@ -2173,6 +2200,37 @@ mod tests {
             vec!["person", "unused"],
             "crowd-only category dropped; categories never used are left as before"
         );
+    }
+
+    #[test]
+    fn categories_to_create_skips_crowd_only_categories() {
+        let ann = |id: u64, category_id: u32, iscrowd: u8| CocoAnnotation {
+            id,
+            image_id: 1,
+            category_id,
+            bbox: [0.0, 0.0, 10.0, 10.0],
+            area: 100.0,
+            iscrowd,
+            segmentation: None,
+            score: None,
+        };
+        let cat = |id: u32, name: &str| CocoCategory {
+            id,
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let dataset = CocoDataset {
+            categories: vec![cat(1, "person"), cat(2, "crowdonly"), cat(3, "unused")],
+            annotations: vec![ann(1, 1, 0), ann(2, 1, 1), ann(3, 2, 1)],
+            ..Default::default()
+        };
+
+        let names: Vec<String> = categories_to_create(&dataset)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["person", "unused"]);
+        assert_eq!(dataset.categories.len(), 3, "input dataset is unchanged");
     }
 
     #[test]
