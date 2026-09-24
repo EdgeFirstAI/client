@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.15.0] - 2026-09-24
+
 ### Added
 
 - `visdrone-to-arrow` converts extracted VisDrone2019-DET and VisDrone2019-VID splits into one offline EdgeFirst dataset (Arrow or Parquet, with `--images` staging). Multiple split directories merge into one file with a `group` column (`train`, `val`, `test-dev`, …); DET and VID splits can be combined into a mixed dataset (flat images plus sequence subfolders). VisDrone categories 1–10 get `label_index = category - 1`; categories 0 (`ignored regions`) and 11 (`others`) are dropped by default, so the ten classes are indexed 0–9 (pedestrian = 0), matching the Ultralytics VisDrone mapping; the redundant `score` flag is not stored. VID sequences become `name`/`frame` rows with `object_id = <seq>/<target_id>`, which survives `upload-dataset` as Studio's `object_reference`. Python: `edgefirst_client.visdrone_to_arrow`.
@@ -18,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The EdgeFirst Dataset Format is now 2026.10. `migrate` upgrades 2026.04 files by adding `ignore` from `iscrowd`.
+- The EdgeFirst Dataset Format specification 2026.10 is now released (no longer draft). `migrate` upgrades 2026.04 files by adding `ignore` from `iscrowd`.
 - Uploads (`upload-dataset`, `populate_samples`, `import-coco` and `import-coco --update`) skip annotations flagged `ignore` or `exclude`, including COCO crowd annotations, since Studio does not store these flags yet. One warning per upload or import gives the number skipped, and `import-coco --verify` leaves crowd annotations, and categories used only by them, out of the comparison. `collect_labels_from_samples` skips flagged annotations.
 - `arrow-to-coco` writes `iscrowd` from `ignore` and skips unlabelled `ignore` rows and `exclude` rows, which have no COCO equivalent.
 
@@ -32,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `download-annotations` and `samples_dataframe` now read Studio's empty `object_reference` as null instead of an empty `object_id` string.
 - `validate-snapshot` now resolves sequence frames named `{name}_{frame}` as the format specification documents, falling back to the older zero-padded `{name}_{frame:03}` form. Frames below 100 in unpadded layouts were previously reported missing.
 - `upload-dataset` now carries `category_frequency`, `truncation`, `occlusion`, and the per-geometry score columns from Arrow into the upload payload.
+
+### Security
+
+- Upgraded `rustls` from 0.23.41 to 0.23.45 (with `rustls-webpki` 0.103.15 and `aws-lc-rs` 1.18.1) to address [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285), where TLS 1.3 handshake messages were accepted across encryption level boundaries.
 
 ## [2.14.0] - 2026-09-03
 

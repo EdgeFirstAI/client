@@ -1,8 +1,8 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.10
-**Last Updated**: 22 September, 2026
-**Status**: DRAFT (pending review)
+**Last Updated**: 24 September, 2026
+**Status**: Released (EdgeFirst Client v2.15.0)
 
 > **Implementation status:** the SDK has implemented the 2026.04 Arrow schema since client v2.9.0, and 2026.10 is the current format. As of the client v2.14.0, dataset annotation files can also be written and read as Apache Parquet (`.parquet`), selected by output file extension, with the same file-level metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet footer key-value pairs — full parity with Arrow IPC. `validate-snapshot` accepts either format when the annotation filename matches the dataset directory basename. The client writes `schema_version` 2026.10 as of client v2.15.0; see [Migration from 2026.04](#migration-from-202604) for what changed.
 >
@@ -1805,7 +1805,7 @@ Users who read EdgeFirst Arrow files directly with raw Polars (outside the SDK) 
 
 ## Version History
 
-### Version 2026.10 - Current
+### Version 2026.10 - Current (released 24 September, 2026 with client v2.15.0)
 
 **`ignore`/`exclude` Flags and `iscrowd` Deprecation**
 
