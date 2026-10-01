@@ -4262,6 +4262,35 @@ impl ValidationSession {
         ))
     }
 
+    /// Record the platform this validation ran on.
+    ///
+    /// `platform` is the `platform.yaml` document as a dict, or as JSON or
+    /// YAML text.
+    #[tokio_wrap::sync]
+    pub fn set_platform<'py>(
+        &self,
+        py: Python<'py>,
+        platform: &Bound<'py, PyAny>,
+    ) -> Result<(), Error> {
+        let platform = if let Ok(text) = platform.extract::<String>() {
+            serde_json::Value::String(text)
+        } else if platform.is_instance_of::<PyDict>() {
+            let text: String = py
+                .import("json")?
+                .call_method1("dumps", (platform,))?
+                .extract()?;
+            serde_json::from_str(&text).map_err(edgefirst_client::Error::from)?
+        } else {
+            return Err(Error::TypeError(
+                "set_platform() platform must be a dict or str".to_string(),
+            ));
+        };
+        let client = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError("ValidationSession has no client reference.".to_string())
+        })?;
+        Ok(self.inner.set_platform(client.as_ref(), platform).await?)
+    }
+
     /// Get artifacts for this validation session.
     ///
     /// New API (v2.6.0+): `session.artifacts()` - uses embedded client

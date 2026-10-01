@@ -1307,6 +1307,41 @@ impl ValidationSession {
         Ok(())
     }
 
+    /// Records the platform this validation ran on.
+    ///
+    /// `platform` is the EdgeFirst Profiler `platform.yaml` document, either
+    /// as a JSON object or as a JSON string holding JSON or YAML text.
+    /// Studio validates it against the schema named by its `schema_version`
+    /// and stores it as the session's detected platform.
+    ///
+    /// # Errors
+    /// Returns `Error::RpcError` when Studio rejects the platform (for
+    /// example an unsupported `schema_version` or a field of the wrong
+    /// type), or when the session has no linked task.
+    pub async fn set_platform(
+        &self,
+        client: &client::Client,
+        platform: serde_json::Value,
+    ) -> Result<(), Error> {
+        #[derive(Serialize)]
+        struct Params {
+            validate_session_id: ValidationSessionID,
+            platform: serde_json::Value,
+        }
+
+        let _: serde_json::Value = client
+            .rpc(
+                "validate.session.set_platform".to_owned(),
+                Some(Params {
+                    validate_session_id: self.id(),
+                    platform,
+                }),
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Uploads files to this validation session's data folder.
     ///
     /// **Breaking change**: this method replaces the former `upload`.
