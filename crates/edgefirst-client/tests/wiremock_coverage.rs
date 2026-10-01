@@ -3602,8 +3602,7 @@ async fn validation_session_set_platform_surfaces_rejection() {
         .and(path("/api"))
         .and(rpc_method_body("validate.session.set_platform"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(rpc_error(101, "unsupported schema version: 3")),
+            ResponseTemplate::new(200).set_body_json(rpc_error(3, "unsupported schema version: 3")),
         )
         .mount(&server)
         .await;
@@ -3613,7 +3612,7 @@ async fn validation_session_set_platform_surfaces_rejection() {
         .await
         .expect_err("a rejected platform must be an error");
     assert!(
-        matches!(&err, Error::RpcError(_, msg) if msg.contains("unsupported schema version: 3")),
-        "expected RpcError naming the version, got {err:?}"
+        matches!(&err, Error::RpcError(3, msg) if msg.contains("unsupported schema version: 3")),
+        "expected bad-request RpcError naming the version, got {err:?}"
     );
 }

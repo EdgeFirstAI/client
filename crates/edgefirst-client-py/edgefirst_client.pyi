@@ -4600,6 +4600,9 @@ class ValidationSession:
                 either as a dict or as JSON or YAML text.
 
         Raises:
+            TypeError: If ``platform`` is neither a dict nor a str, or the
+                dict holds a value JSON cannot represent.
+            ValueError: If the dict holds NaN or infinity.
             RuntimeError: If Studio rejects the platform, for example an
                 unsupported ``schema_version``, or the session has no
                 linked task.

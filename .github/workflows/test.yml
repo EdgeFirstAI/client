@@ -267,8 +267,9 @@ jobs:
           print("edgefirst_client imported OK, exports present:", ", ".join(expected))
           PY
 
-      # Only the Python tests that construct no Client. The Studio-backed
-      # Python suite runs in studio.yml.
+      # Only the Python tests that need no Studio: they construct no Client,
+      # or point one at a local stub server. The Studio-backed Python suite
+      # runs in studio.yml.
       # Named individually rather than discovered, because most of test/ needs a
       # live Studio. test_ids is split by class for the same reason: its
       # conversion tests are pure ID translation, while TestIDTypes calls
@@ -284,7 +285,7 @@ jobs:
           python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
             test.test_coco_roundtrip test.test_storage test.test_parameter \
             test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
-            test.test_sample_metadata test.test_example_paths \
+            test.test_sample_metadata test.test_example_paths test.test_set_platform \
             -o target/python
 
       # Merges the deferred Rust run with the Python run into one lcov. Asserts
