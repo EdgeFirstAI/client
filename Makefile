@@ -85,12 +85,12 @@ py-test:
 		venv/bin/python -m unittest \
 			test.test_coco_roundtrip test.test_visdrone test.test_storage test.test_parameter \
 			test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
-			test.test_sample_metadata test.test_example_paths; \
+			test.test_sample_metadata test.test_example_paths test.test_set_platform; \
 	else \
 		python3 -m unittest \
 			test.test_coco_roundtrip test.test_visdrone test.test_storage test.test_parameter \
 			test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
-			test.test_sample_metadata test.test_example_paths; \
+			test.test_sample_metadata test.test_example_paths test.test_set_platform; \
 	fi
 
 # Build all crates

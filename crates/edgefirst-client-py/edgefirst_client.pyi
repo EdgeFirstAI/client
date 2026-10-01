@@ -4591,6 +4591,24 @@ class ValidationSession:
         """
         ...
 
+    def set_platform(self, platform: Union[Dict[str, Any], str]) -> None:
+        """
+        Records the platform this validation ran on.
+
+        Args:
+            platform: The EdgeFirst Profiler ``platform.yaml`` document,
+                either as a dict or as JSON or YAML text.
+
+        Raises:
+            TypeError: If ``platform`` is neither a dict nor a str, or the
+                dict holds a value JSON cannot represent.
+            ValueError: If the dict holds NaN or infinity.
+            RuntimeError: If Studio rejects the platform, for example an
+                unsupported ``schema_version``, or the session has no
+                linked task.
+        """
+        ...
+
     def artifacts(self, client: Optional[Client] = None) -> List[Artifact]:
         """
         Returns a list of artifacts produced by the validation session.

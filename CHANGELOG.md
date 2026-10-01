@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-10-01
+
+### Added
+
+- `ValidationSession::set_platform` (Python `ValidationSession.set_platform`) records the platform a validation ran on, from an EdgeFirst Profiler `platform.yaml` document given as a JSON object or as JSON or YAML text.
+
 ## [2.15.0] - 2026-09-24
 
 ### Added

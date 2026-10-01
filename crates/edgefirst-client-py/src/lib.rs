@@ -4262,6 +4262,43 @@ impl ValidationSession {
         ))
     }
 
+    /// Record the platform this validation ran on.
+    ///
+    /// `platform` is the `platform.yaml` document as a dict, or as JSON or
+    /// YAML text. Any other type raises `TypeError`; a dict holding values
+    /// JSON cannot represent raises the `json` module's `TypeError` or
+    /// `ValueError`.
+    #[tokio_wrap::sync]
+    pub fn set_platform<'py>(&self, py: Python<'py>, platform: &Bound<'py, PyAny>) -> PyResult<()> {
+        let platform = if let Ok(text) = platform.extract::<String>() {
+            serde_json::Value::String(text)
+        } else if platform.is_instance_of::<PyDict>() {
+            // `allow_nan=False` rejects NaN and infinity in Python, where the
+            // error names the value, rather than in serde_json.
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("allow_nan", false)?;
+            let text: String = py
+                .import("json")?
+                .call_method("dumps", (platform,), Some(&kwargs))?
+                .extract()?;
+            serde_json::from_str(&text)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "set_platform() platform must be a dict or str, not {}",
+                platform.get_type().name()?
+            )));
+        };
+        let client = self.client.as_ref().ok_or_else(|| {
+            Error::TypeError("ValidationSession has no client reference.".to_string())
+        })?;
+        self.inner
+            .set_platform(client.as_ref(), platform)
+            .await
+            .map_err(Error::from)?;
+        Ok(())
+    }
+
     /// Get artifacts for this validation session.
     ///
     /// New API (v2.6.0+): `session.artifacts()` - uses embedded client

@@ -3557,3 +3557,62 @@ async fn create_snapshot_from_dataset_accepts_real_id() {
     assert_eq!(result.id.to_string(), "ss-81f");
     assert!(result.task_id.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// ValidationSession::set_platform
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn validation_session_set_platform_sends_session_id_and_platform() {
+    let server = MockServer::start().await;
+    let session = mock_validation_session(&server, 2707).await;
+    let platform = json!({
+        "schema_version": 2,
+        "host": { "hostname": "imx95-frdm" },
+        "processor": { "cpu": { "cores": 6 } },
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "validate.session.set_platform",
+            "params": { "validate_session_id": 2707, "platform": platform },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "validate_session_id": "v-a93",
+            "platform_instance_id": 0,
+            "detected_platform": platform,
+        }))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    session
+        .set_platform(&client_for(&server.uri()), platform.clone())
+        .await
+        .expect("set_platform via mock");
+}
+
+#[tokio::test]
+async fn validation_session_set_platform_surfaces_rejection() {
+    let server = MockServer::start().await;
+    let session = mock_validation_session(&server, 2707).await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("validate.session.set_platform"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_error(3, "unsupported schema version: 3")),
+        )
+        .mount(&server)
+        .await;
+
+    let err = session
+        .set_platform(&client_for(&server.uri()), json!({ "schema_version": 3 }))
+        .await
+        .expect_err("a rejected platform must be an error");
+    assert!(
+        matches!(&err, Error::RpcError(3, msg) if msg.contains("unsupported schema version: 3")),
+        "expected bad-request RpcError naming the version, got {err:?}"
+    );
+}
