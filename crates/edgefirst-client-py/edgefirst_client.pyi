@@ -1294,6 +1294,32 @@ class UsageSummary:
         """Total spendable balance (credits + funds)."""
         ...
 
+class RecycleBinItem:
+    """
+    An item in the recycle bin, from :py:meth:`Client.recycle_bin`.
+
+    Deleted items count against the organization's quota until they are
+    purged with :py:meth:`Client.purge_recycle_bin`.
+    """
+
+    @property
+    def id(self) -> str:
+        """The item's prefixed ID, such as ``"ds-1a"`` or ``"p-2"``."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """
+        The item's name. Validation sessions have no name, so this is
+        their description.
+        """
+        ...
+
+    @property
+    def deleted(self) -> datetime:
+        """When the item was deleted."""
+        ...
+
 class FileType(Enum):
     """
     File types supported in EdgeFirst Studio datasets.
@@ -6278,6 +6304,52 @@ class Client:
         Args:
             dataset_id (Union[DatasetID, int, str]): ID of the dataset
                 to delete.
+        """
+        ...
+
+    def recycle_bin(self) -> List[RecycleBinItem]:
+        """
+        List every item in the recycle bin that the user can see, most
+        recently deleted first.
+
+        Deleted projects, datasets, annotation sets, experiments, training
+        sessions and validation sessions count against the organization's
+        quota until they are purged with :py:meth:`purge_recycle_bin`.
+
+        Returns:
+            List[RecycleBinItem]: The recycle bin contents.
+        """
+        ...
+
+    def purge_recycle_bin(
+        self,
+        items: List[
+            Union[
+                str,
+                ProjectID,
+                DatasetID,
+                AnnotationSetID,
+                ExperimentID,
+                TrainingSessionID,
+                ValidationSessionID,
+            ]
+        ],
+    ) -> None:
+        """
+        Permanently delete items from the recycle bin, freeing their quota.
+        This cannot be undone.
+
+        Items must already be deleted and the user needs write access to
+        each. If any item fails either check, nothing is purged.
+
+        Args:
+            items: Prefixed ID strings (``"ds-1a"``, such as
+                :py:attr:`RecycleBinItem.id`) or ID objects. A bare ``int``
+                is rejected because it does not identify the kind of item.
+
+        Example:
+            >>> client.delete_dataset(dataset_id)
+            >>> client.purge_recycle_bin([dataset_id])
         """
         ...
 

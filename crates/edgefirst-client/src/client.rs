@@ -6,14 +6,15 @@ use crate::{
     api::{
         AnnotationSetID, Artifact, ChangelogCountResult, ChangelogResponse, DatasetID,
         DatasetSummary, Experiment, ExperimentID, LoginResult, NewTrainingSession,
-        NewValidationSession, Organization, Project, ProjectID, RestoreResult, SampleID,
-        SamplesCountResult, SamplesListParams, SamplesListResult, SchemaField, Snapshot,
-        SnapshotCreateFromDataset, SnapshotFromDatasetResult, SnapshotID, SnapshotRestore,
-        SnapshotRestoreResult, Stage, StartTrainingRequest, StartValidationRequest, Tag, TaskID,
-        TaskInfo, TaskStages, TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo,
-        TrainingSession, TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID,
-        ValidatorSchema, VersionChangelogParams, VersionCurrentResponse, VersionTag,
-        VersionTagCreateParams, VersionTagNameParams,
+        NewValidationSession, Organization, Project, ProjectID, RecycleBinItem, RecycleBinItemID,
+        RecycleListResult, RestoreResult, SampleID, SamplesCountResult, SamplesListParams,
+        SamplesListResult, SchemaField, Snapshot, SnapshotCreateFromDataset,
+        SnapshotFromDatasetResult, SnapshotID, SnapshotRestore, SnapshotRestoreResult, Stage,
+        StartTrainingRequest, StartValidationRequest, Tag, TaskID, TaskInfo, TaskStages,
+        TaskStatus, TasksListParams, TasksListResult, TrainerSchemaInfo, TrainingSession,
+        TrainingSessionID, UsageSummary, ValidationSession, ValidationSessionID, ValidatorSchema,
+        VersionChangelogParams, VersionCurrentResponse, VersionTag, VersionTagCreateParams,
+        VersionTagNameParams,
     },
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
@@ -1836,6 +1837,63 @@ impl Client {
     pub async fn delete_dataset(&self, dataset_id: DatasetID) -> Result<(), Error> {
         let params = HashMap::from([("id", dataset_id)]);
         let _: serde_json::Value = self.rpc("dataset.delete".to_owned(), Some(params)).await?;
+        Ok(())
+    }
+
+    /// Lists every item in the organization's recycle bin that the user can
+    /// see, most recently deleted first.
+    ///
+    /// Deleting a project, dataset, annotation set, experiment, training
+    /// session or validation session moves it to the recycle bin, where it
+    /// still counts against the organization's quota until it is purged with
+    /// [`Client::purge_recycle_bin`].
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `recycle.list`.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn recycle_bin(&self) -> Result<Vec<RecycleBinItem>, Error> {
+        // Without a date range the server lists live items instead of
+        // deleted ones, so always pass one covering every deletion.
+        let params = serde_json::json!({
+            "types": RecycleListResult::TYPES,
+            "deleted_start": "1900-01-01T00:00:00Z",
+            "deleted_end": Utc::now().to_rfc3339(),
+        });
+        let result: RecycleListResult = self.rpc("recycle.list".to_owned(), Some(params)).await?;
+        Ok(result.into_items())
+    }
+
+    /// Permanently deletes items from the recycle bin, freeing the quota they
+    /// use. This cannot be undone.
+    ///
+    /// Items must already be deleted, and the user needs write access to each
+    /// of them. If any item fails either check, the server rejects the whole
+    /// request without purging anything.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &edgefirst_client::Client, dataset_id: edgefirst_client::DatasetID) -> Result<(), edgefirst_client::Error> {
+    /// client.delete_dataset(dataset_id).await?;
+    /// client.purge_recycle_bin(&[dataset_id.into()]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any RPC error from `recycle.purge`. A
+    /// [`Error::PermissionDenied`] means the user lacks write access to at
+    /// least one item.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn purge_recycle_bin(&self, items: &[RecycleBinItemID]) -> Result<(), Error> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let item_ids: Vec<String> = items.iter().map(ToString::to_string).collect();
+        let params = HashMap::from([("item_ids", item_ids)]);
+        let _: serde_json::Value = self.rpc("recycle.purge".to_owned(), Some(params)).await?;
         Ok(())
     }
 

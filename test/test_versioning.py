@@ -21,7 +21,7 @@ import time
 import unittest
 from unittest import TestCase
 
-from test import get_client, get_test_data_dir, skip_if_known_group_by_bug
+from test import delete_and_purge_dataset, get_client, get_test_data_dir, skip_if_known_group_by_bug
 from test.fixtures import (
     create_sample_with_circle_annotation,
     create_sample_without_annotation,
@@ -210,7 +210,7 @@ class VersionTagLifecycleTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_duplicate_tag_creation(self):
         """Creating a tag with an existing name should raise an error."""
@@ -229,7 +229,7 @@ class VersionTagLifecycleTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_invalid_tag_name(self):
         """Tag name with invalid characters should raise an error."""
@@ -247,7 +247,7 @@ class VersionTagLifecycleTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_nonexistent_tag_get(self):
         """Getting a tag that does not exist should raise an error."""
@@ -262,7 +262,7 @@ class VersionTagLifecycleTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionTaggedDataFetchTest(TestCase):
@@ -360,7 +360,7 @@ class VersionTaggedDataFetchTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_download_dataset_with_tag(self):
         """Download dataset at a tagged version."""
@@ -397,7 +397,7 @@ class VersionTaggedDataFetchTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_tagged_labels_and_annotation_sets_nonempty(self):
         """Regression test: tag-scoped labels()/annotation_sets() must not
@@ -445,7 +445,7 @@ class VersionTaggedDataFetchTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_annotation_triggered_label_creation_completes(self):
         """Verifies that a label referenced only through an annotation (no
@@ -478,7 +478,7 @@ class VersionTaggedDataFetchTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionChangelogTest(TestCase):
@@ -533,7 +533,7 @@ class VersionChangelogTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_changelog_count(self):
         """Verify version_changelog_count returns correct count."""
@@ -563,7 +563,7 @@ class VersionChangelogTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_changelog_version_range(self):
         """Test changelog filtering by version range."""
@@ -605,7 +605,7 @@ class VersionChangelogTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_version_summary(self):
         """Test version_summary and version_summary_recalculate."""
@@ -631,7 +631,7 @@ class VersionChangelogTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_version_current_no_tags(self):
         """version_current with no tags should have latest_tag=None."""
@@ -662,7 +662,7 @@ class VersionChangelogTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_changelog_records_edits_after_tag(self):
         """Every edit after a tag is created must still be recorded in the
@@ -700,7 +700,7 @@ class VersionChangelogTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionTagRestoreTest(TestCase):
@@ -767,7 +767,7 @@ class VersionTagRestoreTest(TestCase):
 
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionEditAfterTagTest(TestCase):
@@ -846,7 +846,7 @@ class VersionEditAfterTagTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_fetch_back_multiple_historical_tags(self):
         """Create three tags at three different states; verify each can
@@ -893,7 +893,7 @@ class VersionEditAfterTagTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_head_reflects_latest_after_tagging_and_editing(self):
         """HEAD reads (no version param) must always reflect the current
@@ -926,7 +926,7 @@ class VersionEditAfterTagTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionDeleteSampleTest(TestCase):
@@ -1094,7 +1094,7 @@ class VersionDeleteSampleTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_restore_same_tag_twice_after_delete_is_idempotent(self):
         """Restoring the same tag a second time immediately after the first
@@ -1133,7 +1133,7 @@ class VersionDeleteSampleTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_delete_unannotated_sample_then_restore_brings_it_back(self):
         """Same round trip as the annotated test, but for a sample with NO
@@ -1192,7 +1192,7 @@ class VersionDeleteSampleTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
     def test_delete_multiple_samples_bulk(self):
         """Bulk-delete 2 of 4 samples in a single call; verify only the
@@ -1229,7 +1229,7 @@ class VersionDeleteSampleTest(TestCase):
             )
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionDatasetIdTypingTest(TestCase):
@@ -1276,7 +1276,7 @@ class VersionDatasetIdTypingTest(TestCase):
             print("dataset_id typing verified as DatasetID on all 4 types")
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 class VersionDatasetConvenienceMethodsTest(TestCase):
@@ -1343,7 +1343,7 @@ class VersionDatasetConvenienceMethodsTest(TestCase):
             print("Dataset-level version_*() methods match Client-level equivalents")
         finally:
             if not skip_cleanup:
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
 
 
 if __name__ == "__main__":

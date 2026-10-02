@@ -138,6 +138,16 @@ enum Command {
         /// Dataset ID
         dataset_id: String,
     },
+    /// List the items in the recycle bin, most recently deleted first.
+    /// Deleted items count against the organization's quota until purged.
+    RecycleBin,
+    /// Permanently delete items from the recycle bin, freeing their quota.
+    /// Items must already be deleted. This cannot be undone.
+    PurgeRecycleBin {
+        /// Item IDs to purge (p-, ds-, as-, exp-, t- or v- prefixed)
+        #[clap(required = true)]
+        item_ids: Vec<String>,
+    },
     /// Delete one or more samples (images) from a dataset. Annotations belonging to the
     /// deleted samples are removed automatically by the server (cascade delete). NOTE:
     /// deletion happens asynchronously on the server; samples may not disappear from
@@ -1279,6 +1289,30 @@ async fn handle_delete_dataset(client: &Client, dataset_id: String) -> Result<()
     let dataset_id: edgefirst_client::DatasetID = dataset_id.try_into()?;
     client.delete_dataset(dataset_id).await?;
     println!("Dataset {} marked as deleted", dataset_id);
+    Ok(())
+}
+
+async fn handle_recycle_bin(client: &Client) -> Result<(), Error> {
+    for item in client.recycle_bin().await? {
+        println!(
+            "[{}] {} (deleted {})",
+            item.id(),
+            item.name(),
+            item.deleted().to_rfc3339()
+        );
+    }
+    Ok(())
+}
+
+async fn handle_purge_recycle_bin(client: &Client, item_ids: Vec<String>) -> Result<(), Error> {
+    let ids = item_ids
+        .iter()
+        .map(|id| id.parse::<edgefirst_client::RecycleBinItemID>())
+        .collect::<Result<Vec<_>, _>>()?;
+    client.purge_recycle_bin(&ids).await?;
+    for id in ids {
+        println!("Purged {}", id);
+    }
     Ok(())
 }
 
@@ -6298,6 +6332,8 @@ async fn main() -> Result<(), Error> {
             description,
         } => handle_create_dataset(&client, project_id, name, description).await,
         Command::DeleteDataset { dataset_id } => handle_delete_dataset(&client, dataset_id).await,
+        Command::RecycleBin => handle_recycle_bin(&client).await,
+        Command::PurgeRecycleBin { item_ids } => handle_purge_recycle_bin(&client, item_ids).await,
         Command::DeleteSamples {
             dataset_id,
             sample_ids,

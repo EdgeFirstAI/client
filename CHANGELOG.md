@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client::recycle_bin` and `Client::purge_recycle_bin` (Python `Client.recycle_bin` / `Client.purge_recycle_bin`, CLI `recycle-bin` / `purge-recycle-bin`) list the recycle bin and permanently purge items from it. Deleted items count against the organization's quota until purged. Items are identified by `RecycleBinItemID`, which parses and displays as the prefixed ID (`ds-1a`, `p-2`, …) and converts from each ID type.
+
+### Changed
+
+- Studio integration tests purge the datasets, training sessions and validation sessions they delete, so test runs no longer fill the test organization's recycle bin and quota.
+
 ## [2.16.0] - 2026-10-01
 
 ### Added
