@@ -25,7 +25,7 @@ from pathlib import Path
 
 from edgefirst_client import Annotation, Box2d, Polygon, Sample, SampleFile
 from PIL import Image
-from test import get_client, get_test_data_dir
+from test import delete_and_purge_dataset, get_client, get_test_data_dir
 
 
 def generate_timestamp():
@@ -575,7 +575,7 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
                 print(f"  Dataset: {dataset_name}")
             else:
                 print("\nCleaning up...")
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
                 print("  ✓ Deleted test dataset")
 
     def test_coco_import_export_preserves_labels(self):
@@ -641,7 +641,7 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
     def test_coco_bbox_accuracy(self):
         """Test that bounding box coordinates are accurate through roundtrip."""
@@ -701,7 +701,7 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
     def test_coco_multiple_annotations_per_image(self):
         """Test handling multiple annotations on a single image."""
@@ -764,7 +764,7 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
     def test_coco_with_masks(self):
         """Test that segmentation masks survive the roundtrip."""
@@ -827,7 +827,7 @@ class TestCocoStudioRoundtrip(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
 
 class TestCocoStudioImportExport(unittest.TestCase):
@@ -878,7 +878,7 @@ class TestCocoStudioImportExport(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
     def test_export_produces_valid_coco(self):
         """Verify exported COCO has valid structure."""
@@ -939,7 +939,7 @@ class TestCocoStudioImportExport(unittest.TestCase):
 
         finally:
             if not self.skip_cleanup:
-                self.client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(self.client, dataset_id)
 
 
 if __name__ == "__main__":

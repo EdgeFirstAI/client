@@ -501,6 +501,195 @@ typeid!(
     "as"
 );
 
+/// Identifies an item in the EdgeFirst Studio recycle bin.
+///
+/// Displays and parses as the item's prefixed ID, such as `"ds-1a"` for a
+/// dataset or `"p-2"` for a project.
+///
+/// # Examples
+///
+/// ```rust
+/// use edgefirst_client::{DatasetID, RecycleBinItemID};
+/// use std::str::FromStr;
+///
+/// let id = RecycleBinItemID::from(DatasetID::from(0x1a));
+/// assert_eq!(id.to_string(), "ds-1a");
+/// assert_eq!(RecycleBinItemID::from_str("ds-1a").unwrap(), id);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RecycleBinItemID {
+    Project(ProjectID),
+    Dataset(DatasetID),
+    AnnotationSet(AnnotationSetID),
+    Experiment(ExperimentID),
+    TrainingSession(TrainingSessionID),
+    ValidationSession(ValidationSessionID),
+}
+
+impl Display for RecycleBinItemID {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            RecycleBinItemID::Project(id) => id.fmt(f),
+            RecycleBinItemID::Dataset(id) => id.fmt(f),
+            RecycleBinItemID::AnnotationSet(id) => id.fmt(f),
+            RecycleBinItemID::Experiment(id) => id.fmt(f),
+            RecycleBinItemID::TrainingSession(id) => id.fmt(f),
+            RecycleBinItemID::ValidationSession(id) => id.fmt(f),
+        }
+    }
+}
+
+impl FromStr for RecycleBinItemID {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let prefix = s.split_once('-').map(|(prefix, _)| prefix);
+        match prefix {
+            Some("p") => Ok(RecycleBinItemID::Project(s.parse()?)),
+            Some("ds") => Ok(RecycleBinItemID::Dataset(s.parse()?)),
+            Some("as") => Ok(RecycleBinItemID::AnnotationSet(s.parse()?)),
+            Some("exp") => Ok(RecycleBinItemID::Experiment(s.parse()?)),
+            Some("t") => Ok(RecycleBinItemID::TrainingSession(s.parse()?)),
+            Some("v") => Ok(RecycleBinItemID::ValidationSession(s.parse()?)),
+            _ => Err(Error::InvalidParameters(format!(
+                "{s} is not a recycle bin item ID (expected a p-, ds-, as-, exp-, t- or v- prefix)"
+            ))),
+        }
+    }
+}
+
+macro_rules! recycle_bin_item_from {
+    ($($id:ident => $variant:ident),* $(,)?) => {
+        $(impl From<$id> for RecycleBinItemID {
+            fn from(id: $id) -> Self {
+                RecycleBinItemID::$variant(id)
+            }
+        })*
+    };
+}
+
+recycle_bin_item_from!(
+    ProjectID => Project,
+    DatasetID => Dataset,
+    AnnotationSetID => AnnotationSet,
+    ExperimentID => Experiment,
+    TrainingSessionID => TrainingSession,
+    ValidationSessionID => ValidationSession,
+);
+
+/// An item in the EdgeFirst Studio recycle bin, as returned by
+/// [`Client::recycle_bin`].
+///
+/// Deleted items stay in the recycle bin, and count against the
+/// organization's quota, until they are purged with
+/// [`Client::purge_recycle_bin`] or restored from Studio.
+#[derive(Clone, Debug)]
+pub struct RecycleBinItem {
+    id: RecycleBinItemID,
+    name: String,
+    deleted: DateTime<Utc>,
+}
+
+impl RecycleBinItem {
+    /// The item's prefixed ID.
+    pub fn id(&self) -> RecycleBinItemID {
+        self.id
+    }
+
+    /// The item's name. Validation sessions have no name, so this is their
+    /// description.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// When the item was deleted.
+    pub fn deleted(&self) -> &DateTime<Utc> {
+        &self.deleted
+    }
+}
+
+/// One row of a `recycle.list` category. Each category carries the full
+/// entity, of which only these fields are common to all of them.
+#[derive(Deserialize)]
+pub(crate) struct RecycleListEntry {
+    id: u64,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    name: String,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    description: String,
+    deleted: DateTime<Utc>,
+}
+
+/// `recycle.list` result. The server returns `null` for a category whose
+/// query found nothing.
+#[derive(Deserialize)]
+pub(crate) struct RecycleListResult {
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    projects: Vec<RecycleListEntry>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    datasets: Vec<RecycleListEntry>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    annotation_sets: Vec<RecycleListEntry>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    experiments: Vec<RecycleListEntry>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    training_sessions: Vec<RecycleListEntry>,
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
+    validate_sessions: Vec<RecycleListEntry>,
+}
+
+impl RecycleListResult {
+    /// The `types` values that request each category above.
+    pub(crate) const TYPES: [&'static str; 6] = [
+        "project",
+        "dataset",
+        "annset",
+        "experiment",
+        "train-session",
+        "validate",
+    ];
+
+    /// Flattens every category into recycle bin items, most recently deleted
+    /// first.
+    pub(crate) fn into_items(self) -> Vec<RecycleBinItem> {
+        fn convert(
+            entries: Vec<RecycleListEntry>,
+            id: fn(u64) -> RecycleBinItemID,
+        ) -> impl Iterator<Item = RecycleBinItem> {
+            entries.into_iter().map(move |entry| RecycleBinItem {
+                id: id(entry.id),
+                name: if entry.name.is_empty() {
+                    entry.description
+                } else {
+                    entry.name
+                },
+                deleted: entry.deleted,
+            })
+        }
+
+        let mut items: Vec<RecycleBinItem> =
+            convert(self.projects, |id| RecycleBinItemID::Project(id.into()))
+                .chain(convert(self.datasets, |id| {
+                    RecycleBinItemID::Dataset(id.into())
+                }))
+                .chain(convert(self.annotation_sets, |id| {
+                    RecycleBinItemID::AnnotationSet(id.into())
+                }))
+                .chain(convert(self.experiments, |id| {
+                    RecycleBinItemID::Experiment(id.into())
+                }))
+                .chain(convert(self.training_sessions, |id| {
+                    RecycleBinItemID::TrainingSession(id.into())
+                }))
+                .chain(convert(self.validate_sessions, |id| {
+                    RecycleBinItemID::ValidationSession(id.into())
+                }))
+                .collect();
+        items.sort_by_key(|item| std::cmp::Reverse(item.deleted));
+        items
+    }
+}
+
 typeid!(
     /// Unique identifier for a sample within a dataset.
     ///
@@ -3834,6 +4023,41 @@ mod tests {
     );
     test_typeid_conversions!(test_sample_id_conversions, SampleID, "s", "p");
     test_typeid_conversions!(test_app_id_conversions, AppId, "app", "p");
+
+    #[test]
+    fn test_recycle_bin_item_id_round_trips() {
+        let cases = [
+            ("p-2", RecycleBinItemID::Project(ProjectID::from(0x2))),
+            ("ds-1a", RecycleBinItemID::Dataset(DatasetID::from(0x1a))),
+            (
+                "as-ff",
+                RecycleBinItemID::AnnotationSet(AnnotationSetID::from(0xff)),
+            ),
+            (
+                "exp-3",
+                RecycleBinItemID::Experiment(ExperimentID::from(0x3)),
+            ),
+            (
+                "t-10000",
+                RecycleBinItemID::TrainingSession(TrainingSessionID::from(0x10000)),
+            ),
+            (
+                "v-5",
+                RecycleBinItemID::ValidationSession(ValidationSessionID::from(0x5)),
+            ),
+        ];
+        for (text, id) in cases {
+            assert_eq!(text.parse::<RecycleBinItemID>().unwrap(), id, "{text}");
+            assert_eq!(id.to_string(), text);
+        }
+
+        for bad in ["ss-1", "s-1", "inf-1", "12", "ds-", "ds-xyz", ""] {
+            assert!(
+                bad.parse::<RecycleBinItemID>().is_err(),
+                "{bad} should not parse"
+            );
+        }
+    }
     test_typeid_conversions!(test_image_id_conversions, ImageId, "im", "se");
     test_typeid_conversions!(test_sequence_id_conversions, SequenceId, "se", "im");
 

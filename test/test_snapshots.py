@@ -26,6 +26,7 @@ import polars as pl
 
 from test import (
     TEST_PROJECT_NAME,
+    delete_and_purge_dataset,
     get_client,
     get_test_data_dir,
     skip_if_known_group_by_bug,
@@ -548,7 +549,7 @@ class TestLabelIndexRoundtrip(unittest.TestCase):
             self.assertEqual(dict(zip(names, indices, strict=True)), synced)
         finally:
             try:
-                self.client.delete_dataset(new_dataset_id)
+                delete_and_purge_dataset(self.client, new_dataset_id)
             except Exception:
                 pass
 
