@@ -32,7 +32,7 @@ from edgefirst_client import (
     SampleFile,
 )
 from PIL import Image, ImageDraw
-from test import get_client, get_test_data_dir, skip_if_known_group_by_bug
+from test import delete_and_purge_dataset, get_client, get_test_data_dir, skip_if_known_group_by_bug
 from test.fixtures import get_test_dataset, get_test_dataset_types
 
 
@@ -262,7 +262,7 @@ class DatasetTest(TestCase):
                 )
             else:
                 print("\nCleaning up test dataset...")
-                client.delete_dataset(dataset_id)
+                delete_and_purge_dataset(client, dataset_id)
                 print("  ✓ Deleted test dataset")
 
     def _sample_uuid(self, sample):
@@ -818,7 +818,7 @@ class DatasetTest(TestCase):
                     "(SKIP_CLEANUP=1)."
                 )
             else:
-                client.delete_dataset(new_dataset_id)
+                delete_and_purge_dataset(client, new_dataset_id)
             shutil.rmtree(export_dir, ignore_errors=True)
             shutil.rmtree(reexport_dir, ignore_errors=True)
 
@@ -855,7 +855,7 @@ class DatasetTest(TestCase):
             self.assertEqual(len(results), 1)
             print("✓ Sample with image name works")
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_helper_annotation_image_key(self):
         """Test creating samples with annotations."""
@@ -896,7 +896,7 @@ class DatasetTest(TestCase):
             self.assertEqual(len(results), 1)
             print("✓ Annotation image key works")
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_collect_exported_files_scenario(self):
         """Test roundtrip export includes all expected files."""
@@ -938,7 +938,7 @@ class DatasetTest(TestCase):
             self.assertEqual(len(results), 1)
             print("✓ Export files scenario works")
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_annotation_signature_with_bbox(self):
         """Test annotation with bbox creates consistent signature."""
@@ -979,7 +979,7 @@ class DatasetTest(TestCase):
             self.assertEqual(len(results), 1)
             print("✓ Annotation signature with bbox works")
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_annotation_signature_with_mask(self):
         """Test samples with mask annotations load correctly."""
@@ -1048,7 +1048,7 @@ class DatasetTest(TestCase):
             self.assertEqual(len(results), 1)
             print("✓ Multiple annotations for same image works")
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_dataset_tags(self):
         """dataset_tags() should return the legacy free-form tags for a dataset."""
@@ -1064,7 +1064,7 @@ class DatasetTest(TestCase):
             # A freshly created dataset has no tags yet.
             self.assertEqual(len(tags), 0)
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
     def test_collect_labels_from_samples(self):
         """collect_labels_from_samples() should extract unique label/index pairs."""
@@ -1166,7 +1166,7 @@ class DatasetTest(TestCase):
             returned_ann = created_sample.annotations[0]
             self.assertEqual(returned_ann.label_index, 4242)
         finally:
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
 
 class TestLabels(TestCase):

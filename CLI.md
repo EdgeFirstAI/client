@@ -252,6 +252,35 @@ Delete a dataset by marking it as deleted.
 
 **Note:** This operation marks the dataset as deleted but may not immediately remove all associated data. Deletion is typically soft and may be reversible through the web interface.
 
+## RECYCLE BIN
+
+Deleted projects, datasets, annotation sets, experiments, training sessions and validation sessions stay in the recycle bin, where they still count against the organization's quota, until they are purged.
+
+### recycle-bin
+
+List the items in the recycle bin, most recently deleted first.
+
+**edgefirst-client recycle-bin**
+
+Each line shows the item ID, its name and when it was deleted:
+
+```
+[ds-1a] Deer copy (deleted 2026-10-02T08:00:00+00:00)
+```
+
+### purge-recycle-bin
+
+Permanently delete items from the recycle bin, freeing the quota they use. This cannot be undone.
+
+**edgefirst-client purge-recycle-bin** *ITEM_ID*...
+
+**Arguments:**
+
+*ITEM_ID*
+:   One or more item IDs from `recycle-bin`, with their `p-`, `ds-`, `as-`, `exp-`, `t-` or `v-` prefix.
+
+**Note:** Items must already be deleted, and you need write access to each one. If any item fails either check, nothing is purged.
+
 ## ANNOTATION SETS
 
 ### create-annotation-set

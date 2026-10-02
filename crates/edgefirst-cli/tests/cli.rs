@@ -20,6 +20,23 @@ fn edgefirst_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("edgefirst-client"))
 }
 
+/// Purges deleted test items so they stop counting against the test
+/// organization's quota. Deleted items otherwise stay in the recycle bin
+/// indefinitely. A failure is reported but never fails the test.
+fn purge_recycled(ids: &[&str]) {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("purge-recycle-bin").args(ids);
+    match cmd.output() {
+        Ok(output) if output.status.success() => println!("✓ Purged {}", ids.join(", ")),
+        Ok(output) => eprintln!(
+            "⚠ Could not purge {}: {}",
+            ids.join(", "),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(err) => eprintln!("⚠ Could not purge {}: {err}", ids.join(", ")),
+    }
+}
+
 /// Known, internally-tracked server-side error signature. Not a client bug.
 fn is_known_group_by_bug(text: &str) -> bool {
     text.contains("must appear in the GROUP BY clause")
@@ -1614,6 +1631,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
     match cmd.output() {
         Ok(output) if output.status.success() => {
             println!("✓ Deleted dataset: {}", new_dataset_id);
+            purge_recycled(&[&new_dataset_id]);
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1802,6 +1820,7 @@ fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error
     let mut cmd = edgefirst_cmd();
     cmd.arg("delete-dataset").arg(&new_dataset_id);
     let _ = cmd.output();
+    purge_recycled(&[&new_dataset_id]);
 
     let mut cmd = edgefirst_cmd();
     cmd.arg("delete-snapshot").arg(&snapshot_id);
@@ -2033,6 +2052,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     match cmd.output() {
         Ok(output) if output.status.success() => {
             println!("✓ Deleted dataset: {}", new_dataset_id);
+            purge_recycled(&[&new_dataset_id]);
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3349,6 +3369,31 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output_str.contains(dataset_id));
 
     println!("✓ Step 5: Deleted dataset {}", dataset_id);
+
+    // 6. The deleted dataset is in the recycle bin until it is purged.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("recycle-bin");
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(
+        output_str.contains(&format!("[{}]", dataset_id)),
+        "deleted dataset {dataset_id} missing from the recycle bin"
+    );
+    println!("✓ Step 6: Dataset {} is in the recycle bin", dataset_id);
+
+    // 7. Purge it so the test does not consume the organization's quota.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("purge-recycle-bin").arg(dataset_id);
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(output_str.contains(&format!("Purged {}", dataset_id)));
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("recycle-bin");
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(
+        !output_str.contains(&format!("[{}]", dataset_id)),
+        "purged dataset {dataset_id} still in the recycle bin"
+    );
+    println!("✓ Step 7: Purged dataset {}", dataset_id);
     println!("✅ Dataset CRUD workflow completed successfully");
 
     Ok(())
@@ -4302,6 +4347,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     match cmd.output() {
         Ok(output) if output.status.success() => {
             println!("✓ Deleted restored dataset: {}", restored_dataset_id);
+            purge_recycled(&[&restored_dataset_id]);
         }
         _ => {
             println!(
@@ -5041,6 +5087,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
         match cmd.output() {
             Ok(output) if output.status.success() => {
                 println!("✓ Deleted dataset: {}", dataset_id);
+                purge_recycled(&[&dataset_id]);
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -5291,6 +5338,7 @@ fn test_server_rejects_inconsistent_group_snapshot() -> Result<(), Box<dyn std::
                     let mut cleanup_cmd = edgefirst_cmd();
                     cleanup_cmd.arg("delete-dataset").arg(&dataset_id);
                     cleanup_cmd.output().ok();
+                    purge_recycled(&[&dataset_id]);
                 }
 
                 // Check if the task failed even though command returned success
@@ -6137,6 +6185,7 @@ fn test_training_session_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     cmd.assert()
         .success()
         .stdout(predicates::str::contains("Deleted training session"));
+    purge_recycled(&[&session_id]);
 
     result
 }

@@ -3261,6 +3261,73 @@ impl UsageSummary {
     }
 }
 
+/// An item in the recycle bin, from :py:meth:`Client.recycle_bin`.
+///
+/// Deleted items count against the organization's quota until they are
+/// purged with :py:meth:`Client.purge_recycle_bin`.
+#[pyclass(module = "edgefirst_client")]
+pub struct RecycleBinItem(edgefirst_client::RecycleBinItem);
+
+#[pymethods]
+impl RecycleBinItem {
+    /// The item's prefixed ID, such as ``"ds-1a"`` or ``"p-2"``.
+    #[getter]
+    pub fn id(&self) -> String {
+        self.0.id().to_string()
+    }
+
+    /// The item's name. Validation sessions have no name, so this is their
+    /// description.
+    #[getter]
+    pub fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    /// When the item was deleted.
+    #[getter]
+    pub fn deleted(&self, py: Python<'_>) -> PyResult<Py<PyDateTime>> {
+        Ok(self.0.deleted().into_pyobject(py)?.into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("RecycleBinItem('{}', '{}')", self.0.id(), self.0.name())
+    }
+}
+
+/// Converts one Python recycle bin item reference: a prefixed ID string or
+/// one of the ID classes. A bare int is rejected because it does not say
+/// which kind of item it is.
+fn recycle_bin_item_id(
+    value: &Bound<'_, PyAny>,
+) -> Result<edgefirst_client::RecycleBinItemID, Error> {
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(s.parse()?);
+    }
+    if let Ok(id) = value.extract::<ProjectID>() {
+        return Ok(id.0.into());
+    }
+    if let Ok(id) = value.extract::<DatasetID>() {
+        return Ok(id.0.into());
+    }
+    if let Ok(id) = value.extract::<AnnotationSetID>() {
+        return Ok(id.0.into());
+    }
+    if let Ok(id) = value.extract::<ExperimentID>() {
+        return Ok(id.0.into());
+    }
+    if let Ok(id) = value.extract::<TrainingSessionID>() {
+        return Ok(id.0.into());
+    }
+    if let Ok(id) = value.extract::<ValidationSessionID>() {
+        return Ok(id.0.into());
+    }
+    Err(Error::TypeError(
+        "recycle bin item must be a prefixed ID string or a ProjectID, DatasetID, \
+         AnnotationSetID, ExperimentID, TrainingSessionID or ValidationSessionID"
+            .into(),
+    ))
+}
+
 impl Display for Group {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.name())
@@ -6442,6 +6509,33 @@ impl Client {
     pub fn delete_dataset<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<(), Error> {
         let dataset_id: DatasetID = dataset_id.try_into()?;
         Ok(self.0.delete_dataset(dataset_id.0).await?)
+    }
+
+    /// List every item in the recycle bin that the user can see, most
+    /// recently deleted first (Studio ``recycle.list``).
+    ///
+    /// Deleted items count against the organization's quota until purged
+    /// with :py:meth:`purge_recycle_bin`.
+    #[tokio_wrap::sync]
+    pub fn recycle_bin(&self) -> Result<Vec<RecycleBinItem>, Error> {
+        let items = self.0.recycle_bin().await?;
+        Ok(items.into_iter().map(RecycleBinItem).collect())
+    }
+
+    /// Permanently delete items from the recycle bin, freeing their quota
+    /// (Studio ``recycle.purge``). This cannot be undone.
+    ///
+    /// Accepts prefixed ID strings (``"ds-1a"``), ID objects such as
+    /// ``DatasetID``, or :py:class:`RecycleBinItem` ids. Items must already
+    /// be deleted and the user needs write access to each; if any item fails
+    /// either check, nothing is purged.
+    #[tokio_wrap::sync]
+    pub fn purge_recycle_bin<'py>(&self, items: Vec<Bound<'py, PyAny>>) -> Result<(), Error> {
+        let ids = items
+            .iter()
+            .map(recycle_bin_item_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.0.purge_recycle_bin(&ids).await?)
     }
 
     #[tokio_wrap::sync]
@@ -9983,6 +10077,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Group>()?;
     m.add_class::<Tag>()?;
     m.add_class::<UsageSummary>()?;
+    m.add_class::<RecycleBinItem>()?;
     m.add_class::<Label>()?;
     m.add_class::<AnnotationType>()?;
     m.add_class::<Dataset>()?;

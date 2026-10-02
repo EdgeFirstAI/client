@@ -34,8 +34,8 @@
 use base64::Engine as _;
 use edgefirst_client::{
     Annotation, AnnotationSetID, Client, DatasetID, Error, ExperimentID, FileType, GpsData,
-    ImuData, Location, Parameter, Sample, SampleDimensionUpdate, SampleFile, SampleID, TaskID,
-    TrainingSessionID, ValidationSessionID,
+    ImuData, Location, Parameter, ProjectID, RecycleBinItemID, Sample, SampleDimensionUpdate,
+    SampleFile, SampleID, TaskID, TrainingSessionID, ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
@@ -3615,4 +3615,190 @@ async fn validation_session_set_platform_surfaces_rejection() {
         matches!(&err, Error::RpcError(3, msg) if msg.contains("unsupported schema version: 3")),
         "expected bad-request RpcError naming the version, got {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `Client::recycle_bin` / `Client::purge_recycle_bin`
+// ---------------------------------------------------------------------------
+
+/// A `recycle.list` result shaped like dve-database's `Recycle_List`: each
+/// category is the full entity serialized by Go, `deleted` is a Go
+/// `time.Time` (nanoseconds and a local offset), a category whose query found
+/// nothing is `null`, and validation sessions carry no `name`.
+fn recycle_list_json() -> serde_json::Value {
+    json!({
+        "projects": [{
+            "id": 0x2, "name": "Old project", "description": "",
+            "deleted": "2026-10-01T09:00:00.123456789-06:00"
+        }],
+        "datasets": [
+            {
+                "id": 0x1a, "name": "Deer copy", "description": "",
+                "project_id": 0x2, "deleted": "2026-10-02T08:00:00Z"
+            },
+            {
+                "id": 0x1b, "name": "Older", "description": "",
+                "project_id": 0x2, "deleted": "2026-09-01T08:00:00Z"
+            }
+        ],
+        "annotation_sets": null,
+        "experiments": [],
+        "training_sessions": null,
+        "automated_tasks": [],
+        "validate_sessions": [{
+            "id": 0x5, "description": "val run", "dataset_id": 0x1a,
+            "project_id": 0x2, "deleted": "2026-10-02T07:00:00Z",
+            "params": {}, "results": null
+        }]
+    })
+}
+
+#[tokio::test]
+async fn recycle_bin_requests_every_type_over_all_time() {
+    let server = MockServer::start().await;
+
+    // Recycle_List lists *live* items when deleted_start/deleted_end are
+    // absent, so the client must always send a range.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "recycle.list",
+            "params": {
+                "types": ["project", "dataset", "annset", "experiment", "train-session", "validate"],
+                "deleted_start": "1900-01-01T00:00:00Z"
+            }
+        })))
+        .and(|req: &Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            body["params"]["deleted_end"]
+                .as_str()
+                .is_some_and(|end| chrono::DateTime::parse_from_rfc3339(end).is_ok())
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(recycle_list_json())))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let items = client.recycle_bin().await.expect("recycle.list via mock");
+
+    let summary: Vec<(String, &str)> = items
+        .iter()
+        .map(|item| (item.id().to_string(), item.name()))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("ds-1a".to_string(), "Deer copy"),
+            ("v-5".to_string(), "val run"),
+            ("p-2".to_string(), "Old project"),
+            ("ds-1b".to_string(), "Older"),
+        ],
+        "items flattened across categories, most recently deleted first"
+    );
+    assert_eq!(
+        items[0].id(),
+        RecycleBinItemID::Dataset(DatasetID::from(0x1a))
+    );
+    assert_eq!(
+        items[2].deleted().to_rfc3339(),
+        "2026-10-01T15:00:00.123456789+00:00"
+    );
+}
+
+#[tokio::test]
+async fn recycle_bin_surfaces_rpc_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("recycle.list"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_error(101, "Missing or invalid type")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .recycle_bin()
+        .await
+        .expect_err("expected RPC failure");
+    assert!(
+        matches!(err, Error::RpcError(101, _)),
+        "expected RpcError(101), got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn purge_recycle_bin_sends_prefixed_item_ids() {
+    let server = MockServer::start().await;
+
+    // Recycle_Purge splits each item_ids entry on '-' and decodes the hex
+    // part, so ids must be prefixed strings, not the bare integers the
+    // typed IDs serialize to.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "recycle.purge",
+            "params": { "item_ids": ["ds-1a", "p-2", "t-10000"] }
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!("purging complete"))),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .purge_recycle_bin(&[
+            DatasetID::from(0x1a).into(),
+            ProjectID::from(0x2).into(),
+            TrainingSessionID::from(0x10000).into(),
+        ])
+        .await
+        .expect("recycle.purge via mock");
+}
+
+#[tokio::test]
+async fn purge_recycle_bin_maps_permission_denied() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("recycle.purge"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_error(403, "permission denied: ds-1a: no access")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .purge_recycle_bin(&[DatasetID::from(0x1a).into()])
+        .await
+        .expect_err("expected permission failure");
+    assert!(
+        matches!(err, Error::PermissionDenied(_)),
+        "expected PermissionDenied, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn purge_recycle_bin_with_no_items_makes_no_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("recycle.purge"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!("purging complete"))),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .purge_recycle_bin(&[])
+        .await
+        .expect("empty purge is a no-op");
 }
