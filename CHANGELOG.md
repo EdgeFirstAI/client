@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.1] - 2026-10-05
+
+### Changed
+
+- Updated Rust workspace dependencies to their latest releases: Polars 0.55, PyO3 0.29, pyo3-polars 0.28, base64 0.23, imagesize 0.15, infer 0.22, itertools 0.15, and compatible updates across the lockfile. Rust users of the `polars` feature must build against Polars 0.55, since `DataFrame` and `PolarsError` appear in the public API.
+- Building from source now requires Rust 1.95 or later, the minimum for `sysinfo` 0.39 that Polars 0.55 depends on. CI and release builds use Rust 1.95.
+
+### Security
+
+- PyO3 0.29 fixes [RUSTSEC-2026-0176](https://rustsec.org/advisories/RUSTSEC-2026-0176) and [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177); their ignores are removed from `.cargo/audit.toml`.
+
 ## [2.16.0] - 2026-10-01
 
 ### Added

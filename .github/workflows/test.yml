@@ -19,7 +19,7 @@ env:
   RUST_BACKTRACE: 1
   # Pinned Rust version for CI/CD - update manually to control Rust upgrades
   # This ensures consistent builds and allows testing before upgrading
-  RUST_STABLE_VERSION: "1.94"
+  RUST_STABLE_VERSION: "1.95"
 
 jobs:
   # Formatting and clippy. Split from `test` so a lint failure reports in about
