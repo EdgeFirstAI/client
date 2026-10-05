@@ -110,7 +110,7 @@ cargo build --release
 
 ### System Requirements
 
-- **MSRV (Minimum Supported Rust Version)**: Rust 1.90+ (Rust 2024 Edition)
+- **MSRV (Minimum Supported Rust Version)**: Rust 1.95+ (Rust 2024 Edition)
 - **Python**: 3.8+ (for Python bindings)
 - **Network**: Access to EdgeFirst Studio (*.edgefirst.studio)
 
