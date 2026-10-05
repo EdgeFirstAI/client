@@ -9112,7 +9112,7 @@ impl Annotation {
 /// a label. This mirrors the CLI's `import-coco --update` path
 /// (`edgefirst_client::coco::studio::update_coco_annotations`), which
 /// always sets `label_id` alongside `label_name`.
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone)]
 pub struct ServerAnnotation(edgefirst_client::ServerAnnotation);
 
@@ -9551,7 +9551,7 @@ fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<Py
 // Version management wrapper types
 // ---------------------------------------------------------------------------
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct VersionTag(edgefirst_client::VersionTag);
 
@@ -9648,7 +9648,7 @@ impl VersionTag {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct ChangelogEntry(edgefirst_client::ChangelogEntry);
 
@@ -9728,7 +9728,7 @@ impl ChangelogEntry {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct ChangelogResponse(edgefirst_client::ChangelogResponse);
 
@@ -9768,7 +9768,7 @@ impl ChangelogResponse {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct DatasetSummary(edgefirst_client::DatasetSummary);
 
@@ -9832,7 +9832,7 @@ impl DatasetSummary {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct VersionCurrentResponse(edgefirst_client::VersionCurrentResponse);
 
@@ -9871,7 +9871,7 @@ impl VersionCurrentResponse {
     }
 }
 
-#[pyclass(module = "edgefirst_client")]
+#[pyclass(module = "edgefirst_client", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RestoreResult(edgefirst_client::RestoreResult);
 

@@ -37,7 +37,7 @@ When contributing, consider how changes might affect:
 
 ### Prerequisites
 
-- **Rust** 1.90 or later
+- **Rust** 1.95 or later
 - **Python** 3.8 or later (for Python bindings)
 - **Git**
 - **EdgeFirst Studio account** (free tier available) for integration testing

@@ -43,7 +43,7 @@ run-name: Studio Tests - ${{ inputs.studio_server || 'nightly (test, stage, saas
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUST_STABLE_VERSION: "1.94"
+  RUST_STABLE_VERSION: "1.95"
   RUST_LOG: "edgefirst_client=trace"
   # Coverage is collected from exactly ONE matrix leg. The three servers run the
   # same code against different data, so instrumenting all of them would triple

@@ -28,7 +28,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
-          toolchain: 1.94
+          toolchain: 1.95
 
       # Prebuilt binary rather than `cargo install`, which compiled
       # cargo-cyclonedx from source on every push and pull request.
