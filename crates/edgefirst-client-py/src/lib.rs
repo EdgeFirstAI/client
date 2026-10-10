@@ -9048,6 +9048,14 @@ impl Annotation {
         self.0.mask().map(|m| m.as_bytes().to_vec())
     }
 
+    /// The `(x, y)` pixel position of the mask's top-left corner on the
+    /// image, read from the PNG `oFFs` chunk. `None` when there is no mask
+    /// or the mask has no pixel offset, in which case it is image-sized.
+    #[getter]
+    pub fn mask_offset(&self) -> Option<(i32, i32)> {
+        self.0.mask().and_then(|m| m.offset())
+    }
+
     /// Whether this annotation is a don't-care region that loss and
     /// evaluation should mask. With a label it applies to that class only;
     /// without one it applies to every class.

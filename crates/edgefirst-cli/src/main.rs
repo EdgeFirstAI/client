@@ -2909,7 +2909,7 @@ fn build_sensor_file_index_from_zip(
             .name_for_index(i)
             .ok_or_else(|| {
                 Error::InvalidParameters(format!("Failed to read ZIP entry name at index {}", i))
-            })?
+            })??
             .to_string();
 
         // Skip directories (they end with /)

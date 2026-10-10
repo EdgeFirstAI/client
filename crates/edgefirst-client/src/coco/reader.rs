@@ -97,7 +97,7 @@ impl CocoReader {
 
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i)?;
-            let name = entry.name().to_string();
+            let name = entry.name()?.to_string();
 
             // Only process JSON files containing annotations
             if name.ends_with(".json") && name.contains("instances") {
@@ -159,7 +159,7 @@ impl CocoReader {
 
             for i in 0..archive.len() {
                 let entry = archive.by_index(i)?;
-                let name = entry.name().to_string();
+                let name = entry.name()?.to_string();
                 let name_lower = name.to_lowercase();
 
                 if !entry.is_dir()

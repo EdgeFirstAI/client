@@ -5,8 +5,8 @@
 //!
 //! [`MaskData`] wraps PNG-encoded bytes for storing raster masks in Arrow
 //! `Binary` columns. It supports fast header-only reads (width, height,
-//! bit_depth) without decoding pixels, and can encode from raw pixels at
-//! various bit depths (1-bit binary, 8-bit scores, 16-bit precision).
+//! bit_depth, offset) without decoding pixels, and can encode from raw pixels
+//! at various bit depths (1-bit binary, 8-bit scores, 16-bit precision).
 
 /// PNG magic bytes (first 8 bytes of every valid PNG file).
 const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -15,11 +15,24 @@ const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 /// 8 (signature) + 4 (length) + 4 (type "IHDR") + 13 (IHDR data) + 4 (IHDR CRC) = 33
 const MIN_PNG_LEN: usize = 33;
 
+/// Largest mask, in pixels, that is decoded or rasterized (100 megapixels).
+pub(crate) const MAX_PIXELS: u64 = 100_000_000;
+
+/// PNG `oFFs` chunk type: image position as x/y (i32 BE) plus a unit byte.
+const OFFS_CHUNK: [u8; 4] = *b"oFFs";
+
+/// `oFFs` unit specifier for pixels; the only other defined unit is 1 (micrometres).
+const OFFS_UNIT_PIXEL: u8 = 0;
+
 /// A raster mask stored as PNG-encoded bytes.
 ///
 /// `MaskData` provides zero-copy access to PNG metadata (width, height,
 /// bit_depth) by reading the IHDR chunk directly, and full encode/decode
 /// for pixel data at 1-bit, 8-bit, and 16-bit depths.
+///
+/// An instance mask may cover only a tile of the image, in which case the
+/// PNG carries an `oFFs` chunk (pixel units) with the tile's top-left
+/// position on the image; see [`offset`](Self::offset).
 ///
 /// # PNG layout reference
 ///
@@ -134,6 +147,41 @@ impl MaskData {
         self.png.get(24).copied().unwrap_or(0)
     }
 
+    /// Returns the mask's top-left position on the image from the PNG `oFFs`
+    /// chunk, walking chunk headers up to the first `IDAT` without decoding.
+    ///
+    /// Returns `None` if there is no `oFFs` chunk before the image data, if
+    /// its unit is not pixels or its length is not 9 bytes, or if the PNG
+    /// data is too short or invalid.
+    /// A mask without an offset is image-sized and placed at the origin.
+    pub fn offset(&self) -> Option<(i32, i32)> {
+        if !self.is_valid() {
+            return None;
+        }
+        let mut pos = PNG_SIGNATURE.len();
+        while let Some(header) = self.png.get(pos..pos.checked_add(8)?) {
+            let len = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
+            let chunk_type: [u8; 4] = header[4..8].try_into().ok()?;
+            let data_start = pos + 8;
+            match &chunk_type {
+                b"IDAT" | b"IEND" => return None,
+                t if *t == OFFS_CHUNK => {
+                    let data = self.png.get(data_start..data_start.checked_add(len)?)?;
+                    if len != 9 || data[8] != OFFS_UNIT_PIXEL {
+                        return None;
+                    }
+                    let x = i32::from_be_bytes(data[0..4].try_into().ok()?);
+                    let y = i32::from_be_bytes(data[4..8].try_into().ok()?);
+                    return Some((x, y));
+                }
+                _ => {}
+            }
+            // Chunk data is followed by a 4-byte CRC.
+            pos = data_start.checked_add(len)?.checked_add(4)?;
+        }
+        None
+    }
+
     /// Encodes raw 8-bit grayscale pixels into a PNG.
     ///
     /// For `bit_depth == 1`, pixel values must be `0` or `1` and will be packed
@@ -151,6 +199,47 @@ impl MaskData {
         width: u32,
         height: u32,
         bit_depth: u8,
+    ) -> Result<Self, crate::Error> {
+        Self::encode_impl(pixels, width, height, bit_depth, None)
+    }
+
+    /// Encodes raw 8-bit grayscale pixels into a PNG positioned at `offset`
+    /// on the image.
+    ///
+    /// Identical to [`encode`](Self::encode) but also writes an `oFFs` chunk
+    /// (pixel units) so readers place the mask's top-left at `(x, y)` on the
+    /// image, treating pixels outside it as background.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bit_depth` is not 1 or 8, or if `pixels.len()`
+    /// does not equal `width * height`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use edgefirst_client::MaskData;
+    ///
+    /// let mask = MaskData::encode_with_offset(&[1, 0, 0, 1], 2, 2, 1, (120, 48)).unwrap();
+    /// assert_eq!(mask.offset(), Some((120, 48)));
+    /// assert_eq!((mask.width(), mask.height()), (2, 2));
+    /// ```
+    pub fn encode_with_offset(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+        offset: (i32, i32),
+    ) -> Result<Self, crate::Error> {
+        Self::encode_impl(pixels, width, height, bit_depth, Some(offset))
+    }
+
+    fn encode_impl(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+        offset: Option<(i32, i32)>,
     ) -> Result<Self, crate::Error> {
         if bit_depth != 1 && bit_depth != 8 {
             return Err(crate::Error::InvalidParameters(format!(
@@ -180,6 +269,21 @@ impl MaskData {
             let mut writer = encoder.write_header().map_err(|e| {
                 crate::Error::InvalidParameters(format!("PNG header write failed: {}", e))
             })?;
+
+            if let Some((x, y)) = offset {
+                let mut data = [0u8; 9];
+                data[0..4].copy_from_slice(&x.to_be_bytes());
+                data[4..8].copy_from_slice(&y.to_be_bytes());
+                data[8] = OFFS_UNIT_PIXEL;
+                writer
+                    .write_chunk(png::chunk::ChunkType(OFFS_CHUNK), &data)
+                    .map_err(|e| {
+                        crate::Error::InvalidParameters(format!(
+                            "PNG oFFs chunk write failed: {}",
+                            e
+                        ))
+                    })?;
+            }
 
             match bit_depth {
                 1 => {
@@ -267,7 +371,6 @@ impl MaskData {
         // Guard against decompression bombs
         let info = reader.info();
         let total_pixels = info.width as u64 * info.height as u64;
-        const MAX_PIXELS: u64 = 100_000_000; // 100 megapixels
         if total_pixels > MAX_PIXELS {
             return Err(crate::Error::InvalidParameters(format!(
                 "PNG dimensions {}x{} exceed maximum of {} pixels",
@@ -488,6 +591,86 @@ mod tests {
     fn test_encode_invalid_bit_depth() {
         let result = MaskData::encode(&[0; 4], 2, 2, 4);
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // oFFs offset tests
+    // =========================================================================
+
+    /// Encodes a 1x1 1-bit PNG with a raw `oFFs` chunk payload.
+    fn png_with_offs(data: &[u8]) -> MaskData {
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 1, 1);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::One);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_chunk(png::chunk::ChunkType(OFFS_CHUNK), data)
+                .unwrap();
+            writer.write_image_data(&[0x80]).unwrap();
+        }
+        MaskData::from_png(buf)
+    }
+
+    #[test]
+    fn test_offset_absent() {
+        let mask = MaskData::encode(&[1, 0, 0, 1], 2, 2, 1).unwrap();
+        assert_eq!(mask.offset(), None);
+    }
+
+    #[test]
+    fn test_offset_present() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&37i32.to_be_bytes());
+        data.extend_from_slice(&(-5i32).to_be_bytes());
+        data.push(OFFS_UNIT_PIXEL);
+        assert_eq!(png_with_offs(&data).offset(), Some((37, -5)));
+    }
+
+    #[test]
+    fn test_offset_non_pixel_unit_ignored() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&37i32.to_be_bytes());
+        data.extend_from_slice(&5i32.to_be_bytes());
+        data.push(1);
+        assert_eq!(png_with_offs(&data).offset(), None);
+    }
+
+    #[test]
+    fn test_offset_invalid_data() {
+        assert_eq!(MaskData::from_png(vec![]).offset(), None);
+        assert_eq!(MaskData::from_png(vec![1, 2, 3]).offset(), None);
+
+        // Valid prefix truncated mid-chunk must not panic.
+        let mask = MaskData::encode_with_offset(&[1], 1, 1, 1, (3, 4)).unwrap();
+        let bytes = mask.as_bytes();
+        for len in 0..bytes.len() {
+            let _ = MaskData::from_png(bytes[..len].to_vec()).offset();
+        }
+    }
+
+    #[test]
+    fn test_encode_with_offset_roundtrip() {
+        let pixels: Vec<u8> = vec![
+            1, 0, 1, 1, 0, // row 0
+            0, 1, 0, 0, 1, // row 1
+            1, 1, 1, 0, 0, // row 2
+        ];
+        for bit_depth in [1u8, 8] {
+            let mask = MaskData::encode_with_offset(&pixels, 5, 3, bit_depth, (-2, 1024)).unwrap();
+            assert_eq!(mask.width(), 5);
+            assert_eq!(mask.height(), 3);
+            assert_eq!(mask.bit_depth(), bit_depth);
+            assert_eq!(mask.offset(), Some((-2, 1024)));
+            assert_eq!(mask.decode().unwrap(), pixels);
+            assert!(MaskData::from_png_checked(mask.into_bytes()).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_encode_with_offset_invalid_bit_depth() {
+        assert!(MaskData::encode_with_offset(&[0; 4], 2, 2, 4, (0, 0)).is_err());
     }
 
     #[test]

@@ -1102,9 +1102,9 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                 // 2026.04+: try mask (Binary/PNG → RLE) first, then polygon column
                 let mask_seg = mask_binary_2026.as_ref().and_then(|masks| {
                     masks.get(i).and_then(|opt_bytes| {
-                        opt_bytes
-                            .as_ref()
-                            .and_then(|png_bytes| png_to_rle_segmentation(png_bytes, i))
+                        opt_bytes.as_ref().and_then(|png_bytes| {
+                            png_to_rle_segmentation(png_bytes, width, height, i)
+                        })
                     })
                 });
 
@@ -1474,9 +1474,20 @@ fn extract_f32_column(df: &DataFrame, name: &str, total_rows: usize) -> Vec<Opti
 /// Decode a PNG mask (Binary column bytes) into COCO RLE segmentation.
 ///
 /// Validates the PNG, decodes pixels, binarizes if needed (8-bit or 16-bit),
-/// and encodes as COCO RLE. Returns `None` for empty or invalid data (with
-/// a warning log for invalid cases).
-fn png_to_rle_segmentation(png_bytes: &[u8], row_index: usize) -> Option<CocoSegmentation> {
+/// and encodes as COCO RLE. A mask with an `oFFs` offset is a tile of the
+/// `image_width` x `image_height` image and is placed on an image-sized
+/// canvas before encoding; when the image size is unknown (`0`), the canvas
+/// extends just far enough to hold the tile. Otherwise the RLE has the mask's
+/// own dimensions. Returns `None` for empty or invalid data, for tiles whose
+/// decoded bit depth cannot be placed, and for canvases larger than
+/// [`MAX_PIXELS`](crate::mask::MAX_PIXELS) (with a warning log for these
+/// cases).
+fn png_to_rle_segmentation(
+    png_bytes: &[u8],
+    image_width: u32,
+    image_height: u32,
+    row_index: usize,
+) -> Option<CocoSegmentation> {
     if png_bytes.is_empty() {
         return None;
     }
@@ -1492,6 +1503,7 @@ fn png_to_rle_segmentation(png_bytes: &[u8], row_index: usize) -> Option<CocoSeg
     let mw = mask_data.width();
     let mh = mask_data.height();
     let bit_depth = mask_data.bit_depth();
+    let offset = mask_data.offset();
 
     let decoded = match mask_data.decode() {
         Ok(d) => d,
@@ -1533,6 +1545,41 @@ fn png_to_rle_segmentation(png_bytes: &[u8], row_index: usize) -> Option<CocoSeg
         _ => decoded,
     };
 
+    let (binary_mask, mw, mh) = match offset {
+        Some(offset) => {
+            let (w, h) = if image_width > 0 && image_height > 0 {
+                (image_width, image_height)
+            } else {
+                // Unknown image size: extend the canvas just far enough to
+                // hold the tile at its offset.
+                let extent = |origin: i32, len: u32| {
+                    (i64::from(origin) + i64::from(len)).clamp(0, i64::from(u32::MAX)) as u32
+                };
+                (extent(offset.0, mw), extent(offset.1, mh))
+            };
+            if binary_mask.len() as u64 != u64::from(mw) * u64::from(mh) {
+                log::warn!(
+                    "Skipping {}-bit PNG mask tile at row {}: unsupported bit depth",
+                    bit_depth,
+                    row_index
+                );
+                return None;
+            }
+            if u64::from(w) * u64::from(h) > crate::mask::MAX_PIXELS {
+                log::warn!(
+                    "Skipping PNG mask tile at row {}: {}x{} canvas exceeds {} pixels",
+                    row_index,
+                    w,
+                    h,
+                    crate::mask::MAX_PIXELS
+                );
+                return None;
+            }
+            (place_mask_tile(&binary_mask, mw, mh, offset, w, h), w, h)
+        }
+        None => (binary_mask, mw, mh),
+    };
+
     match super::convert::encode_rle(&binary_mask, mw, mh) {
         Ok(rle) => Some(CocoSegmentation::Rle(rle)),
         Err(e) => {
@@ -1540,6 +1587,41 @@ fn png_to_rle_segmentation(png_bytes: &[u8], row_index: usize) -> Option<CocoSeg
             None
         }
     }
+}
+
+/// Places a row-major `tile_width` x `tile_height` mask tile with its top-left
+/// at `(x, y)` on a zeroed row-major `width` x `height` canvas, clipping any
+/// part of the tile that falls outside the canvas.
+fn place_mask_tile(
+    tile: &[u8],
+    tile_width: u32,
+    tile_height: u32,
+    (x, y): (i32, i32),
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let (tw, th) = (i64::from(tile_width), i64::from(tile_height));
+    let (w, h) = (i64::from(width), i64::from(height));
+    let (x, y) = (i64::from(x), i64::from(y));
+
+    let mut canvas = vec![0u8; (width as usize) * (height as usize)];
+
+    // Visible tile columns/rows, in tile coordinates.
+    let col_start = (-x).clamp(0, tw);
+    let col_end = (w - x).clamp(col_start, tw);
+    let row_start = (-y).clamp(0, th);
+    let row_end = (h - y).clamp(row_start, th);
+
+    let span = (col_end - col_start) as usize;
+    if span == 0 {
+        return canvas;
+    }
+    for row in row_start..row_end {
+        let src = (row * tw + col_start) as usize;
+        let dst = ((y + row) * w + x + col_start) as usize;
+        canvas[dst..dst + span].copy_from_slice(&tile[src..src + span]);
+    }
+    canvas
 }
 
 #[cfg(test)]
@@ -3033,5 +3115,241 @@ mod tests {
             !names.contains(&"others"),
             "excluded rows create no category: {names:?}"
         );
+    }
+
+    // =========================================================================
+    // png_to_rle_segmentation with oFFs mask tiles
+    // =========================================================================
+
+    const IMG_W: u32 = 10;
+    const IMG_H: u32 = 6;
+
+    /// A 4x3 tile with an irregular pattern so misplaced rows/columns show up.
+    fn sample_tile() -> (Vec<u8>, u32, u32) {
+        let tile = vec![
+            1, 1, 0, 1, // row 0
+            0, 1, 1, 1, // row 1
+            1, 0, 0, 1, // row 2
+        ];
+        (tile, 4, 3)
+    }
+
+    /// Full-image equivalent of a tile at `(x, y)`, built pixel by pixel.
+    fn full_image_equivalent(tile: &[u8], tw: u32, th: u32, (x, y): (i32, i32)) -> Vec<u8> {
+        let mut full = vec![0u8; (IMG_W * IMG_H) as usize];
+        for ty in 0..th as i32 {
+            for tx in 0..tw as i32 {
+                let (ix, iy) = (x + tx, y + ty);
+                if (0..IMG_W as i32).contains(&ix) && (0..IMG_H as i32).contains(&iy) {
+                    full[(iy as u32 * IMG_W + ix as u32) as usize] =
+                        tile[(ty as u32 * tw + tx as u32) as usize];
+                }
+            }
+        }
+        full
+    }
+
+    fn rle_of(png: &crate::MaskData, width: u32, height: u32) -> crate::coco::CocoRle {
+        match png_to_rle_segmentation(png.as_bytes(), width, height, 0) {
+            Some(CocoSegmentation::Rle(rle)) => rle,
+            other => panic!("expected RLE segmentation, got {other:?}"),
+        }
+    }
+
+    fn assert_tile_matches_full_image(offset: (i32, i32), bit_depth: u8) {
+        let (tile, tw, th) = sample_tile();
+        let tile_pixels: Vec<u8> = if bit_depth == 8 {
+            tile.iter().map(|&v| v * 255).collect()
+        } else {
+            tile.clone()
+        };
+        let tiled =
+            crate::MaskData::encode_with_offset(&tile_pixels, tw, th, bit_depth, offset).unwrap();
+        let full = crate::MaskData::encode(
+            &full_image_equivalent(&tile, tw, th, offset),
+            IMG_W,
+            IMG_H,
+            1,
+        )
+        .unwrap();
+
+        let tiled_rle = rle_of(&tiled, IMG_W, IMG_H);
+        let full_rle = rle_of(&full, IMG_W, IMG_H);
+        assert_eq!(tiled_rle.size, [IMG_H, IMG_W], "offset {offset:?}");
+        assert_eq!(tiled_rle.size, full_rle.size, "offset {offset:?}");
+        assert_eq!(tiled_rle.counts, full_rle.counts, "offset {offset:?}");
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_inside_image() {
+        assert_tile_matches_full_image((3, 1), 1);
+        assert_tile_matches_full_image((0, 0), 1);
+        assert_tile_matches_full_image((6, 3), 1);
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_clipped_right_bottom() {
+        assert_tile_matches_full_image((8, 4), 1);
+        assert_tile_matches_full_image((9, 5), 1);
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_negative_offset() {
+        assert_tile_matches_full_image((-2, -1), 1);
+        assert_tile_matches_full_image((-1, 4), 1);
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_fully_outside_image() {
+        assert_tile_matches_full_image((IMG_W as i32, 0), 1);
+        assert_tile_matches_full_image((-4, -3), 1);
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_8bit_binarized() {
+        assert_tile_matches_full_image((3, 1), 8);
+        assert_tile_matches_full_image((8, -1), 8);
+    }
+
+    #[test]
+    fn test_png_to_rle_without_offset_uses_mask_dimensions() {
+        let (tile, tw, th) = sample_tile();
+        let mask = crate::MaskData::encode(&tile, tw, th, 1).unwrap();
+        let rle = rle_of(&mask, IMG_W, IMG_H);
+        assert_eq!(rle.size, [th, tw]);
+        assert_eq!(
+            rle.counts,
+            crate::coco::convert::encode_rle(&tile, tw, th)
+                .unwrap()
+                .counts
+        );
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_unknown_image_size() {
+        let (tile, tw, th) = sample_tile();
+        let mask = crate::MaskData::encode_with_offset(&tile, tw, th, 1, (2, 1)).unwrap();
+        let rle = rle_of(&mask, 0, 0);
+        assert_eq!(rle.size, [th + 1, tw + 2]);
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_4bit_skipped() {
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 4, 3);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Four);
+            let mut writer = encoder.write_header().unwrap();
+            let mut offs = Vec::new();
+            offs.extend_from_slice(&2i32.to_be_bytes());
+            offs.extend_from_slice(&1i32.to_be_bytes());
+            offs.push(0);
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"oFFs"), &offs)
+                .unwrap();
+            writer
+                .write_image_data(&[0xF0, 0x0F, 0xFF, 0x00, 0x0F, 0xF0])
+                .unwrap();
+        }
+        assert!(png_to_rle_segmentation(&buf, IMG_W, IMG_H, 0).is_none());
+    }
+
+    #[test]
+    fn test_png_to_rle_offset_tile_oversized_canvas_skipped() {
+        let mask = crate::MaskData::encode_with_offset(&[1], 1, 1, 1, (100_000, 100_000)).unwrap();
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0).is_none());
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 100_000, 100_000, 0).is_none());
+
+        let mask =
+            crate::MaskData::encode_with_offset(&[1], 1, 1, 1, (i32::MAX, i32::MAX)).unwrap();
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_arrow_to_coco_offset_tile_matches_full_image_mask() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Tile hanging off the bottom-right corner of the image.
+        let (tile, tw, th) = sample_tile();
+        let offset = (8, 4);
+        let full = full_image_equivalent(&tile, tw, th, offset);
+        let full_rle = crate::coco::convert::encode_rle(&full, IMG_W, IMG_H).unwrap();
+
+        let original = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: IMG_W,
+                height: IMG_H,
+                file_name: "tile.jpg".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![CocoAnnotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: [8.0, 4.0, 2.0, 2.0],
+                area: 3.0,
+                iscrowd: 0,
+                segmentation: Some(CocoSegmentation::Rle(full_rle.clone())),
+                score: None,
+            }],
+            categories: vec![CocoCategory {
+                id: 1,
+                name: "object".to_string(),
+                supercategory: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let coco_path = temp_dir.path().join("original.json");
+        crate::coco::CocoWriter::new()
+            .write_json(&original, &coco_path)
+            .unwrap();
+        let arrow_path = temp_dir.path().join("tile.arrow");
+        coco_to_arrow(
+            &coco_path,
+            &arrow_path,
+            &CocoToArrowOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Swap the image-sized mask for the equivalent offset tile.
+        let (mut df, metadata) = {
+            let mut file = std::fs::File::open(&arrow_path).unwrap();
+            let mut reader = IpcReader::new(&mut file);
+            let metadata = reader.custom_metadata().unwrap().unwrap();
+            (reader.finish().unwrap(), metadata)
+        };
+        let tiled = crate::MaskData::encode_with_offset(&tile, tw, th, 1, offset).unwrap();
+        df.with_column(Column::new("mask".into(), vec![Some(tiled.as_bytes())]))
+            .unwrap();
+        let mut file = std::fs::File::create(&arrow_path).unwrap();
+        let mut writer = IpcWriter::new(&mut file);
+        writer.set_custom_schema_metadata(metadata);
+        writer.finish(&mut df).unwrap();
+
+        let restored_path = temp_dir.path().join("restored.json");
+        arrow_to_coco(
+            &arrow_path,
+            &restored_path,
+            &ArrowToCocoOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let restored = crate::coco::CocoReader::new()
+            .read_json(&restored_path)
+            .unwrap();
+
+        match &restored.annotations[0].segmentation {
+            Some(CocoSegmentation::Rle(rle)) => {
+                assert_eq!(rle.size, full_rle.size);
+                assert_eq!(rle.counts, full_rle.counts);
+            }
+            other => panic!("expected RLE segmentation, got {other:?}"),
+        }
     }
 }
