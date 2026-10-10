@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-10-10
+
+### Added
+
+- Instance segmentation masks can be stored as a tile covering only the object, positioned on the image by a standard PNG `oFFs` offset, instead of a full-image mask. This is a clarification of the 2026.10 dataset format: `schema_version` and the schema are unchanged, and existing files read exactly as before. The Rust and Python APIs can read a mask's offset and the Rust API can write offset masks. See "Instance mask tiles" in the EdgeFirst Dataset Format specification.
+
+### Changed
+
+- `arrow-to-coco` places offset mask tiles at their position on the image, producing image-sized COCO RLE identical to that of the equivalent full-image mask.
+- `arrow-to-coco` skips, with a warning, mask tiles it cannot place (2-bit and 4-bit PNGs) and tiles whose canvas would exceed 100 megapixels.
+- Updated Rust dependencies to their latest releases, including zip 9 and compatible updates across the lockfile, and refreshed the hash-locked Python test and build requirements (maturin 1.15, Polars 1.44, ruff 0.14.14).
+
 ## [2.16.1] - 2026-10-05
 
 ### Changed
