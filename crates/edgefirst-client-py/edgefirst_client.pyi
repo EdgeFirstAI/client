@@ -2722,7 +2722,10 @@ class Annotation:
 
         Returns:
             Optional[Tuple[int, int]]: ``(x, y)`` offset, or None when there
-            is no mask or the mask has no pixel offset (image-sized mask).
+            is no mask or the mask has no pixel offset. A mask without an
+            offset covers the full image from the origin at its own
+            resolution, which may be the image's or a model output's, so do
+            not infer image dimensions from it.
         """
         ...
 

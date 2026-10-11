@@ -1546,37 +1546,14 @@ fn png_to_rle_segmentation(
     };
 
     let (binary_mask, mw, mh) = match offset {
-        Some(offset) => {
-            let (w, h) = if image_width > 0 && image_height > 0 {
-                (image_width, image_height)
-            } else {
-                // Unknown image size: extend the canvas just far enough to
-                // hold the tile at its offset.
-                let extent = |origin: i32, len: u32| {
-                    (i64::from(origin) + i64::from(len)).clamp(0, i64::from(u32::MAX)) as u32
-                };
-                (extent(offset.0, mw), extent(offset.1, mh))
-            };
-            if binary_mask.len() as u64 != u64::from(mw) * u64::from(mh) {
-                log::warn!(
-                    "Skipping {}-bit PNG mask tile at row {}: unsupported bit depth",
-                    bit_depth,
-                    row_index
-                );
-                return None;
-            }
-            if u64::from(w) * u64::from(h) > crate::mask::MAX_PIXELS {
-                log::warn!(
-                    "Skipping PNG mask tile at row {}: {}x{} canvas exceeds {} pixels",
-                    row_index,
-                    w,
-                    h,
-                    crate::mask::MAX_PIXELS
-                );
-                return None;
-            }
-            (place_mask_tile(&binary_mask, mw, mh, offset, w, h), w, h)
-        }
+        Some(offset) => tile_on_image_canvas(
+            &binary_mask,
+            (mw, mh),
+            offset,
+            (image_width, image_height),
+            bit_depth,
+            row_index,
+        )?,
         None => (binary_mask, mw, mh),
     };
 
@@ -1587,6 +1564,56 @@ fn png_to_rle_segmentation(
             None
         }
     }
+}
+
+/// Places a decoded `tile_width` x `tile_height` mask tile at `offset` on an
+/// image-sized canvas, returning the canvas and its dimensions.
+///
+/// When the image size is unknown (`0`), the canvas extends just far enough
+/// to hold the tile. Returns `None` with a warning when the decoded tile is
+/// not one byte per pixel (2-bit and 4-bit PNGs decode packed) or the canvas
+/// would exceed [`MAX_PIXELS`](crate::mask::MAX_PIXELS).
+fn tile_on_image_canvas(
+    tile: &[u8],
+    (tile_width, tile_height): (u32, u32),
+    offset: (i32, i32),
+    (image_width, image_height): (u32, u32),
+    bit_depth: u8,
+    row_index: usize,
+) -> Option<(Vec<u8>, u32, u32)> {
+    if tile.len() as u64 != u64::from(tile_width) * u64::from(tile_height) {
+        log::warn!(
+            "Skipping {}-bit PNG mask tile at row {}: unsupported bit depth",
+            bit_depth,
+            row_index
+        );
+        return None;
+    }
+
+    let (w, h) = if image_width > 0 && image_height > 0 {
+        (image_width, image_height)
+    } else {
+        let extent = |origin: i32, len: u32| {
+            (i64::from(origin) + i64::from(len)).clamp(0, i64::from(u32::MAX)) as u32
+        };
+        (extent(offset.0, tile_width), extent(offset.1, tile_height))
+    };
+    if u64::from(w) * u64::from(h) > crate::mask::MAX_PIXELS {
+        log::warn!(
+            "Skipping PNG mask tile at row {}: {}x{} canvas exceeds {} pixels",
+            row_index,
+            w,
+            h,
+            crate::mask::MAX_PIXELS
+        );
+        return None;
+    }
+
+    Some((
+        place_mask_tile(tile, tile_width, tile_height, offset, w, h),
+        w,
+        h,
+    ))
 }
 
 /// Places a row-major `tile_width` x `tile_height` mask tile with its top-left

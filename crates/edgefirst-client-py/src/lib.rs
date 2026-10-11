@@ -9050,7 +9050,8 @@ impl Annotation {
 
     /// The `(x, y)` pixel position of the mask's top-left corner on the
     /// image, read from the PNG `oFFs` chunk. `None` when there is no mask
-    /// or the mask has no pixel offset, in which case it is image-sized.
+    /// or the mask has no pixel offset, in which case it covers the full
+    /// image from the origin at its own (image or model-output) resolution.
     #[getter]
     pub fn mask_offset(&self) -> Option<(i32, i32)> {
         self.0.mask().and_then(|m| m.offset())

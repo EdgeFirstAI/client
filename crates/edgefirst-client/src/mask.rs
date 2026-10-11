@@ -152,8 +152,11 @@ impl MaskData {
     ///
     /// Returns `None` if there is no `oFFs` chunk before the image data, if
     /// its unit is not pixels or its length is not 9 bytes, or if the PNG
-    /// data is too short or invalid.
-    /// A mask without an offset is image-sized and placed at the origin.
+    /// data is too short, truncated or invalid.
+    ///
+    /// A mask without an offset covers the full image from the origin at its
+    /// own resolution, which may be the image's or a model output's; `None`
+    /// does not imply the PNG has the image's dimensions.
     pub fn offset(&self) -> Option<(i32, i32)> {
         if !self.is_valid() {
             return None;
@@ -163,11 +166,17 @@ impl MaskData {
             let len = u32::from_be_bytes(header[..4].try_into().ok()?) as usize;
             let chunk_type: [u8; 4] = header[4..8].try_into().ok()?;
             let data_start = pos + 8;
+            let data_end = data_start.checked_add(len)?;
+            // Chunk data is followed by a 4-byte CRC.
+            let chunk_end = data_end.checked_add(4)?;
             match &chunk_type {
                 b"IDAT" | b"IEND" => return None,
                 t if *t == OFFS_CHUNK => {
-                    let data = self.png.get(data_start..data_start.checked_add(len)?)?;
-                    if len != 9 || data[8] != OFFS_UNIT_PIXEL {
+                    if len != 9 || chunk_end > self.png.len() {
+                        return None;
+                    }
+                    let data = &self.png[data_start..data_end];
+                    if data[8] != OFFS_UNIT_PIXEL {
                         return None;
                     }
                     let x = i32::from_be_bytes(data[0..4].try_into().ok()?);
@@ -176,8 +185,7 @@ impl MaskData {
                 }
                 _ => {}
             }
-            // Chunk data is followed by a 4-byte CRC.
-            pos = data_start.checked_add(len)?.checked_add(4)?;
+            pos = chunk_end;
         }
         None
     }
@@ -648,6 +656,26 @@ mod tests {
         for len in 0..bytes.len() {
             let _ = MaskData::from_png(bytes[..len].to_vec()).offset();
         }
+    }
+
+    #[test]
+    fn test_offset_requires_complete_chunk() {
+        let mask = MaskData::encode_with_offset(&[1], 1, 1, 1, (3, 4)).unwrap();
+        let bytes = mask.as_bytes();
+        let type_at = bytes
+            .windows(4)
+            .position(|w| w == OFFS_CHUNK)
+            .expect("oFFs chunk present");
+        let crc_end = type_at + 4 + 9 + 4;
+
+        // Payload present but CRC missing or partial.
+        for len in type_at + 4 + 9..crc_end {
+            assert_eq!(MaskData::from_png(bytes[..len].to_vec()).offset(), None);
+        }
+        assert_eq!(
+            MaskData::from_png(bytes[..crc_end].to_vec()).offset(),
+            Some((3, 4))
+        );
     }
 
     #[test]
