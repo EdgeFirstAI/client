@@ -2711,6 +2711,25 @@ class Annotation:
         ...
 
     @property
+    def mask_offset(self) -> Optional[Tuple[int, int]]:
+        """
+        The pixel position of the mask's top-left corner on the image.
+
+        Instance masks may cover only a tile of the image; the PNG then
+        carries an ``oFFs`` chunk (pixel units) giving the tile's top-left
+        ``(x, y)``, which may be negative. Pixels outside the tile are
+        background.
+
+        Returns:
+            Optional[Tuple[int, int]]: ``(x, y)`` offset, or None when there
+            is no mask or the mask has no pixel offset. A mask without an
+            offset covers the full image from the origin at its own
+            resolution, which may be the image's or a model output's, so do
+            not infer image dimensions from it.
+        """
+        ...
+
+    @property
     def ignore(self) -> Optional[bool]:
         """
         Whether this annotation is a don't-care region that loss and

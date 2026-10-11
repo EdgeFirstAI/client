@@ -1,8 +1,8 @@
 # EdgeFirst Dataset Format Specification
 
 **Version**: 2026.10
-**Last Updated**: 24 September, 2026
-**Status**: Released (EdgeFirst Client v2.15.0)
+**Last Updated**: 10 October, 2026
+**Status**: Released (EdgeFirst Client v2.15.0; clarified in v2.17.0)
 
 > **Implementation status:** the SDK has implemented the 2026.04 Arrow schema since client v2.9.0, and 2026.10 is the current format. As of the client v2.14.0, dataset annotation files can also be written and read as Apache Parquet (`.parquet`), selected by output file extension, with the same file-level metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet footer key-value pairs — full parity with Arrow IPC. `validate-snapshot` accepts either format when the annotation filename matches the dataset directory basename. The client writes `schema_version` 2026.10 as of client v2.15.0; see [Migration from 2026.04](#migration-from-202604) for what changed.
 >
@@ -1093,7 +1093,7 @@ polygon: [[0.69, 0.34, 0.70, 0.35, 0.71, 0.36], [0.72, 0.37, 0.73, 0.38, 0.74, 0
 
 PNG does not support floating-point pixel values. If float precision is needed in the future, a different encoding would be introduced as a new column type.
 
-**Dimensions**: Mask dimensions are defined by the PNG image itself, not by the `size` column or `box2d`. The producer determines the resolution:
+**Dimensions**: Mask dimensions are defined by the PNG image itself, not by the `size` column or `box2d`. For a mask without an offset (see [Instance mask tiles](#instance-mask-tiles)), the producer determines the resolution:
 
 - **Model output resolution** (e.g., 256x256 from the model head)
 - **Model input resolution** (e.g., 640x640 after preprocessing)
@@ -1108,10 +1108,28 @@ Consumers rescale to the target coordinate space as needed. The `size` column (i
 | `mask` + `box2d` (instance seg) | Sigmoid confidence (0–255) or binary (0/1) for a single instance | `label` column on the row |
 | `mask` without `box2d` (semantic seg) | Argmax class indices | Optional file-level `labels` metadata; index ordering is model-specific |
 
-- **Instance segmentation**: The mask covers the **full image** (not cropped to the box). Most pixels are 0 (background); the object region has confidence scores or binary 1 values. This avoids lossy cropping and handles interpolation that extends beyond box bounds.
-- **Semantic segmentation**: Each pixel value is a class index. The mapping from index to class name is provided by the optional `labels` file-level metadata.
+- **Instance segmentation**: The mask is either **image-sized** or an **offset tile** of the image (see below). Outside the object, pixels are 0 (background); the object region has confidence scores or binary 1 values.
+- **Semantic segmentation**: Each pixel value is a class index. The mapping from index to class name is provided by the optional `labels` file-level metadata. Semantic masks are always image-sized (or model-output-sized) and never carry an offset.
 
-The mask is **always image-sized** (or model-output-sized). Never box-cropped.
+##### Instance mask tiles
+
+> **Clarified in 2026.10** (EdgeFirst Client v2.17.0). Tiled instance masks are a clarification of the 2026.10 format, not a new version: `schema_version` stays `"2026.10"` and no columns change. Readers older than EdgeFirst Client v2.17.0 do not read the `oFFs` chunk and treat a tile as a mask anchored at the image origin, so they misplace it; see [Clarifications to 2026.10](#clarifications-to-202610).
+
+An instance mask MAY be cropped to the tile of the image that contains the mask, which avoids storing and decoding large areas of background. A tiled mask carries a standard PNG `oFFs` chunk giving the tile's top-left position on the image:
+
+| Field | Type | Value |
+|-------|------|-------|
+| x position | `int32`, big-endian | Column of the tile's left edge on the image, in pixels |
+| y position | `int32`, big-endian | Row of the tile's top edge on the image, in pixels |
+| unit specifier | `uint8` | `0` (pixels) |
+
+The `oFFs` chunk must appear before the first `IDAT` chunk, as the PNG specification requires. Readers interpret a mask as follows:
+
+- **`oFFs` present with unit `0` (pixels)**: place the PNG's top-left pixel at `(x, y)` on the image. Pixels of the image outside the tile are background. Any part of the tile that falls outside the image (offsets may be negative, or the tile may extend past the right or bottom edge) is discarded.
+- **No `oFFs` chunk**: the mask is image-sized (or model-output-sized) and covers the full image from the origin.
+- **`oFFs` with any other unit**: the offset is ignored and the mask is treated as having no offset.
+
+Tile offsets are in image pixel coordinates, so a tiled mask is at image resolution. The tile is not tied to `box2d`: it should cover the full mask extent, which may reach beyond the box (e.g. from mask interpolation), so cropping to the box would be lossy. The 1-bit preference for binary masks applies to tiles as well.
 
 - **JSON representation**: base64-encoded PNG bytes
 - **Relationship to polygon**: `polygon` and `mask` can coexist (e.g., panoptic segmentation with instance polygons and semantic raster masks). Typically a dataset uses one or the other.
@@ -1880,6 +1898,14 @@ This version adds two annotation-metadata columns and deprecates the one they re
 - **`visdrone-to-arrow`**: drops VisDrone categories 0 and 11 by default and indexes the ten remaining classes 0–9 (`pedestrian` = 0 … `motor` = 9). `--keep-ignored` keeps them as unlabelled rows flagged `ignore`/`exclude` instead.
 - **`arrow-to-coco`**: writes `iscrowd=1` from labelled `ignore` rows; unlabelled `ignore` rows and all `exclude` rows have no COCO equivalent and are skipped with one warning giving the count. `exclude` rows create no COCO category.
 - **Uploads**: `upload-dataset`, `populate_samples`/`populate_samples_with_concurrency`, `import-coco` and `import-coco --update` drop annotations flagged `ignore` or `exclude` (including COCO crowd annotations) and log one warning per upload or import with the count, since EdgeFirst Studio does not store these flags yet.
+
+#### Clarifications to 2026.10
+
+These clarify how existing 2026.10 columns may be written. They do not change `schema_version` or the schema.
+
+- **Instance mask tiles** (EdgeFirst Client v2.17.0): an instance-segmentation `mask` PNG may cover only the tile of the image containing the mask, with a standard PNG `oFFs` chunk (pixel units) giving the tile's top-left position on the image. This replaces the earlier wording that instance masks are always image-sized and never box-cropped. Masks without `oFFs` keep their previous meaning, so every existing file reads exactly as before. Tiles are not tied to `box2d`: a tile covers the mask's full extent, which may reach beyond the box. Semantic-segmentation masks are unaffected and stay image-sized. See [Instance mask tiles](#instance-mask-tiles) for the chunk layout and reader rules.
+  - **Why**: an instance mask usually covers a small part of the image, so image-sized masks spend most of their storage and decode time on background. The EdgeFirst Profiler writes tiles for its predictions from the release that pairs with EdgeFirst Client v2.17.0, making prediction files about 20% smaller and validation of segmentation models many times faster.
+  - **Compatibility**: readers that ignore `oFFs` (EdgeFirst Client v2.16 and earlier, and generic PNG tools) see a tile as a small mask at the image origin. Use EdgeFirst Client v2.17.0 or later, or apply the reader rules above, to read tiled masks. Writers that need older readers to work should keep writing image-sized masks.
 
 ### Version 2026.04
 
