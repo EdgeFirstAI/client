@@ -10102,6 +10102,8 @@ pub fn collect_labels_from_samples(
 ///   producing a complete offline dataset next to `output_path`
 /// * `link_images` - Symlink staged images instead of copying (default:
 ///   False)
+/// * `rle_to_polygon` - Trace RLE segmentation to polygon contours instead of
+///   storing lossless 1-bit masks (default: False)
 ///
 /// COCO `iscrowd = 1` becomes `ignore = True`; the label and index are kept.
 ///
@@ -10109,7 +10111,8 @@ pub fn collect_labels_from_samples(
 /// Number of EdgeFirst rows written (including unannotated image placeholders)
 #[cfg(feature = "polars")]
 #[pyfunction]
-#[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, progress = None, images_dir = None, link_images = false))]
+#[pyo3(signature = (coco_path, output_path, include_masks = true, group = None, progress = None, images_dir = None, link_images = false, rle_to_polygon = false))]
+#[allow(clippy::too_many_arguments)]
 pub fn coco_to_arrow(
     coco_path: PathBuf,
     output_path: PathBuf,
@@ -10118,6 +10121,7 @@ pub fn coco_to_arrow(
     progress: Option<Py<PyAny>>,
     images_dir: Option<PathBuf>,
     link_images: bool,
+    rle_to_polygon: bool,
 ) -> Result<usize, Error> {
     use edgefirst_client::coco::CocoToArrowOptions;
 
@@ -10126,6 +10130,7 @@ pub fn coco_to_arrow(
         group,
         images_dir,
         link_images,
+        rle_to_polygon,
         ..Default::default()
     };
 

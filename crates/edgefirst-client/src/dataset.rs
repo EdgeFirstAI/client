@@ -2223,6 +2223,128 @@ pub(crate) fn warn_flagged_not_uploaded(count: usize) {
     }
 }
 
+/// Counts returned by [`masks_to_polygons`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MaskConversion {
+    /// Labelled 1-bit instance masks replaced by traced polygons.
+    pub converted: usize,
+    /// Masks removed without a polygon: unlabelled masks (semantic
+    /// class-index maps), masks that are not 1-bit, and masks that cannot be
+    /// decoded, placed on the image, or traced to an outline.
+    pub skipped: usize,
+}
+
+impl MaskConversion {
+    /// The user-facing upload warnings for these counts, if any.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.converted > 0 {
+            warnings.push(format!(
+                "{} raster masks were converted to polygons for upload: Studio stores segmentation only as polygons, so the uploaded outlines approximate the masks (the source file is unchanged)",
+                self.converted
+            ));
+        }
+        if self.skipped > 0 {
+            warnings.push(format!(
+                "{} raster masks were not uploaded: they are not labelled 1-bit instance masks or have no traceable outline, and Studio does not store raster masks yet",
+                self.skipped
+            ));
+        }
+        warnings
+    }
+}
+
+/// Replace raster masks with traced polygons for upload to EdgeFirst Studio,
+/// which stores segmentation only as polygons.
+///
+/// Only labelled 1-bit instance masks are traced. A mask tile with a PNG
+/// `oFFs` offset is placed at that position on the image, and the polygon is
+/// normalized by the sample's image size (or, for a mask without an offset,
+/// the mask's own size when the sample has none). An annotation that already
+/// has a polygon keeps it. Unlabelled masks are semantic class-index maps,
+/// which have no single outline, and are skipped along with other bit depths.
+///
+/// Every mask is removed, so a second call does nothing.
+/// [`Client::populate_samples`](crate::Client::populate_samples) applies this
+/// automatically.
+///
+/// # Example
+///
+/// ```rust
+/// use edgefirst_client::{Annotation, MaskData, Sample, masks_to_polygons};
+///
+/// let mut annotation = Annotation::new();
+/// annotation.set_label(Some("person".into()));
+/// annotation.set_mask(Some(MaskData::encode(&[1, 1, 1, 1], 2, 2, 1).unwrap()));
+/// let mut sample = Sample::new();
+/// sample.annotations = vec![annotation];
+/// let mut samples = vec![sample];
+///
+/// let counts = masks_to_polygons(&mut samples);
+/// assert_eq!(counts.converted, 1);
+/// assert!(samples[0].annotations[0].polygon().is_some());
+/// assert!(samples[0].annotations[0].mask().is_none());
+/// ```
+pub fn masks_to_polygons(samples: &mut [Sample]) -> MaskConversion {
+    let mut counts = MaskConversion::default();
+    for sample in samples.iter_mut() {
+        let image_size = sample.width.zip(sample.height);
+        for annotation in &mut sample.annotations {
+            let Some(mask) = annotation.mask.take() else {
+                continue;
+            };
+            if annotation.polygon.is_some() {
+                continue;
+            }
+            match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
+                Some(polygon) => {
+                    annotation.polygon = Some(polygon);
+                    counts.converted += 1;
+                }
+                None => counts.skipped += 1,
+            }
+        }
+    }
+    counts
+}
+
+fn instance_mask_to_polygon(
+    mask: &MaskData,
+    labelled: bool,
+    image_size: Option<(u32, u32)>,
+) -> Option<Polygon> {
+    if !labelled || mask.bit_depth() != 1 {
+        return None;
+    }
+    let (mask_width, mask_height) = (mask.width(), mask.height());
+    let (offset_x, offset_y) = mask.offset().unwrap_or((0, 0));
+    let (image_width, image_height) = match (image_size, mask.offset()) {
+        (Some(size), _) => size,
+        (None, None) => (mask_width, mask_height),
+        (None, Some(_)) => return None,
+    };
+    if image_width == 0 || image_height == 0 {
+        return None;
+    }
+    let pixels = mask.decode().ok()?;
+    let rings: Vec<Vec<(f32, f32)>> =
+        crate::coco::mask_to_contours(&pixels, mask_width, mask_height)
+            .into_iter()
+            .map(|contour| {
+                contour
+                    .into_iter()
+                    .map(|(x, y)| {
+                        (
+                            ((x + offset_x as f64) / image_width as f64) as f32,
+                            ((y + offset_y as f64) / image_height as f64) as f32,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+    (!rings.is_empty()).then(|| Polygon::new(rings))
+}
+
 #[cfg(feature = "polars")]
 fn extract_annotation_name(ann: &Annotation) -> Option<(String, Option<u32>)> {
     use std::path::Path;
@@ -4480,6 +4602,113 @@ mod tests {
         assert_eq!(drop_flagged_annotations(&mut samples), 2);
         assert_eq!(samples[0].annotations.len(), 2);
         assert!(samples[0].annotations.iter().all(|a| !a.is_flagged()));
+    }
+
+    fn mask_annotation(label: Option<&str>, mask: MaskData) -> Annotation {
+        let mut annotation = Annotation::new();
+        annotation.set_label(label.map(String::from));
+        annotation.set_mask(Some(mask));
+        annotation
+    }
+
+    fn polygon_bounds(polygon: &Polygon) -> (f32, f32, f32, f32) {
+        polygon.rings.iter().flatten().fold(
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+            |(x0, y0, x1, y1), &(x, y)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        )
+    }
+
+    #[test]
+    fn masks_to_polygons_traces_labelled_binary_masks() {
+        // 10x10 image with a 2x2 block at columns 4-5, rows 6-7.
+        let mut pixels = vec![0u8; 100];
+        for (x, y) in [(4, 6), (5, 6), (4, 7), (5, 7)] {
+            pixels[y * 10 + x] = 1;
+        }
+        let full = MaskData::encode(&pixels, 10, 10, 1).unwrap();
+        let tile = MaskData::encode_with_offset(&[1, 1, 1, 1], 2, 2, 1, (4, 6)).unwrap();
+        let mut samples = vec![Sample {
+            width: Some(10),
+            height: Some(10),
+            annotations: vec![
+                mask_annotation(Some("car"), full),
+                mask_annotation(Some("car"), tile),
+            ],
+            ..Default::default()
+        }];
+
+        let counts = masks_to_polygons(&mut samples);
+        assert_eq!(
+            counts,
+            MaskConversion {
+                converted: 2,
+                skipped: 0
+            }
+        );
+        for annotation in &samples[0].annotations {
+            assert!(annotation.mask().is_none());
+            let (x0, y0, x1, y1) = polygon_bounds(annotation.polygon().unwrap());
+            assert_eq!((x0, y0, x1, y1), (0.4, 0.6, 0.5, 0.7));
+        }
+        assert_eq!(
+            masks_to_polygons(&mut samples),
+            MaskConversion::default(),
+            "masks are removed, so a second call does nothing"
+        );
+    }
+
+    #[test]
+    fn masks_to_polygons_skips_class_maps_and_non_binary_masks() {
+        let class_map = MaskData::encode(&[0, 3, 3, 12], 2, 2, 8).unwrap();
+        let scores = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
+        let tile = MaskData::encode_with_offset(&[1], 1, 1, 1, (1, 1)).unwrap();
+        let mut samples = vec![
+            Sample {
+                annotations: vec![
+                    mask_annotation(None, class_map),
+                    mask_annotation(Some("car"), scores),
+                ],
+                ..Default::default()
+            },
+            // A tile cannot be placed without the image size.
+            Sample {
+                annotations: vec![mask_annotation(Some("car"), tile)],
+                ..Default::default()
+            },
+        ];
+
+        let counts = masks_to_polygons(&mut samples);
+        assert_eq!(
+            counts,
+            MaskConversion {
+                converted: 0,
+                skipped: 3
+            }
+        );
+        let annotations = samples.iter().flat_map(|s| &s.annotations);
+        assert!(annotations.clone().all(|a| a.mask().is_none()));
+        assert!(annotations.clone().all(|a| a.polygon().is_none()));
+        assert_eq!(
+            counts.warnings(),
+            vec![
+                "3 raster masks were not uploaded: they are not labelled 1-bit instance masks or have no traceable outline, and Studio does not store raster masks yet"
+            ]
+        );
+    }
+
+    #[test]
+    fn masks_to_polygons_keeps_existing_polygon() {
+        let polygon = Polygon::new(vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]]);
+        let mut annotation = mask_annotation(Some("car"), MaskData::encode(&[1], 1, 1, 1).unwrap());
+        annotation.set_polygon(Some(polygon.clone()));
+        let mut samples = vec![Sample {
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        assert_eq!(masks_to_polygons(&mut samples), MaskConversion::default());
+        assert_eq!(samples[0].annotations[0].polygon(), Some(&polygon));
+        assert!(samples[0].annotations[0].mask().is_none());
     }
 
     #[test]

@@ -493,6 +493,8 @@ EdgeFirst Dataset Format.
 
 **Note:** Annotations flagged `ignore` or `exclude` are dropped before upload and reported once as `⚠ Skipping N annotations flagged ignore/exclude: Studio does not support these flags yet`, since EdgeFirst Studio does not store these flags yet.
 
+**Note:** EdgeFirst Studio stores segmentation only as polygons. Labelled 1-bit instance masks in the `mask` column (including offset tiles) are traced to polygons before upload and reported once as `⚠ N raster masks were converted to polygons for upload: ...`; the outlines approximate the masks. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are reported in a second warning. The Arrow file keeps the original masks.
+
 ### update-dimensions
 
 Backfill missing image width/height metadata for an existing dataset. Useful for datasets uploaded before the client started extracting image dimensions at upload time, or for samples where dimensions could not be determined.
@@ -996,7 +998,8 @@ Tools for converting between the COCO (Common Objects in Context) annotation
 format and the EdgeFirst Dataset Format, and for importing and exporting COCO
 datasets directly to and from EdgeFirst Studio. These commands support bounding
 boxes, polygon segmentation, and RLE segmentation. RLE masks are stored as
-PNG-encoded raster data in the EdgeFirst `mask` column.
+PNG-encoded raster data in the EdgeFirst `mask` column, unless
+`coco-to-arrow --rle-to-polygon` traces them to polygons.
 
 For details on the EdgeFirst Dataset Format and its COCO mapping, see: https://doc.edgefirst.ai/latest/datasets/format/
 
@@ -1041,6 +1044,9 @@ annotation file for a complete offline dataset.
 
 **\--link**
 :   Symlink staged images instead of copying (requires `--images`). Saves disk space for large datasets.
+
+**\--rle-to-polygon**
+:   Trace RLE segmentation (plain or compressed) to polygon contours in the `polygon` column instead of storing lossless 1-bit masks in the `mask` column. Tracing is lossy. `upload-dataset` converts masks to polygons anyway, so use this only when the offline file itself should hold polygons.
 
 **Examples:**
 

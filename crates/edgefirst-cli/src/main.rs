@@ -664,16 +664,15 @@ enum Command {
     /// one dataset with inferred groups. The output extension selects Arrow
     /// IPC (`.arrow`) or Parquet (`.parquet`).
     ///
-    /// By default all segmentation (polygon and RLE alike) is stored as
-    /// polygon contours in the `polygon` column — the preferred
-    /// representation for ground-truth training data.
+    /// Polygon segmentation is stored in the `polygon` column and RLE
+    /// segmentation as lossless 1-bit masks in the `mask` column, unless
+    /// --rle-to-polygon is given.
     ///
     /// Examples:
     ///   edgefirst-client coco-to-arrow instances.json -o dataset.arrow
     ///   edgefirst-client coco-to-arrow coco.zip -o dataset.arrow --group train
     ///   edgefirst-client coco-to-arrow instances_val2017.json -o val2017/val2017.arrow --images ~/coco/val2017 --link
-    ///   edgefirst-client coco-to-arrow stuff_train2017.json -o semseg.arrow --group train
-    ///   edgefirst-client coco-to-arrow instances.json -o masks.arrow --to-masks
+    ///   edgefirst-client coco-to-arrow stuff_val2017.json -o stuff/stuff.arrow --group val --rle-to-polygon
     CocoToArrow {
         /// Path to a COCO annotation file, ZIP archive, or extracted directory
         coco_path: PathBuf,
@@ -701,13 +700,10 @@ enum Command {
         #[clap(long, requires = "images")]
         link: bool,
 
-        /// Store RLE segmentation as PNG-encoded binary masks instead of
-        /// polygon contours. Use when downstream consumers need pixel-perfect
-        /// raster masks (e.g. storing model prediction outputs). Polygon
-        /// annotations are always stored as polygon contours regardless of
-        /// this flag.
+        /// Trace RLE segmentation to polygon contours instead of storing
+        /// 1-bit masks (lossy; EdgeFirst Studio stores only polygons)
         #[clap(long)]
-        to_masks: bool,
+        rle_to_polygon: bool,
     },
     /// Convert VisDrone2019 DET and VID splits to the EdgeFirst Dataset Format.
     ///
@@ -3289,6 +3285,9 @@ async fn handle_upload_dataset(
     if let Some(warning) = drop_flagged_for_upload(&mut samples) {
         println!("{warning}");
     }
+    for warning in edgefirst_client::masks_to_polygons(&mut samples).warnings() {
+        println!("⚠ {warning}");
+    }
 
     if samples.is_empty() {
         return Err(Error::InvalidParameters(
@@ -4988,7 +4987,7 @@ async fn handle_coco_to_arrow(
     group: Option<String>,
     images: Option<PathBuf>,
     link: bool,
-    to_masks: bool,
+    rle_to_polygon: bool,
 ) -> Result<(), Error> {
     use edgefirst_client::coco::{CocoToArrowOptions, coco_to_arrow};
     use indicatif::{ProgressBar, ProgressStyle};
@@ -5019,7 +5018,7 @@ async fn handle_coco_to_arrow(
         group,
         images_dir: images,
         link_images: link,
-        to_masks,
+        rle_to_polygon,
         ..Default::default()
     };
 
@@ -6128,7 +6127,7 @@ async fn main() -> Result<(), Error> {
             group,
             images,
             link,
-            to_masks,
+            rle_to_polygon,
         } => {
             return handle_coco_to_arrow(
                 coco_path.clone(),
@@ -6137,7 +6136,7 @@ async fn main() -> Result<(), Error> {
                 group.clone(),
                 images.clone(),
                 *link,
-                *to_masks,
+                *rle_to_polygon,
             )
             .await;
         }

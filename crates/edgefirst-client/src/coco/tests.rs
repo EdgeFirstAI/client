@@ -876,9 +876,7 @@ mod integration_tests {
         }
     }
 
-    /// Test that RLE segmentation is stored as PNG-encoded binary mask when
-    /// `to_masks=true`. The default stores RLE as polygon contours; this
-    /// test explicitly exercises the opt-in raster output path.
+    /// Test that RLE segmentations produce PNG-encoded mask data in Arrow output.
     #[cfg(feature = "polars")]
     #[tokio::test]
     async fn test_coco_to_arrow_rle_to_png_mask() {
@@ -926,10 +924,7 @@ mod integration_tests {
 
         // Convert to Arrow
         let arrow_path = temp_dir.path().join("rle_test.arrow");
-        let options = CocoToArrowOptions {
-            to_masks: true,
-            ..Default::default()
-        };
+        let options = CocoToArrowOptions::default();
         let count = coco_to_arrow(&coco_path, &arrow_path, &options, None)
             .await
             .unwrap();
@@ -970,12 +965,12 @@ mod integration_tests {
         let fg_count = decoded.iter().filter(|&&v| v == 1).count();
         assert_eq!(fg_count, 5, "should have 5 foreground pixels from RLE");
 
-        // polygon column should be absent or all-null (RLE went to mask with to_masks=true)
+        // polygon column should be absent or all-null (RLE went to mask)
         if let Ok(polygon_col) = df.column("polygon") {
             assert_eq!(
                 polygon_col.null_count(),
                 polygon_col.len(),
-                "polygon column should be all-null with to_masks=true and only RLE annotations"
+                "polygon column should be all-null with only RLE annotations"
             );
         }
     }
@@ -1646,12 +1641,11 @@ mod integration_tests {
         let writer = CocoWriter::new();
         writer.write_json(&original, &coco_path).unwrap();
 
-        // Step 2: COCO -> Arrow  (to_masks=true to exercise mixed polygon+rle_mask roundtrip)
+        // Step 2: COCO -> Arrow
         let arrow_path = temp_dir.path().join("mixed.arrow");
         let coco_options = CocoToArrowOptions {
             include_masks: true,
             group: Some("val".to_string()),
-            to_masks: true,
             ..Default::default()
         };
         let count = coco_to_arrow(&coco_path, &arrow_path, &coco_options, None)
@@ -1817,18 +1811,11 @@ mod integration_tests {
         );
     }
 
-    /// Test that the default behaviour stores RLE as polygon contours, and
-    /// that `to_masks=true` routes RLE to the binary `mask` column instead.
-    ///
-    /// Ground-truth annotations are polygon by default — RLE is decoded to
-    /// boundary contours so training iterators can composite per-class
-    /// polygons into semantic label maps without pre-rasterisation.
-    ///
-    /// `to_masks=true` is the opt-in for pixel-perfect raster storage (e.g.
-    /// storing model prediction outputs alongside ground-truth).
+    /// Test that RLE is stored as a binary mask by default, and traced to
+    /// polygon contours with `rle_to_polygon`, for both `iscrowd` values.
     #[cfg(feature = "polars")]
     #[tokio::test]
-    async fn test_to_masks_rle_routing() {
+    async fn test_rle_to_polygon_routing() {
         use polars::prelude::*;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1857,7 +1844,7 @@ mod integration_tests {
                 },
             ],
             annotations: vec![
-                // iscrowd=0 RLE (COCO Stuff style) → polygon by default
+                // iscrowd=0 RLE (COCO Stuff style)
                 CocoAnnotation {
                     id: 20000001,
                     image_id: 1,
@@ -1871,7 +1858,7 @@ mod integration_tests {
                     })),
                     score: None,
                 },
-                // iscrowd=1 RLE (crowd) → polygon by default too
+                // iscrowd=1 RLE (crowd)
                 CocoAnnotation {
                     id: 20000002,
                     image_id: 1,
@@ -1893,65 +1880,56 @@ mod integration_tests {
         let writer = CocoWriter::new();
         writer.write_json(&dataset, &coco_path).unwrap();
 
-        // --- Default: all RLE → polygon column ---
-        let arrow_default = temp_dir.path().join("default.arrow");
-        coco_to_arrow(&coco_path, &arrow_default, &CocoToArrowOptions::default(), None)
-            .await
-            .unwrap();
+        let convert = |name: &'static str, options: CocoToArrowOptions| {
+            let coco_path = coco_path.clone();
+            let arrow_path = temp_dir.path().join(name);
+            async move {
+                coco_to_arrow(&coco_path, &arrow_path, &options, None)
+                    .await
+                    .unwrap();
+                let mut f = std::fs::File::open(&arrow_path).unwrap();
+                IpcReader::new(&mut f).finish().unwrap()
+            }
+        };
+        let is_set = |df: &DataFrame, column: &str, label: &str| {
+            let labels = df.column("label").unwrap().cast(&DataType::String).unwrap();
+            let row = labels
+                .str()
+                .unwrap()
+                .iter()
+                .position(|l| l == Some(label))
+                .unwrap();
+            df.column(column)
+                .map(|c| !matches!(c.get(row).unwrap(), AnyValue::Null))
+                .unwrap_or(false)
+        };
 
-        let mut f = std::fs::File::open(&arrow_default).unwrap();
-        let df = IpcReader::new(&mut f).finish().unwrap();
-        let labels: Vec<String> = df
-            .column("label")
-            .unwrap()
-            .cast(&DataType::String)
-            .unwrap()
-            .str()
-            .unwrap()
-            .iter()
-            .map(|v| v.unwrap_or("").to_string())
-            .collect();
+        let df = convert("default.arrow", CocoToArrowOptions::default()).await;
+        for label in ["sky", "grass"] {
+            assert!(
+                is_set(&df, "mask", label),
+                "{label} RLE should be a mask by default"
+            );
+            assert!(
+                !is_set(&df, "polygon", label),
+                "{label} should have no polygon by default"
+            );
+        }
 
-        // Both sky (iscrowd=0) and grass (iscrowd=1) should be in polygon col
-        let sky_idx = labels.iter().position(|l| l == "sky").expect("sky");
-        let grass_idx = labels.iter().position(|l| l == "grass").expect("grass");
-        let poly_col = df.column("polygon").unwrap();
-        assert!(
-            !matches!(poly_col.get(sky_idx).unwrap(), AnyValue::Null),
-            "sky RLE should be polygon by default"
-        );
-        assert!(
-            !matches!(poly_col.get(grass_idx).unwrap(), AnyValue::Null),
-            "grass RLE (crowd) should also be polygon by default"
-        );
-
-        // --- to_masks=true: RLE → binary mask column ---
-        let arrow_masks = temp_dir.path().join("to_masks.arrow");
-        let opts = CocoToArrowOptions {
-            to_masks: true,
+        let options = CocoToArrowOptions {
+            rle_to_polygon: true,
             ..Default::default()
         };
-        coco_to_arrow(&coco_path, &arrow_masks, &opts, None)
-            .await
-            .unwrap();
-
-        let mut f2 = std::fs::File::open(&arrow_masks).unwrap();
-        let df2 = IpcReader::new(&mut f2).finish().unwrap();
-        let labels2: Vec<String> = df2
-            .column("label")
-            .unwrap()
-            .cast(&DataType::String)
-            .unwrap()
-            .str()
-            .unwrap()
-            .iter()
-            .map(|v| v.unwrap_or("").to_string())
-            .collect();
-        let sky_idx2 = labels2.iter().position(|l| l == "sky").unwrap();
-        let mask_col2 = df2.column("mask").unwrap();
-        assert!(
-            !matches!(mask_col2.get(sky_idx2).unwrap(), AnyValue::Null),
-            "sky RLE should be binary mask with to_masks=true"
-        );
+        let df = convert("polygon.arrow", options).await;
+        for label in ["sky", "grass"] {
+            assert!(
+                is_set(&df, "polygon", label),
+                "{label} RLE should be traced to a polygon"
+            );
+            assert!(
+                !is_set(&df, "mask", label),
+                "{label} should have no mask with rle_to_polygon"
+            );
+        }
     }
 }

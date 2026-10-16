@@ -3371,6 +3371,9 @@ impl Client {
     ///   during populate.
     /// - **Annotations flagged ignore or exclude are dropped with a
     ///   warning**; Studio does not store these flags yet.
+    /// - **Raster masks are converted to polygons with a warning**; Studio
+    ///   stores segmentation only as polygons. Only labelled 1-bit instance
+    ///   masks are converted; see [`masks_to_polygons`](crate::masks_to_polygons).
     ///
     /// # Arguments
     ///
@@ -3485,11 +3488,16 @@ impl Client {
         // Process samples to detect local files and generate UUIDs. This is
         // synchronous CPU/metadata work; the span uses `.entered()` since it
         // runs on the current task with no await inside.
-        let samples = {
+        let mut samples = {
             #[cfg(feature = "profiling")]
             let _prepare_span = tracing::info_span!("prepare_samples", n = samples.len()).entered();
             self.prepare_samples_for_upload(samples, &mut files_to_upload)?
         };
+
+        // After preparation, so image sizes read from the files are known.
+        for warning in crate::masks_to_polygons(&mut samples).warnings() {
+            log::warn!("{warning}");
+        }
 
         // Pin labels (and source-faithful indices) before populate2, matching
         // upload-dataset. The server's FromJSON path auto-assigns Index = 0

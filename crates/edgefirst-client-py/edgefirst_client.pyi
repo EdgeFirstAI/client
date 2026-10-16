@@ -8037,6 +8037,7 @@ def coco_to_arrow(
     progress: Optional[Progress] = None,
     images_dir: Optional[Union[str, Path]] = None,
     link_images: bool = False,
+    rle_to_polygon: bool = False,
 ) -> int:
     """
     Convert COCO annotations to an offline EdgeFirst dataset.
@@ -8054,6 +8055,11 @@ def coco_to_arrow(
     COCO crowd annotations (``iscrowd: 1``) are written with ``ignore`` set
     to true, keeping their label and index; the deprecated ``iscrowd`` column
     is written as a mirror of ``ignore``.
+
+    Polygon segmentation is written to the ``polygon`` column and RLE
+    segmentation (plain or compressed) as lossless 1-bit masks in the
+    ``mask`` column. ``rle_to_polygon=True`` traces RLE to polygon contours
+    instead, which is lossy.
 
     Returns:
         Number of EdgeFirst rows written, including placeholder rows for

@@ -558,6 +558,10 @@ images and basename collisions are reported as warnings. An image with no
 annotations still receives one placeholder row with a null `label`, retaining
 its `name`, `size`, and `group`.
 
+Polygon segmentation is written to the `polygon` column. RLE segmentation
+(plain or compressed) is written losslessly as 1-bit masks in the `mask`
+column; `--rle-to-polygon` traces it to polygons instead, which is lossy.
+
 Use Polars to select a split:
 
 ```python
@@ -1267,6 +1271,8 @@ The EdgeFirst Client SDK distinguishes four annotation geometry types:
 | `Mask` | `mask` | Raster pixel masks (new in 2026.04) |
 
 Both `Polygon` and `Mask` represent segmentation data and map to `"seg"` in the EdgeFirst Studio API (which has no concept of raster masks — it only stores polygon data). The distinction is client-side, for Arrow/DataFrame handling.
+
+**Studio compatibility**: Uploads (`upload-dataset`, `populate_samples`) trace labelled 1-bit instance masks, including offset tiles, to polygons and log one warning with the count; the polygons approximate the masks. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning. The Arrow file remains the source of truth.
 
 ---
 
