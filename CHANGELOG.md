@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `coco-to-arrow --rle-to-polygon` (Rust `CocoToArrowOptions::rle_to_polygon`, Python `coco_to_arrow(rle_to_polygon=True)`) traces COCO RLE segmentation to polygon contours instead of storing it as 1-bit masks. Storing masks remains the default; tracing is lossy.
 - `masks_to_polygons` (Rust) converts labelled 1-bit instance masks, including offset tiles, to polygons and reports how many masks were converted or skipped.
 - Example `10_coco_stuff_conversion.py` converts COCO-Stuff semantic segmentation annotations to an offline EdgeFirst dataset.
+- `ade20k-to-arrow` converts ADE20K (ADEChallengeData2016) to an offline EdgeFirst dataset of semantic label maps: one row per image whose `mask` is the annotation PNG, unchanged, with groups `train` and `val`. Python: `edgefirst_client.ade20k_to_arrow`; Rust: `edgefirst_client::ade20k`. Example `11_ade20k_conversion.py`.
+- Semantic label maps are specified as a clarification of the 2026.10 dataset format: a row with only an image-sized class-index `mask` is a label map, the new `ignore_index` file metadata names the `labels` position whose pixels are don't-care, and `mask_interpretation = "class_index"` marks class-index masks. `schema_version` is unchanged.
 
 ### Changed
 
-- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning.
+- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning; an annotation whose mask is not uploaded is dropped unless it has a box. `upload-dataset` now reads the `mask` column of Arrow and Parquet files, which it previously ignored.
 
 ### Fixed
 

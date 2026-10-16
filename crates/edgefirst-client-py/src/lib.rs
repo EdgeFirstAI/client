@@ -10033,6 +10033,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_function(wrap_pyfunction!(coco_to_arrow, m)?)?;
         m.add_function(wrap_pyfunction!(visdrone_to_arrow, m)?)?;
+        m.add_function(wrap_pyfunction!(ade20k_to_arrow, m)?)?;
         m.add_function(wrap_pyfunction!(arrow_to_coco, m)?)?;
     }
 
@@ -10246,6 +10247,74 @@ fn visdrone_to_arrow_sync(
         edgefirst_client::visdrone::visdrone_to_arrow(split_dirs, output_path, options, progress)
             .await?,
     )
+}
+
+/// Convert ADE20K (ADEChallengeData2016) to an EdgeFirst dataset of
+/// semantic label maps.
+///
+/// # Arguments
+/// * `root` - Extracted ADEChallengeData2016 directory
+/// * `output_path` - Output `.arrow` or `.parquet` file
+/// * `group` - Convert only `"train"` or `"val"`; omit for both
+/// * `progress` - Optional callback function(current, total, status)
+/// * `stage_images` - Stage images next to the output (default: False)
+/// * `link_images` - Symlink instead of copy on Unix (default: False)
+///
+/// # Returns
+/// Number of rows written, one per image
+#[cfg(feature = "polars")]
+#[pyfunction]
+#[pyo3(signature = (root, output_path, group = None, progress = None, stage_images = false, link_images = false))]
+pub fn ade20k_to_arrow(
+    root: PathBuf,
+    output_path: PathBuf,
+    group: Option<String>,
+    progress: Option<Py<PyAny>>,
+    stage_images: bool,
+    link_images: bool,
+) -> Result<usize, Error> {
+    use edgefirst_client::ade20k::Ade20kToArrowOptions;
+
+    let options = Ade20kToArrowOptions {
+        group,
+        stage_images,
+        link_images,
+        ..Default::default()
+    };
+
+    match progress {
+        Some(progress) => {
+            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+            let task = std::thread::spawn(move || {
+                ade20k_to_arrow_sync(&root, &output_path, &options, Some(tx))
+            });
+            while let Some(status) = rx.blocking_recv() {
+                Python::attach(|py| {
+                    if progress
+                        .call1(py, (status.current, status.total, status.status.clone()))
+                        .is_err()
+                    {
+                        progress
+                            .call1(py, (status.current, status.total))
+                            .expect("Progress callback should be callable");
+                    }
+                });
+            }
+            task.join().unwrap()
+        }
+        None => ade20k_to_arrow_sync(&root, &output_path, &options, None),
+    }
+}
+
+#[cfg(feature = "polars")]
+#[tokio_wrap::sync]
+fn ade20k_to_arrow_sync(
+    root: &PathBuf,
+    output_path: &PathBuf,
+    options: &edgefirst_client::ade20k::Ade20kToArrowOptions,
+    progress: Option<mpsc::Sender<edgefirst_client::Progress>>,
+) -> Result<usize, Error> {
+    Ok(edgefirst_client::ade20k::ade20k_to_arrow(root, output_path, options, progress).await?)
 }
 
 /// Convert EdgeFirst Arrow format to COCO dataset.

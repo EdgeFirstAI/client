@@ -2263,6 +2263,8 @@ impl MaskConversion {
 /// the mask's own size when the sample has none). An annotation that already
 /// has a polygon keeps it. Unlabelled masks are semantic class-index maps,
 /// which have no single outline, and are skipped along with other bit depths.
+/// An annotation whose mask is skipped is removed unless it has a box, so no
+/// annotation is left with only a label or nothing at all.
 ///
 /// Every mask is removed, so a second call does nothing.
 /// [`Client::populate_samples`](crate::Client::populate_samples) applies this
@@ -2289,21 +2291,25 @@ pub fn masks_to_polygons(samples: &mut [Sample]) -> MaskConversion {
     let mut counts = MaskConversion::default();
     for sample in samples.iter_mut() {
         let image_size = sample.width.zip(sample.height);
-        for annotation in &mut sample.annotations {
+        sample.annotations.retain_mut(|annotation| {
             let Some(mask) = annotation.mask.take() else {
-                continue;
+                return true;
             };
             if annotation.polygon.is_some() {
-                continue;
+                return true;
             }
             match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
                 Some(polygon) => {
                     annotation.polygon = Some(polygon);
                     counts.converted += 1;
+                    true
                 }
-                None => counts.skipped += 1,
+                None => {
+                    counts.skipped += 1;
+                    annotation.box2d.is_some() || annotation.box3d.is_some()
+                }
             }
-        }
+        });
     }
     counts
 }
@@ -4694,6 +4700,28 @@ mod tests {
                 "3 raster masks were not uploaded: they are not labelled 1-bit instance masks or have no traceable outline, and Studio does not store raster masks yet"
             ]
         );
+    }
+
+    #[test]
+    fn masks_to_polygons_drops_annotations_left_without_geometry() {
+        let class_map = MaskData::encode(&[0, 3, 3, 12], 2, 2, 8).unwrap();
+        let scores = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
+        let mut boxed = mask_annotation(Some("car"), scores.clone());
+        boxed.set_box2d(Some(Box2d::new(0.1, 0.1, 0.5, 0.5)));
+        let mut samples = vec![Sample {
+            annotations: vec![
+                mask_annotation(None, class_map),
+                mask_annotation(Some("car"), scores),
+                boxed,
+            ],
+            ..Default::default()
+        }];
+
+        let counts = masks_to_polygons(&mut samples);
+        assert_eq!(counts.skipped, 3);
+        let annotations = &samples[0].annotations;
+        assert_eq!(annotations.len(), 1, "only the boxed annotation remains");
+        assert!(annotations[0].box2d().is_some());
     }
 
     #[test]

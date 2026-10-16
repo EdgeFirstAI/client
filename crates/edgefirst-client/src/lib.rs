@@ -53,6 +53,7 @@
 //! - `polars`: Enables integration with Polars DataFrames for enhanced data
 //!   manipulation
 
+pub mod ade20k;
 mod api;
 mod client;
 pub mod coco;

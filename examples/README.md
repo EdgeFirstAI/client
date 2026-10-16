@@ -97,6 +97,7 @@ Verify both install paths (PyPI wheel and maturin develop) before releasing.
 | [08_coco_conversion](08_coco_conversion.py) | `coco-to-arrow`, `validate-snapshot` | `coco_to_arrow`, `polars.read_ipc` / `read_parquet` |
 | [09_visdrone_conversion](09_visdrone_conversion.py) | `visdrone-to-arrow`, `validate-snapshot` | `visdrone_to_arrow`, `polars.read_ipc` / `read_parquet` |
 | [10_coco_stuff_conversion](10_coco_stuff_conversion.py) | `coco-to-arrow [--rle-to-polygon]`, `upload-dataset` | `coco_to_arrow(rle_to_polygon=...)`, `polars.read_ipc` / `read_parquet` |
+| [11_ade20k_conversion](11_ade20k_conversion.py) | `ade20k-to-arrow`, `validate-snapshot` | `ade20k_to_arrow`, `polars.read_ipc` / `read_parquet` |
 
 [05_download_dataset](05_download_dataset.py) writes a flat YOLO/Darknet layout —
 images and labels mirror each other per group:
