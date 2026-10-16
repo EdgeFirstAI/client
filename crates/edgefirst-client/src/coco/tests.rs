@@ -965,13 +965,12 @@ mod integration_tests {
         let fg_count = decoded.iter().filter(|&&v| v == 1).count();
         assert_eq!(fg_count, 5, "should have 5 foreground pixels from RLE");
 
-        // Verify polygon column is all-null (RLE goes to mask, not polygon).
-        // The polygon column may be absent entirely or all-null; both are correct.
+        // polygon column should be absent or all-null (RLE went to mask)
         if let Ok(polygon_col) = df.column("polygon") {
             assert_eq!(
                 polygon_col.null_count(),
                 polygon_col.len(),
-                "polygon column should be all-null when only RLE segmentations are present"
+                "polygon column should be all-null with only RLE annotations"
             );
         }
     }
@@ -1810,5 +1809,127 @@ mod integration_tests {
             1,
             "Should have exactly 1 annotation without segmentation"
         );
+    }
+
+    /// Test that RLE is stored as a binary mask by default, and traced to
+    /// polygon contours with `rle_to_polygon`, for both `iscrowd` values.
+    #[cfg(feature = "polars")]
+    #[tokio::test]
+    async fn test_rle_to_polygon_routing() {
+        use polars::prelude::*;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let rle_counts: Vec<u32> = vec![0, 2, 2, 2, 2, 4, 4];
+        let dataset = CocoDataset {
+            images: vec![CocoImage {
+                id: 1,
+                width: 4,
+                height: 4,
+                file_name: "stuff_test.jpg".to_string(),
+                ..Default::default()
+            }],
+            categories: vec![
+                CocoCategory {
+                    id: 92,
+                    name: "sky".to_string(),
+                    supercategory: Some("nature".to_string()),
+                    ..Default::default()
+                },
+                CocoCategory {
+                    id: 93,
+                    name: "grass".to_string(),
+                    supercategory: Some("nature".to_string()),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![
+                // iscrowd=0 RLE (COCO Stuff style)
+                CocoAnnotation {
+                    id: 20000001,
+                    image_id: 1,
+                    category_id: 92,
+                    bbox: [0.0, 0.0, 2.0, 2.0],
+                    area: 4.0,
+                    iscrowd: 0,
+                    segmentation: Some(CocoSegmentation::Rle(super::super::CocoRle {
+                        counts: rle_counts.clone(),
+                        size: [4, 4],
+                    })),
+                    score: None,
+                },
+                // iscrowd=1 RLE (crowd)
+                CocoAnnotation {
+                    id: 20000002,
+                    image_id: 1,
+                    category_id: 93,
+                    bbox: [0.0, 0.0, 4.0, 4.0],
+                    area: 16.0,
+                    iscrowd: 1,
+                    segmentation: Some(CocoSegmentation::Rle(super::super::CocoRle {
+                        counts: vec![0, 16],
+                        size: [4, 4],
+                    })),
+                    score: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let coco_path = temp_dir.path().join("stuff_test.json");
+        let writer = CocoWriter::new();
+        writer.write_json(&dataset, &coco_path).unwrap();
+
+        let convert = |name: &'static str, options: CocoToArrowOptions| {
+            let coco_path = coco_path.clone();
+            let arrow_path = temp_dir.path().join(name);
+            async move {
+                coco_to_arrow(&coco_path, &arrow_path, &options, None)
+                    .await
+                    .unwrap();
+                let mut f = std::fs::File::open(&arrow_path).unwrap();
+                IpcReader::new(&mut f).finish().unwrap()
+            }
+        };
+        let is_set = |df: &DataFrame, column: &str, label: &str| {
+            let labels = df.column("label").unwrap().cast(&DataType::String).unwrap();
+            let row = labels
+                .str()
+                .unwrap()
+                .iter()
+                .position(|l| l == Some(label))
+                .unwrap();
+            df.column(column)
+                .map(|c| !matches!(c.get(row).unwrap(), AnyValue::Null))
+                .unwrap_or(false)
+        };
+
+        let df = convert("default.arrow", CocoToArrowOptions::default()).await;
+        for label in ["sky", "grass"] {
+            assert!(
+                is_set(&df, "mask", label),
+                "{label} RLE should be a mask by default"
+            );
+            assert!(
+                !is_set(&df, "polygon", label),
+                "{label} should have no polygon by default"
+            );
+        }
+
+        let options = CocoToArrowOptions {
+            rle_to_polygon: true,
+            ..Default::default()
+        };
+        let df = convert("polygon.arrow", options).await;
+        for label in ["sky", "grass"] {
+            assert!(
+                is_set(&df, "polygon", label),
+                "{label} RLE should be traced to a polygon"
+            );
+            assert!(
+                !is_set(&df, "mask", label),
+                "{label} should have no mask with rle_to_polygon"
+            );
+        }
     }
 }

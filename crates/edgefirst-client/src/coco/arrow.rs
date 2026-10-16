@@ -52,6 +52,14 @@ pub struct CocoToArrowOptions {
     pub images_dir: Option<PathBuf>,
     /// Symlink instead of copy (large datasets).
     pub link_images: bool,
+    /// Store RLE segmentation as polygon contours instead of 1-bit masks.
+    ///
+    /// By default RLE annotations are stored losslessly as 1-bit PNG masks
+    /// in the `mask` column and polygon annotations in the `polygon` column.
+    /// With `rle_to_polygon`, RLE annotations are traced to contours and
+    /// stored in the `polygon` column. Tracing is lossy: holes and pixel
+    /// boundaries are approximated.
+    pub rle_to_polygon: bool,
 }
 
 impl Default for CocoToArrowOptions {
@@ -62,6 +70,7 @@ impl Default for CocoToArrowOptions {
             max_workers: max_workers(),
             images_dir: None,
             link_images: false,
+            rle_to_polygon: false,
         }
     }
 }
@@ -195,12 +204,18 @@ pub async fn coco_to_arrow<P: AsRef<Path>>(
             let progress = progress.clone();
             let group = group.clone();
             let include_masks = options.include_masks;
+            let rle_to_polygon = options.rle_to_polygon;
 
             let task = tokio::spawn(async move {
                 let _permit = sem.acquire().await.map_err(Error::SemaphoreError)?;
 
-                let samples =
-                    convert_image_annotations(&image, &index, include_masks, group.as_deref());
+                let samples = convert_image_annotations(
+                    &image,
+                    &index,
+                    include_masks,
+                    rle_to_polygon,
+                    group.as_deref(),
+                );
 
                 let c = current.fetch_add(1, Ordering::SeqCst) + 1;
                 if let Some(ref p) = progress {
@@ -656,6 +671,7 @@ fn convert_image_annotations(
     image: &CocoImage,
     index: &CocoIndex,
     include_masks: bool,
+    rle_to_polygon: bool,
     group: Option<&str>,
 ) -> Vec<Sample> {
     let annotations = index.annotations_for_image(image.id);
@@ -684,11 +700,19 @@ fn convert_image_annotations(
 
             // Convert segmentation based on type:
             // - Polygon → annotation.polygon (normalized coords)
-            // - RLE/CompressedRle → annotation.mask (PNG-encoded MaskData)
+            // - RLE/CompressedRle → annotation.mask (PNG-encoded MaskData),
+            //   or annotation.polygon (traced contours) with rle_to_polygon
             let (polygon, mask) = if include_masks {
                 if let Some(seg) = &ann.segmentation {
                     match seg {
                         CocoSegmentation::Polygon(_) => {
+                            let poly =
+                                coco_segmentation_to_polygon(seg, image.width, image.height).ok();
+                            (poly, None)
+                        }
+                        CocoSegmentation::Rle(_) | CocoSegmentation::CompressedRle(_)
+                            if rle_to_polygon =>
+                        {
                             let poly =
                                 coco_segmentation_to_polygon(seg, image.width, image.height).ok();
                             (poly, None)
@@ -1784,7 +1808,7 @@ mod tests {
         };
 
         let index = CocoIndex::from_dataset(&dataset);
-        let samples = convert_image_annotations(&image, &index, true, Some("train"));
+        let samples = convert_image_annotations(&image, &index, true, false, Some("train"));
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].image_name, Some("test_image".to_string()));
@@ -1835,11 +1859,11 @@ mod tests {
         let index = CocoIndex::from_dataset(&dataset);
 
         // With masks enabled
-        let samples_with_mask = convert_image_annotations(&image, &index, true, None);
+        let samples_with_mask = convert_image_annotations(&image, &index, true, false, None);
         assert!(samples_with_mask[0].annotations[0].polygon().is_some());
 
         // With masks disabled
-        let samples_no_mask = convert_image_annotations(&image, &index, false, None);
+        let samples_no_mask = convert_image_annotations(&image, &index, false, false, None);
         assert!(samples_no_mask[0].annotations[0].polygon().is_none());
     }
 
@@ -1881,7 +1905,7 @@ mod tests {
         };
 
         let index = CocoIndex::from_dataset(&dataset);
-        let samples = convert_image_annotations(&image, &index, true, None);
+        let samples = convert_image_annotations(&image, &index, true, false, None);
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].annotations.len(), 1);
@@ -1909,7 +1933,7 @@ mod tests {
         };
 
         let index = CocoIndex::from_dataset(&dataset);
-        let samples = convert_image_annotations(&image, &index, true, None);
+        let samples = convert_image_annotations(&image, &index, true, false, None);
 
         // An image with no annotations must still emit one placeholder row so
         // the image is never dropped from the dataset.
@@ -2523,7 +2547,7 @@ mod tests {
         };
 
         let index = CocoIndex::from_dataset(&dataset);
-        let samples = convert_image_annotations(&image, &index, true, None);
+        let samples = convert_image_annotations(&image, &index, true, false, None);
 
         // Should emit 1 sentinel sample (no annotations but has neg data)
         assert_eq!(
@@ -2568,7 +2592,7 @@ mod tests {
         };
 
         let index = CocoIndex::from_dataset(&dataset);
-        let samples = convert_image_annotations(&image, &index, true, Some("train"));
+        let samples = convert_image_annotations(&image, &index, true, false, Some("train"));
 
         assert_eq!(
             samples.len(),

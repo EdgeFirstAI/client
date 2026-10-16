@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `coco-to-arrow --rle-to-polygon` (Rust `CocoToArrowOptions::rle_to_polygon`, Python `coco_to_arrow(rle_to_polygon=True)`) traces COCO RLE segmentation to polygon contours instead of storing it as 1-bit masks. Storing masks remains the default; tracing is lossy.
+- `masks_to_polygons` (Rust) converts labelled 1-bit instance masks, including offset tiles, to polygons and reports how many masks were converted or skipped.
+- Example `10_coco_stuff_conversion.py` converts COCO-Stuff semantic segmentation annotations to an offline EdgeFirst dataset.
+
+### Changed
+
+- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning.
+
+### Fixed
+
+- Compressed COCO RLE (string `counts`) was decoded with the wrong delta scheme, so nearly every compressed mask failed its pixel-count check and was dropped: 32,798 of the 32,801 COCO-Stuff val2017 annotations were written by `coco-to-arrow` without a mask, were imported by `import-coco` without a polygon, and counted as zero area in `verify-coco`. Decoding now matches pycocotools; re-convert affected files. List-form RLE, which COCO instance crowd annotations use, was not affected.
+- Malformed compressed RLE strings with characters outside `0`–`o` or with an unterminated value now return an error instead of being decoded incorrectly or panicking.
+
 ## [2.17.0] - 2026-10-10
 
 ### Added
