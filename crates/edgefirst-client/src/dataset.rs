@@ -2259,10 +2259,13 @@ impl MaskConversion {
 ///
 /// Only labelled 1-bit instance masks are traced. A mask tile with a PNG
 /// `oFFs` offset is placed at that position on the image, and the polygon is
-/// normalized by the sample's image size (or, for a mask without an offset,
-/// the mask's own size when the sample has none). An annotation that already
+/// normalized by the sample's image size. When the sample has no size, a
+/// tile reads it from the sample's image file and stores it on the sample;
+/// a mask without an offset uses its own size. An annotation that already
 /// has a polygon keeps it. Unlabelled masks are semantic class-index maps,
 /// which have no single outline, and are skipped along with other bit depths.
+/// An annotation whose mask is skipped is removed unless it has a box, so no
+/// annotation is left with only a label or nothing at all.
 ///
 /// Every mask is removed, so a second call does nothing.
 /// [`Client::populate_samples`](crate::Client::populate_samples) applies this
@@ -2288,24 +2291,51 @@ impl MaskConversion {
 pub fn masks_to_polygons(samples: &mut [Sample]) -> MaskConversion {
     let mut counts = MaskConversion::default();
     for sample in samples.iter_mut() {
+        let needs_size = sample.width.zip(sample.height).is_none()
+            && sample
+                .annotations
+                .iter()
+                .any(|a| a.mask.as_ref().is_some_and(|m| m.offset().is_some()));
+        if needs_size && let Some((width, height)) = image_size_from_files(&sample.files) {
+            sample.width = Some(width);
+            sample.height = Some(height);
+        }
         let image_size = sample.width.zip(sample.height);
-        for annotation in &mut sample.annotations {
+        sample.annotations.retain_mut(|annotation| {
             let Some(mask) = annotation.mask.take() else {
-                continue;
+                return true;
             };
             if annotation.polygon.is_some() {
-                continue;
+                return true;
             }
             match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
                 Some(polygon) => {
                     annotation.polygon = Some(polygon);
                     counts.converted += 1;
+                    true
                 }
-                None => counts.skipped += 1,
+                None => {
+                    counts.skipped += 1;
+                    annotation.box2d.is_some() || annotation.box3d.is_some()
+                }
             }
-        }
+        });
     }
     counts
+}
+
+/// Size of the sample's image, read from its bytes or local file.
+fn image_size_from_files(files: &[SampleFile]) -> Option<(u32, u32)> {
+    let file = files.iter().find(|f| f.file_type() == "image")?;
+    let size = match (file.bytes(), file.filename()) {
+        (Some(bytes), _) => imagesize::blob_size(bytes).ok()?,
+        (None, Some(path)) => imagesize::size(path).ok()?,
+        (None, None) => return None,
+    };
+    Some((
+        u32::try_from(size.width).ok()?,
+        u32::try_from(size.height).ok()?,
+    ))
 }
 
 fn instance_mask_to_polygon(
@@ -4658,6 +4688,32 @@ mod tests {
     }
 
     #[test]
+    fn masks_to_polygons_reads_missing_image_size_from_files() {
+        // 2x2 tile at (4, 6) on a 10x10 image whose size is not on the sample.
+        let image = MaskData::encode(&[0; 100], 10, 10, 8).unwrap().into_bytes();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, &image).unwrap();
+        let files = [
+            SampleFile::with_filename("image".into(), path.to_string_lossy().into_owned()),
+            SampleFile::with_bytes("image".into(), "image.png".into(), image),
+        ];
+        for file in files {
+            let tile = MaskData::encode_with_offset(&[1, 1, 1, 1], 2, 2, 1, (4, 6)).unwrap();
+            let mut samples = vec![Sample {
+                files: vec![file],
+                annotations: vec![mask_annotation(Some("car"), tile)],
+                ..Default::default()
+            }];
+
+            let counts = masks_to_polygons(&mut samples);
+            assert_eq!(counts.converted, 1, "{:?}", samples[0].files);
+            let polygon = samples[0].annotations[0].polygon().unwrap();
+            assert_eq!(polygon_bounds(polygon), (0.4, 0.6, 0.5, 0.7));
+        }
+    }
+
+    #[test]
     fn masks_to_polygons_skips_class_maps_and_non_binary_masks() {
         let class_map = MaskData::encode(&[0, 3, 3, 12], 2, 2, 8).unwrap();
         let scores = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
@@ -4694,6 +4750,28 @@ mod tests {
                 "3 raster masks were not uploaded: they are not labelled 1-bit instance masks or have no traceable outline, and Studio does not store raster masks yet"
             ]
         );
+    }
+
+    #[test]
+    fn masks_to_polygons_drops_annotations_left_without_geometry() {
+        let class_map = MaskData::encode(&[0, 3, 3, 12], 2, 2, 8).unwrap();
+        let scores = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
+        let mut boxed = mask_annotation(Some("car"), scores.clone());
+        boxed.set_box2d(Some(Box2d::new(0.1, 0.1, 0.5, 0.5)));
+        let mut samples = vec![Sample {
+            annotations: vec![
+                mask_annotation(None, class_map),
+                mask_annotation(Some("car"), scores),
+                boxed,
+            ],
+            ..Default::default()
+        }];
+
+        let counts = masks_to_polygons(&mut samples);
+        assert_eq!(counts.skipped, 3);
+        let annotations = &samples[0].annotations;
+        assert_eq!(annotations.len(), 1, "only the boxed annotation remains");
+        assert!(annotations[0].box2d().is_some());
     }
 
     #[test]

@@ -158,6 +158,23 @@ impl MaskData {
     /// own resolution, which may be the image's or a model output's; `None`
     /// does not imply the PNG has the image's dimensions.
     pub fn offset(&self) -> Option<(i32, i32)> {
+        let data = self.offs_chunk()?;
+        if data.len() != 9 || data[8] != OFFS_UNIT_PIXEL {
+            return None;
+        }
+        let x = i32::from_be_bytes(data[0..4].try_into().ok()?);
+        let y = i32::from_be_bytes(data[4..8].try_into().ok()?);
+        Some((x, y))
+    }
+
+    /// Whether the PNG has an `oFFs` chunk before the image data, whatever
+    /// its unit or length.
+    pub(crate) fn has_offs_chunk(&self) -> bool {
+        self.offs_chunk().is_some()
+    }
+
+    /// Payload of the first complete `oFFs` chunk before the first `IDAT`.
+    fn offs_chunk(&self) -> Option<&[u8]> {
         if !self.is_valid() {
             return None;
         }
@@ -172,16 +189,10 @@ impl MaskData {
             match &chunk_type {
                 b"IDAT" | b"IEND" => return None,
                 t if *t == OFFS_CHUNK => {
-                    if len != 9 || chunk_end > self.png.len() {
+                    if chunk_end > self.png.len() {
                         return None;
                     }
-                    let data = &self.png[data_start..data_end];
-                    if data[8] != OFFS_UNIT_PIXEL {
-                        return None;
-                    }
-                    let x = i32::from_be_bytes(data[0..4].try_into().ok()?);
-                    let y = i32::from_be_bytes(data[4..8].try_into().ok()?);
-                    return Some((x, y));
+                    return Some(&self.png[data_start..data_end]);
                 }
                 _ => {}
             }

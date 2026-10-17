@@ -8094,6 +8094,30 @@ def visdrone_to_arrow(
     """
     ...
 
+def ade20k_to_arrow(
+    root: Union[str, Path],
+    output_path: Union[str, Path],
+    group: Optional[str] = None,
+    progress: Optional[Progress] = None,
+    stage_images: bool = False,
+    link_images: bool = False,
+) -> int:
+    """
+    Convert ADE20K (ADEChallengeData2016) to an offline EdgeFirst dataset.
+
+    ``root`` holds ``objectInfo150.txt``, ``images/`` and ``annotations/``.
+    Each image becomes one row whose ``mask`` is its label PNG, unchanged,
+    with no label or geometry. Pixel values are positions in the file's
+    ``labels`` metadata, ``["unlabeled", "wall", ...]``; ``ignore_index``
+    is ``"0"`` and ``mask_interpretation`` is ``"class_index"``.
+    ``training`` becomes group ``train`` and ``validation`` group ``val``;
+    ``group`` converts only one of them.
+
+    Returns:
+        Number of rows written, one per image.
+    """
+    ...
+
 def arrow_to_coco(
     arrow_path: Union[str, Path],
     output_path: Union[str, Path],

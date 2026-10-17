@@ -396,6 +396,8 @@ edgefirst-client validate-snapshot coco-parquet
 `visdrone-to-arrow` converts VisDrone2019 DET and VID splits into an offline
 EdgeFirst dataset.
 
+`ade20k-to-arrow` converts ADE20K (ADEChallengeData2016) into an offline dataset of semantic label maps, storing each annotation PNG unchanged.
+
 For one COCO JSON file, assign its split explicitly with `--group train` or
 `--group val`. See [CLI.md](CLI.md#coco-interchange),
 [DATASET_FORMAT.md](DATASET_FORMAT.md), and
