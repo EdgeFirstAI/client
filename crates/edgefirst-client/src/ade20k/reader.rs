@@ -132,7 +132,7 @@ pub fn read_label_map(path: &Path) -> Result<MaskData, Error> {
             mask.bit_depth()
         )));
     }
-    if mask.offset().is_some() {
+    if mask.has_offs_chunk() {
         return Err(invalid(
             "has an oFFs offset; label maps cover the whole image".into(),
         ));

@@ -167,6 +167,28 @@ fn offset_label_png_is_an_error() {
     assert!(err.contains("ADE_val_tile.png"), "{err}");
 }
 
+#[test]
+fn label_png_with_any_offs_chunk_is_an_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("ADE_val_micrometre.png");
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 2, 2);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        // Offset (1, 1) in micrometres (unit byte 1).
+        let data = [0, 0, 0, 1, 0, 0, 0, 1, 1];
+        writer
+            .write_chunk(png::chunk::ChunkType(*b"oFFs"), &data)
+            .unwrap();
+        writer.write_image_data(&[1, 2, 3, 4]).unwrap();
+    }
+    std::fs::write(&path, &png).unwrap();
+    let err = read_label_map(&path).unwrap_err().to_string();
+    assert!(err.contains("ADE_val_micrometre.png"), "{err}");
+}
+
 fn group_of(df: &DataFrame, idx: usize) -> String {
     let groups = df.column("group").unwrap().cast(&DataType::String).unwrap();
     groups.str().unwrap().get(idx).unwrap().to_owned()

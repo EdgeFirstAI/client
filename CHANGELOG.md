@@ -17,11 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning; an annotation whose mask is not uploaded is dropped unless it has a box. `upload-dataset` now reads the `mask` column of Arrow and Parquet files, which it previously ignored.
+- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning; an annotation whose mask is not uploaded is dropped unless it has a box. An offset mask tile on a sample without an image size takes the size from the sample's image file. `upload-dataset` now reads the `mask` column of Arrow and Parquet files, which it previously ignored.
 
 ### Fixed
 
 - Compressed COCO RLE (string `counts`) was decoded with the wrong delta scheme, so nearly every compressed mask failed its pixel-count check and was dropped: 32,798 of the 32,801 COCO-Stuff val2017 annotations were written by `coco-to-arrow` without a mask, were imported by `import-coco` without a polygon, and counted as zero area in `verify-coco`. Decoding now matches pycocotools; re-convert affected files. List-form RLE, which COCO instance crowd annotations use, was not affected.
+- A Python progress callback that raised an exception crashed the call with a Rust panic. The callback's exception is now raised from the call once the operation finishes, and whether a callback takes `(current, total, status)` or `(current, total)` is read from its signature instead of retrying a failed call with two arguments.
 - Malformed compressed RLE strings with characters outside `0`–`o` or with an unterminated value now return an error instead of being decoded incorrectly or panicking.
 
 ## [2.17.0] - 2026-10-10

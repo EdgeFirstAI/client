@@ -100,7 +100,66 @@ impl From<pyo3::PyErr> for Error {
 
 impl From<Error> for PyErr {
     fn from(err: Error) -> PyErr {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("{}", err))
+        match err {
+            Error::PyErr(err) => err,
+            err => pyo3::exceptions::PyRuntimeError::new_err(format!("{}", err)),
+        }
+    }
+}
+
+/// Whether a progress callback accepts `(current, total, status)` rather
+/// than `(current, total)`. Callables without an inspectable signature are
+/// called with all three.
+fn progress_takes_status(callback: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let py = callback.py();
+    match py.import("inspect")?.call_method1("signature", (callback,)) {
+        Ok(signature) => Ok(signature.call_method1("bind", (0, 0, py.None())).is_ok()),
+        Err(err)
+            if err.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+                || err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) =>
+        {
+            Ok(true)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Passes a worker thread's progress updates to a Python callback taking
+/// `(current, total, status)` or `(current, total)`, then joins the worker.
+///
+/// An exception raised by the callback stops progress reporting and is
+/// returned, unchanged, once the worker has finished.
+fn forward_progress<T, E>(
+    progress: &Py<PyAny>,
+    mut rx: tokio::sync::mpsc::Receiver<edgefirst_client::Progress>,
+    task: std::thread::JoinHandle<Result<T, E>>,
+) -> Result<T, Error>
+where
+    Error: From<E>,
+{
+    let mut failure = Python::attach(|py| progress_takes_status(progress.bind(py)))
+        .and_then(|takes_status| {
+            while let Some(status) = rx.blocking_recv() {
+                Python::attach(|py| {
+                    if takes_status {
+                        progress.call1(py, (status.current, status.total, status.status))
+                    } else {
+                        progress.call1(py, (status.current, status.total))
+                    }
+                })?;
+            }
+            Ok(())
+        })
+        .err();
+    drop(rx);
+    let output = task.join().map_err(|_| {
+        Error::PyErr(pyo3::exceptions::PyRuntimeError::new_err(
+            "worker thread panicked",
+        ))
+    })?;
+    match failure.take() {
+        Some(err) => Err(Error::PyErr(err)),
+        None => Ok(output?),
     }
 }
 
@@ -2444,7 +2503,7 @@ impl Dataset {
 
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
                 let client = client_ref.clone();
                 let dataset_id = self.inner.id();
                 let groups_clone = groups.clone();
@@ -2469,25 +2528,7 @@ impl Dataset {
                     })
                 });
 
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 let client = client_ref.clone();
@@ -2587,7 +2628,7 @@ impl Dataset {
         let client_arc = Arc::clone(client_ref);
         let samples = match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
                 let client = client_ref.clone();
                 let dataset_id = self.inner.id();
                 let groups_clone = groups.clone();
@@ -2612,22 +2653,7 @@ impl Dataset {
                     })
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()?
+                forward_progress(&progress, rx, task)?
             }
             None => {
                 let client = client_ref.clone();
@@ -3405,7 +3431,7 @@ impl AnnotationSet {
 
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
                 let client = client_ref.clone();
                 let annotation_set_id = self.inner.id();
                 let groups_clone = groups.clone();
@@ -3427,22 +3453,10 @@ impl AnnotationSet {
                     })
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?.into_iter().map(Annotation).collect())
+                Ok(forward_progress(&progress, rx, task)?
+                    .into_iter()
+                    .map(Annotation)
+                    .collect())
             }
             None => {
                 let annotations = client_ref
@@ -4364,7 +4378,7 @@ impl ValidationSession {
     ) -> Result<(), Error> {
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(32);
+                let (tx, rx) = mpsc::channel(32);
                 let inner = self.inner.clone();
                 let client_inner = client.0.clone();
                 let folder_clone = folder.clone();
@@ -4376,22 +4390,7 @@ impl ValidationSession {
                             .await
                     })
                 });
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -4428,7 +4427,7 @@ impl ValidationSession {
     ) -> Result<(), Error> {
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(32);
+                let (tx, rx) = mpsc::channel(32);
                 let inner = self.inner.clone();
                 let client_inner = client.0.clone();
                 let filename_owned = filename.to_owned();
@@ -4440,22 +4439,7 @@ impl ValidationSession {
                             .await
                     })
                 });
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -5062,7 +5046,7 @@ impl TaskInfo {
     ) -> Result<(), Error> {
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(32);
+                let (tx, rx) = mpsc::channel(32);
                 let inner = self.0.clone();
                 let client_inner = client.0.clone();
                 let folder_clone = folder.clone();
@@ -5074,22 +5058,7 @@ impl TaskInfo {
                             .await
                     })
                 });
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -5128,7 +5097,7 @@ impl TaskInfo {
     ) -> Result<(), Error> {
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(32);
+                let (tx, rx) = mpsc::channel(32);
                 let inner = self.0.clone();
                 let client_inner = client.0.clone();
                 let file_owned = file.to_owned();
@@ -5147,22 +5116,7 @@ impl TaskInfo {
                             .await
                     })
                 });
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -6622,7 +6576,7 @@ impl Client {
 
         let annotations = match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let version_clone = version.clone();
@@ -6636,30 +6590,17 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()
+                forward_progress(&progress, rx, task)
             }
-            None => self.annotations_sync(
-                annotation_set_id,
-                &groups,
-                &annotation_types,
-                None,
-                version.as_deref(),
-            ),
+            None => self
+                .annotations_sync(
+                    annotation_set_id,
+                    &groups,
+                    &annotation_types,
+                    None,
+                    version.as_deref(),
+                )
+                .map_err(Error::from),
         }?;
 
         Ok(annotations.into_iter().map(Annotation).collect::<Vec<_>>())
@@ -6721,7 +6662,7 @@ impl Client {
 
         let df = match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let version_clone = version.clone();
@@ -6736,31 +6677,18 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()
+                forward_progress(&progress, rx, task)
             }
-            None => self.samples_dataframe_sync(
-                dataset_id,
-                annotation_set_id,
-                &groups,
-                &annotation_types,
-                None,
-                version.as_deref(),
-            ),
+            None => self
+                .samples_dataframe_sync(
+                    dataset_id,
+                    annotation_set_id,
+                    &groups,
+                    &annotation_types,
+                    None,
+                    version.as_deref(),
+                )
+                .map_err(Error::from),
         }?;
 
         Ok(df)
@@ -6821,27 +6749,14 @@ impl Client {
 
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let task = std::thread::spawn(move || {
                     client.backfill_sample_dimensions_sync(dataset_id, Some(tx))
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => Ok(self.backfill_sample_dimensions_sync(dataset_id, None)?),
         }
@@ -7024,7 +6939,7 @@ impl Client {
 
         let samples = match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let version_clone = version.clone();
@@ -7040,32 +6955,19 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()
+                forward_progress(&progress, rx, task)
             }
-            None => self.samples_sync(
-                dataset_id,
-                annotation_set_id,
-                &annotation_types,
-                &groups,
-                &types,
-                None,
-                version.as_deref(),
-            ),
+            None => self
+                .samples_sync(
+                    dataset_id,
+                    annotation_set_id,
+                    &annotation_types,
+                    &groups,
+                    &types,
+                    None,
+                    version.as_deref(),
+                )
+                .map_err(Error::from),
         }?;
 
         let client_arc = Arc::new(self.0.clone());
@@ -7157,31 +7059,18 @@ impl Client {
 
         let results = match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let task = std::thread::spawn(move || {
                     client.populate_samples_sync(dataset_id, annotation_set_id, samples, Some(tx))
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                task.join().unwrap()
+                forward_progress(&progress, rx, task)
             }
-            None => self.populate_samples_sync(dataset_id, annotation_set_id, samples, None),
+            None => self
+                .populate_samples_sync(dataset_id, annotation_set_id, samples, None)
+                .map_err(Error::from),
         }?;
 
         Ok(results
@@ -7305,7 +7194,7 @@ impl Client {
 
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let version_clone = version.clone();
@@ -7321,25 +7210,7 @@ impl Client {
                     )
                 });
 
-                while let Some(prog) = rx.blocking_recv() {
-                    let current = prog.current;
-                    let total = prog.total;
-                    let status = prog.status.clone();
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (current, total, status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (current, total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => Ok(self.download_dataset_sync(
                 dataset_id,
@@ -8284,7 +8155,7 @@ impl Client {
         let training_session_id: TrainingSessionID = training_session_id.try_into()?;
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let modelname = modelname.to_string();
@@ -8298,22 +8169,7 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => {
                 Ok(self.download_artifact_sync(training_session_id, modelname, filename, None)?)
@@ -8349,7 +8205,7 @@ impl Client {
         let training_session_id: TrainingSessionID = training_session_id.try_into()?;
         match progress {
             Some(progress) => {
-                let (tx, mut rx) = mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
 
                 let client = Client(self.0.clone());
                 let checkpoint = checkpoint.to_string();
@@ -8363,22 +8219,7 @@ impl Client {
                     )
                 });
 
-                while let Some(status) = rx.blocking_recv() {
-                    Python::attach(|py| {
-                        // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                        // backwards compatibility
-                        if progress
-                            .call1(py, (status.current, status.total, status.status.clone()))
-                            .is_err()
-                        {
-                            progress
-                                .call1(py, (status.current, status.total))
-                                .expect("Progress callback should be callable");
-                        }
-                    });
-                }
-
-                Ok(task.join().unwrap()?)
+                Ok(forward_progress(&progress, rx, task)?)
             }
             None => Ok(self.download_checkpoint_sync(
                 training_session_id,
@@ -10137,28 +9978,13 @@ pub fn coco_to_arrow(
 
     match progress {
         Some(progress) => {
-            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+            let (tx, rx) = mpsc::channel::<edgefirst_client::Progress>(100);
 
             let task = std::thread::spawn(move || {
                 coco_to_arrow_sync(&coco_path, &output_path, &options, Some(tx))
             });
 
-            while let Some(status) = rx.blocking_recv() {
-                Python::attach(|py| {
-                    // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                    // backwards compatibility
-                    if progress
-                        .call1(py, (status.current, status.total, status.status.clone()))
-                        .is_err()
-                    {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
-                    }
-                });
-            }
-
-            task.join().unwrap()
+            forward_progress(&progress, rx, task)
         }
         None => coco_to_arrow_sync(&coco_path, &output_path, &options, None),
     }
@@ -10213,23 +10039,11 @@ pub fn visdrone_to_arrow(
 
     match progress {
         Some(progress) => {
-            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+            let (tx, rx) = mpsc::channel::<edgefirst_client::Progress>(100);
             let task = std::thread::spawn(move || {
                 visdrone_to_arrow_sync(&split_dirs, &output_path, &options, Some(tx))
             });
-            while let Some(status) = rx.blocking_recv() {
-                Python::attach(|py| {
-                    if progress
-                        .call1(py, (status.current, status.total, status.status.clone()))
-                        .is_err()
-                    {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
-                    }
-                });
-            }
-            task.join().unwrap()
+            forward_progress(&progress, rx, task)
         }
         None => visdrone_to_arrow_sync(&split_dirs, &output_path, &options, None),
     }
@@ -10284,23 +10098,11 @@ pub fn ade20k_to_arrow(
 
     match progress {
         Some(progress) => {
-            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+            let (tx, rx) = mpsc::channel::<edgefirst_client::Progress>(100);
             let task = std::thread::spawn(move || {
                 ade20k_to_arrow_sync(&root, &output_path, &options, Some(tx))
             });
-            while let Some(status) = rx.blocking_recv() {
-                Python::attach(|py| {
-                    if progress
-                        .call1(py, (status.current, status.total, status.status.clone()))
-                        .is_err()
-                    {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
-                    }
-                });
-            }
-            task.join().unwrap()
+            forward_progress(&progress, rx, task)
         }
         None => ade20k_to_arrow_sync(&root, &output_path, &options, None),
     }
@@ -10354,28 +10156,13 @@ pub fn arrow_to_coco(
 
     match progress {
         Some(progress) => {
-            let (tx, mut rx) = mpsc::channel::<edgefirst_client::Progress>(100);
+            let (tx, rx) = mpsc::channel::<edgefirst_client::Progress>(100);
 
             let task = std::thread::spawn(move || {
                 arrow_to_coco_sync(&arrow_path, &output_path, &options, Some(tx))
             });
 
-            while let Some(status) = rx.blocking_recv() {
-                Python::attach(|py| {
-                    // Try 3-arg callback first (current, total, status), fall back to 2-arg for
-                    // backwards compatibility
-                    if progress
-                        .call1(py, (status.current, status.total, status.status.clone()))
-                        .is_err()
-                    {
-                        progress
-                            .call1(py, (status.current, status.total))
-                            .expect("Progress callback should be callable");
-                    }
-                });
-            }
-
-            task.join().unwrap()
+            forward_progress(&progress, rx, task)
         }
         None => arrow_to_coco_sync(&arrow_path, &output_path, &options, None),
     }

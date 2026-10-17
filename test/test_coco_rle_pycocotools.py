@@ -121,5 +121,12 @@ class TestCocoRlePycocotools(unittest.TestCase):
                 self.assertIsNotNone(row["polygon"], f"annotation {row['object_id']}")
 
 
+    def test_progress_callback_exception_propagates(self):
+        def callback(current, total):
+            raise OSError("callback failed")
+
+        with self.assertRaisesRegex(OSError, "callback failed"):
+            self._convert(progress=callback)
+
 if __name__ == "__main__":
     unittest.main()

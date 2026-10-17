@@ -84,5 +84,32 @@ class TestAde20k(unittest.TestCase):
         self.assertEqual(meta["mask_interpretation"], "class_index")
 
 
+    def test_progress_callbacks(self):
+        import edgefirst_client as ec
+
+        calls = {"three": [], "two": []}
+        callbacks = {
+            "three": lambda current, total, status: calls["three"].append(status),
+            "two": lambda current, total: calls["two"].append(current),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ade, _ = _make_ade20k(tmpdir)
+            for name, callback in callbacks.items():
+                output = os.path.join(tmpdir, name, "out.arrow")
+                self.assertEqual(ec.ade20k_to_arrow(ade, output, progress=callback), 2)
+                self.assertTrue(calls[name], name)
+
+    def test_progress_callback_exception_propagates(self):
+        import edgefirst_client as ec
+
+        def callback(current, total, status):
+            raise OSError("callback failed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ade, _ = _make_ade20k(tmpdir)
+            output = os.path.join(tmpdir, "out", "out.arrow")
+            with self.assertRaisesRegex(OSError, "callback failed"):
+                ec.ade20k_to_arrow(ade, output, progress=callback)
+
 if __name__ == "__main__":
     unittest.main()
