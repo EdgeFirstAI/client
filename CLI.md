@@ -1369,6 +1369,59 @@ flagged = df.filter(pl.any_horizontal(flag_cols)) if flag_cols else df.clear()
 
 **Source fidelity:** boxes are converted exactly as written in the VisDrone text files. A few extend past the image edge (34 boxes across the six official splits) and a few have zero height (3 boxes); they are kept, not clipped or dropped, so evaluation against the official protocol stays exact. Filter them in Polars if a trainer rejects them.
 
+## ADE20K INTERCHANGE
+
+Convert the ADE20K scene-parsing benchmark (ADEChallengeData2016, also known as SceneParse150) into one offline EdgeFirst dataset of semantic label maps. No Studio account is needed.
+
+### ade20k-to-arrow
+
+**edgefirst-client ade20k-to-arrow** [*OPTIONS*] **\--output** *OUTPUT* *ROOT*
+
+**Arguments:**
+
+*ROOT*
+:   The extracted `ADEChallengeData2016` directory, holding `objectInfo150.txt`, `images/{training,validation}/` and `annotations/{training,validation}/`.
+
+**Options:**
+
+**-o, \--output** *OUTPUT*
+:   Output annotation file (required). `.parquet` writes Apache Parquet, anything else writes Arrow IPC. File metadata carries `schema_version`, `labels` (`unlabeled` followed by the 150 classes), `ignore_index` (`"0"`), `mask_interpretation` (`"class_index"`) and `category_metadata`.
+
+**\--group** *GROUP*
+:   Convert only `train` (the `training` split) or `val` (the `validation` split). Both are converted when omitted; any other value is an error.
+
+**\--images**
+:   Stage the images into `<dir>/<stem>/` next to the output, keeping their names.
+
+**\--link**
+:   Symlink staged images instead of copying (Unix only; requires `--images`).
+
+**Mapping:**
+
+| ADE20K | EdgeFirst |
+|---|---|
+| `annotations/<split>/<stem>.png` | `mask`, the PNG bytes unchanged (8-bit grayscale, image-sized) |
+| pixel value 1–150 | class `labels[value]`, the first name on line `value` of `objectInfo150.txt` |
+| pixel value 0 (unlabelled) | `labels[0] = "unlabeled"`, marked don't-care by `ignore_index = "0"` |
+| `objectInfo150.txt` names | `category_metadata[name]`: `id` 1–150 and `synonyms` when a class lists several names |
+| `training`, `validation` | `group` = `train`, `val` |
+| `<stem>` | `name` |
+
+Rows have no `label`, `label_index` or geometry. The conversion fails, naming the file, if an image has no label PNG or a label PNG has no image, if a label PNG is not 8-bit grayscale or carries an `oFFs` offset, or if its size differs from its image's.
+
+**Examples:**
+
+```bash
+# Both splits into one offline dataset
+edgefirst-client ade20k-to-arrow ADEChallengeData2016 -o ade20k/ade20k.arrow --images --link
+edgefirst-client validate-snapshot ade20k
+
+# Validation only, as Parquet
+edgefirst-client ade20k-to-arrow ADEChallengeData2016 -o ade20k-val/ade20k-val.parquet --group val
+```
+
+**Studio notes:** `upload-dataset` uploads the images but not the label maps, and warns with the count, because Studio stores segmentation only as polygons. `arrow-to-coco` writes the images with no annotations.
+
 ## TRAINING
 
 ### experiments

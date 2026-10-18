@@ -12,14 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `coco-to-arrow --rle-to-polygon` (Rust `CocoToArrowOptions::rle_to_polygon`, Python `coco_to_arrow(rle_to_polygon=True)`) traces COCO RLE segmentation to polygon contours instead of storing it as 1-bit masks. Storing masks remains the default; tracing is lossy.
 - `masks_to_polygons` (Rust) converts labelled 1-bit instance masks, including offset tiles, to polygons and reports how many masks were converted or skipped.
 - Example `10_coco_stuff_conversion.py` converts COCO-Stuff semantic segmentation annotations to an offline EdgeFirst dataset.
+- `ade20k-to-arrow` converts ADE20K (ADEChallengeData2016) to an offline EdgeFirst dataset of semantic label maps: one row per image whose `mask` is the annotation PNG, unchanged, with groups `train` and `val`. Python: `edgefirst_client.ade20k_to_arrow`; Rust: `edgefirst_client::ade20k`. Example `11_ade20k_conversion.py`.
+- Semantic label maps are specified as a clarification of the 2026.10 dataset format: a row with only an image-sized class-index `mask` is a label map, the new `ignore_index` file metadata names the `labels` position whose pixels are don't-care, and `mask_interpretation = "class_index"` marks class-index masks. `schema_version` is unchanged.
 
 ### Changed
 
-- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning.
+- `upload-dataset` and `Client::populate_samples` convert labelled 1-bit instance masks to polygons before upload, with one warning per upload, because EdgeFirst Studio stores segmentation only as polygons. Previously raster masks were dropped from the upload without a warning. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are counted in a second warning; an annotation whose mask is not uploaded is dropped unless it has a box. An offset mask tile on a sample without an image size takes the size from the sample's image file. `upload-dataset` now reads the `mask` column of Arrow and Parquet files, which it previously ignored.
 
 ### Fixed
 
 - Compressed COCO RLE (string `counts`) was decoded with the wrong delta scheme, so nearly every compressed mask failed its pixel-count check and was dropped: 32,798 of the 32,801 COCO-Stuff val2017 annotations were written by `coco-to-arrow` without a mask, were imported by `import-coco` without a polygon, and counted as zero area in `verify-coco`. Decoding now matches pycocotools; re-convert affected files. List-form RLE, which COCO instance crowd annotations use, was not affected.
+- A Python progress callback that raised an exception crashed the call with a Rust panic. The callback's exception is now raised from the call once the operation finishes, and whether a callback takes `(current, total, status)` or `(current, total)` is read from its signature instead of retrying a failed call with two arguments.
 - Malformed compressed RLE strings with characters outside `0`–`o` or with an unterminated value now return an error instead of being decoded incorrectly or panicking.
 
 ## [2.17.0] - 2026-10-10

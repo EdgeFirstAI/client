@@ -749,6 +749,41 @@ enum Command {
         #[clap(long)]
         keep_ignored: bool,
     },
+    /// Convert ADE20K (ADEChallengeData2016) to the EdgeFirst Dataset Format.
+    ///
+    /// ROOT is the extracted ADEChallengeData2016 directory holding
+    /// objectInfo150.txt, images/ and annotations/. Each image becomes one
+    /// row whose mask is its label PNG, unchanged: pixel values are class
+    /// indices into the file's labels metadata, where 0 is "unlabeled" and is
+    /// marked by ignore_index. training becomes group train and validation
+    /// becomes group val. The output extension selects Arrow IPC (.arrow) or
+    /// Parquet (.parquet).
+    ///
+    /// Examples:
+    ///   edgefirst-client ade20k-to-arrow ADEChallengeData2016 -o ade20k/ade20k.arrow --images
+    ///   edgefirst-client ade20k-to-arrow ADEChallengeData2016 -o ade20k-val/ade20k-val.parquet --group val
+    Ade20kToArrow {
+        /// Extracted ADEChallengeData2016 directory
+        root: PathBuf,
+
+        /// Output EdgeFirst file path (.arrow or .parquet)
+        #[clap(long, short = 'o')]
+        output: PathBuf,
+
+        /// Convert only this group: train or val (default: both)
+        #[clap(long)]
+        group: Option<String>,
+
+        /// Stage the images next to the output, producing a complete
+        /// offline dataset (annotation file + sibling image folder)
+        #[clap(long)]
+        images: bool,
+
+        /// Symlink staged images instead of copying (Unix only; requires
+        /// --images)
+        #[clap(long, requires = "images")]
+        link: bool,
+    },
     /// Convert EdgeFirst Arrow format to COCO annotations.
     ///
     /// Reads an EdgeFirst Arrow file and converts it to COCO JSON format.
@@ -2243,6 +2278,11 @@ fn parse_annotations_from_arrow(
         let category_frequency_str = category_frequency_col.as_ref().and_then(|c| c.str().ok());
         let ignore_flags = edgefirst_client::format::ignore_flags(&df);
         let exclude_flags = edgefirst_client::format::flag_column(&df, "exclude");
+        // Legacy files store `mask` as a polygon list; only PNG bytes are masks.
+        let mask_col = df
+            .column("mask")
+            .ok()
+            .and_then(|c| c.binary().ok().cloned());
 
         // Process each row in the DataFrame
         for idx in 0..total_rows {
@@ -2459,6 +2499,12 @@ fn parse_annotations_from_arrow(
 
                 if let Some(polygon) = parse_polygon_from_dataframe(&df, idx)? {
                     annotation.set_polygon(Some(polygon));
+                    has_annotation = true;
+                    geometry_count += 1;
+                }
+
+                if let Some(bytes) = mask_col.as_ref().and_then(|c| c.get(idx)) {
+                    annotation.set_mask(Some(edgefirst_client::MaskData::from_png(bytes.to_vec())));
                     has_annotation = true;
                     geometry_count += 1;
                 }
@@ -5105,6 +5151,64 @@ async fn handle_visdrone_to_arrow(
     Ok(())
 }
 
+/// Handle ADE20K to Arrow conversion.
+async fn handle_ade20k_to_arrow(
+    root: PathBuf,
+    output: PathBuf,
+    group: Option<String>,
+    images: bool,
+    link: bool,
+) -> Result<(), Error> {
+    use edgefirst_client::ade20k::{Ade20kToArrowOptions, ade20k_to_arrow};
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let output_format = if output.extension().is_some_and(|ext| ext == "parquet") {
+        "Parquet"
+    } else {
+        "Arrow IPC"
+    };
+    println!("Converting ADE20K to EdgeFirst {output_format} format...");
+    println!("  Input:  {:?}", root);
+    println!("  Output: {:?}", output);
+
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Progress>(100);
+    let options = Ade20kToArrowOptions {
+        group,
+        stage_images: images,
+        link_images: link,
+        ..Default::default()
+    };
+
+    let output_clone = output.clone();
+    let task =
+        tokio::spawn(
+            async move { ade20k_to_arrow(&root, &output_clone, &options, Some(tx)).await },
+        );
+
+    while let Some(progress) = rx.recv().await {
+        pb.set_length(progress.total as u64);
+        pb.set_position(progress.current as u64);
+    }
+
+    let rows = task.await??;
+    pb.finish_with_message("done");
+
+    println!("\n✓ Converted {rows} rows to {output_format} format");
+    if images {
+        println!("✓ Image staging complete (see log output above for counts)");
+    }
+    Ok(())
+}
+
 /// Handle Arrow to COCO conversion.
 async fn handle_arrow_to_coco(
     arrow_path: PathBuf,
@@ -6158,6 +6262,22 @@ async fn main() -> Result<(), Error> {
             )
             .await;
         }
+        Command::Ade20kToArrow {
+            root,
+            output,
+            group,
+            images,
+            link,
+        } => {
+            return handle_ade20k_to_arrow(
+                root.clone(),
+                output.clone(),
+                group.clone(),
+                *images,
+                *link,
+            )
+            .await;
+        }
         Command::ArrowToCoco {
             arrow_path,
             output,
@@ -6575,6 +6695,7 @@ async fn main() -> Result<(), Error> {
         Command::ValidateSnapshot { .. } => unreachable!(),
         Command::CocoToArrow { .. } => unreachable!(),
         Command::VisdroneToArrow { .. } => unreachable!(),
+        Command::Ade20kToArrow { .. } => unreachable!(),
         Command::ArrowToCoco { .. } => unreachable!(),
         #[cfg(feature = "polars")]
         Command::Migrate { .. } => unreachable!(),
@@ -7855,6 +7976,71 @@ mod tests {
             edgefirst_client::coco::write_dataset(&mut ldf, &legacy, Default::default()).unwrap();
             let samples = parse_annotations_from_arrow(&Some(legacy), &images, true, &pb).unwrap();
             assert_eq!(samples[0].annotations[0].ignore(), Some(true));
+        }
+
+        #[test]
+        fn parse_annotations_from_arrow_reads_mask_column() {
+            use edgefirst_client::{Annotation, Box2d, MaskData, Sample, samples_dataframe};
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let images = temp.path().join("images");
+            std::fs::create_dir_all(&images).unwrap();
+            std::fs::write(images.join("map.jpg"), b"\xFF\xD8\xFF\xD9").unwrap();
+            std::fs::write(images.join("inst.jpg"), b"\xFF\xD8\xFF\xD9").unwrap();
+
+            let label_map = MaskData::encode(&[0, 1, 2, 3], 2, 2, 8).unwrap();
+            let mut map_ann = Annotation::new();
+            map_ann.set_name(Some("map".into()));
+            map_ann.set_mask(Some(label_map.clone()));
+
+            let instance_mask = MaskData::encode(&[1, 1, 1, 1], 2, 2, 1).unwrap();
+            let mut inst_ann = Annotation::new();
+            inst_ann.set_name(Some("inst".into()));
+            inst_ann.set_label(Some("car".into()));
+            inst_ann.set_box2d(Some(Box2d::new(0.1, 0.1, 0.2, 0.2)));
+            inst_ann.set_mask(Some(instance_mask.clone()));
+
+            let sample = |name: &str, ann: Annotation| Sample {
+                image_name: Some(format!("{name}.jpg")),
+                width: Some(2),
+                height: Some(2),
+                annotations: vec![ann],
+                ..Default::default()
+            };
+            let mut df =
+                samples_dataframe(&[sample("map", map_ann), sample("inst", inst_ann)]).unwrap();
+            let arrow = temp.path().join("ds.arrow");
+            edgefirst_client::coco::write_dataset(&mut df, &arrow, Default::default()).unwrap();
+
+            let pb = indicatif::ProgressBar::hidden();
+            let samples = parse_annotations_from_arrow(&Some(arrow), &images, true, &pb).unwrap();
+            let by_name = |stem: &str| {
+                samples
+                    .iter()
+                    .find(|s| s.image_name.as_deref() == Some(&format!("{stem}.jpg")))
+                    .unwrap_or_else(|| panic!("sample {stem} missing"))
+            };
+
+            let map = by_name("map");
+            assert_eq!(map.annotations.len(), 1, "mask-only row must be kept");
+            let parsed = &map.annotations[0];
+            assert_eq!(parsed.label(), None);
+            assert_eq!(parsed.mask().unwrap().as_bytes(), label_map.as_bytes());
+
+            let inst = &by_name("inst").annotations[0];
+            assert_eq!(inst.label().map(String::as_str), Some("car"));
+            assert!(inst.box2d().is_some());
+            assert_eq!(inst.mask().unwrap().as_bytes(), instance_mask.as_bytes());
+
+            // Upload: the label map is skipped and leaves no empty annotation.
+            let mut samples = samples;
+            let counts = edgefirst_client::masks_to_polygons(&mut samples);
+            assert_eq!((counts.converted, counts.skipped), (1, 1));
+            let map = samples
+                .iter()
+                .find(|s| s.image_name.as_deref() == Some("map.jpg"))
+                .unwrap();
+            assert!(map.annotations.is_empty());
         }
 
         #[test]
