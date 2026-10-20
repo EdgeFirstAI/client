@@ -201,3 +201,22 @@ fn read_reports_invalid_metadata_with_the_path() {
         "{err}"
     );
 }
+
+#[cfg(feature = "polars")]
+#[test]
+fn read_rejects_an_unreadable_arrow_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (name, bytes) in [
+        ("empty.arrow", &b""[..]),
+        ("garbage.arrow", b"not an arrow file"),
+    ] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let err = DatasetMetadata::read(&path).unwrap_err().to_string();
+        assert!(err.contains(name), "{err}");
+        assert!(
+            super::super::read_dataset_metadata(&path).is_err(),
+            "{name}"
+        );
+    }
+}

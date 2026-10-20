@@ -14,8 +14,7 @@ use crate::{Error, MaskData};
 /// every semantic label-map row: a row with a `mask` and no label, box or
 /// polygon.
 pub(super) fn validate_contents(path: &Path) -> Result<Vec<ValidationIssue>, Error> {
-    let (df, map) = super::read_dataset_dataframe(path)?;
-    let metadata = match DatasetMetadata::from_map(&map) {
+    let metadata = match DatasetMetadata::from_map(&super::read_dataset_metadata(path)?) {
         Ok(metadata) => metadata,
         Err(Error::InvalidParameters(message)) => {
             let message = message
@@ -29,6 +28,8 @@ pub(super) fn validate_contents(path: &Path) -> Result<Vec<ValidationIssue>, Err
     if metadata.mask_interpretation != MaskInterpretation::ClassIndex {
         return Ok(Vec::new());
     }
+    // Rows are decoded only for class-index files, whose label maps are checked.
+    let (df, _) = super::read_dataset_dataframe(path)?;
     // Legacy files store `mask` as a polygon list; only PNG bytes are masks.
     let Some(masks) = df.column("mask").ok().and_then(|c| c.binary().ok()) else {
         return Ok(Vec::new());

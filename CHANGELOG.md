@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Compressed COCO RLE (string `counts`) was decoded with the wrong delta scheme, so nearly every compressed mask failed its pixel-count check and was dropped: 32,798 of the 32,801 COCO-Stuff val2017 annotations were written by `coco-to-arrow` without a mask, were imported by `import-coco` without a polygon, and counted as zero area in `verify-coco`. Decoding now matches pycocotools; re-convert affected files. List-form RLE, which COCO instance crowd annotations use, was not affected.
 - A Python progress callback that raised an exception crashed the call with a Rust panic. The callback's exception is now raised from the call once the operation finishes, and whether a callback takes `(current, total, status)` or `(current, total)` is read from its signature instead of retrying a failed call with two arguments.
+- `format::read_dataset_metadata` and `read_dataset_dataframe` returned empty metadata for an Arrow IPC file whose metadata could not be read; they now return an error naming the file.
 - Malformed compressed RLE strings with characters outside `0`–`o` or with an unterminated value now return an error instead of being decoded incorrectly or panicking.
 
 ## [2.17.0] - 2026-10-10

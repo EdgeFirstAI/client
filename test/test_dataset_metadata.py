@@ -75,6 +75,16 @@ class TestDatasetMetadata(unittest.TestCase):
         self.assertIn("ignore_index 2 is outside labels", message)
         self.assertNotIn("Invalid parameters", message)
 
+    def test_unreadable_file_raises(self):
+        import edgefirst_client as ec
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "garbage.arrow")
+            with open(path, "wb") as f:
+                f.write(b"not an arrow file")
+            with self.assertRaisesRegex(Exception, "garbage.arrow"):
+                ec.read_dataset_metadata(path)
+
     def test_ade20k_output(self):
         import edgefirst_client as ec
 

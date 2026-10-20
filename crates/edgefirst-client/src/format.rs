@@ -129,7 +129,9 @@ pub fn read_dataset_metadata(path: &Path) -> Result<BTreeMap<String, String>, Er
             .unwrap_or_default())
     } else {
         let mut file = file;
-        let custom_meta = IpcReader::new(&mut file).custom_metadata().ok().flatten();
+        let custom_meta = IpcReader::new(&mut file).custom_metadata().map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read Arrow metadata {:?}: {}", path, e))
+        })?;
         Ok(custom_meta
             .map(|m| {
                 m.iter()
@@ -191,7 +193,9 @@ pub fn read_dataset_dataframe(
     } else {
         let mut file = file;
         let mut reader = IpcReader::new(&mut file);
-        let custom_meta = reader.custom_metadata().ok().flatten();
+        let custom_meta = reader.custom_metadata().map_err(|e| {
+            Error::InvalidParameters(format!("Failed to read Arrow metadata {:?}: {}", path, e))
+        })?;
         let metadata: BTreeMap<String, String> = custom_meta
             .map(|m| {
                 m.iter()
