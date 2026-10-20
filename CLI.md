@@ -960,6 +960,17 @@ The command checks that the directory follows the EdgeFirst Dataset Format:
   or `<name>.parquet`)
 - Sensor container directory exists (e.g., `camera/`, `lidar/`)
 - All files referenced in the annotation file exist on disk
+- The file-level metadata is valid: `labels` is a JSON array of strings,
+  `ignore_index` is a position in `labels`, `mask_interpretation` is a known
+  value, and `class_index` files have `labels`
+- In a `class_index` file, every semantic label map (a row with a `mask` and
+  no label or geometry) is an 8- or 16-bit grayscale PNG without an `oFFs`
+  chunk and has no pixel value outside `labels`. Its size is not checked, so
+  label maps at a model's output resolution are valid
+
+Invalid metadata and invalid label maps are critical errors: the command
+lists them (the first 10 label maps, or all with **-v**) and exits with an
+error.
 
 **Arguments:**
 
@@ -1112,6 +1123,12 @@ filtered by group.
 
 **\--pretty**
 :   Pretty-print the JSON output.
+
+Raster masks follow the file's `mask_interpretation` metadata. `binary`
+(the default), `confidence` and `sigmoid` masks are thresholded at half range;
+`class_index` masks are never binarized, so semantic label maps are skipped
+with one warning giving the count; `logits` masks are skipped. Invalid file
+metadata fails the conversion.
 
 **Examples:**
 
@@ -1420,7 +1437,7 @@ edgefirst-client validate-snapshot ade20k
 edgefirst-client ade20k-to-arrow ADEChallengeData2016 -o ade20k-val/ade20k-val.parquet --group val
 ```
 
-**Studio notes:** `upload-dataset` uploads the images but not the label maps, and warns with the count, because Studio stores segmentation only as polygons. `arrow-to-coco` writes the images with no annotations.
+**Studio notes:** `upload-dataset` uploads the images but not the label maps, and warns with the count, because Studio does not store raster masks yet. `arrow-to-coco` writes the images with no annotations and warns with the count of skipped label maps. `validate-snapshot` checks every label map against `labels`.
 
 ## TRAINING
 

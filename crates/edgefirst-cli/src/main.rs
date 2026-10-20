@@ -3205,6 +3205,35 @@ fn drop_flagged_for_upload(samples: &mut [edgefirst_client::Sample]) -> Option<S
     })
 }
 
+/// Removes the semantic label maps of a `class_index` file, which Studio
+/// cannot store, and returns a warning with their count.
+#[cfg(feature = "polars")]
+fn drop_label_maps_for_upload(
+    samples: &mut [edgefirst_client::Sample],
+    interpretation: edgefirst_client::format::MaskInterpretation,
+) -> Option<String> {
+    if interpretation != edgefirst_client::format::MaskInterpretation::ClassIndex {
+        return None;
+    }
+    let mut dropped = 0usize;
+    for sample in samples.iter_mut() {
+        sample.annotations.retain(|a| {
+            let label_map = a.mask().is_some()
+                && a.label().is_none()
+                && a.box2d().is_none()
+                && a.box3d().is_none()
+                && a.polygon().is_none();
+            dropped += usize::from(label_map);
+            !label_map
+        });
+    }
+    (dropped > 0).then(|| {
+        format!(
+            "⚠ {dropped} semantic label maps (mask_interpretation=class_index) are not uploaded: EdgeFirst Studio does not store raster masks yet. Images are uploaded; keep the Arrow file as the source of truth."
+        )
+    })
+}
+
 #[cfg(feature = "polars")]
 #[cfg_attr(feature = "profiling", tracing::instrument(skip(client), fields(dataset_id = %dataset_id)))]
 async fn handle_upload_dataset(
@@ -3220,6 +3249,14 @@ async fn handle_upload_dataset(
             "Must provide at least one of --annotations or --images".to_owned(),
         ));
     }
+
+    // Before anything is created in Studio, so invalid metadata fails early.
+    let interpretation = annotations
+        .as_deref()
+        .map(edgefirst_client::format::DatasetMetadata::read)
+        .transpose()?
+        .map(|m| m.mask_interpretation)
+        .unwrap_or_default();
 
     #[cfg(feature = "profiling")]
     let _resolve_span = tracing::info_span!("resolve_annotation_set").entered();
@@ -3329,6 +3366,9 @@ async fn handle_upload_dataset(
     }
 
     if let Some(warning) = drop_flagged_for_upload(&mut samples) {
+        println!("{warning}");
+    }
+    if let Some(warning) = drop_label_maps_for_upload(&mut samples, interpretation) {
         println!("{warning}");
     }
     for warning in edgefirst_client::masks_to_polygons(&mut samples).warnings() {
@@ -4467,32 +4507,12 @@ async fn handle_create_snapshot(
         SnapshotSource::LocalPath(path) => {
             // For directories, validate the structure before upload
             if path.is_dir() {
-                use edgefirst_client::format::{ValidationIssue, validate_dataset_structure};
+                use edgefirst_client::format::validate_dataset_structure;
 
                 let issues = validate_dataset_structure(&path)?;
                 if !issues.is_empty() {
-                    // Separate errors from warnings
-                    let errors: Vec<_> = issues
-                        .iter()
-                        .filter(|i| {
-                            matches!(
-                                i,
-                                ValidationIssue::MissingArrowFile { .. }
-                                    | ValidationIssue::MissingSensorContainer { .. }
-                            )
-                        })
-                        .collect();
-
-                    let warnings: Vec<_> = issues
-                        .iter()
-                        .filter(|i| {
-                            !matches!(
-                                i,
-                                ValidationIssue::MissingArrowFile { .. }
-                                    | ValidationIssue::MissingSensorContainer { .. }
-                            )
-                        })
-                        .collect();
+                    let (errors, warnings): (Vec<_>, Vec<_>) =
+                        issues.iter().partition(|i| i.is_critical());
 
                     // Print warnings but continue
                     for warning in &warnings {
@@ -4501,12 +4521,27 @@ async fn handle_create_snapshot(
 
                     // Abort on errors
                     if !errors.is_empty() {
-                        for error in &errors {
+                        for error in errors.iter().take(10) {
                             eprintln!("Error: {}", error);
                         }
+                        if errors.len() > 10 {
+                            eprintln!(
+                                "... and {} more; run validate-snapshot -v to list all",
+                                errors.len() - 10
+                            );
+                        }
+                        let hint = if errors.iter().any(|e| {
+                            matches!(
+                                e,
+                                edgefirst_client::format::ValidationIssue::MissingArrowFile { .. }
+                            )
+                        }) {
+                            " Use 'edgefirst generate-arrow' to create an Arrow file from images."
+                        } else {
+                            ""
+                        };
                         return Err(Error::InvalidParameters(format!(
-                            "Invalid snapshot structure: {} error(s) found. \
-                            Use 'edgefirst generate-arrow' to create an Arrow file from images.",
+                            "Invalid snapshot structure: {} error(s) found.{hint}",
                             errors.len()
                         )));
                     }
@@ -4765,13 +4800,12 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
     // Categorize issues
     let errors: Vec<_> = issues
         .iter()
-        .filter(|i| {
-            matches!(
-                i,
-                ValidationIssue::MissingArrowFile { .. }
-                    | ValidationIssue::MissingSensorContainer { .. }
-            )
-        })
+        .filter(|i| i.is_critical() && !matches!(i, ValidationIssue::InvalidLabelMap { .. }))
+        .collect();
+
+    let label_maps: Vec<_> = issues
+        .iter()
+        .filter(|i| matches!(i, ValidationIssue::InvalidLabelMap { .. }))
         .collect();
 
     let missing_files: Vec<_> = issues
@@ -4789,6 +4823,20 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
         println!("\n✗ {} critical error(s):", errors.len());
         for error in &errors {
             println!("  - {}", error);
+        }
+    }
+
+    if !label_maps.is_empty() {
+        println!("\n✗ {} invalid label map(s):", label_maps.len());
+        let shown = if verbose { label_maps.len() } else { 10 };
+        for issue in label_maps.iter().take(shown) {
+            println!("  - {}", issue);
+        }
+        if label_maps.len() > shown {
+            println!(
+                "  ... and {} more (use -v to see all)",
+                label_maps.len() - shown
+            );
         }
     }
 
@@ -4831,10 +4879,11 @@ fn handle_validate_snapshot(path: PathBuf, verbose: bool) -> Result<(), Error> {
     }
 
     // Return error if there are critical issues
-    if !errors.is_empty() {
+    let critical = errors.len() + label_maps.len();
+    if critical > 0 {
         return Err(Error::InvalidParameters(format!(
             "Snapshot validation failed with {} critical error(s)",
-            errors.len()
+            critical
         )));
     }
 
@@ -6813,6 +6862,44 @@ mod tests {
             drop_flagged_for_upload(&mut samples),
             None,
             "no warning when nothing dropped"
+        );
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn drop_label_maps_for_upload_counts_only_class_index_label_maps() {
+        use edgefirst_client::{Annotation, MaskData, Sample, format::MaskInterpretation};
+
+        let label_map = || {
+            let mut a = Annotation::new();
+            a.set_mask(Some(MaskData::encode(&[0, 1, 1, 0], 2, 2, 8).unwrap()));
+            a
+        };
+        let mut instance = Annotation::new();
+        instance.set_label(Some("car".into()));
+        instance.set_mask(Some(MaskData::encode(&[0, 1, 1, 0], 2, 2, 1).unwrap()));
+        let mut sample = Sample::new();
+        sample.annotations = vec![label_map(), instance, label_map()];
+        let samples = vec![sample];
+
+        let mut binary = samples.clone();
+        assert_eq!(
+            drop_label_maps_for_upload(&mut binary, MaskInterpretation::Binary),
+            None
+        );
+        assert_eq!(binary[0].annotations.len(), 3);
+
+        let mut class_index = samples;
+        let warning = drop_label_maps_for_upload(&mut class_index, MaskInterpretation::ClassIndex)
+            .expect("warning for label maps");
+        assert_eq!(
+            warning,
+            "⚠ 2 semantic label maps (mask_interpretation=class_index) are not uploaded: EdgeFirst Studio does not store raster masks yet. Images are uploaded; keep the Arrow file as the source of truth."
+        );
+        assert_eq!(class_index[0].annotations.len(), 1);
+        assert_eq!(
+            class_index[0].annotations[0].label().map(String::as_str),
+            Some("car")
         );
     }
 

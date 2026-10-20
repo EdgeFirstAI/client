@@ -15,7 +15,6 @@ Studio account or network connection is required.
 
 import argparse
 import io
-import json
 from pathlib import Path
 
 import edgefirst_client as ec
@@ -55,19 +54,21 @@ def main() -> None:
     )
     print(f"Wrote {rows} rows to {output}")
 
+    meta = ec.read_dataset_metadata(output)
+    labels = meta.labels
+    print(f"mask_interpretation: {meta.mask_interpretation}")
+    print(f"ignore_index: {meta.ignore_index} ({labels[meta.ignore_index]})")
+    print(f"{len(labels)} labels: {labels[:4]} ...")
+
     if output.suffix == ".parquet":
         df = pl.read_parquet(output)
-        meta = pl.read_parquet_metadata(output)
-        labels = json.loads(meta["labels"])
-        print(f"ignore_index: {meta['ignore_index']} ({labels[0]})")
-        print(f"{len(labels)} labels: {labels[:4]} ...")
     else:
         df = pl.read_ipc(output, memory_map=False)
     print(df.group_by("group").len().sort("group"))
 
     row = df.row(0, named=True)
     classes = np.asarray(Image.open(io.BytesIO(row["mask"])))
-    present = np.unique(classes)
+    present = [labels[i] for i in np.unique(classes)]
     print(f"{row['name']}: {classes.shape[1]}x{classes.shape[0]}, classes {present}")
 
 

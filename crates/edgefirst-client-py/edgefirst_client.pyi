@@ -8136,11 +8136,72 @@ def arrow_to_coco(
     indexed from 0 (such as a default VisDrone conversion) produces
     ``category_id`` 0.
 
+    Raster masks follow the file's ``mask_interpretation``: ``binary``,
+    ``confidence`` and ``sigmoid`` masks are thresholded at half range;
+    ``class_index`` masks are never binarized, so semantic label maps are
+    skipped with one logged warning; ``logits`` masks are skipped. Invalid
+    file metadata raises an error.
+
     Args:
         groups: Optional group filter, for example ``["train", "val"]``.
 
     Returns:
         Number of COCO annotations written; skipped rows are not counted.
+    """
+    ...
+
+class DatasetMetadata:
+    """
+    File-level metadata of an EdgeFirst dataset file, parsed and validated.
+
+    Returned by :func:`read_dataset_metadata`.
+    """
+
+    @property
+    def schema_version(self) -> Optional[str]:
+        """``schema_version``, e.g. ``"2026.10"``; ``None`` for legacy files."""
+        ...
+    @property
+    def labels(self) -> Optional[List[str]]:
+        """Ordered class names; for class-index masks pixel value ``i`` is ``labels[i]``."""
+        ...
+    @property
+    def ignore_index(self) -> Optional[int]:
+        """Position in ``labels`` whose pixels are don't-care."""
+        ...
+    @property
+    def mask_interpretation(self) -> str:
+        """
+        Meaning of raster mask pixel values: ``"binary"`` (the default when
+        the key is absent), ``"class_index"``, ``"confidence"``,
+        ``"sigmoid"`` or ``"logits"``.
+        """
+        ...
+    @property
+    def category_metadata(self) -> Optional[Dict[str, Any]]:
+        """Per-label reference data keyed by label name."""
+        ...
+    @property
+    def extra(self) -> Dict[str, str]:
+        """Every other metadata key, unchanged."""
+        ...
+
+def read_dataset_metadata(path: Union[str, Path]) -> DatasetMetadata:
+    """
+    Read and validate the file-level metadata of an EdgeFirst dataset file
+    (``.arrow``, ``.ipc`` or ``.parquet``) without decoding its rows.
+
+    Raises:
+        ValueError: The metadata is invalid, for example ``labels`` is not a
+            JSON array of strings, ``ignore_index`` is not a position within
+            ``labels``, or ``mask_interpretation`` is unknown or is
+            ``class_index`` without ``labels``.
+
+    Examples:
+        >>> import edgefirst_client as ec
+        >>> meta = ec.read_dataset_metadata("ade20k/ade20k.arrow")
+        >>> meta.labels[meta.ignore_index]
+        'unlabeled'
     """
     ...
 

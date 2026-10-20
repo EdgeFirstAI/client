@@ -9876,6 +9876,8 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(visdrone_to_arrow, m)?)?;
         m.add_function(wrap_pyfunction!(ade20k_to_arrow, m)?)?;
         m.add_function(wrap_pyfunction!(arrow_to_coco, m)?)?;
+        m.add_function(wrap_pyfunction!(read_dataset_metadata, m)?)?;
+        m.add_class::<DatasetMetadata>()?;
     }
 
     Ok(())
@@ -10106,6 +10108,103 @@ pub fn ade20k_to_arrow(
         }
         None => ade20k_to_arrow_sync(&root, &output_path, &options, None),
     }
+}
+
+/// File-level metadata of an EdgeFirst dataset file, parsed and validated.
+///
+/// Returned by [`read_dataset_metadata`].
+#[cfg(feature = "polars")]
+#[pyclass(name = "DatasetMetadata", frozen)]
+pub struct DatasetMetadata(edgefirst_client::format::DatasetMetadata);
+
+#[cfg(feature = "polars")]
+#[pymethods]
+impl DatasetMetadata {
+    /// `schema_version`, e.g. `"2026.10"`; `None` for legacy files.
+    #[getter]
+    fn schema_version(&self) -> Option<String> {
+        self.0.schema_version.clone()
+    }
+
+    /// Ordered class names; for class-index masks pixel value `i` is
+    /// `labels[i]`.
+    #[getter]
+    fn labels(&self) -> Option<Vec<String>> {
+        self.0.labels.clone()
+    }
+
+    /// Position in `labels` whose pixels are don't-care.
+    #[getter]
+    fn ignore_index(&self) -> Option<usize> {
+        self.0.ignore_index
+    }
+
+    /// Meaning of raster mask pixel values: `"binary"` (default),
+    /// `"class_index"`, `"confidence"`, `"sigmoid"` or `"logits"`.
+    #[getter]
+    fn mask_interpretation(&self) -> &'static str {
+        self.0.mask_interpretation.as_str()
+    }
+
+    /// Per-label reference data keyed by label name, as Python objects.
+    #[getter]
+    fn category_metadata<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.0
+            .category_metadata
+            .as_ref()
+            .map(|categories| {
+                let text = serde_json::to_string(categories)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                py.import("json")?.call_method1("loads", (text,))
+            })
+            .transpose()
+    }
+
+    /// Every other metadata key, unchanged.
+    #[getter]
+    fn extra(&self) -> std::collections::BTreeMap<String, String> {
+        self.0.extra.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DatasetMetadata(schema_version={:?}, labels={}, ignore_index={:?}, mask_interpretation={:?})",
+            self.0.schema_version,
+            self.0
+                .labels
+                .as_ref()
+                .map_or("None".to_owned(), |l| format!("[{} names]", l.len())),
+            self.0.ignore_index,
+            self.0.mask_interpretation.as_str(),
+        )
+    }
+}
+
+/// Read and validate the file-level metadata of an EdgeFirst dataset file
+/// (`.arrow`, `.ipc` or `.parquet`) without decoding its rows.
+///
+/// # Arguments
+/// * `path` - Dataset annotation file
+///
+/// # Returns
+/// A `DatasetMetadata`
+///
+/// # Raises
+/// `ValueError` when the metadata is invalid, for example an
+/// `ignore_index` outside `labels` or an unknown `mask_interpretation`.
+#[cfg(feature = "polars")]
+#[pyfunction]
+pub fn read_dataset_metadata(path: PathBuf) -> PyResult<DatasetMetadata> {
+    let map = edgefirst_client::format::read_dataset_metadata(&path).map_err(Error::from)?;
+    edgefirst_client::format::DatasetMetadata::from_map(&map)
+        .map(DatasetMetadata)
+        .map_err(|e| {
+            let message = match e {
+                edgefirst_client::Error::InvalidParameters(m) => m,
+                other => other.to_string(),
+            };
+            pyo3::exceptions::PyValueError::new_err(format!("{}: {message}", path.display()))
+        })
 }
 
 #[cfg(feature = "polars")]

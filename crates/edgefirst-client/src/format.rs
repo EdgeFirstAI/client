@@ -68,6 +68,11 @@ use walkdir::WalkDir;
 
 use crate::Error;
 
+#[cfg(feature = "polars")]
+mod label_map;
+mod metadata;
+pub use metadata::{DatasetMetadata, MaskInterpretation};
+
 /// Image file extensions supported by EdgeFirst.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg",
@@ -650,6 +655,26 @@ pub enum ValidationIssue {
     UnreferencedFile { path: PathBuf },
     /// Invalid directory structure
     InvalidStructure { message: String },
+    /// File-level metadata that [`DatasetMetadata::from_map`] rejects
+    InvalidMetadata { message: String },
+    /// A semantic label-map row of a `class_index` file that is not a valid
+    /// label map
+    InvalidLabelMap { name: String, reason: String },
+}
+
+impl ValidationIssue {
+    /// Whether the issue makes the dataset unusable: a missing annotation
+    /// file or sensor container, invalid file metadata, or an invalid
+    /// semantic label map. Missing and unreferenced files are not critical.
+    pub fn is_critical(&self) -> bool {
+        matches!(
+            self,
+            ValidationIssue::MissingArrowFile { .. }
+                | ValidationIssue::MissingSensorContainer { .. }
+                | ValidationIssue::InvalidMetadata { .. }
+                | ValidationIssue::InvalidLabelMap { .. }
+        )
+    }
 }
 
 impl std::fmt::Display for ValidationIssue {
@@ -673,6 +698,12 @@ impl std::fmt::Display for ValidationIssue {
             }
             ValidationIssue::InvalidStructure { message } => {
                 write!(f, "Invalid structure: {}", message)
+            }
+            ValidationIssue::InvalidMetadata { message } => {
+                write!(f, "Invalid dataset metadata: {}", message)
+            }
+            ValidationIssue::InvalidLabelMap { name, reason } => {
+                write!(f, "Invalid label map for sample '{}': {}", name, reason)
             }
         }
     }
@@ -744,6 +775,8 @@ pub fn validate_dataset_structure(dataset_dir: &Path) -> Result<Vec<ValidationIs
             return Ok(issues);
         }
     };
+
+    issues.extend(label_map::validate_contents(&dataset_path)?);
 
     // Check for sensor container
     let container_path = dataset_dir.join(dataset_name);

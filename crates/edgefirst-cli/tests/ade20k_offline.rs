@@ -126,3 +126,35 @@ fn unknown_group_fails() {
         .failure()
         .stderr(predicates::str::contains("Unknown ADE20K group"));
 }
+
+#[test]
+fn validate_snapshot_rejects_label_values_outside_labels() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let ade = make_ade20k(temp.path());
+    let bad = edgefirst_client::MaskData::encode(&[9; 15], 5, 3, 8).unwrap();
+    std::fs::write(
+        ade.join("annotations/validation/ADE_val_00000001.png"),
+        bad.as_bytes(),
+    )
+    .unwrap();
+    let out_dir = temp.path().join("out");
+    let output = out_dir.join("out.arrow");
+    edgefirst_cmd()
+        .args([
+            "ade20k-to-arrow",
+            ade.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--images",
+        ])
+        .assert()
+        .success();
+
+    edgefirst_cmd()
+        .args(["validate-snapshot", out_dir.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains(
+            "Invalid label map for sample 'ADE_val_00000001': pixel value 9 is outside labels (4 entries)",
+        ));
+}

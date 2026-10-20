@@ -7,13 +7,13 @@
 > **Implementation status:** the SDK has implemented the 2026.04 Arrow schema since client v2.9.0, and 2026.10 is the current format. As of the client v2.14.0, dataset annotation files can also be written and read as Apache Parquet (`.parquet`), selected by output file extension, with the same file-level metadata (`schema_version`, `category_metadata`, `labels`) carried as Parquet footer key-value pairs — full parity with Arrow IPC. `validate-snapshot` accepts either format when the annotation filename matches the dataset directory basename. The client writes `schema_version` 2026.10 as of client v2.15.0; see [Migration from 2026.04](#migration-from-202604) for what changed.
 >
 > Several other items in this specification remain design targets, not yet
-> shipped: the **configurable box-format/mask-interpretation file-level
-> metadata** (`box2d_format`, `box2d_normalized`, `box3d_format`, `box3d_normalized`,
-> `mask_interpretation`) described below is not read or written anywhere in the
-> codebase — box2d is unconditionally `cxcywh` in Arrow and `ltwh` in JSON. Only
-> `schema_version`, `category_metadata`, and `labels` file-level metadata keys are
-> actually implemented. Treat any configurable-box-format example in this
-> document as the intended future design, not current behavior.
+> shipped: the **configurable box-format file-level metadata** (`box2d_format`,
+> `box2d_normalized`, `box3d_format`, `box3d_normalized`) described below is not
+> read or written anywhere in the codebase — box2d is unconditionally `cxcywh` in
+> Arrow and `ltwh` in JSON. The `schema_version`, `category_metadata`, `labels`,
+> `ignore_index` and `mask_interpretation` file-level metadata keys are
+> implemented. Treat any configurable-box-format example in this document as the
+> intended future design, not current behavior.
 
 ---
 
@@ -710,7 +710,7 @@ Both Arrow IPC and Parquet support key-value metadata at the schema/file level. 
 
 All metadata values are strings.
 
-> **Implementation status:** `schema_version`, `category_metadata` and `labels` (below) are read/written by the SDK; `ignore_index` and `mask_interpretation = "class_index"` are written by `ade20k-to-arrow` and not yet read by the SDK. `box2d_format`, `box2d_normalized`, `box3d_format`, `box3d_normalized`, and the other `mask_interpretation` values are part of this specification's design but are not implemented anywhere in the client — the SDK always uses `cxcywh` (Arrow) / `ltwh` (JSON) for box2d, unconditionally.
+> **Implementation status:** `schema_version`, `category_metadata`, `labels`, `ignore_index` and `mask_interpretation` (below) are read and validated by the SDK (Rust `format::DatasetMetadata`, Python `read_dataset_metadata`); `ade20k-to-arrow` writes `ignore_index` and `mask_interpretation = "class_index"`. `arrow-to-coco`, `upload-dataset` and `validate-snapshot` act on `mask_interpretation` as described in [Mask Interpretation](#mask-interpretation). `box2d_format`, `box2d_normalized`, `box3d_format` and `box3d_normalized` are part of this specification's design but are not implemented anywhere in the client — the SDK always uses `cxcywh` (Arrow) / `ltwh` (JSON) for box2d, unconditionally.
 
 | Key | Values | Default (absent) | Description | Implemented? |
 |-----|--------|-------------------|-------------|--------------|
@@ -719,7 +719,7 @@ All metadata values are strings.
 | `box2d_normalized` | `"true"`, `"false"` | `"true"` | Box2D coordinate system | No — design only |
 | `box3d_format` | `"cxcyczwhl"` | `"cxcyczwhl"` | Box3D array layout descriptor | No — design only |
 | `box3d_normalized` | `"true"`, `"false"` | `"true"` | Box3D coordinate system | No — design only |
-| `mask_interpretation` | `"binary"`, `"class_index"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks | `"class_index"` only (written by `ade20k-to-arrow`) |
+| `mask_interpretation` | `"binary"`, `"class_index"`, `"confidence"`, `"sigmoid"`, `"logits"` | `"binary"` | Pixel value meaning for raster masks | Yes |
 | `category_metadata` | JSON string | absent | Per-label metadata (synset, synonyms, definition) | Yes |
 | `labels` | JSON array `["person", "car", ...]` | absent | Ordered class names for semantic segmentation masks. `labels[i]` = class name for argmax pixel value `i`. | Yes |
 | `ignore_index` | String integer, e.g. `"0"` | absent | Position in `labels` whose pixels are don't-care: excluded from loss and evaluation. A position in `labels`, never a `label_index` value. See [Ignore Index](#ignore-index). | Yes |
@@ -783,6 +783,8 @@ A `labels` position is not a source category ID. For COCO, `person` has source I
 
 The `ignore_index` key marks one position in `labels` as don't-care: pixels with that value are excluded from training loss and from evaluation. It is stored as a decimal string (`"0"`) and is a position in `labels`, so `labels[ignore_index]` names the don't-care class (for example `"unlabeled"`). It applies to every class-index mask in the file; there is no per-row ignore value for masks.
 
+`ignore_index` is always a single position. A source with several ignored values, such as Cityscapes (whose raw label ids 0–6, 9, 10, 14–16 and 18 are all ignored in evaluation), is converted by remapping every ignored value onto one `labels` position, for example a trailing `"unlabeled"` after the 19 Cityscapes train classes, with `ignore_index` naming that position. The raw source ids are kept in `category_metadata[name].id`, as for any other source id. This matches training frameworks such as PyTorch's `CrossEntropyLoss` and mmsegmentation, which take one ignore value.
+
 `ignore_index` describes the data, not a training recipe. A dataset such as ADE20K, whose value 0 means "unlabelled", is stored with its values unchanged and `ignore_index = "0"`; a training pipeline that wants a different layout (for example mmsegmentation's `reduce_zero_label`, which maps 0 to 255 and shifts the other classes down by one) applies that remapping itself.
 
 ### Box Format Descriptors
@@ -827,6 +829,15 @@ The `mask_interpretation` metadata describes how to interpret pixel values in th
 | `confidence` | Quantized confidence scores — use 8-bit (0–255) or 16-bit (0–65535) PNG |
 | `sigmoid` | Quantized sigmoid outputs — use 8-bit or 16-bit PNG |
 | `logits` | Quantized logit outputs — use 8-bit or 16-bit PNG |
+
+A reader rejects an unknown value, and `class_index` without `labels`. The client handles each value as follows:
+
+| Value | `arrow-to-coco` | `upload-dataset` | `validate-snapshot` |
+|-------|-----------------|------------------|---------------------|
+| `binary` | 1-bit masks used as they are; 8- and 16-bit masks thresholded at half range | Labelled 1-bit masks traced to polygons | Metadata only |
+| `class_index` | Never binarized: semantic label maps are skipped with one warning giving the count; masks on labelled rows are skipped | Semantic label maps are not uploaded, with one warning giving the count; images are uploaded | Every semantic label map is checked (see [Semantic label-map rows](#semantic-label-map-rows)) |
+| `confidence`, `sigmoid` | Thresholded at half range, with one warning giving the count | Not uploaded (only 1-bit masks are traced) | Metadata only |
+| `logits` | Skipped with one warning giving the count: logits have no fixed threshold | Not uploaded | Metadata only |
 
 ### Schema Version Strategy
 
@@ -1171,11 +1182,15 @@ Consumers rescale to the target coordinate space as needed. The `size` column (i
 
 A semantic label map is stored as one row per image:
 
-- `mask` holds the label map: an image-sized grayscale PNG (8-bit, or 16-bit for more than 256 classes) with no `oFFs` chunk.
+- `mask` holds the label map: a grayscale PNG (8-bit, or 16-bit for more than 256 classes) with no `oFFs` chunk, covering the whole image. It is usually image-sized; a label map at a model's output resolution is also valid, and a reader that needs image-sized labels resizes it (nearest neighbour, so class indices are not blended).
 - `label`, `label_index`, `box2d`, `box3d` and `polygon` are null. The classes are in the pixels, so the row has no single label or geometry.
 - The file carries `labels`, `mask_interpretation = "class_index"` and, when the source has a don't-care value, `ignore_index`.
 
+Every pixel value must be a position in `labels`, so it is less than the number of labels. `validate-snapshot` checks each label map of a `class_index` file for this, for the bit depth and for the absence of `oFFs`.
+
 A placeholder row for an image without annotations has a null `mask` as well as a null `label` and null geometry. A row with only a `mask` is therefore a label map, never a placeholder. Other per-image labels, such as image classification or scene labels, go in rows of their own (a `label` with null geometry and null `mask`) rather than on the label-map row.
+
+COCO-Stuff converted by `coco-to-arrow` is not stored as label maps: COCO-Stuff gives each class region of an image as its own RLE annotation, so each becomes a labelled 1-bit `mask` row and the file keeps the default `mask_interpretation` (`binary`).
 
 ##### Instance mask tiles
 
@@ -1974,7 +1989,7 @@ These clarify how existing 2026.10 columns may be written. They do not change `s
 - **Instance mask tiles** (EdgeFirst Client v2.17.0): an instance-segmentation `mask` PNG may cover only the tile of the image containing the mask, with a standard PNG `oFFs` chunk (pixel units) giving the tile's top-left position on the image. This replaces the earlier wording that instance masks are always image-sized and never box-cropped. Masks without `oFFs` keep their previous meaning, so every existing file reads exactly as before. Tiles are not tied to `box2d`: a tile covers the mask's full extent, which may reach beyond the box. Semantic-segmentation masks are unaffected and stay image-sized. See [Instance mask tiles](#instance-mask-tiles) for the chunk layout and reader rules.
   - **Why**: an instance mask usually covers a small part of the image, so image-sized masks spend most of their storage and decode time on background. The EdgeFirst Profiler writes tiles for its predictions from the release that pairs with EdgeFirst Client v2.17.0, making prediction files about 20% smaller and validation of segmentation models many times faster.
   - **Compatibility**: readers that ignore `oFFs` (EdgeFirst Client v2.16 and earlier, and generic PNG tools) see a tile as a small mask at the image origin. Use EdgeFirst Client v2.17.0 or later, or apply the reader rules above, to read tiled masks. Writers that need older readers to work should keep writing image-sized masks.
-- **Semantic label maps**: a row whose only geometry is an image-sized class-index `mask`, with null `label`, `label_index`, `box2d`, `box3d` and `polygon`, is a semantic label map, not an empty-image placeholder (a placeholder also has a null `mask`). Files with label maps set `mask_interpretation = "class_index"` and give the class names in `labels`; the new `ignore_index` key names the `labels` position whose pixels are don't-care. `label` is the primary class key and `label_index` stays optional. See [Semantic label-map rows](#semantic-label-map-rows) and [Ignore Index](#ignore-index).
+- **Semantic label maps**: a row whose only geometry is a class-index `mask` covering the whole image, with null `label`, `label_index`, `box2d`, `box3d` and `polygon`, is a semantic label map, not an empty-image placeholder (a placeholder also has a null `mask`). Files with label maps set `mask_interpretation = "class_index"` and give the class names in `labels`; the new `ignore_index` key names the `labels` position whose pixels are don't-care. `label` is the primary class key and `label_index` stays optional. See [Semantic label-map rows](#semantic-label-map-rows) and [Ignore Index](#ignore-index).
   - **Why**: datasets such as ADE20K ship dense per-pixel class maps with a reserved "unlabelled" value; storing the source PNG unchanged keeps the conversion lossless and lets evaluation reproduce published mIoU exactly.
   - **Compatibility**: older readers see a label-map row as a row without a label or geometry and may treat it as a placeholder; they ignore the unknown `ignore_index` key.
 

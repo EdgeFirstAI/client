@@ -930,6 +930,15 @@ mod integration_tests {
             .unwrap();
         assert_eq!(count, 1);
 
+        // RLE regions, including COCO-Stuff's per-class regions, are labelled
+        // binary instance masks, not class-index label maps.
+        let metadata = crate::format::DatasetMetadata::read(&arrow_path).unwrap();
+        assert_eq!(
+            metadata.mask_interpretation,
+            crate::format::MaskInterpretation::Binary
+        );
+        assert_eq!(metadata.ignore_index, None);
+
         // Read back and verify mask column
         let mut file = std::fs::File::open(&arrow_path).unwrap();
         let df = IpcReader::new(&mut file).finish().unwrap();

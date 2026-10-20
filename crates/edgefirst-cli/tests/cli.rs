@@ -5810,6 +5810,48 @@ fn migrate_2026_04_iscrowd_to_ignore() {
 }
 
 #[test]
+fn migrate_2026_04_keeps_label_map_metadata() {
+    use polars::prelude::*;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("semantic.arrow");
+    let mut df = df!("name" => ["a"], "iscrowd" => [Some(false)]).unwrap();
+    let keys = [
+        ("labels", r#"["unlabeled","wall"]"#),
+        ("ignore_index", "0"),
+        ("mask_interpretation", "class_index"),
+        ("category_metadata", r#"{"wall":{"id":1}}"#),
+    ];
+    let mut meta: std::collections::BTreeMap<PlSmallStr, PlSmallStr> = keys
+        .iter()
+        .map(|(k, v)| ((*k).into(), (*v).into()))
+        .collect();
+    meta.insert("schema_version".into(), "2026.04".into());
+    edgefirst_client::coco::write_dataset(&mut df, &path, meta).unwrap();
+
+    let out = edgefirst_cmd()
+        .args(["migrate", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let migrated = edgefirst_client::format::read_dataset_metadata(&path).unwrap();
+    assert_eq!(
+        migrated.get("schema_version").map(String::as_str),
+        Some("2026.10")
+    );
+    for (key, value) in keys {
+        assert_eq!(migrated.get(key).map(String::as_str), Some(value), "{key}");
+    }
+    let typed = edgefirst_client::format::DatasetMetadata::read(&path).unwrap();
+    assert_eq!(typed.ignore_index, Some(0));
+}
+
+#[test]
 fn migrate_2026_04_binary_mask_is_preserved() {
     use polars::prelude::*;
 
