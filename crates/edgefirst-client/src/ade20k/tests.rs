@@ -270,6 +270,15 @@ async fn writes_class_index_metadata() {
     );
     assert_eq!(categories["wall"], serde_json::json!({"id": 1}));
     assert!(categories.get("unlabeled").is_none());
+
+    let typed = crate::format::DatasetMetadata::read(&output).unwrap();
+    assert_eq!(typed.ignore_index, Some(0));
+    assert_eq!(
+        typed.mask_interpretation,
+        crate::format::MaskInterpretation::ClassIndex
+    );
+    assert_eq!(typed.labels.unwrap().len(), 4);
+    assert!(typed.extra.is_empty(), "{:?}", typed.extra);
 }
 
 #[tokio::test]

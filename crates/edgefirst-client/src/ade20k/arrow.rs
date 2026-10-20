@@ -9,7 +9,7 @@ use super::reader::{
 use crate::{
     Annotation, Error, Progress, Sample,
     coco::{SCHEMA_VERSION, write_dataset},
-    format::stage_files,
+    format::{DatasetMetadata, MaskInterpretation, stage_files},
 };
 use polars::prelude::PlSmallStr;
 use std::{
@@ -109,9 +109,9 @@ fn pair_to_sample(pair: &Ade20kPair, group: &str) -> Result<Sample, Error> {
 /// File-level metadata: `labels` puts `unlabeled` at position 0 so a pixel
 /// value is its class's position, which `ignore_index` marks as don't-care.
 fn build_metadata(classes: &[Ade20kClass]) -> BTreeMap<PlSmallStr, PlSmallStr> {
-    let mut labels = vec![UNLABELED];
-    labels.extend(classes.iter().map(|c| c.name.as_str()));
-    let categories: serde_json::Map<String, serde_json::Value> = classes
+    let mut labels = vec![UNLABELED.to_owned()];
+    labels.extend(classes.iter().map(|c| c.name.clone()));
+    let categories = classes
         .iter()
         .map(|c| {
             let mut entry = serde_json::json!({ "id": c.id });
@@ -121,17 +121,18 @@ fn build_metadata(classes: &[Ade20kClass]) -> BTreeMap<PlSmallStr, PlSmallStr> {
             (c.name.clone(), entry)
         })
         .collect();
-    let json = |v: serde_json::Value| PlSmallStr::from(v.to_string().as_str());
-    BTreeMap::from([
-        ("schema_version".into(), SCHEMA_VERSION.into()),
-        ("labels".into(), json(serde_json::json!(labels))),
-        ("ignore_index".into(), "0".into()),
-        ("mask_interpretation".into(), "class_index".into()),
-        (
-            "category_metadata".into(),
-            json(serde_json::Value::Object(categories)),
-        ),
-    ])
+    DatasetMetadata {
+        schema_version: Some(SCHEMA_VERSION.to_owned()),
+        labels: Some(labels),
+        ignore_index: Some(0),
+        mask_interpretation: MaskInterpretation::ClassIndex,
+        category_metadata: Some(categories),
+        extra: BTreeMap::new(),
+    }
+    .to_map()
+    .into_iter()
+    .map(|(k, v)| (k.into(), v.into()))
+    .collect()
 }
 
 /// Convert ADEChallengeData2016 into one EdgeFirst dataset of semantic

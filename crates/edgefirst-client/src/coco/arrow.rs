@@ -15,7 +15,7 @@ use super::{
     types::{CocoCategory, CocoDataset, CocoImage, CocoIndex, CocoInfo, CocoSegmentation},
     writer::{CocoDatasetBuilder, CocoWriteOptions, CocoWriter},
 };
-use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample};
+use crate::{Annotation, Box2d, Error, Polygon, Progress, Sample, format::MaskInterpretation};
 use polars::prelude::*;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -834,6 +834,8 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     // Read the DataFrame and its file-level metadata (schema_version,
     // category_metadata, labels). Accepts .arrow/.ipc/.parquet.
     let (df, metadata) = crate::format::read_dataset_dataframe(arrow_path)?;
+    let interpretation =
+        crate::format::DatasetMetadata::from_file_map(arrow_path, &metadata)?.mask_interpretation;
     let schema_version = metadata.get("schema_version").cloned();
     let category_metadata_json = metadata.get("category_metadata").cloned();
     let labels_metadata_json = metadata.get("labels").cloned();
@@ -941,6 +943,20 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
     } else {
         None
     };
+    // Whether each row has a mask, read even when masks are not exported so
+    // skipped label maps are still counted.
+    let has_mask: Vec<bool> = df
+        .column("mask")
+        .ok()
+        .filter(|c| matches!(c.dtype(), DataType::Binary))
+        .map(|c| c.is_not_null().iter().map(|v| v.unwrap_or(false)).collect())
+        .unwrap_or_else(|| vec![false; total_rows]);
+    let mask_bytes = |i: usize| {
+        mask_binary_2026
+            .as_ref()
+            .and_then(|masks| masks.get(i))
+            .and_then(|bytes| bytes.as_deref())
+    };
 
     // Extract all sizes upfront if present
     let sizes = df
@@ -955,6 +971,7 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         .map(|v| v.into_iter().map(|f| f.unwrap_or(false)).collect())
         .unwrap_or_else(|| vec![false; total_rows]);
     let mut skipped_flagged = 0usize;
+    let mut mask_skips = MaskSkips::default();
 
     // Extract category_frequency column (optional, Categorical/String)
     let category_frequencies: Vec<Option<String>> = df
@@ -1079,8 +1096,12 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
             continue;
         }
 
-        // Skip sentinel rows (empty label = image with neg/exhaustive data but no annotations)
+        // Skip sentinel rows (empty label = image with neg/exhaustive data but
+        // no annotations) and semantic label maps.
         if label.is_empty() {
+            if interpretation == MaskInterpretation::ClassIndex && has_mask[i] {
+                mask_skips.label_maps += 1;
+            }
             continue;
         }
 
@@ -1124,12 +1145,19 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
                 })
             } else {
                 // 2026.04+: try mask (Binary/PNG → RLE) first, then polygon column
-                let mask_seg = mask_binary_2026.as_ref().and_then(|masks| {
-                    masks.get(i).and_then(|opt_bytes| {
-                        opt_bytes.as_ref().and_then(|png_bytes| {
-                            png_to_rle_segmentation(png_bytes, width, height, i)
-                        })
-                    })
+                let mask_seg = mask_bytes(i).and_then(|png_bytes| match interpretation {
+                    MaskInterpretation::ClassIndex | MaskInterpretation::Logits => {
+                        mask_skips.unconverted += 1;
+                        None
+                    }
+                    MaskInterpretation::Binary => {
+                        png_to_rle_segmentation(png_bytes, width, height, i, true)
+                    }
+                    MaskInterpretation::Confidence | MaskInterpretation::Sigmoid => {
+                        let seg = png_to_rle_segmentation(png_bytes, width, height, i, false);
+                        mask_skips.thresholded += usize::from(seg.is_some());
+                        seg
+                    }
                 });
 
                 if mask_seg.is_some() {
@@ -1197,6 +1225,9 @@ pub async fn arrow_to_coco<P: AsRef<Path>>(
         }
     }
 
+    for warning in mask_skips.warnings(interpretation) {
+        log::warn!("{warning}");
+    }
     if skipped_flagged > 0 {
         log::warn!(
             "{skipped_flagged} ignore/exclude rows have no COCO equivalent (unlabelled or excluded) and were skipped"
@@ -1497,6 +1528,43 @@ fn extract_f32_column(df: &DataFrame, name: &str, total_rows: usize) -> Vec<Opti
 
 /// Decode a PNG mask (Binary column bytes) into COCO RLE segmentation.
 ///
+/// Masks `arrow_to_coco` left out or thresholded, by reason.
+#[derive(Debug, Default)]
+struct MaskSkips {
+    label_maps: usize,
+    unconverted: usize,
+    thresholded: usize,
+}
+
+impl MaskSkips {
+    fn warnings(&self, interpretation: MaskInterpretation) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.label_maps > 0 {
+            warnings.push(format!(
+                "{} semantic label maps skipped (mask_interpretation={interpretation}): COCO instance annotations have no class-index form",
+                self.label_maps
+            ));
+        }
+        if self.unconverted > 0 {
+            let why = match interpretation {
+                MaskInterpretation::Logits => "logits have no fixed threshold",
+                _ => "class-index masks are not binarized",
+            };
+            warnings.push(format!(
+                "{} masks skipped (mask_interpretation={interpretation}): {why}",
+                self.unconverted
+            ));
+        }
+        if self.thresholded > 0 {
+            warnings.push(format!(
+                "{} masks thresholded at half range (mask_interpretation={interpretation}); the scores are not kept",
+                self.thresholded
+            ));
+        }
+        warnings
+    }
+}
+
 /// Validates the PNG, decodes pixels, binarizes if needed (8-bit or 16-bit),
 /// and encodes as COCO RLE. A mask with an `oFFs` offset is a tile of the
 /// `image_width` x `image_height` image and is placed on an image-sized
@@ -1511,6 +1579,7 @@ fn png_to_rle_segmentation(
     image_width: u32,
     image_height: u32,
     row_index: usize,
+    warn_per_row: bool,
 ) -> Option<CocoSegmentation> {
     if png_bytes.is_empty() {
         return None;
@@ -1540,20 +1609,24 @@ fn png_to_rle_segmentation(
     let binary_mask = match bit_depth {
         1 => decoded,
         8 => {
-            log::warn!(
-                "Binarizing 8-bit mask for row {} — score data is lost",
-                row_index
-            );
+            if warn_per_row {
+                log::warn!(
+                    "Binarizing 8-bit mask for row {} — score data is lost",
+                    row_index
+                );
+            }
             decoded
                 .iter()
                 .map(|&v| if v >= 128 { 1 } else { 0 })
                 .collect()
         }
         16 => {
-            log::warn!(
-                "Binarizing 16-bit mask for row {} — score data is lost",
-                row_index
-            );
+            if warn_per_row {
+                log::warn!(
+                    "Binarizing 16-bit mask for row {} — score data is lost",
+                    row_index
+                );
+            }
             decoded
                 .chunks(2)
                 .map(|pair| {
@@ -3168,6 +3241,187 @@ mod tests {
         );
     }
 
+    /// One 10x10 image with a labelled, boxed annotation carrying `mask`,
+    /// plus an unlabelled label-map row when `label_map` is given, written
+    /// with the given file metadata. Returns the COCO annotations.
+    async fn coco_from_masks(
+        mask: crate::MaskData,
+        label_map: Option<crate::MaskData>,
+        meta: &[(&str, &str)],
+    ) -> Result<Vec<serde_json::Value>, Error> {
+        let dir = TempDir::new().unwrap();
+        let mut boxed = Annotation::new();
+        boxed.set_name(Some("img".into()));
+        boxed.set_label(Some("wall".into()));
+        boxed.set_box2d(Some(Box2d::new(0.0, 0.0, 1.0, 1.0)));
+        boxed.set_mask(Some(mask));
+        let mut annotations = vec![boxed];
+        if let Some(map) = label_map {
+            let mut row = Annotation::new();
+            row.set_name(Some("img".into()));
+            row.set_mask(Some(map));
+            annotations.push(row);
+        }
+        let sample = Sample {
+            image_name: Some("img.jpg".into()),
+            width: Some(10),
+            height: Some(10),
+            annotations,
+            ..Default::default()
+        };
+        let arrow = dir.path().join("ds.arrow");
+        let mut df = crate::samples_dataframe(&[sample]).unwrap();
+        let meta = meta
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect();
+        write_dataset(&mut df, &arrow, meta).unwrap();
+        let out = dir.path().join("coco.json");
+        arrow_to_coco(&arrow, &out, &ArrowToCocoOptions::default(), None).await?;
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        Ok(json["annotations"].as_array().unwrap().clone())
+    }
+
+    fn eight_bit_mask() -> crate::MaskData {
+        let mut pixels = vec![0u8; 100];
+        pixels[..50].fill(200);
+        crate::MaskData::encode(&pixels, 10, 10, 8).unwrap()
+    }
+
+    const CLASS_INDEX_META: [(&str, &str); 3] = [
+        ("schema_version", SCHEMA_VERSION),
+        ("labels", r#"["unlabeled","wall"]"#),
+        ("mask_interpretation", "class_index"),
+    ];
+
+    #[tokio::test]
+    async fn arrow_to_coco_never_binarizes_class_index_masks() {
+        let label_map = crate::MaskData::encode(&[1; 100], 10, 10, 8).unwrap();
+        let annotations = coco_from_masks(eight_bit_mask(), Some(label_map), &CLASS_INDEX_META)
+            .await
+            .unwrap();
+        assert_eq!(annotations.len(), 1, "the label map is not an annotation");
+        assert!(
+            annotations[0]
+                .get("segmentation")
+                .is_none_or(|s| s.is_null()),
+            "class-index mask must not become RLE: {}",
+            annotations[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn arrow_to_coco_skips_sixteen_bit_label_maps() {
+        let labels: Vec<String> = (0..300).map(|i| format!("c{i}")).collect();
+        let labels = serde_json::to_string(&labels).unwrap();
+        let pixels: Vec<u16> = (0..100).map(|i| 250 + i as u16).collect();
+        let label_map = crate::MaskData::encode_16bit(&pixels, 10, 10).unwrap();
+        let meta = [
+            ("schema_version", SCHEMA_VERSION),
+            ("labels", labels.as_str()),
+            ("mask_interpretation", "class_index"),
+        ];
+        let annotations = coco_from_masks(eight_bit_mask(), Some(label_map), &meta)
+            .await
+            .unwrap();
+        assert_eq!(annotations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn arrow_to_coco_skips_logit_masks() {
+        let meta = [
+            ("schema_version", SCHEMA_VERSION),
+            ("mask_interpretation", "logits"),
+        ];
+        let annotations = coco_from_masks(eight_bit_mask(), None, &meta)
+            .await
+            .unwrap();
+        assert_eq!(annotations.len(), 1);
+        assert!(
+            annotations[0]
+                .get("segmentation")
+                .is_none_or(|s| s.is_null())
+        );
+    }
+
+    #[tokio::test]
+    async fn arrow_to_coco_thresholds_confidence_masks() {
+        for interpretation in ["confidence", "sigmoid", "binary"] {
+            let meta = [
+                ("schema_version", SCHEMA_VERSION),
+                ("mask_interpretation", interpretation),
+            ];
+            let annotations = coco_from_masks(eight_bit_mask(), None, &meta)
+                .await
+                .unwrap();
+            let counts = annotations[0]["segmentation"]["counts"].as_array().unwrap();
+            let foreground: u64 = counts
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .map(|c| c.as_u64().unwrap())
+                .sum();
+            assert_eq!(foreground, 50, "{interpretation}: {}", annotations[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn arrow_to_coco_rejects_invalid_metadata() {
+        let meta = [
+            ("schema_version", SCHEMA_VERSION),
+            ("mask_interpretation", "probability"),
+        ];
+        let err = coco_from_masks(eight_bit_mask(), None, &meta)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("probability") && err.contains("ds.arrow"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn mask_skip_warnings_name_the_interpretation() {
+        let skips = MaskSkips {
+            label_maps: 2000,
+            unconverted: 3,
+            thresholded: 0,
+        };
+        let warnings = skips.warnings(crate::format::MaskInterpretation::ClassIndex);
+        assert_eq!(
+            warnings,
+            [
+                "2000 semantic label maps skipped (mask_interpretation=class_index): COCO instance annotations have no class-index form",
+                "3 masks skipped (mask_interpretation=class_index): class-index masks are not binarized",
+            ]
+        );
+        let logits = MaskSkips {
+            unconverted: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            logits.warnings(crate::format::MaskInterpretation::Logits),
+            ["4 masks skipped (mask_interpretation=logits): logits have no fixed threshold"]
+        );
+        let scores = MaskSkips {
+            thresholded: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            scores.warnings(crate::format::MaskInterpretation::Sigmoid),
+            [
+                "5 masks thresholded at half range (mask_interpretation=sigmoid); the scores are not kept"
+            ]
+        );
+        assert!(
+            MaskSkips::default()
+                .warnings(crate::format::MaskInterpretation::Binary)
+                .is_empty()
+        );
+    }
+
     // =========================================================================
     // png_to_rle_segmentation with oFFs mask tiles
     // =========================================================================
@@ -3201,7 +3455,7 @@ mod tests {
     }
 
     fn rle_of(png: &crate::MaskData, width: u32, height: u32) -> crate::coco::CocoRle {
-        match png_to_rle_segmentation(png.as_bytes(), width, height, 0) {
+        match png_to_rle_segmentation(png.as_bytes(), width, height, 0, true) {
             Some(CocoSegmentation::Rle(rle)) => rle,
             other => panic!("expected RLE segmentation, got {other:?}"),
         }
@@ -3303,18 +3557,18 @@ mod tests {
                 .write_image_data(&[0xF0, 0x0F, 0xFF, 0x00, 0x0F, 0xF0])
                 .unwrap();
         }
-        assert!(png_to_rle_segmentation(&buf, IMG_W, IMG_H, 0).is_none());
+        assert!(png_to_rle_segmentation(&buf, IMG_W, IMG_H, 0, true).is_none());
     }
 
     #[test]
     fn test_png_to_rle_offset_tile_oversized_canvas_skipped() {
         let mask = crate::MaskData::encode_with_offset(&[1], 1, 1, 1, (100_000, 100_000)).unwrap();
-        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0).is_none());
-        assert!(png_to_rle_segmentation(mask.as_bytes(), 100_000, 100_000, 0).is_none());
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0, true).is_none());
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 100_000, 100_000, 0, true).is_none());
 
         let mask =
             crate::MaskData::encode_with_offset(&[1], 1, 1, 1, (i32::MAX, i32::MAX)).unwrap();
-        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0).is_none());
+        assert!(png_to_rle_segmentation(mask.as_bytes(), 0, 0, 0, true).is_none());
     }
 
     #[tokio::test]

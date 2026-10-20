@@ -168,8 +168,9 @@ impl MaskData {
     }
 
     /// Whether the PNG has an `oFFs` chunk before the image data, whatever
-    /// its unit or length.
-    pub(crate) fn has_offs_chunk(&self) -> bool {
+    /// its unit or length. [`offset`](Self::offset) reads only pixel-unit
+    /// offsets; use this to reject any offset.
+    pub fn has_offs_chunk(&self) -> bool {
         self.offs_chunk().is_some()
     }
 
