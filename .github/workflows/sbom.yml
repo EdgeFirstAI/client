@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # release.yml calls this so the SBOM attached to a release is generated from
+  # the release branch, under the repository's own license policy.
+  workflow_call:
+    inputs:
+      retention-days:
+        description: Artifact retention; release.yml passes 30 so publish.yml can still find it at the tag
+        type: number
+        default: 90
 
-# Supersede an in-flight run when a PR is pushed again, but never on main:
-# release.yml resolves this workflow's run for a specific SHA, and a blanket
-# cancel would destroy the run a release depends on.
+# Supersede an in-flight run when a PR is pushed again. The literal prefix
+# keeps this group distinct from release.yml's when called from it, where
+# github.workflow names the caller.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: sbom-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -72,7 +80,8 @@ jobs:
         with:
           name: sbom
           path: sbom.json
-          retention-days: 90
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days || 90 }}
 
       - name: Fail on License Violations
         if: failure()

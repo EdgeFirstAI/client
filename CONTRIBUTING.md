@@ -600,18 +600,17 @@ git commit -s -m "chore: prepare vX.Y.Z release"
 git push -u origin release/X.Y.Z
 ```
 
-Do not create or push the release tag manually. When the reviewed
-`release/X.Y.Z` pull request is merged, `tag-release.yml` creates the annotated
-`vX.Y.Z` tag on the merge commit. GitHub Actions then:
+Pushing the branch runs `release.yml`, which builds every artifact the release ships: CLI archives, wheels, packaged crates, SBOM and man page. A build failure is a red release PR, fixed with another push to the branch. Bring the branch up to date with `main` before merging.
 
-- Verifies version matches tag
-- Uses the binaries and wheels built and tested for the same commit
-- Publishes to crates.io and PyPI
-- Creates GitHub Release with artifacts
-- Generates man page and SBOM
+Do not create or push the release tag manually. When the reviewed `release/X.Y.Z` pull request is merged, `tag-release.yml` creates the annotated `vX.Y.Z` tag on the merge commit, but only if `release.yml` is green for the merged head. The tag triggers `publish.yml`, which builds nothing. It:
 
-**Branch format**: `release/X.Y.Z`. **Tag format**: `vX.Y.Z`, created
-automatically after merge.
+- Proves the green release build's tree is the tagged tree
+- Publishes `edgefirst-client` and `edgefirst-cli` to crates.io and the wheels to PyPI
+- Creates the GitHub Release with the CHANGELOG notes and every artifact attached
+
+After changing `release.yml` or `publish.yml`, rehearse before merging the release PR: `gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z`. See [.github/WORKFLOW_ARCHITECTURE.md](.github/WORKFLOW_ARCHITECTURE.md#3-release-chain-releaseyml--tag-releaseyml--publishyml).
+
+**Branch format**: `release/X.Y.Z` (or `release/X.Y.Z-rcN`). **Tag format**: `vX.Y.Z`, created automatically after merge.
 
 ## Getting Help
 

@@ -1,0 +1,86 @@
+# PUBLISH. This is step 3 of 3:
+#
+#   release.yml      push to release/*.*.*  -> build every artifact
+#   tag-release.yml  release PR merged      -> annotated vX.Y.Z tag
+#   publish.yml      push of a v*.*.* tag   -> publish what was built (this file)
+#
+# THIS WORKFLOW COMPILES NOTHING. The shared workflow finds the latest green
+# release.yml run on release/X.Y.Z, proves its tree equals the tag's tree (a
+# merge commit differs by SHA, never by tree, when the branch was up to date
+# with main), downloads every artifact, publishes the crates with
+# `cargo publish --no-verify`, and attaches the files to the GitHub Release. A
+# missing or expired artifact or a tree mismatch fails the publish; it never
+# falls back to a build.
+#
+# A workflow_dispatch is a rehearsal: it resolves, verifies and stages
+# everything and uploads nothing.
+#
+#   gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z
+#
+# Trusted Publishers match on the workflow FILENAME and environment, and a
+# rehearsal cannot detect a stale one because it skips the upload:
+#   - PyPI edgefirst-client:   Repository EdgeFirstAI/client, Workflow publish.yml, Environment pypi
+#   - crates.io edgefirst-client and edgefirst-cli:
+#                              Repository EdgeFirstAI/client, Workflow publish.yml, Environment crates-io
+
+name: Publish
+
+on:
+  push:
+    tags: ['v*.*.*']              # vX.Y.Z and vX.Y.Z-rcN
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to rehearse, e.g. v2.19.0 (publishes nothing)'
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.ref }}
+  # A half-finished publish is unrecoverable: crates.io and PyPI versions are
+  # immutable.
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    uses: EdgeFirstAI/.github/.github/workflows/publish-rust.yml@c7876194b9fe9f7f72daf0efadaf32d7dff1b257  # v2.3.1
+    with:
+      tag: ${{ inputs.tag }}
+      build-workflow: release.yml
+      publish-crates: true
+      # Must equal release.yml's list, in dependency order.
+      crate-packages: "edgefirst-client edgefirst-cli"
+    permissions:
+      contents: write             # GitHub Release
+      actions: read               # the release.yml run and its artifacts
+      id-token: write             # crates.io trusted publishing
+    secrets: inherit
+
+  # PyPI Trusted Publishing matches job_workflow_ref in the publishing
+  # repository, so this job cannot live in the shared workflow. It runs on a
+  # rehearsal too: staging checks the wheel set and versions, and only the
+  # upload is gated.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish
+    if: ${{ always() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: EdgeFirstAI/.github/.github/actions/stage-pypi@c7876194b9fe9f7f72daf0efadaf32d7dff1b257  # v2.3.1
+        with:
+          distribution: edgefirst-client
+          version: ${{ needs.publish.outputs.artifact-version }}
+
+      # Directly in this job, never through a composite action: the action
+      # resolves its container image from the repository it is called from.
+      - name: Upload to PyPI
+        if: ${{ needs.publish.outputs.publish-registries == 'true' }}
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          packages-dir: dist
+          skip-existing: true

@@ -5,33 +5,18 @@ This document provides a comprehensive overview of the GitHub Actions workflows 
 ## Workflow Overview
 
 ```
- Push / PR to main                      Tag vX.Y.Z[rcN]        Manual
-        │                                      │                  │
-        ├──► test.yml    lint ─┐               │                  ├──► studio.yml
-        │                test ─┴─► sonarcloud  │                  │
-        │                                      │                  └──► (any workflow,
-        ├──► build.yml   build-cli                                     workflow_dispatch)
-        │                    └─► build-wheels ─► verify
-        │                                      │
-        └──► sbom.yml    sbom-compliance       │
-                                               ▼
-                                          release.yml
-                                               │
-                              create-release ──┴── wait-for-ci
-                                                        │  resolves the build.yml and
-                                                        │  sbom.yml *run ids* for this
-                                                        │  commit, then fans out:
-                                    ┌───────────────────┼───────────────────┐
-                                    ▼                   ▼                   ▼
-                              upload-cli          upload-wheels        upload-sbom
-                              upload-manpage      publish-pypi         publish-crates-io
+ Push / PR to main           Push release/X.Y.Z        Release PR merged     Tag vX.Y.Z
+        │                           │                          │                  │
+        ├──► test.yml               ▼                          ▼                  ▼
+        │                      release.yml               tag-release.yml     publish.yml
+        ├──► build.yml ◄─────── artifacts (called)       requires a green    resolves the
+        │                       sbom (called)            release.yml run     release.yml run,
+        └──► sbom.yml  ◄─────── verify (shared)          for the PR head,    binds it by tree,
+                                manpage                  then creates the    publishes it
+                                                         annotated tag
 ```
 
-Release never rebuilds. It waits for the `build.yml` and `sbom.yml` runs that
-were triggered by the push to `main`, then downloads their artifacts by run id,
-so what ships is byte-identical to what was tested.
-
-A separate `tag-release.yml` creates the tag when a `release/*` PR merges.
+**A tag publishes; it never builds.** Every file a release ships is built by `release.yml` on the release branch, so a broken build is a red release PR rather than a failed deploy after the tag already exists. `release.yml` calls the same `build.yml` and `sbom.yml` that every pull request runs, so what ships is what was tested. Manual dispatch is available for `studio.yml` and for a publish rehearsal.
 
 ## Workflow Files
 
@@ -178,80 +163,47 @@ distributions.
 
 ---
 
-### 3. Release Workflow (`.github/workflows/release.yml`)
+### 3. Release Chain (`release.yml` → `tag-release.yml` → `publish.yml`)
 
-**Purpose**: Complete release automation with publishing
-
-**Triggers**:
-
-- Tags matching semantic versioning:
-  - Stable releases: `[0-9]+.[0-9]+.[0-9]+`
-    - Examples: `1.0.0`, `2.1.3`, `0.5.0`
-  - Release candidates: `[0-9]+.[0-9]+.[0-9]+rc[0-9]+`
-    - Examples: `1.0.0rc1`, `2.1.0rc2`, `0.5.0rc1`
-
-**Jobs**:
+The chain follows SPS 10 / SPS 11 and uses the shared workflows in `EdgeFirstAI/.github`, pinned by SHA.
 
 ```
-release.yml
-├── create-release                       Verify Cargo.toml version == tag
-├── wait-for-ci      [needs: create-release]
-│   ├── Wait for build.yml  ──► outputs build-run-id
-│   └── Wait for sbom.yml   ──► outputs sbom-run-id
-├── upload-sbom      [needs: wait-for-ci]   sbom.json  ──► release
-├── generate-manpage [needs: create-release] pandoc CLI.md ──► release
-├── upload-cli       [needs: wait-for-ci]   5 binaries ──► release
-├── upload-wheels    [needs: wait-for-ci]   5 wheels   ──► release
-├── publish-pypi     [needs: wait-for-ci]   wheels     ──► PyPI (OIDC)
-└── publish-crates-io[needs: create-release] cargo publish --workspace
+release.yml        push to release/*.*.*       BUILD every artifact
+├── verify         release-rust.yml (shared): version vs branch, workspace
+│                  versions, CHANGELOG section, cargo package --locked
+│                  for edgefirst-client and edgefirst-cli
+├── artifacts      build.yml (retention 30): 5 CLI archives, 5 wheels
+├── sbom           sbom.yml  (retention 30): sbom.json under the license policy
+└── manpage        pandoc CLI.md → edgefirst-client.1
+
+tag-release.yml    release PR merged           TAG
+└── tag            tag-release.yml (shared, require-build: release.yml)
+
+publish.yml        push of v*.*.* tag          PUBLISH, builds nothing
+├── publish        publish-rust.yml (shared)
+│   ├── resolve        latest green release.yml run on release/X.Y.Z,
+│   │                  tree(tag) == tree(build), artifacts not expired
+│   ├── crates         cargo publish --no-verify (crates.io trusted publishing)
+│   └── github-release CHANGELOG notes + every artifact attached
+└── publish-pypi   stage-pypi (shared) + pypa/gh-action-pypi-publish
 ```
 
-`wait-for-ci` runs `.github/scripts/wait-for-run.sh`, which polls
-`gh run list` for the workflow's run on this exact commit and returns its
-run id. Downstream jobs pass that id to `actions/download-artifact`, which
-is what lets them reach artifacts from a different workflow run.
+**Binding by tree.** The release PR merges with a new commit SHA, but when the release branch is up to date with `main` the merge commit has the same tree as the branch head that was built. `publish.yml` requires that equality, so keep the release branch up to date with `main` before merging. A mismatch fails the publish; it never triggers a rebuild.
 
-This replaced `lewagon/wait-on-check-action`, which matched on
-human-readable **check names**. That coupling was silent and brittle:
-renaming or deleting a job left the release blocking on a check that would
-never appear, surfacing only as a timeout. Matching on the workflow file
-also yields the run id the download step needs, which the check-name
-approach could not provide.
+**Rehearsal.** `gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z` resolves, verifies and stages everything against the green release branch and uploads nothing. Run it after any change to `release.yml` or `publish.yml`, before merging that release PR. It cannot detect a stale Trusted Publisher, because it skips the upload.
 
-**Key Features**:
+**Trusted Publishers** match on the workflow filename and environment:
 
-- Automatic version extraction from git tag
-- **Verifies Cargo.toml version matches tag** (fails if mismatch)
-- Parallel builds for all platforms
-- Bundles CLI binary with Python wheel
-- Intelligent build directory detection (handles both native and cross-compilation paths)
-- Binaries are automatically stripped by cargo --release (no separate strip step needed)
-- Publishes to three destinations:
-  - crates.io (Rust crates)
-  - PyPI (Python packages)
-  - GitHub Releases (binaries + wheels)
+| Registry | Project | Workflow | Environment |
+|---|---|---|---|
+| PyPI | `edgefirst-client` | `publish.yml` | `pypi` |
+| crates.io | `edgefirst-client`, `edgefirst-cli` | `publish.yml` | `crates-io` |
 
-**Important**: The version in `Cargo.toml` must be updated to match the git tag **before** creating the tag. The workflow will verify this and fail if they don't match. For release candidates, use the format `X.Y.ZrcN` (e.g., `1.0.0rc1`) with no separators.
+**What ships**:
 
-**Secrets Required**:
-
-- `CARGO_REGISTRY_TOKEN`: For publishing to crates.io
-
-**Note**: PyPI publishing uses **Trusted Publisher** authentication (OpenID Connect) and does not require an API token. The workflow uses the `pypi` environment with `id-token: write` permission for secure, token-less authentication.
-
-**Artifacts Created**:
-
-- **GitHub Release** with:
-  - CLI binaries for 5 platforms (compressed)
-  - Python wheels for 5 platforms
-  - `sbom.json` - Software Bill of Materials in CycloneDX format
-  - Automatic release notes
-- **crates.io** packages:
-  - `edgefirst-client` - Rust library crate for EdgeFirst API
-  - `edgefirst-cli` - CLI binary (installable via `cargo install edgefirst-cli`)
-  - Note: `edgefirst-client-py` is NOT published to crates.io (Python bindings only, distributed via PyPI)
-- **PyPI** package:
-  - `edgefirst-client` - Python package with bundled CLI binary
+- **GitHub Release**: `edgefirst-client-<platform>-X.Y.Z.tar.gz` / `.zip` for 5 platforms, 5 wheels, `sbom.json`, `edgefirst-client.1`, and the packaged `.crate` files, with notes from the `CHANGELOG.md` section
+- **crates.io**: `edgefirst-client` (library) and `edgefirst-cli` (`cargo install edgefirst-cli`). `edgefirst-client-py` is `publish = false`.
+- **PyPI**: `edgefirst-client`, with the CLI bundled in each wheel
 
 ---
 
@@ -305,11 +257,9 @@ The project uses version formats compatible with both Python (PEP 440) and Rust 
 | Type | Format | Examples | PyPI Compatible | crates.io Compatible |
 |------|--------|----------|-----------------|---------------------|
 | Stable | `X.Y.Z` | `1.0.0`, `2.1.3` | ✅ | ✅ |
-| Release Candidate | `X.Y.ZrcN` | `1.0.0rc1`, `2.0.0rc2` | ✅ | ✅ |
-| Alpha | `X.Y.ZaN` | `0.1.0a1`, `1.0.0a2` | ✅ | ✅ |
-| Beta | `X.Y.ZbN` | `0.1.0b1`, `1.0.0b2` | ✅ | ✅ |
+| Release Candidate | `X.Y.Z-rcN` (Cargo, branch, tag) | `1.0.0-rc1` | ✅ as `1.0.0rc1` | ✅ |
 
-**Important**: Do NOT use separators (dots or hyphens) in pre-release versions. Use `1.0.0rc1`, not `1.0.0-rc.1` or `1.0.0.rc.1`.
+Release candidates use the `release/X.Y.Z-rcN` branch and `vX.Y.Z-rcN` tag. maturin writes the PEP 440 spelling (`X.Y.ZrcN`) into the wheel. If the manifests carry the base version `X.Y.Z` instead, `publish.yml` creates a GitHub pre-release and skips crates.io and PyPI, so the final release can still claim that version.
 
 ---
 
@@ -427,23 +377,15 @@ checklist. The authoritative path is a reviewed release pull request:
 2. Update the workspace and internal dependency versions in `Cargo.toml`,
    regenerate `Cargo.lock`, promote the changelog's `[Unreleased]` entries to a
    dated `[X.Y.Z]` section, and update the `CLI.md` footer/date.
-3. Run `make pre-release`, commit with DCO, push the branch, and open
-   `Release X.Y.Z` against `main`.
-4. Merge only after required review and checks. Do not create or push a tag
-   manually.
-5. `tag-release.yml` validates the branch name and creates annotated tag
-   `vX.Y.Z` on the merge commit.
-6. The tag triggers `release.yml`, which waits for `build.yml` and `sbom.yml`
-   artifacts from that same commit, creates the GitHub Release, uploads CLI
-   binaries/wheels/SBOM/man page, and publishes to PyPI and crates.io.
+3. Run `make pre-release`, commit with DCO, push the branch, and open `Release X.Y.Z` against `main`. The push runs `release.yml`, which builds every artifact the release will ship. A fixup push rebuilds.
+4. Optionally rehearse the publish against the green branch: `gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z`. This is required after any change to `release.yml` or `publish.yml`.
+5. Bring the branch up to date with `main` if it has moved, then merge after required review and checks. Do not create or push a tag manually.
+6. `tag-release.yml` creates annotated tag `vX.Y.Z` on the merge commit, but only if `release.yml` is green for the merged release-branch head.
+7. The tag triggers `publish.yml`, which publishes the release build's artifacts to crates.io, PyPI and the GitHub Release. It builds nothing.
 
-The release publisher accepts `vX.Y.ZrcN`, but `tag-release.yml` currently
-validates stable `release/X.Y.Z` branches only. Release candidates therefore
-require an explicit workflow update before using this automated path.
+Do not delete the release branch until `publish.yml` has finished, because the publish resolves the build by branch name. A failed publish is fixed forward with the next PATCH release; tags are never moved or recreated.
 
-After publication, verify the Release workflow, GitHub assets, PyPI package,
-and crates.io crate. A version mismatch between `Cargo.toml`, the release
-branch, and the generated tag fails the workflow.
+After publication, verify the Publish workflow, GitHub assets, PyPI package, and crates.io crates.
 
 ---
 
@@ -475,7 +417,7 @@ STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 | Secret | Purpose | Required For |
 |--------|---------|--------------|
 | `SONAR_TOKEN` | SonarCloud analysis and quality gate | Test workflow |
-| `CARGO_REGISTRY_TOKEN` | Publish to crates.io | Release workflow |
+| `RELEASE_TAG_TOKEN` | Create the release tag so it triggers `publish.yml` (organization secret) | Tag Release workflow |
 | `STUDIO_USERNAME` | Run tests | Test workflow |
 | `STUDIO_PASSWORD` | Run tests | Test workflow |
 
@@ -483,7 +425,7 @@ STUDIO_PASSWORD: ${{ secrets.STUDIO_PASSWORD }}
 
 None currently required.
 
-**Note**: PyPI publishing uses Trusted Publisher (OIDC) authentication and does not require an API token.
+**Note**: PyPI and crates.io publishing use Trusted Publisher (OIDC) authentication and need no API token.
 
 ### Setting Secrets
 

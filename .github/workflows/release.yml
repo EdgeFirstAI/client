@@ -1,180 +1,67 @@
-# Release Workflow
+# RELEASE BUILD. This is step 1 of 3:
 #
-# This workflow orchestrates the release process by:
-# 1. Creating the GitHub release
-# 2. Downloading pre-built artifacts from build.yml and sbom.yml
-# 3. Uploading artifacts to the GitHub release
-# 4. Publishing to PyPI and crates.io
+#   release.yml      push to release/*.*.*  -> build every artifact  (this file)
+#   tag-release.yml  release PR merged      -> annotated vX.Y.Z tag
+#   publish.yml      push of a v*.*.* tag   -> publish what was built
 #
-# NOTE: This workflow does NOT rebuild artifacts. It downloads them from the
-# workflows that ran when the commit was pushed to main. This saves CI time
-# and ensures release artifacts are identical to what was tested.
+# It runs on `push` to the release branch rather than on `pull_request`. A
+# pull_request run builds a merge-preview commit that exists nowhere in
+# history, so publish.yml could never bind its artifacts to the tag; a push run
+# builds the branch head, whose tree the release PR merges onto main.
+#
+# Accepting the release PR is the gate. tag-release.yml refuses to tag unless
+# this is green for the merged head, and green here means every file the
+# release ships -- CLI archives, wheels, packaged crates, SBOM, man page --
+# already exists. Nothing is built after the tag.
 
-name: Release
+name: Release Build
 
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+rc[0-9]+'
+    branches: ['release/*.*.*']   # release/X.Y.Z and release/X.Y.Z-rcN
+  workflow_dispatch:              # rebuild a release branch on demand
 
-# Serialize releases of the same tag, and never cancel one in flight: a
-# half-uploaded release leaves published assets in an inconsistent state.
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true        # a fixup commit supersedes the build it interrupts
 
-env:
-  CARGO_TERM_COLOR: always
-  # Pinned Rust version for CI/CD - update manually to control Rust upgrades
-  # This ensures consistent builds and allows testing before upgrading
-  RUST_STABLE_VERSION: "1.95"
+permissions:
+  contents: read
 
 jobs:
-  # ==========================================================================
-  # Create GitHub Release
-  # ==========================================================================
-  create-release:
-    name: Create Release
+  # Version consistency of Cargo.toml against the branch name, the workspace
+  # dependency versions, the CHANGELOG section publish.yml renders the notes
+  # from, and `cargo package --locked` for each crate. The packaged list is
+  # recorded beside the .crate files and publish.yml refuses to publish a
+  # different one.
+  verify:
+    uses: EdgeFirstAI/.github/.github/workflows/release-rust.yml@c7876194b9fe9f7f72daf0efadaf32d7dff1b257  # v2.3.1
+    with:
+      # The SBOM comes from this repository's sbom.yml below, which applies
+      # its own license policy.
+      sbom: false
+      crate-packages: "edgefirst-client edgefirst-cli"
+    secrets: inherit
+
+  # The same CLI and wheel matrix every pull request builds, at the retention
+  # the tag needs.
+  artifacts:
+    needs: verify
+    uses: ./.github/workflows/build.yml
+    with:
+      retention-days: 30
+
+  sbom:
+    needs: verify
+    uses: ./.github/workflows/sbom.yml
+    with:
+      retention-days: 30
+
+  manpage:
+    name: Man page
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Get version from tag
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-        id: get_version
-
-      - name: Verify version matches tag
-        env:
-          TAG_VERSION: ${{ steps.get_version.outputs.version }}
-        run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
-            exit 1
-          fi
-          echo "Version verified: $CARGO_VERSION"
-
-      - name: Create Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          name: Release ${{ steps.get_version.outputs.version }}
-          draft: false
-          prerelease: false
-          body: |
-            ## What's Changed
-
-            See [CHANGELOG.md](https://github.com/EdgeFirstAI/client/blob/v${{ steps.get_version.outputs.version }}/CHANGELOG.md) for details.
-
-            ## Installation
-
-            ### CLI Binary
-            Download the appropriate binary for your platform from the assets below.
-
-            _Alternatively, the pip package includes the CLI (see below)._
-
-            ### Python Package
-            ```bash
-            pip install edgefirst-client==${{ steps.get_version.outputs.version }}
-            ```
-
-            ### Rust Crate
-            ```toml
-            [dependencies]
-            edgefirst-client = "${{ steps.get_version.outputs.version }}"
-            ```
-
-            ### iOS and Android
-            The EdgeFirst Studio API for iOS and Android is provided by the
-            [EdgeFirst Mobile SDK](https://github.com/EdgeFirstAI/mobile-sdk).
-
-  # ==========================================================================
-  # Wait for CI Workflows to Complete
-  #
-  # Resolves each workflow's run id for this commit, which is what
-  # actions/download-artifact needs to reach across workflow runs.
-  # ==========================================================================
-  wait-for-ci:
-    name: Wait for CI Workflows
-    needs: [create-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 70
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      build-run-id: ${{ steps.build.outputs.run-id }}
-      sbom-run-id: ${{ steps.sbom.outputs.run-id }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Wait for Build workflow
-        id: build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "run-id=$(./.github/scripts/wait-for-run.sh build.yml "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SBOM workflow
-        id: sbom
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "run-id=$(./.github/scripts/wait-for-run.sh sbom.yml "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
-
-  # ==========================================================================
-  # Download and Upload SBOM
-  # ==========================================================================
-  upload-sbom:
-    name: Upload SBOM
-    needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      # run-id + github-token are what reach across workflow runs; without
-      # them download-artifact only sees artifacts from THIS run, of which
-      # there are none.
-      - name: Download SBOM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sbom
-          path: .
-          run-id: ${{ needs.wait-for-ci.outputs.sbom-run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify SBOM exists
-        run: |
-          if [ ! -s sbom.json ]; then
-            echo "::error::sbom.json not found or empty in artifacts"
-            exit 1
-          fi
-          echo "SBOM downloaded successfully:"
-          ls -la sbom.json
-
-      - name: Upload sbom.json to release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: sbom.json
-
-  # ==========================================================================
-  # Generate and Upload Man Page
-  # ==========================================================================
-  generate-manpage:
-    name: Generate Man Page
-    needs: [create-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -184,177 +71,12 @@ jobs:
           sudo apt-get install -y pandoc
 
       - name: Generate man page
-        run: |
-          pandoc CLI.md --standalone --to man --output edgefirst-client.1
+        run: pandoc CLI.md --standalone --to man --output edgefirst-client.1
 
-      - name: Upload man page to release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+      - name: Upload man page
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: edgefirst-client.1
-
-  # ==========================================================================
-  # Download and Upload CLI Binaries
-  # ==========================================================================
-  upload-cli:
-    name: Upload CLI Binaries
-    needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      actions: read
-    strategy:
-      matrix:
-        include:
-          - artifact: edgefirst-client-linux-amd64
-            extension: tar.gz
-          - artifact: edgefirst-client-linux-arm64
-            extension: tar.gz
-          - artifact: edgefirst-client-macos-amd64
-            extension: tar.gz
-          - artifact: edgefirst-client-macos-arm64
-            extension: tar.gz
-          - artifact: edgefirst-client-windows-amd64.exe
-            extension: zip
-    steps:
-      - name: Download CLI artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ matrix.artifact }}
-          path: cli/
-          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # actions/upload-artifact does not preserve file modes, so the downloaded
-      # binary may arrive 0644. Restore 0755 before archiving so the published
-      # tarball carries an executable binary.
-      - name: Package CLI binary
-        env:
-          VERSION: ${{ needs.create-release.outputs.version }}
-          ARTIFACT: ${{ matrix.artifact }}
-          EXTENSION: ${{ matrix.extension }}
-        run: |
-          set -euo pipefail
-          chmod +x cli/*
-          cd cli
-          if [ "$EXTENSION" = "zip" ]; then
-            zip "../${ARTIFACT}-${VERSION}.zip" ./*
-          else
-            tar czf "../${ARTIFACT}-${VERSION}.tar.gz" ./*
-          fi
-
-      - name: Upload CLI to release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: ${{ matrix.artifact }}-${{ needs.create-release.outputs.version }}.${{ matrix.extension }}
-
-  # ==========================================================================
-  # Download and Upload Python Wheels
-  # ==========================================================================
-  upload-wheels:
-    name: Upload Wheels
-    needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: wheels-*
-          path: wheels/
-          merge-multiple: true
-          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: List downloaded wheels
-        run: |
-          set -euo pipefail
-          echo "Downloaded wheels:"
-          find wheels -name "*.whl" -type f
-          if [ -z "$(find wheels -name '*.whl' -type f)" ]; then
-            echo "::error::no wheels downloaded from build.yml"
-            exit 1
-          fi
-
-      - name: Upload wheels to release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
-        with:
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: wheels/**/*.whl
-
-  # ==========================================================================
-  # Publish to PyPI
-  # ==========================================================================
-  publish-pypi:
-    name: Publish to PyPI
-    needs: [create-release, wait-for-ci]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment: pypi
-    permissions:
-      id-token: write
-      actions: read
-    steps:
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: wheels-*
-          path: wheels/
-          merge-multiple: true
-          run-id: ${{ needs.wait-for-ci.outputs.build-run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Flatten wheel directory structure
-        run: |
-          set -euo pipefail
-          # pypi-publish takes a flat directory; merge-multiple can still leave
-          # per-artifact subdirectories when names collide.
-          find wheels -mindepth 2 -name "*.whl" -type f -exec mv -n {} wheels/ \;
-          find wheels -mindepth 1 -type d -empty -delete
-          echo "Wheels to publish:"
-          ls -lh wheels/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
-        with:
-          packages-dir: wheels/
-          skip-existing: true
-
-  # ==========================================================================
-  # Publish to crates.io
-  # ==========================================================================
-  publish-crates-io:
-    name: Publish to crates.io
-    needs: [create-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: ${{ env.RUST_STABLE_VERSION }}
-
-      - name: Verify version matches tag
-        env:
-          TAG_VERSION: ${{ needs.create-release.outputs.version }}
-        run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
-            exit 1
-          fi
-          echo "Version verified: $CARGO_VERSION"
-
-      - name: Publish workspace to crates.io
-        run: cargo publish --workspace
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          name: manpage
+          path: edgefirst-client.1
+          if-no-files-found: error
+          retention-days: 30

@@ -6,12 +6,24 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # release.yml calls this on a release branch so the release ships exactly
+  # what every pull request builds.
+  workflow_call:
+    inputs:
+      retention-days:
+        description: >-
+          Artifact retention. release.yml passes 30: the artifacts have to
+          outlive the human-paced gap between the release build and the tag,
+          and publish.yml fails on an expired artifact rather than rebuilding.
+          0 keeps the repository default.
+        type: number
+        default: 0
 
-# Supersede an in-flight run when a PR is pushed again, but never on main:
-# release.yml resolves this workflow's run for a specific SHA, and a blanket
-# cancel would destroy the run a release depends on.
+# Supersede an in-flight run when a PR is pushed again. The literal prefix
+# keeps this group distinct from release.yml's when called from it, where
+# github.workflow names the caller.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -137,20 +149,42 @@ jobs:
           fi
           echo "✅ GLIBC requirements verified: $GLIBC_MAX <= GLIBC_2.17"
 
-      - name: Rename binary
+      # The archive is the artifact on every run, not only on a release, so a
+      # pull request exercises exactly the file publish.yml attaches to the
+      # GitHub Release. Packing on the build host also keeps the 0755 mode,
+      # which a round trip through upload-artifact would drop.
+      - name: Package CLI archive
+        id: package
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.artifact_name }}
+          ASSET: ${{ matrix.asset_name }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          mkdir -p artifacts
-          # When --target is specified, cargo uses target/<triple>/release/
-          # This applies to all builds since we always specify --target
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
+          set -euo pipefail
+          version="$(grep -E '^version\s*=' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+          mkdir -p dist
+          # --target is always given, so cargo writes to target/<triple>/release/.
+          cp "target/${TARGET}/release/${BINARY}" "dist/${ASSET}"
+          if [ "$PLATFORM" = windows ]; then
+            archive="${ASSET}-${version}.zip"
+            (cd dist && 7z a -tzip "$archive" "$ASSET")
+          else
+            archive="${ASSET}-${version}.tar.gz"
+            chmod 0755 "dist/${ASSET}"
+            tar -C dist -czf "dist/${archive}" "$ASSET"
+          fi
+          rm "dist/${ASSET}"
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ matrix.asset_name }}
-          path: artifacts/${{ matrix.asset_name }}
+          path: dist/${{ steps.package.outputs.archive }}
           if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
 
   build-wheels:
     name: Build Python Wheel - ${{ matrix.target }}
@@ -231,6 +265,16 @@ jobs:
         with:
           name: ${{ matrix.cli_artifact }}
           path: cli-binary
+
+      - name: Unpack CLI binary
+        shell: bash
+        working-directory: cli-binary
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for a in *.tar.gz; do tar -xzf "$a"; done
+          for a in *.zip; do unzip -q "$a"; done
+          ls -la
 
       # Set up maturin data directory with CLI binary as a script
       # Files in .data/scripts/ are installed as executables on the PATH
@@ -378,6 +422,7 @@ jobs:
           name: wheels-${{ matrix.platform }}-${{ matrix.arch }}
           path: target/wheels/*.whl
           if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
 
   # Verify all binaries and wheels were built successfully
   verify:
@@ -403,7 +448,7 @@ jobs:
           EXPECTED_WHEELS: '5'     # one per CLI target
         run: |
           set -euo pipefail
-          BINARIES=$(find artifacts -type f -name '*client*' -not -name '*.whl' | wc -l | tr -d ' ')
+          BINARIES=$(find artifacts -type f \( -name 'edgefirst-client-*.tar.gz' -o -name 'edgefirst-client-*.zip' \) | wc -l | tr -d ' ')
           WHEELS=$(find artifacts -type f -name '*.whl' | wc -l | tr -d ' ')
 
           {
