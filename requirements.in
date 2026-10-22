@@ -17,14 +17,13 @@
 # Upper bounds stop short of the next major release to avoid
 # accidentally adopting breaking changes — refresh deliberately when
 # the package's own changelog says it is safe.
-ruff>=0.14.6,<0.15
+ruff>=0.17.2,<0.18
 maturin>=1.10.2,<2
-# numpy 2.5 requires Python 3.12; CI tests on Python 3.11.
-numpy>=1.26,<2.5
-pillow>=12.0,<13
-polars>=1.35,<2
+numpy>=1.26,<3
+pillow>=12.0,<14
+polars>=1.35,<3
 pycocotools>=2.0.8,<3
 slipcover>=1.0,<2
 tqdm>=4.67,<5
-unittest-xml-reporting>=3.2,<4
+unittest-xml-reporting>=3.2,<5
 requests>=2.32.5,<3

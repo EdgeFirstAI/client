@@ -94,7 +94,8 @@ class TestCocoRlePycocotools(unittest.TestCase):
                 json.dump(self.coco, f)
             arrow_path = os.path.join(tmpdir, "rle.arrow")
             ec.coco_to_arrow(coco_path, arrow_path, **options)
-            return pl.read_ipc(arrow_path, memory_map=False)
+            with open(arrow_path, "rb") as f:
+                return pl.read_ipc(f.read())
 
     def test_masks_match_pycocotools(self):
         df = self._convert()

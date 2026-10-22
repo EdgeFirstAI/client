@@ -31,24 +31,24 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.95
+          toolchain: 1.99
 
       # Prebuilt binary rather than `cargo install`, which compiled
       # cargo-cyclonedx from source on every push and pull request.
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@7bc99eee1f1b8902a125006cf790a1f4c8461e63 # v2.69.8
+        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-cyclonedx
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install scancode-toolkit
         run: |
@@ -60,9 +60,9 @@ jobs:
         run: |
           mkdir -p ~/.local/bin
           wget -q -O ~/.local/bin/cyclonedx \
-            https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64
-          # Verify SHA-256 checksum (from CycloneDX v0.27.1 release)
-          echo "b36a12d5103c1fd799005e02ee8d5a546c8db5b67f770bb28786f15238ceac16  $HOME/.local/bin/cyclonedx" | sha256sum -c -
+            https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64
+          # Verify SHA-256 checksum (from CycloneDX v0.33.1 release)
+          echo "bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746  $HOME/.local/bin/cyclonedx" | sha256sum -c -
           chmod +x ~/.local/bin/cyclonedx
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
@@ -76,7 +76,7 @@ jobs:
         run: python3 .github/scripts/check_license_policy.py sbom.json
 
       - name: Upload SBOM Artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom.json

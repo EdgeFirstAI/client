@@ -63,7 +63,7 @@ def main() -> None:
     if output.suffix == ".parquet":
         df = pl.read_parquet(output)
     else:
-        df = pl.read_ipc(output, memory_map=False)
+        df = pl.read_ipc(output)
     print(df.group_by("group").len().sort("group"))
 
     row = df.row(0, named=True)

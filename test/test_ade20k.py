@@ -60,7 +60,8 @@ class TestAde20k(unittest.TestCase):
             ade, labels = _make_ade20k(tmpdir)
             output = os.path.join(tmpdir, "out", "out.arrow")
             self.assertEqual(ec.ade20k_to_arrow(ade, output), 2)
-            df = pl.read_ipc(output, memory_map=False)
+            with open(output, "rb") as f:
+                df = pl.read_ipc(f.read())
 
         self.assertEqual(sorted(df["group"].cast(pl.String)), ["train", "val"])
         for row in df.iter_rows(named=True):
