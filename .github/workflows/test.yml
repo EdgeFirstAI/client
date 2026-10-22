@@ -8,8 +8,6 @@ on:
   workflow_dispatch:
 
 # Supersede an in-flight run when a PR is pushed again, but never on main.
-# release.yml waits for a build.yml run on a specific SHA, and a blanket
-# cancel would let a follow-up push kill the very run a release depends on.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
