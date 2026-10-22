@@ -19,6 +19,12 @@ jobs:
   tag:
     if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     uses: EdgeFirstAI/.github/.github/workflows/tag-release.yml@c7876194b9fe9f7f72daf0efadaf32d7dff1b257  # v2.3.1
+    # A called workflow can only narrow the caller's token, never widen it,
+    # so grant exactly what the shared job declares rather than depend on the
+    # repository's default token permissions.
+    permissions:
+      contents: write
+      actions: read
     with:
       # No tag unless release.yml is green for the release-branch head being
       # merged. Branch protection cannot require it, because the release build
