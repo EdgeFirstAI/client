@@ -188,7 +188,7 @@ publish.yml        push of v*.*.* tag          PUBLISH, builds nothing
 └── publish-pypi   stage-pypi (shared) + pypa/gh-action-pypi-publish
 ```
 
-**Binding by tree.** The release PR merges with a new commit SHA, but when the release branch is up to date with `main` the merge commit has the same tree as the branch head that was built. `publish.yml` requires that equality, so keep the release branch up to date with `main` before merging. A mismatch fails the publish; it never triggers a rebuild.
+**Binding by tree.** The release PR merges with a new commit SHA, but when the release branch is up to date with `main` the merge commit has the same tree as the branch head that was built. `tag-release.yml` and `publish.yml` both require that equality, so keep the release branch up to date with `main` before merging; `release-pr.yml` fails a release PR whose branch is behind. A mismatch after merging leaves the release untagged, and the PR cannot be merged again: recovery is pushing the merge commit to the release branch so `release.yml` builds it, then creating the tag at that commit through the organisation's tag-ruleset bypass. It never triggers a rebuild on its own.
 
 **Rehearsal.** `gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z` resolves, verifies and stages everything against the green release branch and uploads nothing. Run it after any change to `release.yml` or `publish.yml`, before merging that release PR. It cannot detect a stale Trusted Publisher, because it skips the upload.
 
@@ -379,7 +379,7 @@ checklist. The authoritative path is a reviewed release pull request:
    dated `[X.Y.Z]` section, and update the `CLI.md` footer/date.
 3. Run `make pre-release`, commit with DCO, push the branch, and open `Release X.Y.Z` against `main`. The push runs `release.yml`, which builds every artifact the release will ship. A fixup push rebuilds.
 4. Optionally rehearse the publish against the green branch: `gh workflow run publish.yml --ref release/X.Y.Z -f tag=vX.Y.Z`. This is required after any change to `release.yml` or `publish.yml`.
-5. Bring the branch up to date with `main` if it has moved, then merge after required review and checks. Do not create or push a tag manually.
+5. Bring the branch up to date with `main` if it has moved (the `Release PR` check fails while it is behind), wait for the resulting `release.yml` run to go green, then merge after required review and checks. Do not create or push a tag manually.
 6. `tag-release.yml` creates annotated tag `vX.Y.Z` on the merge commit, but only if `release.yml` is green for the merged release-branch head.
 7. The tag triggers `publish.yml`, which publishes the release build's artifacts to crates.io, PyPI and the GitHub Release. It builds nothing.
 

@@ -600,7 +600,7 @@ git commit -s -m "chore: prepare vX.Y.Z release"
 git push -u origin release/X.Y.Z
 ```
 
-Pushing the branch runs `release.yml`, which builds every artifact the release ships: CLI archives, wheels, packaged crates, SBOM and man page. A build failure is a red release PR, fixed with another push to the branch. Bring the branch up to date with `main` before merging.
+Pushing the branch runs `release.yml`, which builds every artifact the release ships: CLI archives, wheels, packaged crates, SBOM and man page. A build failure is a red release PR, fixed with another push to the branch. Before merging, bring the branch up to date with `main` (the `Release PR` check fails while it is behind) and wait for the resulting `release.yml` run to go green; merging an out-of-date or unbuilt release branch leaves the release untagged.
 
 Do not create or push the release tag manually. When the reviewed `release/X.Y.Z` pull request is merged, `tag-release.yml` creates the annotated `vX.Y.Z` tag on the merge commit, but only if `release.yml` is green for the merged head. The tag triggers `publish.yml`, which builds nothing. It:
 
