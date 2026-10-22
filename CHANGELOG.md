@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-10-22
+
 ### Added
 
 - `coco-to-arrow --rle-to-polygon` (Rust `CocoToArrowOptions::rle_to_polygon`, Python `coco_to_arrow(rle_to_polygon=True)`) traces COCO RLE segmentation to polygon contours instead of storing it as 1-bit masks. Storing masks remains the default; tracing is lossy.
@@ -14,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example `10_coco_stuff_conversion.py` converts COCO-Stuff semantic segmentation annotations to an offline EdgeFirst dataset.
 - `ade20k-to-arrow` converts ADE20K (ADEChallengeData2016) to an offline EdgeFirst dataset of semantic label maps: one row per image whose `mask` is the annotation PNG, unchanged, with groups `train` and `val`. Python: `edgefirst_client.ade20k_to_arrow`; Rust: `edgefirst_client::ade20k`. Example `11_ade20k_conversion.py`.
 - Semantic label maps are specified as a clarification of the 2026.10 dataset format: a row with only a class-index `mask` covering the whole image is a label map, the new `ignore_index` file metadata names the `labels` position whose pixels are don't-care, and `mask_interpretation = "class_index"` marks class-index masks. `schema_version` is unchanged.
-
 - Typed, validated dataset metadata: Rust `format::DatasetMetadata` and `format::MaskInterpretation`, Python `read_dataset_metadata()` returning a `DatasetMetadata`. They parse `labels`, `ignore_index`, `mask_interpretation` and `category_metadata`, and reject `labels` that is not a JSON array of strings, an `ignore_index` outside `labels`, an unknown `mask_interpretation`, `class_index` without `labels`, and `category_metadata` that is not a JSON object. Other keys are kept unchanged.
 - `validate-snapshot` reports invalid file metadata and, in `class_index` files, every semantic label map that is not an 8- or 16-bit grayscale PNG without `oFFs`, or has a pixel value outside `labels`. Both are critical errors.
 - `MaskData::has_offs_chunk` reports an `oFFs` chunk in any unit.
