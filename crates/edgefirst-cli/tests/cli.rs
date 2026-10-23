@@ -20,6 +20,47 @@ fn edgefirst_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("edgefirst-client"))
 }
 
+/// Purges deleted test items so they stop counting against the test
+/// organization's quota. Deleted items otherwise stay in the recycle bin
+/// indefinitely. A failure is reported but never fails the test.
+fn purge_recycled(ids: &[&str]) {
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("purge-recycle-bin").args(ids);
+    match cmd.output() {
+        Ok(output) if output.status.success() => println!("✓ Purged {}", ids.join(", ")),
+        Ok(output) => eprintln!(
+            "⚠ Could not purge {}: {}",
+            ids.join(", "),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(err) => eprintln!("⚠ Could not purge {}: {err}", ids.join(", ")),
+    }
+}
+
+/// Deletes a test dataset and purges it from the recycle bin when dropped,
+/// so a test that fails or returns early still releases its quota. A failure
+/// is reported but never fails the test.
+struct DatasetCleanup(String);
+
+impl Drop for DatasetCleanup {
+    fn drop(&mut self) {
+        let mut cmd = edgefirst_cmd();
+        cmd.arg("delete-dataset").arg(&self.0);
+        match cmd.output() {
+            Ok(output) if output.status.success() => {
+                println!("✓ Deleted dataset: {}", self.0);
+                purge_recycled(&[&self.0]);
+            }
+            Ok(output) => eprintln!(
+                "⚠️  Failed to delete dataset {}: {}",
+                self.0,
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            Err(err) => eprintln!("⚠️  Error deleting dataset {}: {err}", self.0),
+        }
+    }
+}
+
 /// Known, internally-tracked server-side error signature. Not a client bug.
 fn is_known_group_by_bug(text: &str) -> bool {
     text.contains("must appear in the GROUP BY clause")
@@ -1564,6 +1605,7 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
         .find_map(|line| line.strip_prefix("Created dataset with ID: "))
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "Failed to parse dataset ID from create-dataset output".to_string())?;
+    let _dataset = DatasetCleanup(new_dataset_id.clone());
 
     let annotation_set_name = format!("{} Annotations", new_dataset_name);
     let mut cmd = edgefirst_cmd();
@@ -1605,27 +1647,6 @@ fn test_upload_dataset_persistent_copy() -> Result<(), Box<dyn std::error::Error
     );
     println!("  Images uploaded from: {:?}", images_dir);
     println!("  Annotations uploaded from: {:?}", annotations_path);
-
-    // Clean up: delete the created dataset (this also deletes the annotation set)
-    println!("\n=== CLEANUP: Deleting created dataset ===");
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("delete-dataset").arg(&new_dataset_id);
-
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
-            println!("✓ Deleted dataset: {}", new_dataset_id);
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "⚠️  Failed to delete dataset {}: {}",
-                new_dataset_id, stderr
-            );
-        }
-        Err(e) => {
-            eprintln!("⚠️  Error deleting dataset {}: {}", new_dataset_id, e);
-        }
-    }
 
     // Clean up local files
     if let Err(err) = fs::remove_dir_all(&images_dir) {
@@ -1702,6 +1723,7 @@ fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error
         .find_map(|line| line.strip_prefix("Created dataset with ID: "))
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
+    let _dataset = DatasetCleanup(new_dataset_id.clone());
 
     let annotation_set_name = format!("{} Annotations", new_dataset_name);
     let mut cmd = edgefirst_cmd();
@@ -1800,10 +1822,6 @@ fn test_label_index_upload_snapshot_roundtrip() -> Result<(), Box<dyn std::error
 
     // Cleanup
     let mut cmd = edgefirst_cmd();
-    cmd.arg("delete-dataset").arg(&new_dataset_id);
-    let _ = cmd.output();
-
-    let mut cmd = edgefirst_cmd();
     cmd.arg("delete-snapshot").arg(&snapshot_id);
     let _ = cmd.output();
 
@@ -1870,6 +1888,7 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         .find_map(|line| line.strip_prefix("Created dataset with ID: "))
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "Failed to parse dataset ID".to_string())?;
+    let _dataset = DatasetCleanup(new_dataset_id.clone());
 
     let annotation_set_name = format!("{} Annotations", new_dataset_name);
     let mut cmd = edgefirst_cmd();
@@ -2024,27 +2043,6 @@ fn test_dataset_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     fs::remove_file(&original_annotations).ok();
     fs::remove_dir_all(&redownloaded_images).ok();
     fs::remove_file(&redownloaded_annotations).ok();
-
-    // Cleanup: Delete the created dataset from the server
-    println!("\n=== CLEANUP: Deleting created dataset ===");
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("delete-dataset").arg(&new_dataset_id);
-
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
-            println!("✓ Deleted dataset: {}", new_dataset_id);
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "⚠️  Failed to delete dataset {}: {}",
-                new_dataset_id, stderr
-            );
-        }
-        Err(e) => {
-            eprintln!("⚠️  Error deleting dataset {}: {}", new_dataset_id, e);
-        }
-    }
 
     println!("\n✅ Dataset roundtrip test completed successfully");
 
@@ -3349,6 +3347,31 @@ fn test_dataset_crud() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output_str.contains(dataset_id));
 
     println!("✓ Step 5: Deleted dataset {}", dataset_id);
+
+    // 6. The deleted dataset is in the recycle bin until it is purged.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("recycle-bin");
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(
+        output_str.contains(&format!("[{}]", dataset_id)),
+        "deleted dataset {dataset_id} missing from the recycle bin"
+    );
+    println!("✓ Step 6: Dataset {} is in the recycle bin", dataset_id);
+
+    // 7. Purge it so the test does not consume the organization's quota.
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("purge-recycle-bin").arg(dataset_id);
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(output_str.contains(&format!("Purged {}", dataset_id)));
+
+    let mut cmd = edgefirst_cmd();
+    cmd.arg("recycle-bin");
+    let output_str = String::from_utf8(cmd.ok()?.stdout)?;
+    assert!(
+        !output_str.contains(&format!("[{}]", dataset_id)),
+        "purged dataset {dataset_id} still in the recycle bin"
+    );
+    println!("✓ Step 7: Purged dataset {}", dataset_id);
     println!("✅ Dataset CRUD workflow completed successfully");
 
     Ok(())
@@ -3834,6 +3857,7 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
             None
         })
         .expect("Could not extract dataset ID from restore output");
+    let _restored = DatasetCleanup(restored_dataset_id.clone());
     println!("✓ Restored dataset: {}", restored_dataset_id);
 
     // Extract task ID from restore output (format: "Task: [task-xxx]")
@@ -4295,21 +4319,6 @@ fn test_snapshot_restore() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n┌─────────────────────────────────────────────────────────────────┐");
     println!("│ CLEANUP                                                         │");
     println!("└─────────────────────────────────────────────────────────────────┘");
-
-    // Delete restored dataset
-    let mut cmd = edgefirst_cmd();
-    cmd.arg("delete-dataset").arg(&restored_dataset_id);
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
-            println!("✓ Deleted restored dataset: {}", restored_dataset_id);
-        }
-        _ => {
-            println!(
-                "⚠️  Could not delete restored dataset: {}",
-                restored_dataset_id
-            );
-        }
-    }
 
     // Clean up local files
     fs::remove_dir_all(&test_dir).ok();
@@ -4969,7 +4978,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
             None
         }
     }) {
-        datasets_to_cleanup.push(dataset_id.clone());
+        datasets_to_cleanup.push(DatasetCleanup(dataset_id.clone()));
         println!("✓ Created dataset with autolabel: {}", dataset_id);
     }
 
@@ -4995,7 +5004,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
             None
         }
     }) {
-        datasets_to_cleanup.push(dataset_id.clone());
+        datasets_to_cleanup.push(DatasetCleanup(dataset_id.clone()));
         println!("✓ Created dataset with autodepth: {}", dataset_id);
     }
 
@@ -5023,7 +5032,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
             None
         }
     }) {
-        datasets_to_cleanup.push(dataset_id.clone());
+        datasets_to_cleanup.push(DatasetCleanup(dataset_id.clone()));
         println!(
             "✓ Created dataset with autolabel + autodepth: {}",
             dataset_id
@@ -5035,22 +5044,7 @@ fn test_snapshot_restore_with_mcap_processing() -> Result<(), Box<dyn std::error
         "\n=== CLEANUP: Deleting {} datasets ===",
         datasets_to_cleanup.len()
     );
-    for dataset_id in datasets_to_cleanup {
-        let mut cmd = edgefirst_cmd();
-        cmd.arg("delete-dataset").arg(&dataset_id);
-        match cmd.output() {
-            Ok(output) if output.status.success() => {
-                println!("✓ Deleted dataset: {}", dataset_id);
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("⚠ Failed to delete {}: {}", dataset_id, stderr);
-            }
-            Err(e) => {
-                println!("⚠ Error deleting {}: {}", dataset_id, e);
-            }
-        }
-    }
+    drop(datasets_to_cleanup);
 
     println!("\n✅ MCAP processing test completed");
     Ok(())
@@ -5291,6 +5285,7 @@ fn test_server_rejects_inconsistent_group_snapshot() -> Result<(), Box<dyn std::
                     let mut cleanup_cmd = edgefirst_cmd();
                     cleanup_cmd.arg("delete-dataset").arg(&dataset_id);
                     cleanup_cmd.output().ok();
+                    purge_recycled(&[&dataset_id]);
                 }
 
                 // Check if the task failed even though command returned success
@@ -6179,6 +6174,7 @@ fn test_training_session_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     cmd.assert()
         .success()
         .stdout(predicates::str::contains("Deleted training session"));
+    purge_recycled(&[&session_id]);
 
     result
 }

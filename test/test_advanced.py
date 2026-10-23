@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 
 from edgefirst_client import Sample, SampleFile
 
-from test import get_client, skip_if_known_group_by_bug
+from test import delete_and_purge_dataset, get_client, skip_if_known_group_by_bug
 
 
 def generate_sequence_uuid(dataset_id_str, sequence_name):
@@ -353,7 +353,7 @@ class TestSequences(unittest.TestCase):
 
         finally:
             # Always clean up the test dataset
-            client.delete_dataset(dataset_id)
+            delete_and_purge_dataset(client, dataset_id)
 
 
 if __name__ == "__main__":

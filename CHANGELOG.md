@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client::recycle_bin` and `Client::purge_recycle_bin` (Python `Client.recycle_bin` / `Client.purge_recycle_bin`, CLI `recycle-bin` / `purge-recycle-bin`) list the recycle bin and permanently purge items from it. Deleted items count against the organization's quota until purged. Items are identified by `RecycleBinItemID`, which parses and displays as the prefixed ID (`ds-1a`, `p-2`, …) and converts from each ID type.
+
 ### Changed
 
 - Python package now accepts polars 2.x (`polars>=1.35,<3`).
 - `download-dataset` (Rust `download_dataset`, Python `download_dataset` and `Dataset.download`) names every sequence frame `{sequence_name}_{frame}.{ext}`, in both the nested and the `--flatten` layout, using the sample's frame number. Frames stored under generic names such as `frame_000008.jpg` used to keep that name inside their sequence folder, and were written as `{sequence_name}_{frame}_{original_name}` when flattened; a frame stored as `{sequence_name}_{frame}` is still written unchanged. The nested and flattened downloads of a dataset now hold the same file names, and tools that match files to annotations by name, such as the EdgeFirst Profiler, can match every frame.
+- Studio integration tests purge the datasets, training sessions and validation sessions they delete, so test runs no longer fill the test organization's recycle bin and quota.
 
 ### Fixed
 

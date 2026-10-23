@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test import get_client, get_test_data_dir
+from test import get_client, get_test_data_dir, purge_from_recycle_bin
 
 
 class TestTrainingSession(unittest.TestCase):
@@ -424,10 +424,12 @@ class TestValidationSessionManagement(unittest.TestCase):
         training_session_id = session.training_session_id
 
         client.delete_validation_sessions([new_session.session_id])
-
-        # The parent training session must survive the deletion.
-        parent = client.training_session(training_session_id)
-        self.assertEqual(parent.id.value, training_session_id.value)
+        try:
+            # The parent training session must survive the deletion.
+            parent = client.training_session(training_session_id)
+            self.assertEqual(parent.id.value, training_session_id.value)
+        finally:
+            purge_from_recycle_bin(client, new_session.session_id)
 
 
 if __name__ == '__main__':
