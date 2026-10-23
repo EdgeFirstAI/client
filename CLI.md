@@ -347,9 +347,9 @@ Download a dataset to the local filesystem from the EdgeFirst Studio server.
 
 **\--flatten**
 :   Download all files to the output directory without creating sequence subdirectories.
-    When enabled, filenames are automatically prefixed to avoid conflicts between sequences.
-    The prefix format is `{sequence_name}_{frame}_` when the frame number is available,
-    and `{sequence_name}_` when the frame number is not available. Default: creates subdirectories for sequences.
+    Sequence frames are named `{sequence_name}_{frame}.{ext}` with or without this flag,
+    so flattening only drops the sequence folder. A sequence sample without a frame number
+    is prefixed with `{sequence_name}_`. Default: creates subdirectories for sequences.
 
 **\--tag** *TAG*
 :   Download files from the specified tagged version instead of the current HEAD state.
@@ -371,7 +371,7 @@ edgefirst-client download-dataset 12345 \
     --output /data/datasets/
 
 # Download with flattened directory structure
-# Files from sequences are prefixed with sequence_name_frame_
+# Sequence frames keep their sequence_name_frame file names, without folders
 edgefirst-client download-dataset 12345 \
     --types image --output ./flat-dataset --flatten
 
@@ -400,7 +400,7 @@ output/
     └── sequence_B_002.camera.jpeg
 ```
 
-With **\--flatten**, all files are placed in the output root with sequence prefixes:
+With **\--flatten**, the same files are placed in the output root:
 
 ```
 output/
