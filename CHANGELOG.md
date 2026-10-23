@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Python package now accepts polars 2.x (`polars>=1.35,<3`).
+- `download-dataset` (Rust `download_dataset`, Python `download_dataset` and `Dataset.download`) names every sequence frame `{sequence_name}_{frame}.{ext}`, in both the nested and the `--flatten` layout, using the sample's frame number. Frames stored under generic names such as `frame_000008.jpg` used to keep that name inside their sequence folder, and were written as `{sequence_name}_{frame}_{original_name}` when flattened; a frame stored as `{sequence_name}_{frame}` is still written unchanged. The nested and flattened downloads of a dataset now hold the same file names, and tools that match files to annotations by name, such as the EdgeFirst Profiler, can match every frame.
+
+### Fixed
+
+- `download-dataset` fails with an error naming the file when two samples would write the same file, instead of keeping only the last one written.
+- `upload-dataset` with an annotations file finds sequence frames whose file names zero-pad the frame number, such as `deer_042.camera.jpeg` for frame 42. They used to be reported as missing images. A file whose name matches exactly is still preferred.
 
 ## [2.18.0] - 2026-10-22
 

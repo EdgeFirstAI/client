@@ -2321,6 +2321,176 @@ async fn test_download_dataset_appends_extension_to_bare_image_name() {
     );
 }
 
+/// Mounts `label.list`, `samples.count` and `samples.list` returning
+/// `samples`, plus one PNG image route per sample `image_name`.
+async fn mount_download_samples(
+    server: &MockServer,
+    samples: &[(&str, Option<&str>, Option<u32>)],
+) {
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("label.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.count"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(rpc_result(json!({ "total": samples.len() }))),
+        )
+        .mount(server)
+        .await;
+
+    let listed: Vec<_> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, (image_name, sequence_name, frame_number))| {
+            json!({
+                "id": 100 + i,
+                "image_name": image_name,
+                "image_url": format!("{}/images/{i}", server.uri()),
+                "group_name": "val",
+                "sequence_name": sequence_name,
+                "frame_number": frame_number,
+            })
+        })
+        .collect();
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "samples": listed,
+            "continue_token": null
+        }))))
+        .mount(server)
+        .await;
+
+    let png_signature: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    for i in 0..samples.len() {
+        Mock::given(method("GET"))
+            .and(path(format!("/images/{i}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(png_signature.to_vec()))
+            .mount(server)
+            .await;
+    }
+}
+
+/// Files under `root`, as sorted `/`-separated paths relative to it.
+fn relative_files(root: &std::path::Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let rel = path.strip_prefix(root).unwrap();
+                files.push(
+                    rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Sequence frames are written as `{sequence}_{frame}.{ext}` whatever name
+/// Studio stored, and the file name is the same in the nested and flattened
+/// layouts. Generic per-sequence names such as `frame_000008.jpg` would
+/// otherwise collide across sequences once flattened, and could not be
+/// matched to ground truth keyed by `(sequence, frame)`.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_names_sequence_frames_by_frame_number() {
+    let server = MockServer::start().await;
+    mount_download_samples(
+        &server,
+        &[
+            ("frame_000008.jpg", Some("seq_a"), Some(8)),
+            ("frame_000008.jpg", Some("seq_b"), Some(8)),
+            ("seq_c_007.camera.png", Some("seq_c"), Some(7)),
+            ("standalone.png", None, None),
+        ],
+    )
+    .await;
+    let client = client_for(&server.uri());
+
+    for (flatten, expected) in [
+        (
+            false,
+            vec![
+                "seq_a/seq_a_8.png",
+                "seq_b/seq_b_8.png",
+                "seq_c/seq_c_007.camera.png",
+                "standalone.png",
+            ],
+        ),
+        (
+            true,
+            vec![
+                "seq_a_8.png",
+                "seq_b_8.png",
+                "seq_c_007.camera.png",
+                "standalone.png",
+            ],
+        ),
+    ] {
+        let output = tempfile::tempdir().unwrap();
+        client
+            .download_dataset(
+                DatasetID::from(1u64),
+                &["val".to_string()],
+                &[edgefirst_client::FileType::Image],
+                output.path().to_path_buf(),
+                flatten,
+                None,
+                None,
+            )
+            .await
+            .expect("download_dataset should succeed");
+        assert_eq!(relative_files(output.path()), expected, "flatten={flatten}");
+    }
+}
+
+/// Two samples that would write the same file fail the download instead of
+/// one silently overwriting the other.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_rejects_duplicate_file_names() {
+    let server = MockServer::start().await;
+    mount_download_samples(
+        &server,
+        &[("same.png", None, None), ("same.png", None, None)],
+    )
+    .await;
+    let client = client_for(&server.uri());
+    let output = tempfile::tempdir().unwrap();
+
+    let err = client
+        .download_dataset(
+            DatasetID::from(1u64),
+            &["val".to_string()],
+            &[edgefirst_client::FileType::Image],
+            output.path().to_path_buf(),
+            true,
+            None,
+            None,
+        )
+        .await
+        .expect_err("duplicate file names must fail the download");
+    assert!(
+        err.to_string().contains("unique within the dataset"),
+        "unexpected error: {err}"
+    );
+}
+
 /// Regression test: a lidar-only sample (no `image_name` at all -- normal
 /// content for a multi-modal dataset, not a data integrity problem) must
 /// not block its own other file types when `file_types` combines

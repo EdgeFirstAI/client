@@ -1614,7 +1614,8 @@ class Dataset:
             types: List of file types to download.
                 Defaults to [FileType.Image].
             flatten: If True, download all files to output root without
-                     sequence subdirectories.
+                     sequence subdirectories. Sequence frames are named
+                     ``{sequence_name}_{frame}.{ext}`` either way.
             progress: Optional progress callback. Supports two signatures:
                 - ``callback(current, total)`` - basic progress
                 - ``callback(current, total, status)`` - with
@@ -6426,9 +6427,9 @@ class Client:
             types (List[FileType]): File types to download.
             output (str): Output directory to save downloaded files.
             flatten (bool): Download all files to output root without sequence
-                subdirectories. When True, filenames are automatically prefixed
-                with sequence name and optionally frame number (when available)
-                to avoid conflicts.
+                subdirectories. Sequence frames are named
+                ``{sequence_name}_{frame}.{ext}`` either way, so flattening only
+                drops the sequence folder.
                 Default: False (preserves sequence directory structure).
             progress (Optional[Progress]): Optional progress
                 callback. Supports:

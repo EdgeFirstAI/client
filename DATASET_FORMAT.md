@@ -287,10 +287,14 @@ dataset_name/
 
 #### File Naming Conventions
 
+File names are unique within the dataset. The sequence folder is optional: a nested dataset flattens by removing the folders, without renaming any file, and a flattened dataset nests by moving each sequence's files into a folder named after the sequence.
+
 **Sequence samples** (when `frame` column is not-null in Arrow file):
 
 - **Nested**: `{sequence_name}/{sequence_name}_{frame}.{sensor}.{ext}`
-- **Flattened**: `{sequence_name}_{frame}_{original_name}` (where `original_name` includes the extension)
+- **Flattened**: `{sequence_name}_{frame}.{sensor}.{ext}`
+
+`{frame}` is the sample's frame number written in decimal with any number of digits, so `deer_042.camera.jpeg` and `deer_42.camera.jpeg` both name frame 42. The `.{sensor}` marker (`.camera`, `.lidar`, `.radar`, `.depth`) is optional.
 
 **Standalone samples** (when `frame` column is null):
 
@@ -315,7 +319,8 @@ Clients should support both nested and flattened structures:
 
 - Use `flatten=false` (default) to preserve sequence subdirectories
 - Use `flatten=true` to download all files to a single directory
-- When `flatten=true`, filenames are automatically prefixed with `{sequence_name}_{frame}_` if not already present
+- Both layouts write sequence frames as `{sequence_name}_{frame}.{sensor}.{ext}`, using the sample's frame number, whatever image name the sample was stored with; a stored name that already gives the same sequence and frame is kept unchanged
+- Two samples that would write the same file fail the download
 
 **ZIP format support**: EdgeFirst uses ZIP64 (standardized 2001) for broad compatibility:
 

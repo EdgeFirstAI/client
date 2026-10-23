@@ -29,13 +29,13 @@ use log::{Level, debug, error, log_enabled, trace, warn};
 use reqwest::{Body, header::CONTENT_LENGTH, multipart::Form};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fs::create_dir_all,
     io::{SeekFrom, Write as _},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -2267,10 +2267,12 @@ impl Client {
     ///   - `FileType::All` - All sensor types (expands to all of the above)
     /// * `output` - Local directory to save downloaded files
     /// * `flatten` - If true, download all files to output root without
-    ///   sequence subdirectories. When flattening, filenames are prefixed with
-    ///   `{sequence_name}_{frame}_` (or `{sequence_name}_` if frame is
-    ///   unavailable) unless the filename already starts with
-    ///   `{sequence_name}_`, to avoid conflicts between sequences.
+    ///   sequence subdirectories. Sequence frames are named
+    ///   `{sequence_name}_{frame}.{ext}` (keeping a sensor marker such as
+    ///   `.camera`) in both layouts, so flattening only drops the
+    ///   `{sequence_name}/` folder. A sequence sample without a frame number
+    ///   is prefixed with `{sequence_name}_` when flattened. Two samples that
+    ///   would write the same file fail the download.
     /// * `progress` - Optional channel for progress updates
     /// * `version` - Optional version tag name to download files from a
     ///   specific tagged state instead of HEAD
@@ -2371,6 +2373,7 @@ impl Client {
         let total = samples.len();
         let current = Arc::new(AtomicUsize::new(0));
         let sem = Arc::new(Semaphore::new(max_tasks()));
+        let written = Arc::new(Mutex::new(HashSet::new()));
 
         // Send initial progress for download phase
         if let Some(ref progress) = progress {
@@ -2392,6 +2395,7 @@ impl Client {
                 let progress = progress.clone();
                 let current = current.clone();
                 let sem = sem.clone();
+                let written = written.clone();
 
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.map_err(|_| {
@@ -2448,33 +2452,33 @@ impl Client {
                                 .map(sanitize_path_component)
                                 .map(|n| Client::ensure_extension(&n, &file_ext));
 
-                            // Construct filename with smart prefixing for flatten mode
-                            // When flatten=true and sample belongs to a sequence:
-                            //   - Check if filename already starts with "{sequence_name}_"
-                            //   - If not, prepend "{sequence_name}_{frame}_" to avoid conflicts
-                            //   - If yes, use filename as-is (already uniquely named)
-                            let file_name = if is_image {
-                                if let Some(img_name) = image_name {
-                                    Client::build_filename(
-                                        &img_name,
-                                        flatten,
-                                        sequence_dir.as_ref(),
-                                        sample.frame_number(),
-                                    )
-                                } else {
-                                    format!("{}.{}", sanitized_sample_name, file_ext)
-                                }
-                            } else {
-                                let base_name = format!("{}.{}", sanitized_sample_name, file_ext);
-                                Client::build_filename(
-                                    &base_name,
-                                    flatten,
-                                    sequence_dir.as_ref(),
-                                    sample.frame_number(),
-                                )
+                            let base_name = match image_name {
+                                Some(img_name) if is_image => img_name,
+                                _ => format!("{}.{}", sanitized_sample_name, file_ext),
                             };
+                            let file_name = Client::build_filename(
+                                &base_name,
+                                flatten,
+                                sequence_dir.as_deref(),
+                                sample.frame_number(),
+                            );
 
                             let file_path = target_dir.join(&file_name);
+
+                            let first_writer = written
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .insert(file_path.clone());
+                            if !first_writer {
+                                return Err(Error::IoError(std::io::Error::new(
+                                    std::io::ErrorKind::AlreadyExists,
+                                    format!(
+                                        "more than one sample downloads to {}: file names must be \
+                                         unique within the dataset",
+                                        file_path.display()
+                                    ),
+                                )));
+                            }
 
                             let mut file = File::create(&file_path).await?;
                             file.write_all(&data).await?;
@@ -2552,44 +2556,74 @@ impl Client {
         }
     }
 
-    /// Builds a filename with smart prefixing for flatten mode.
+    /// Sensor markers that sit between a sample's name and its file
+    /// extension, as in `seq_1.camera.jpeg` or `seq_1.lidar.pcd`.
+    const SENSOR_SUFFIXES: &[&str] = &[".camera", ".lidar", ".radar", ".depth"];
+
+    /// Builds the on-disk filename for one file of a sample.
     ///
-    /// When flattening sequences into a single directory, this function ensures
-    /// unique filenames by checking if the sequence prefix already exists and
-    /// adding it if necessary.
+    /// A sequence frame is always named `{sequence_name}_{frame}{suffix}`,
+    /// where `suffix` is the sensor marker and extension of `base_name`
+    /// (`.camera.jpeg`, `.lidar.pcd`). The name is the same with and without
+    /// `flatten`, so a nested download flattens by dropping the
+    /// `{sequence_name}/` folder and every file name stays unique within the
+    /// dataset. A `base_name` that already names the same frame
+    /// (`{sequence_name}_{digits}`, any zero-padding) is kept as-is; any other
+    /// is replaced, because the frame number identifies the frame and the
+    /// stored image name need not.
     ///
-    /// # Logic
-    ///
-    /// - If `flatten=false`: returns `base_name` unchanged
-    /// - If `flatten=true` and no sequence: returns `base_name` unchanged
-    /// - If `flatten=true` and in sequence:
-    ///   - Already prefixed with `{sequence_name}_`: returns `base_name`
-    ///     unchanged
-    ///   - Not prefixed: returns `{sequence_name}_{frame}_{base_name}` or
-    ///     `{sequence_name}_{base_name}`
+    /// A sample outside a sequence keeps `base_name`. A sequence sample
+    /// without a frame number keeps `base_name` in its sequence folder, and is
+    /// prefixed with `{sequence_name}_` when flattened unless it already is.
     fn build_filename(
         base_name: &str,
         flatten: bool,
-        sequence_name: Option<&String>,
+        sequence_name: Option<&str>,
         frame_number: Option<u32>,
     ) -> String {
-        if !flatten || sequence_name.is_none() {
+        let Some(sequence) = sequence_name else {
             return base_name.to_string();
-        }
+        };
+        let Some(frame) = frame_number else {
+            let prefix = format!("{sequence}_");
+            return if !flatten || base_name.starts_with(&prefix) {
+                base_name.to_string()
+            } else {
+                format!("{prefix}{base_name}")
+            };
+        };
 
-        let seq_name = sequence_name.unwrap();
-        let prefix = format!("{}_", seq_name);
-
-        // Check if already prefixed with sequence name
-        if base_name.starts_with(&prefix) {
+        let (stem, suffix) = Self::split_sensor_suffix(base_name);
+        let named_frame = stem
+            .strip_prefix(sequence)
+            .and_then(|rest| rest.strip_prefix('_'))
+            .filter(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|digits| digits.parse::<u32>().ok());
+        if named_frame == Some(frame) {
             base_name.to_string()
         } else {
-            // Add sequence (and optionally frame) prefix
-            match frame_number {
-                Some(frame) => format!("{}{}_{}", prefix, frame, base_name),
-                None => format!("{}{}", prefix, base_name),
-            }
+            format!("{sequence}_{frame}{suffix}")
         }
+    }
+
+    /// Splits `name` into its stem and its suffix, where the suffix is the
+    /// final extension plus a preceding sensor marker if there is one:
+    /// `a_1.camera.jpeg` → (`a_1`, `.camera.jpeg`), `a_1.jpg` → (`a_1`,
+    /// `.jpg`).
+    fn split_sensor_suffix(name: &str) -> (&str, &str) {
+        let Some(dot) = name.rfind('.').filter(|&i| i > 0) else {
+            return (name, "");
+        };
+        let without_ext = &name[..dot];
+        let stem = Self::SENSOR_SUFFIXES
+            .iter()
+            .find_map(|marker| {
+                without_ext
+                    .strip_suffix(marker)
+                    .filter(|rest| !rest.is_empty())
+            })
+            .unwrap_or(without_ext);
+        name.split_at(stem.len())
     }
 
     /// List available annotation sets for the specified dataset.
@@ -7434,114 +7468,106 @@ mod tests {
     }
 
     #[test]
-    fn test_build_filename_no_flatten() {
-        // When flatten=false, should return base_name unchanged
-        let result = Client::build_filename("image.jpg", false, Some(&"seq".to_string()), Some(42));
-        assert_eq!(result, "image.jpg");
-
-        let result = Client::build_filename("test.png", false, None, None);
-        assert_eq!(result, "test.png");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_no_sequence() {
-        // When flatten=true but no sequence, should return base_name unchanged
-        let result = Client::build_filename("standalone.jpg", true, None, None);
-        assert_eq!(result, "standalone.jpg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_with_sequence_not_prefixed() {
-        // When flatten=true, in sequence, filename not prefixed → add prefix
-        let result = Client::build_filename(
-            "image.camera.jpeg",
-            true,
-            Some(&"deer_sequence".to_string()),
-            Some(42),
-        );
-        assert_eq!(result, "deer_sequence_42_image.camera.jpeg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_with_sequence_no_frame() {
-        // When flatten=true, in sequence, no frame number → prefix with sequence only
-        let result =
-            Client::build_filename("image.jpg", true, Some(&"sequence_A".to_string()), None);
-        assert_eq!(result, "sequence_A_image.jpg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_already_prefixed() {
-        // When flatten=true, filename already starts with sequence_ → return unchanged
-        let result = Client::build_filename(
-            "deer_sequence_042.camera.jpeg",
-            true,
-            Some(&"deer_sequence".to_string()),
-            Some(42),
-        );
-        assert_eq!(result, "deer_sequence_042.camera.jpeg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_already_prefixed_different_frame() {
-        // Edge case: filename has sequence prefix but we're adding different frame
-        // Should still respect existing prefix
-        let result = Client::build_filename(
-            "sequence_A_001.jpg",
-            true,
-            Some(&"sequence_A".to_string()),
-            Some(2),
-        );
-        assert_eq!(result, "sequence_A_001.jpg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_partial_match() {
-        // Edge case: filename contains sequence name but not as prefix
-        let result = Client::build_filename(
-            "test_sequence_A_image.jpg",
-            true,
-            Some(&"sequence_A".to_string()),
-            Some(5),
-        );
-        // Should add prefix because it doesn't START with "sequence_A_"
-        assert_eq!(result, "sequence_A_5_test_sequence_A_image.jpg");
-    }
-
-    #[test]
-    fn test_build_filename_flatten_preserves_extension() {
-        // Verify that file extensions are preserved correctly
-        let extensions = vec![
-            "jpeg",
-            "jpg",
-            "png",
-            "camera.jpeg",
-            "lidar.pcd",
-            "depth.png",
-        ];
-
-        for ext in extensions {
-            let filename = format!("image.{}", ext);
-            let result = Client::build_filename(&filename, true, Some(&"seq".to_string()), Some(1));
-            assert!(
-                result.ends_with(&format!(".{}", ext)),
-                "Extension .{} not preserved in {}",
-                ext,
-                result
+    fn test_build_filename_no_sequence_unchanged() {
+        for flatten in [false, true] {
+            assert_eq!(
+                Client::build_filename("standalone.jpg", flatten, None, None),
+                "standalone.jpg"
+            );
+            assert_eq!(
+                Client::build_filename("x.camera.jpeg", flatten, None, Some(3)),
+                "x.camera.jpeg"
             );
         }
     }
 
     #[test]
-    fn test_build_filename_flatten_sanitization_compatibility() {
-        // Test with sanitized path components (no special chars)
-        let result = Client::build_filename(
-            "sample_001.jpg",
-            true,
-            Some(&"seq_name_with_underscores".to_string()),
-            Some(10),
+    fn test_build_filename_sequence_name_same_in_both_layouts() {
+        let cases = [
+            // Already `{sequence}_{frame}`: kept, including its zero-padding.
+            (
+                "deer_sequence_042.camera.jpeg",
+                "deer_sequence",
+                42,
+                "deer_sequence_042.camera.jpeg",
+            ),
+            ("IMG_9003_109.jpg", "IMG_9003", 109, "IMG_9003_109.jpg"),
+            ("seq_1.jpg", "seq", 1, "seq_1.jpg"),
+            // Generic per-sequence names would collide across sequences.
+            (
+                "frame_000008.jpg",
+                "add_object_002_add_video_20261013-183616",
+                8,
+                "add_object_002_add_video_20261013-183616_8.jpg",
+            ),
+            (
+                "image.camera.jpeg",
+                "deer_sequence",
+                42,
+                "deer_sequence_42.camera.jpeg",
+            ),
+            // The frame number wins over digits in the stored name.
+            ("sequence_A_001.jpg", "sequence_A", 2, "sequence_A_2.jpg"),
+            // Prefix that is not `{sequence}_{digits}`.
+            ("sequence_A_image.jpg", "sequence_A", 5, "sequence_A_5.jpg"),
+            (
+                "test_sequence_A_image.jpg",
+                "sequence_A",
+                5,
+                "sequence_A_5.jpg",
+            ),
+            ("seq_+5.jpg", "seq", 5, "seq_5.jpg"),
+            // Non-image sensor files.
+            ("frame_000008.lidar.pcd", "seq", 8, "seq_8.lidar.pcd"),
+            ("seq_8.radar.png", "seq", 8, "seq_8.radar.png"),
+        ];
+        for (base, sequence, frame, expected) in cases {
+            for flatten in [false, true] {
+                assert_eq!(
+                    Client::build_filename(base, flatten, Some(sequence), Some(frame)),
+                    expected,
+                    "base={base} sequence={sequence} frame={frame} flatten={flatten}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_filename_sequence_without_frame() {
+        assert_eq!(
+            Client::build_filename("image.jpg", false, Some("sequence_A"), None),
+            "image.jpg"
         );
-        assert_eq!(result, "seq_name_with_underscores_10_sample_001.jpg");
+        assert_eq!(
+            Client::build_filename("image.jpg", true, Some("sequence_A"), None),
+            "sequence_A_image.jpg"
+        );
+        assert_eq!(
+            Client::build_filename("sequence_A_image.jpg", true, Some("sequence_A"), None),
+            "sequence_A_image.jpg"
+        );
+    }
+
+    #[test]
+    fn test_split_sensor_suffix() {
+        assert_eq!(
+            Client::split_sensor_suffix("a_1.camera.jpeg"),
+            ("a_1", ".camera.jpeg")
+        );
+        assert_eq!(Client::split_sensor_suffix("a_1.jpg"), ("a_1", ".jpg"));
+        assert_eq!(
+            Client::split_sensor_suffix("a_1.lidar.pcd"),
+            ("a_1", ".lidar.pcd")
+        );
+        assert_eq!(
+            Client::split_sensor_suffix("image.v2.png"),
+            ("image.v2", ".png")
+        );
+        assert_eq!(Client::split_sensor_suffix("noext"), ("noext", ""));
+        assert_eq!(
+            Client::split_sensor_suffix(".camera.jpg"),
+            (".camera", ".jpg")
+        );
     }
 
     // =========================================================================

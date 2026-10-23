@@ -194,8 +194,9 @@ enum Command {
         output: Option<PathBuf>,
 
         /// Download all files to the output directory without creating sequence
-        /// subdirectories. When enabled, filenames are automatically prefixed
-        /// with the sequence name and frame number to avoid conflicts.
+        /// subdirectories. Sequence frames are named
+        /// `{sequence_name}_{frame}.{ext}` with or without this flag, so
+        /// flattening only drops the sequence folder.
         #[clap(long)]
         flatten: bool,
 
@@ -1835,12 +1836,18 @@ enum SensorFileIndex {
     /// Files stored in a directory on disk.
     Directory {
         index: std::collections::HashMap<String, Vec<PathBuf>>,
+        /// The same files keyed by [`frame_normalized_name`], consulted only
+        /// when `index` has no exact match.
+        frames: std::collections::HashMap<String, Vec<PathBuf>>,
     },
     /// Files stored in a ZIP archive (read directly without extraction).
     Zip {
         archive_path: PathBuf,
         /// Maps sample names to ZIP entry names.
         index: std::collections::HashMap<String, Vec<String>>,
+        /// The same entries keyed by [`frame_normalized_name`], consulted
+        /// only when `index` has no exact match.
+        frames: std::collections::HashMap<String, Vec<String>>,
     },
 }
 
@@ -1873,74 +1880,91 @@ impl SensorFileIndex {
         ];
 
         match self {
-            SensorFileIndex::Directory { index } => {
-                for ext in EXTENSIONS {
-                    let candidate = format!("{}{}", sample_name, ext);
-                    if let Some(paths) = index.get(&candidate) {
-                        match paths.len() {
-                            0 => continue,
-                            1 => {
-                                let path_str = paths[0].to_str().unwrap().to_string();
-                                let filename = paths[0]
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(&candidate)
-                                    .to_string();
-                                return Ok((path_str, filename));
-                            }
-                            _ => {
-                                return Err(Error::InvalidParameters(format!(
-                                    "Multiple image matches found for '{}': {:?}",
-                                    candidate, paths
-                                )));
-                            }
-                        }
+            SensorFileIndex::Directory { index, frames } => {
+                match Self::lookup_image(index, frames, sample_name, EXTENSIONS)? {
+                    Some((candidate, path)) => {
+                        let path_str = path.to_str().unwrap().to_string();
+                        let filename = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&candidate)
+                            .to_string();
+                        Ok((path_str, filename))
                     }
+                    None => Err(Error::MissingImages(format!(
+                        "No image found for sample '{}'",
+                        sample_name
+                    ))),
                 }
-                Err(Error::MissingImages(format!(
-                    "No image found for sample '{}'",
-                    sample_name
-                )))
             }
-            SensorFileIndex::Zip { index, .. } => {
-                for ext in EXTENSIONS {
-                    let candidate = format!("{}{}", sample_name, ext);
-                    if let Some(entries) = index.get(&candidate) {
-                        match entries.len() {
-                            0 => continue,
-                            1 => {
-                                let filename = std::path::Path::new(&entries[0])
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(&entries[0])
-                                    .to_string();
-                                return Ok((entries[0].clone(), filename));
-                            }
-                            _ => {
-                                return Err(Error::InvalidParameters(format!(
-                                    "Multiple image matches found for '{}': {:?}",
-                                    candidate, entries
-                                )));
-                            }
-                        }
+            SensorFileIndex::Zip { index, frames, .. } => {
+                match Self::lookup_image(index, frames, sample_name, EXTENSIONS)? {
+                    Some((_, entry)) => {
+                        let filename = std::path::Path::new(entry)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(entry)
+                            .to_string();
+                        Ok((entry.clone(), filename))
                     }
+                    None => Err(Error::MissingImages(format!(
+                        "No image found for sample '{}' in ZIP",
+                        sample_name
+                    ))),
                 }
-                Err(Error::MissingImages(format!(
-                    "No image found for sample '{}' in ZIP",
-                    sample_name
-                )))
             }
         }
+    }
+
+    /// Looks `{sample_name}{ext}` up for each of `extensions`, first by exact
+    /// name and then, if no extension matched exactly, ignoring zero-padding
+    /// of the frame number (`seq_42` finds `seq_042.camera.jpeg`). Returns the
+    /// matched candidate name and file; more than one file for a candidate is
+    /// an error.
+    fn lookup_image<'a, T: std::fmt::Debug>(
+        index: &'a std::collections::HashMap<String, Vec<T>>,
+        frames: &'a std::collections::HashMap<String, Vec<T>>,
+        sample_name: &str,
+        extensions: &[&str],
+    ) -> Result<Option<(String, &'a T)>, Error> {
+        for normalized in [false, true] {
+            for ext in extensions {
+                let mut candidate = format!("{}{}", sample_name, ext);
+                let found = if normalized {
+                    let Some(key) = frame_normalized_name(&candidate) else {
+                        continue;
+                    };
+                    candidate = key;
+                    frames.get(&candidate)
+                } else {
+                    index.get(&candidate)
+                };
+                match found.map(Vec::as_slice) {
+                    None | Some([]) => continue,
+                    Some([only]) => return Ok(Some((candidate, only))),
+                    Some(many) => {
+                        return Err(Error::InvalidParameters(format!(
+                            "Multiple image matches found for '{}': {:?}",
+                            candidate, many
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Find a sensor entry name without reading bytes (for parallel
     /// resolution). Returns Some((entry_name, filename)) if found.
     fn find_sensor_entry(&self, sample_name: &str, extension: &str) -> Option<(String, String)> {
         let candidate = format!("{}{}", sample_name, extension);
+        let normalized = frame_normalized_name(&candidate);
 
         match self {
-            SensorFileIndex::Directory { index } => {
-                if let Some(paths) = index.get(&candidate)
+            SensorFileIndex::Directory { index, frames } => {
+                if let Some(paths) = index
+                    .get(&candidate)
+                    .or_else(|| normalized.as_ref().and_then(|k| frames.get(k)))
                     && paths.len() == 1
                 {
                     let path_str = paths[0].to_str().unwrap().to_string();
@@ -1953,8 +1977,10 @@ impl SensorFileIndex {
                 }
                 None
             }
-            SensorFileIndex::Zip { index, .. } => {
-                if let Some(entries) = index.get(&candidate)
+            SensorFileIndex::Zip { index, frames, .. } => {
+                if let Some(entries) = index
+                    .get(&candidate)
+                    .or_else(|| normalized.as_ref().and_then(|k| frames.get(k)))
                     && entries.len() == 1
                 {
                     let filename = std::path::Path::new(&entries[0])
@@ -2868,6 +2894,8 @@ fn build_sensor_file_index_from_dir(
 ) -> Result<SensorFileIndex, Error> {
     let mut index: std::collections::HashMap<String, Vec<PathBuf>> =
         std::collections::HashMap::new();
+    let mut frames: std::collections::HashMap<String, Vec<PathBuf>> =
+        std::collections::HashMap::new();
 
     progress.set_message(format!("Scanning directory: {}...", dir_path.display()));
 
@@ -2904,13 +2932,18 @@ fn build_sensor_file_index_from_dir(
         for key in generate_sensor_lookup_keys(file_name) {
             index.entry(key).or_default().push(path.clone());
         }
+        if let Some(normalized) = frame_normalized_name(file_name) {
+            for key in generate_sensor_lookup_keys(&normalized) {
+                frames.entry(key).or_default().push(path.clone());
+            }
+        }
     }
 
     progress.set_message(format!(
         "Indexed {} sensor files from directory",
         file_count
     ));
-    Ok(SensorFileIndex::Directory { index })
+    Ok(SensorFileIndex::Directory { index, frames })
 }
 
 #[cfg(feature = "polars")]
@@ -2948,6 +2981,8 @@ fn build_sensor_file_index_from_zip(
     progress.set_message(format!("Indexing {} ZIP entries...", total_entries));
 
     let mut index: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut frames: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
 
     let mut sensor_file_count = 0;
@@ -2989,6 +3024,11 @@ fn build_sensor_file_index_from_zip(
         for key in generate_sensor_lookup_keys(file_name) {
             index.entry(key).or_default().push(entry_name.clone());
         }
+        if let Some(normalized) = frame_normalized_name(file_name) {
+            for key in generate_sensor_lookup_keys(&normalized) {
+                frames.entry(key).or_default().push(entry_name.clone());
+            }
+        }
     }
 
     progress.set_message(format!(
@@ -3004,6 +3044,7 @@ fn build_sensor_file_index_from_zip(
     Ok(SensorFileIndex::Zip {
         archive_path: zip_path.to_path_buf(),
         index,
+        frames,
     })
 }
 
@@ -3077,6 +3118,31 @@ fn generate_sensor_lookup_keys(file_name: &str) -> Vec<String> {
     keys.sort();
     keys.dedup();
     keys
+}
+
+#[cfg(feature = "polars")]
+/// `name` with the zero-padding of its `_{frame}` number removed, so the
+/// differently padded names of one sequence frame share a key:
+/// `deer_042.camera.jpeg` → `deer_42.camera.jpeg`. Returns `None` when the
+/// part before the extension and sensor marker does not end in `_{digits}`.
+fn frame_normalized_name(name: &str) -> Option<String> {
+    let ext_start = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+    let without_ext = &name[..ext_start];
+    let stem = [".camera", ".lidar", ".radar", ".depth"]
+        .iter()
+        .find_map(|marker| {
+            without_ext
+                .strip_suffix(marker)
+                .filter(|rest| !rest.is_empty())
+        })
+        .unwrap_or(without_ext);
+    let (prefix, digits) = stem.rsplit_once('_')?;
+    if prefix.is_empty() || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let trimmed = digits.trim_start_matches('0');
+    let frame = if trimmed.is_empty() { "0" } else { trimmed };
+    Some(format!("{prefix}_{frame}{}", &name[stem.len()..]))
 }
 
 #[cfg(feature = "polars")]
@@ -7560,6 +7626,56 @@ mod tests {
             );
 
             // Cleanup
+            std::fs::remove_dir_all(&test_dir).ok();
+        }
+
+        #[test]
+        fn test_frame_normalized_name() {
+            let cases = [
+                ("deer_042.camera.jpeg", Some("deer_42.camera.jpeg")),
+                ("deer_42.camera.jpeg", Some("deer_42.camera.jpeg")),
+                ("seq_a_000.jpg", Some("seq_a_0.jpg")),
+                ("seq_0007.lidar.pcd", Some("seq_7.lidar.pcd")),
+                ("seq_007", Some("seq_7")),
+                ("seq_0000000000000000000000042.png", Some("seq_42.png")),
+                ("image.jpg", None),
+                ("seq_a.jpg", None),
+                ("_042.jpg", None),
+                ("seq_.jpg", None),
+            ];
+            for (name, expected) in cases {
+                assert_eq!(frame_normalized_name(name).as_deref(), expected, "{name}");
+            }
+        }
+
+        #[test]
+        fn test_find_entries_ignore_frame_zero_padding() {
+            let test_dir = std::env::temp_dir().join("arrow_test_frame_padding");
+            std::fs::remove_dir_all(&test_dir).ok();
+            std::fs::create_dir_all(test_dir.join("deer")).unwrap();
+            std::fs::File::create(test_dir.join("deer/deer_042.camera.jpeg")).unwrap();
+            std::fs::File::create(test_dir.join("deer/deer_042.lidar.pcd")).unwrap();
+            // An exact match wins over a differently padded name.
+            std::fs::File::create(test_dir.join("img_1.jpg")).unwrap();
+            std::fs::File::create(test_dir.join("img_01.jpg")).unwrap();
+
+            let progress = indicatif::ProgressBar::hidden();
+            let sensor_index = build_sensor_file_index(test_dir.as_path(), &progress).unwrap();
+
+            let (_, filename) = sensor_index.find_image_entry("deer_42").unwrap();
+            assert_eq!(filename, "deer_042.camera.jpeg");
+            let (_, filename) = sensor_index.find_image_entry("deer_042").unwrap();
+            assert_eq!(filename, "deer_042.camera.jpeg");
+            let (_, filename) = sensor_index
+                .find_sensor_entry("deer_42", ".lidar.pcd")
+                .unwrap();
+            assert_eq!(filename, "deer_042.lidar.pcd");
+            let (_, filename) = sensor_index.find_image_entry("img_1").unwrap();
+            assert_eq!(filename, "img_1.jpg");
+            let (_, filename) = sensor_index.find_image_entry("img_01").unwrap();
+            assert_eq!(filename, "img_01.jpg");
+            assert!(sensor_index.find_image_entry("deer_43").is_err());
+
             std::fs::remove_dir_all(&test_dir).ok();
         }
 
