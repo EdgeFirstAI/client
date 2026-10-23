@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Python package now accepts polars 2.x (`polars>=1.35,<3`).
+
 ## [2.18.0] - 2026-10-22
 
 ### Added

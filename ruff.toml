@@ -1,0 +1,12 @@
+# Repository-wide Ruff settings for the scripts and examples outside the
+# Python package (the package's own settings live in
+# crates/edgefirst-client-py/pyproject.toml, which Ruff prefers for files
+# beneath it).
+#
+# The examples run on every Python the wheel supports, so fixes must not
+# emit syntax newer than 3.8. The rule set is pinned so a Ruff upgrade that
+# changes its defaults does not rewrite code through `make format`.
+target-version = "py38"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
