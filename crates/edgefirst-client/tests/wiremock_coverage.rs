@@ -2321,12 +2321,12 @@ async fn test_download_dataset_appends_extension_to_bare_image_name() {
     );
 }
 
+/// `(image_name, sequence_name, frame_number)` of one listed sample.
+type MockSample<'a> = (&'a str, Option<&'a str>, Option<u32>);
+
 /// Mounts `label.list`, `samples.count` and `samples.list` returning
 /// `samples`, plus one PNG image route per sample `image_name`.
-async fn mount_download_samples(
-    server: &MockServer,
-    samples: &[(&str, Option<&str>, Option<u32>)],
-) {
+async fn mount_download_samples(server: &MockServer, samples: &[MockSample<'_>]) {
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(rpc_method_body("label.list"))
@@ -2459,36 +2459,82 @@ async fn test_download_dataset_names_sequence_frames_by_frame_number() {
     }
 }
 
-/// Two samples that would write the same file fail the download instead of
-/// one silently overwriting the other.
+/// Samples whose flattened file names match fail the download in both
+/// layouts, instead of one silently overwriting the other, even when the
+/// nested layout would put them in different folders.
 #[tokio::test]
 #[serial]
 async fn test_download_dataset_rejects_duplicate_file_names() {
-    let server = MockServer::start().await;
-    mount_download_samples(
-        &server,
+    let colliding: [&[MockSample<'_>]; 2] = [
         &[("same.png", None, None), ("same.png", None, None)],
-    )
-    .await;
-    let client = client_for(&server.uri());
-    let output = tempfile::tempdir().unwrap();
+        // `seq_8.png` at the root and `seq/seq_8.png` when nested.
+        &[
+            ("seq_8.png", None, None),
+            ("frame_8.png", Some("seq"), Some(8)),
+        ],
+    ];
+    for samples in colliding {
+        for flatten in [false, true] {
+            let server = MockServer::start().await;
+            mount_download_samples(&server, samples).await;
+            let client = client_for(&server.uri());
+            let output = tempfile::tempdir().unwrap();
 
-    let err = client
-        .download_dataset(
-            DatasetID::from(1u64),
-            &["val".to_string()],
-            &[edgefirst_client::FileType::Image],
-            output.path().to_path_buf(),
-            true,
-            None,
-            None,
+            let err = client
+                .download_dataset(
+                    DatasetID::from(1u64),
+                    &["val".to_string()],
+                    &[edgefirst_client::FileType::Image],
+                    output.path().to_path_buf(),
+                    flatten,
+                    None,
+                    None,
+                )
+                .await
+                .expect_err("duplicate file names must fail the download");
+            assert!(
+                err.to_string().contains("unique within the dataset"),
+                "samples={samples:?} flatten={flatten}: unexpected error: {err}"
+            );
+        }
+    }
+}
+
+/// Sequence samples without a frame number may share a name across
+/// sequences: flattening prefixes them with their sequence, so neither
+/// layout overwrites a file.
+#[tokio::test]
+#[serial]
+async fn test_download_dataset_allows_same_name_in_frameless_sequences() {
+    for (flatten, expected) in [
+        (false, vec!["seq_a/image.png", "seq_b/image.png"]),
+        (true, vec!["seq_a_image.png", "seq_b_image.png"]),
+    ] {
+        let server = MockServer::start().await;
+        mount_download_samples(
+            &server,
+            &[
+                ("image.png", Some("seq_a"), None),
+                ("image.png", Some("seq_b"), None),
+            ],
         )
-        .await
-        .expect_err("duplicate file names must fail the download");
-    assert!(
-        err.to_string().contains("unique within the dataset"),
-        "unexpected error: {err}"
-    );
+        .await;
+        let client = client_for(&server.uri());
+        let output = tempfile::tempdir().unwrap();
+        client
+            .download_dataset(
+                DatasetID::from(1u64),
+                &["val".to_string()],
+                &[edgefirst_client::FileType::Image],
+                output.path().to_path_buf(),
+                flatten,
+                None,
+                None,
+            )
+            .await
+            .expect("frameless sequence samples flatten to distinct names");
+        assert_eq!(relative_files(output.path()), expected, "flatten={flatten}");
+    }
 }
 
 /// Regression test: a lidar-only sample (no `image_name` at all -- normal

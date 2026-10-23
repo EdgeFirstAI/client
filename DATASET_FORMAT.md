@@ -320,7 +320,7 @@ Clients should support both nested and flattened structures:
 - Use `flatten=false` (default) to preserve sequence subdirectories
 - Use `flatten=true` to download all files to a single directory
 - Both layouts write sequence frames as `{sequence_name}_{frame}.{sensor}.{ext}`, using the sample's frame number, whatever image name the sample was stored with; a stored name that already gives the same sequence and frame is kept unchanged
-- Two samples that would write the same file fail the download
+- Two samples with the same flattened file name fail the download, in either layout
 
 **ZIP format support**: EdgeFirst uses ZIP64 (standardized 2001) for broad compatibility:
 

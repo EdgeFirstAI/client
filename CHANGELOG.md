@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `download-dataset` fails with an error naming the file when two samples would write the same file, instead of keeping only the last one written.
+- `download-dataset` fails with an error naming the file when two samples have the same file name once flattened, instead of keeping only the last one written. This applies with and without `--flatten`, so a nested download is rejected exactly when flattening it would overwrite a file.
 - `upload-dataset` with an annotations file finds sequence frames whose file names zero-pad the frame number, such as `deer_042.camera.jpeg` for frame 42. They used to be reported as missing images. A file whose name matches exactly is still preferred.
 
 ## [2.18.0] - 2026-10-22

@@ -35,7 +35,7 @@ use std::{
     io::{SeekFrom, Write as _},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -2271,8 +2271,8 @@ impl Client {
     ///   `{sequence_name}_{frame}.{ext}` (keeping a sensor marker such as
     ///   `.camera`) in both layouts, so flattening only drops the
     ///   `{sequence_name}/` folder. A sequence sample without a frame number
-    ///   is prefixed with `{sequence_name}_` when flattened. Two samples that
-    ///   would write the same file fail the download.
+    ///   is prefixed with `{sequence_name}_` when flattened. Two samples with
+    ///   the same flattened file name fail the download in either layout.
     /// * `progress` - Optional channel for progress updates
     /// * `version` - Optional version tag name to download files from a
     ///   specific tagged state instead of HEAD
@@ -2465,16 +2465,26 @@ impl Client {
 
                             let file_path = target_dir.join(&file_name);
 
+                            // Uniqueness is checked on the flattened name in
+                            // both layouts, so a nested download is
+                            // rejected exactly when flattening it would
+                            // overwrite a file.
+                            let flat_name = Client::build_filename(
+                                &base_name,
+                                true,
+                                sequence_dir.as_deref(),
+                                sample.frame_number(),
+                            );
                             let first_writer = written
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .insert(file_path.clone());
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(flat_name.clone());
                             if !first_writer {
                                 return Err(Error::IoError(std::io::Error::new(
                                     std::io::ErrorKind::AlreadyExists,
                                     format!(
-                                        "more than one sample downloads to {}: file names must be \
-                                         unique within the dataset",
+                                        "more than one sample is named {flat_name} (writing {}): \
+                                         file names must be unique within the dataset",
                                         file_path.display()
                                     ),
                                 )));
