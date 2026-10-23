@@ -5,13 +5,19 @@
 
 import decimal  # noqa: F401  # Ensure decimal module is pre-loaded for PyO3
 import time
+import warnings
 from os import environ
 from pathlib import Path
 
 # Ensure PNG encoder/decoder registers before tests create artifacts.
 from PIL import PngImagePlugin  # noqa: F401
 
-from edgefirst_client import Client
+from edgefirst_client import (
+    Client,
+    DatasetID,
+    TrainingSessionID,
+    ValidationSessionID,
+)
 
 # Canonical fixture-bearing project on the Studio test server. The
 # integration suites scope every read of "real" entities (projects,
@@ -51,6 +57,31 @@ def get_client():
             "No authentication credentials found. Set STUDIO_TOKEN or "
             "STUDIO_USERNAME and STUDIO_PASSWORD environment variables."
         )
+
+
+def purge_from_recycle_bin(client, *item_ids):
+    """Purge deleted test items so they stop counting against quota.
+
+    Deleted items stay in the organization's recycle bin, counting against
+    its quota, until purged; without this the suite fills the test org's
+    quota. A purge failure is reported as a warning rather than raised so
+    that cleanup never masks the result of the test itself.
+    """
+    try:
+        client.purge_recycle_bin(list(item_ids))
+    except Exception as err:  # noqa: BLE001
+        ids = ", ".join(str(item_id) for item_id in item_ids)
+        warnings.warn(
+            f"could not purge {ids} from the recycle bin: {err}",
+            stacklevel=2,
+        )
+
+
+def delete_and_purge_dataset(client, dataset_id):
+    """Delete a test dataset and purge it from the recycle bin."""
+    dataset_id = DatasetID(dataset_id)
+    client.delete_dataset(dataset_id)
+    purge_from_recycle_bin(client, dataset_id)
 
 
 _GROUP_BY_BUG_SIGNATURE = "must appear in the group by clause"
@@ -145,7 +176,7 @@ def make_user_managed_validation_session(client, name_suffix=""):
 
 
 def cleanup_validation_session(client, session_id):
-    """Best-effort delete for a fixture session.
+    """Best-effort delete and purge for a fixture session.
 
     Used in ``tearDownClass`` so a successful test pass doesn't leak
     stranded sessions; swallows errors because cleanup failures should
@@ -154,9 +185,11 @@ def cleanup_validation_session(client, session_id):
     if session_id is None:
         return
     try:
+        session_id = ValidationSessionID(session_id)
         client.delete_validation_sessions([session_id])
     except Exception:  # noqa: BLE001
-        pass
+        return
+    purge_from_recycle_bin(client, session_id)
 
 
 def make_user_managed_training_session(client, name_suffix=""):
@@ -233,7 +266,7 @@ def make_user_managed_training_session(client, name_suffix=""):
 
 
 def cleanup_training_session(client, session_id):
-    """Best-effort delete for a fixture training session.
+    """Best-effort delete and purge for a fixture training session.
 
     Used in ``tearDownClass`` so a successful test pass doesn't leak
     stranded sessions; swallows errors because cleanup failures should
@@ -242,6 +275,8 @@ def cleanup_training_session(client, session_id):
     if session_id is None:
         return
     try:
+        session_id = TrainingSessionID(session_id)
         client.delete_training_sessions([session_id])
     except Exception:  # noqa: BLE001
-        pass
+        return
+    purge_from_recycle_bin(client, session_id)
