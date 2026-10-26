@@ -638,8 +638,15 @@ fn convert_coco_image_to_sample(
         ));
     }
 
+    // The full file name, not the stem: `populate_samples` stores the image
+    // under `image_name`.
+    let image_name = Path::new(&image.file_name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map_or_else(|| image.file_name.clone(), String::from);
+
     Ok(Sample {
-        image_name: Some(sample_name),
+        image_name: Some(image_name),
         width: Some(image.width),
         height: Some(image.height),
         group: group.map(String::from),
@@ -2119,12 +2126,47 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sample.image_name, Some("test".to_string()));
+        assert_eq!(sample.image_name, Some("test.jpg".to_string()));
         assert_eq!(sample.width, Some(640));
         assert_eq!(sample.height, Some(480));
         assert_eq!(sample.group, Some("train".to_string()));
         assert_eq!(sample.annotations.len(), 1);
         assert_eq!(sample.annotations[0].label(), Some(&"person".to_string()));
+    }
+
+    /// `image_name` is the image's full file name, so `populate_samples`
+    /// uploads each image under its own name even when one name is another's
+    /// stem (`foo.jpg` and `foo.jpg.jpg`).
+    #[test]
+    fn test_convert_coco_image_to_sample_image_name_is_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let images: Vec<CocoImage> = ["foo.jpg", "foo.jpg.jpg"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                std::fs::write(dir.path().join(name), b"jpeg").unwrap();
+                CocoImage {
+                    id: i as u64 + 1,
+                    width: 640,
+                    height: 480,
+                    file_name: name.to_string(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let dataset = CocoDataset {
+            images: images.clone(),
+            ..Default::default()
+        };
+        let index = CocoIndex::from_dataset(&dataset);
+
+        for image in &images {
+            let sample =
+                convert_coco_image_to_sample(image, &index, dir.path(), false, true, None).unwrap();
+            let file = sample.files[0].filename().unwrap();
+            assert_eq!(sample.image_name.as_deref(), Some(image.file_name.as_str()));
+            assert!(file.ends_with(&format!("/{}", image.file_name)), "{file}");
+        }
     }
 
     #[test]
@@ -2256,7 +2298,7 @@ mod tests {
             convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), true, false, None)
                 .unwrap();
 
-        assert_eq!(sample.image_name, Some("empty".to_string()));
+        assert_eq!(sample.image_name, Some("empty.jpg".to_string()));
         assert!(sample.annotations.is_empty());
     }
 

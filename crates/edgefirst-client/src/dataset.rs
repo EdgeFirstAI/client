@@ -589,6 +589,12 @@ pub struct Sample {
     pub frame_number: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// Image file name in Studio. When uploading with
+    /// [`Client::populate_samples`](crate::Client::populate_samples), the
+    /// attached image is stored under this name; without an extension it
+    /// takes the image file's extension. A name with a different extension
+    /// or a path separator is not used: the image keeps its own file name
+    /// and a warning is logged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

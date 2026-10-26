@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.1] - 2026-10-26
+
+### Fixed
+
+- `populate_samples` (Rust `Client::populate_samples`, Python `Client.populate_samples`) stores each image under the sample's `image_name` (Python `Sample.set_image_name`) instead of ignoring it and using the attached file's name. A name without an extension takes the file's extension, so COCO import is unchanged. A name with a different extension or a path separator is not used: the image keeps its file name and a warning is logged.
+- `populate_samples` fails with an error naming the clashing images when two samples in one call would be stored under the same name in the same sequence. Studio used to keep the first and skip the others without reporting it. Samples without a `sequence_uuid` are stored in the dataset's root folder, whatever their `sequence_name`, and are checked there. A sample with two files of the same name is rejected too.
+- `populate_samples` logs a warning naming the samples Studio skipped because an image with the same name is already in the dataset. They used to be dropped without notice.
+- COCO import to Studio sets each sample's `image_name` to the image's full file name rather than its stem, so the image keeps its name when one file name is another's stem (`foo.jpg` and `foo.jpg.jpg`).
+
 ## [2.19.0] - 2026-10-23
 
 ### Added

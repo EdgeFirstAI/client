@@ -7106,6 +7106,14 @@ impl Client {
     ///     flags yet. Labels used only by removed annotations are not
     ///     created. A single warning with the count is logged.
     ///
+    ///     Each image is stored under the sample's `image_name` when set
+    ///     (see `Sample.set_image_name`), otherwise under its file name, in
+    ///     its sequence's folder when the sample has a `sequence_uuid`.
+    ///     Two samples with the same name in one folder, or two files with
+    ///     the same name in one sample, raise an error before anything is
+    ///     uploaded. Samples that Studio skips because the name is already
+    ///     in the dataset are reported in a warning.
+    ///
     /// Example:
     ///     ```python
     ///     from edgefirst_client import Client, Sample, SampleFile, Annotation,
@@ -9143,6 +9151,11 @@ impl Sample {
     }
 
     /// Sets the image filename for this sample.
+    ///
+    /// `populate_samples` stores the attached image under this name. A name
+    /// without an extension takes the image file's extension; a name with a
+    /// different extension or a path separator is not used, and the image
+    /// keeps its own file name with a warning logged.
     pub fn set_image_name(&mut self, image_name: Option<String>) {
         self.inner.image_name = image_name;
     }
