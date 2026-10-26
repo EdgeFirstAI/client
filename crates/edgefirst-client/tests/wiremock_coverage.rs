@@ -4018,3 +4018,168 @@ async fn purge_recycle_bin_with_no_items_makes_no_request() {
         .await
         .expect("empty purge is a no-op");
 }
+
+/// UUID the populate mocks answer with; samples that expect an upload use it
+/// so the client matches the presigned URL back to their file.
+const POPULATE_UUID: &str = "11111111-1111-1111-1111-111111111111";
+
+/// Writes `name` into `dir` and returns an image `SampleFile` for its path.
+fn local_image(dir: &std::path::Path, name: &str) -> SampleFile {
+    let path = dir.join(name);
+    std::fs::write(&path, b"not really an image").unwrap();
+    SampleFile::with_filename("image".to_string(), path.to_string_lossy().into_owned())
+}
+
+/// Mounts a `samples.populate2` mock that must see `files.image == expected`
+/// and returns a presigned URL for it, plus the PUT that URL must receive.
+async fn mock_populate_expecting_image(server: &MockServer, expected: &str) {
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .and(body_partial_json(json!({
+            "params": { "samples": [{ "files": { "image": expected } }] }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([{
+            "uuid": POPULATE_UUID,
+            "urls": [{
+                "filename": expected,
+                "key": format!("ds/{expected}"),
+                "url": format!("{}/upload/{expected}", server.uri()),
+            }]
+        }]))))
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/upload/{expected}")))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+async fn populate_one(server: &MockServer, sample: Sample) -> Result<(), Error> {
+    client_for(&server.uri())
+        .populate_samples(DatasetID::from(1u64), None, vec![sample], None)
+        .await
+        .map(|_| ())
+}
+
+/// A sample's `image_name` is the name Studio stores the image under: it is
+/// sent as `files.image` and the local file is uploaded to that name's URL.
+#[tokio::test]
+#[serial]
+async fn populate_samples_uploads_image_under_image_name() {
+    let server = MockServer::start().await;
+    mock_populate_expecting_image(&server, "frame_000001.jpg").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut sample = Sample::new();
+    sample.uuid = Some(POPULATE_UUID.to_string());
+    sample.image_name = Some("frame_000001.jpg".to_string());
+    sample.sequence_name = Some("seqA".to_string());
+    sample.frame_number = Some(1);
+    sample.files = vec![local_image(dir.path(), "seqA_1.jpg")];
+
+    populate_one(&server, sample)
+        .await
+        .expect("populate with image_name should succeed");
+}
+
+/// An `image_name` without an extension (as COCO import sets it) takes the
+/// attached file's extension.
+#[tokio::test]
+#[serial]
+async fn populate_samples_extensionless_image_name_takes_file_extension() {
+    let server = MockServer::start().await;
+    mock_populate_expecting_image(&server, "frame_7.png").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut sample = Sample::new();
+    sample.uuid = Some(POPULATE_UUID.to_string());
+    sample.image_name = Some("frame_7".to_string());
+    sample.files = vec![local_image(dir.path(), "capture.png")];
+
+    populate_one(&server, sample)
+        .await
+        .expect("populate with extensionless image_name should succeed");
+}
+
+/// An `image_name` whose extension differs from the file's is not used: the
+/// file keeps its own name and a warning says so.
+#[tokio::test]
+#[serial]
+async fn populate_samples_image_name_extension_mismatch_keeps_file_name() {
+    install_warning_capture();
+    CAPTURED_WARNINGS.lock().unwrap().clear();
+    let server = MockServer::start().await;
+    mock_populate_expecting_image(&server, "capture.jpg").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut sample = Sample::new();
+    sample.uuid = Some(POPULATE_UUID.to_string());
+    sample.image_name = Some("frame.png".to_string());
+    sample.files = vec![local_image(dir.path(), "capture.jpg")];
+
+    populate_one(&server, sample)
+        .await
+        .expect("populate with mismatched image_name should succeed");
+
+    let warnings = CAPTURED_WARNINGS.lock().unwrap().clone();
+    assert!(
+        warnings
+            .iter()
+            .any(|m| m.contains("frame.png") && m.contains("capture.jpg")),
+        "expected a warning naming both files, got {warnings:?}"
+    );
+}
+
+/// Two samples that would be stored under the same name in the same sequence
+/// are rejected before `samples.populate2`, which would silently keep only
+/// the first. The same name in different sequences is allowed.
+#[tokio::test]
+#[serial]
+async fn populate_samples_rejects_duplicate_image_names_in_a_sequence() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let make = |seq: &str, file: &str| {
+        let mut sample = Sample::new();
+        sample.image_name = Some("frame.jpg".to_string());
+        sample.sequence_name = Some(seq.to_string());
+        sample.files = vec![local_image(dir.path(), file)];
+        sample
+    };
+    let client = client_for(&server.uri());
+
+    let err = client
+        .populate_samples(
+            DatasetID::from(1u64),
+            None,
+            vec![make("seqA", "a.jpg"), make("seqA", "b.jpg")],
+            None,
+        )
+        .await
+        .expect_err("duplicate names in one sequence must be rejected");
+    assert!(
+        matches!(&err, Error::InvalidParameters(m) if m.contains("seqA/frame.jpg")),
+        "expected InvalidParameters naming seqA/frame.jpg, got {err:?}"
+    );
+
+    client
+        .populate_samples(
+            DatasetID::from(1u64),
+            None,
+            vec![make("seqA", "a.jpg"), make("seqB", "b.jpg")],
+            None,
+        )
+        .await
+        .expect("the same name in different sequences is allowed");
+}

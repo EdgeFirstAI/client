@@ -2912,7 +2912,13 @@ class Sample:
         ...
 
     def set_image_name(self, image_name: Optional[str]) -> None:
-        """Set the image filename for this sample."""
+        """Set the image filename for this sample.
+
+        ``populate_samples`` stores the attached image under this name. A
+        name without an extension takes the image file's extension; a name
+        with a different extension or a path separator is not used, and the
+        image keeps its own file name with a warning logged.
+        """
         ...
 
     def set_group(self, group: Optional[str]) -> None:
@@ -7119,6 +7125,12 @@ class Client:
             yet. Labels used only by removed annotations are not created. A
             single warning with the count is logged.
 
+            Each image is stored under the sample's ``image_name`` when set
+            (see ``Sample.set_image_name``), otherwise under its file name.
+            Two samples with the same name in the same sequence raise an
+            error before anything is uploaded, because Studio would keep
+            only the first.
+
         Example:
             >>> from edgefirst_client import (
             ...     Client, Sample, SampleFile, Annotation, Box2d
@@ -7184,6 +7196,12 @@ class Client:
             before upload, because EdgeFirst Studio does not store these flags
             yet. Labels used only by removed annotations are not created. A
             single warning with the count is logged.
+
+            Each image is stored under the sample's ``image_name`` when set
+            (see ``Sample.set_image_name``), otherwise under its file name.
+            Two samples with the same name in the same sequence raise an
+            error before anything is uploaded, because Studio would keep
+            only the first.
 
         Raises:
             Error: If the dataset does not exist or upload fails.

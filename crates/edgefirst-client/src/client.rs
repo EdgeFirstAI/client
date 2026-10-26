@@ -3489,6 +3489,16 @@ impl Client {
     ///   auto-generated/extracted if not provided.
     /// * `progress` - Optional channel for progress updates
     ///
+    /// # Image names
+    ///
+    /// Each sample's image is stored under its
+    /// [`image_name`](Sample::image_name) when set (see that field for the
+    /// rules), otherwise under the image file's own name. Studio keeps one
+    /// image per name in each sequence and silently skips a sample whose name
+    /// is already in the dataset, so a call in which two samples share a name
+    /// within a sequence fails with [`Error::InvalidParameters`] before
+    /// anything is uploaded.
+    ///
     /// # Progress
     ///
     /// Reports progress with `status: None` as each sample's files are
@@ -3595,6 +3605,7 @@ impl Client {
             let _prepare_span = tracing::info_span!("prepare_samples", n = samples.len()).entered();
             self.prepare_samples_for_upload(samples, &mut files_to_upload)?
         };
+        Self::check_duplicate_image_names(&samples)?;
 
         // After preparation, so image sizes read from the files are known.
         for warning in crate::masks_to_polygons(&mut samples).warnings() {
@@ -3704,19 +3715,17 @@ impl Client {
                 sample.height = Some(size.height as u32);
             }
 
+            let name = Self::upload_name(file, sample, filename);
+
             // Store the bytes for later upload
             files_to_upload.push((
                 sample_uuid.to_string(),
                 file.file_type().to_string(),
                 FileSource::Bytes(bytes.to_vec()),
-                filename.to_string(),
+                name.clone(),
             ));
 
-            // Return SampleFile with just the filename
-            return crate::SampleFile::with_filename(
-                file.file_type().to_string(),
-                filename.to_string(),
-            );
+            return crate::SampleFile::with_filename(file.file_type().to_string(), name);
         }
 
         // Handle files with local paths
@@ -3737,23 +3746,77 @@ impl Client {
                     sample.height = Some(size.height as u32);
                 }
 
+                let name = Self::upload_name(file, sample, basename);
+
                 // Store the full path for later upload
                 files_to_upload.push((
                     sample_uuid.to_string(),
                     file.file_type().to_string(),
                     FileSource::Path(path.to_path_buf()),
-                    basename.to_string(),
+                    name.clone(),
                 ));
 
-                // Return SampleFile with just the basename
-                return crate::SampleFile::with_filename(
-                    file.file_type().to_string(),
-                    basename.to_string(),
-                );
+                return crate::SampleFile::with_filename(file.file_type().to_string(), name);
             }
         }
         // Return the file unchanged if not a local path
         file.clone()
+    }
+
+    /// Name a local file is uploaded under. Studio stores an image under the
+    /// name sent in `files.image`, so the image takes the sample's
+    /// `image_name` when one is usable; other files keep their own name.
+    fn upload_name(file: &crate::SampleFile, sample: &Sample, file_name: &str) -> String {
+        match sample.image_name.as_deref() {
+            Some(image_name) if file.file_type() == "image" => {
+                image_upload_name(image_name, file_name)
+            }
+            _ => file_name.to_string(),
+        }
+    }
+
+    /// Rejects a batch in which two samples would be stored under the same
+    /// image name in the same sequence: `samples.populate2` keeps the first
+    /// and silently skips the rest.
+    fn check_duplicate_image_names(samples: &[Sample]) -> Result<(), Error> {
+        let mut seen = HashSet::new();
+        let mut duplicates = Vec::new();
+        for sample in samples {
+            let Some(image) = sample
+                .files
+                .iter()
+                .find(|f| f.file_type() == "image")
+                .and_then(|f| f.filename())
+            else {
+                continue;
+            };
+            let key = match sample.sequence_name.as_deref() {
+                Some(seq) if !seq.is_empty() => format!("{seq}/{image}"),
+                _ => image.to_string(),
+            };
+            if !seen.insert(key.clone()) && !duplicates.contains(&key) {
+                duplicates.push(key);
+            }
+        }
+        if duplicates.is_empty() {
+            return Ok(());
+        }
+        const SHOWN: usize = 5;
+        let more = duplicates.len().saturating_sub(SHOWN);
+        let mut list = duplicates
+            .iter()
+            .take(SHOWN)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if more > 0 {
+            list.push_str(&format!(" and {more} more"));
+        }
+        Err(Error::InvalidParameters(format!(
+            "Several samples in this batch would be stored under the same image name \
+             in the same sequence, and Studio would keep only the first: {list}. \
+             Give each sample a unique image_name (or file name) within its sequence."
+        )))
     }
 
     async fn upload_sample_files(
@@ -6964,6 +7027,36 @@ async fn upload_part_streaming(
     Ok(etag.to_owned())
 }
 
+/// Name to store a sample's image under, given its `image_name` and the
+/// attached file's name.
+///
+/// An `image_name` without an extension (as COCO import sets it) takes the
+/// file's extension. One with a different extension, or with a path
+/// separator, is not used: the file keeps its own name and a warning says so.
+fn image_upload_name(image_name: &str, file_name: &str) -> String {
+    use std::path::Path;
+
+    if image_name.is_empty() || image_name == file_name {
+        return file_name.to_string();
+    }
+    let file_ext = Path::new(file_name).extension().and_then(|e| e.to_str());
+    if !image_name.contains(['/', '\\']) {
+        match (Path::new(image_name).extension(), file_ext) {
+            (None, Some(ext)) => return format!("{image_name}.{ext}"),
+            (None, None) => return image_name.to_string(),
+            (Some(a), Some(b)) if a.to_string_lossy().eq_ignore_ascii_case(b) => {
+                return image_name.to_string();
+            }
+            _ => {}
+        }
+    }
+    warn!(
+        "Sample image_name {image_name:?} is not a plain file name with the extension of \
+         {file_name:?}; uploading the image as {file_name:?}"
+    );
+    file_name.to_string()
+}
+
 /// Upload a complete file to a presigned S3 URL using HTTP PUT.
 ///
 /// This is used for populate_samples to upload files to S3 after
@@ -8715,5 +8808,34 @@ mod tests_ensure_extension {
             Client::ensure_extension("image.tar.gz", "gz"),
             "image.tar.gz"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_image_upload_name {
+    use super::image_upload_name;
+
+    #[test]
+    fn test_image_upload_name_rules() {
+        let cases = [
+            ("", "a.jpg", "a.jpg"),
+            ("a.jpg", "a.jpg", "a.jpg"),
+            ("frame_1.jpg", "seq_1.jpg", "frame_1.jpg"),
+            ("frame_1.JPG", "seq_1.jpg", "frame_1.JPG"),
+            ("000000000139", "000000000139.jpg", "000000000139.jpg"),
+            ("frame_1", "seq_1.png", "frame_1.png"),
+            ("frame_1", "seq_1", "frame_1"),
+            ("frame_1.png", "seq_1.jpg", "seq_1.jpg"),
+            ("frame_1.jpg", "seq_1", "seq_1"),
+            ("sub/frame_1.jpg", "seq_1.jpg", "seq_1.jpg"),
+            ("sub\\frame_1.jpg", "seq_1.jpg", "seq_1.jpg"),
+        ];
+        for (image_name, file_name, expected) in cases {
+            assert_eq!(
+                image_upload_name(image_name, file_name),
+                expected,
+                "image_name {image_name:?}, file {file_name:?}"
+            );
+        }
     }
 }
