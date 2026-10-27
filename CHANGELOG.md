@@ -7,14 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.19.1] - 2026-10-26
+## [2.20.0] - 2026-10-27
+
+### Added
+
+- `sequence_uuid(dataset_id, sequence_name)` (Rust `edgefirst_client::sequence_uuid`, Python `edgefirst_client.sequence_uuid`) returns the sequence UUID derived from a dataset and a sequence name, the one `upload-dataset` and `populate_samples` give a sequence the dataset does not have yet.
+- `Client::assign_sequence_uuids(dataset_id, samples)` (Python `Client.assign_sequence_uuids`, which updates the samples in place) gives each sample the `sequence_uuid` of its sequence in the dataset, as `populate_samples` does before uploading, so the UUIDs are known in advance.
 
 ### Fixed
 
 - `populate_samples` (Rust `Client::populate_samples`, Python `Client.populate_samples`) stores each image under the sample's `image_name` (Python `Sample.set_image_name`) instead of ignoring it and using the attached file's name. A name without an extension takes the file's extension, so COCO import is unchanged. A name with a different extension or a path separator is not used: the image keeps its file name and a warning is logged.
 - `populate_samples` fails with an error naming the clashing images when two samples in one call would be stored under the same name in the same sequence. Studio used to keep the first and skip the others without reporting it. A sample with two files of the same name is rejected too.
 - `populate_samples` and `upload-dataset` give each sample the `sequence_uuid` of its sequence in the target dataset: the dataset's sequence of that `sequence_name` if it has one, otherwise the UUID derived from the dataset and the name that `upload-dataset` already used. Studio used to ignore a `sequence_name` without a UUID and store the sample in the dataset's root folder, outside any sequence.
-- `populate_samples` no longer sends a `sequence_uuid` that is not a sequence of the target dataset, such as one on samples copied from another dataset. Studio looks sequence UUIDs up across all datasets, so these samples joined the other dataset's sequence instead of one of their own. The sample gets its sequence in the target dataset and a warning names the replaced UUIDs; a sample without a `sequence_name` is rejected. The new `Client::assign_sequence_uuids` and `sequence_uuid` expose this.
+- `populate_samples` no longer sends a `sequence_uuid` that is not a sequence of the target dataset, such as one on samples copied from another dataset. Studio looks sequence UUIDs up across all datasets, so these samples joined the other dataset's sequence instead of one of their own. The sample gets its sequence in the target dataset and a warning names the replaced UUIDs; a sample without a `sequence_name` is rejected.
 - `populate_samples` logs a warning naming the samples Studio skipped because an image with the same name is already in the dataset. They used to be dropped without notice.
 - COCO import to Studio sets each sample's `image_name` to the image's full file name rather than its stem, so the image keeps its name when one file name is another's stem (`foo.jpg` and `foo.jpg.jpg`).
 

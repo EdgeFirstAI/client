@@ -7084,6 +7084,33 @@ class Client:
         """
         ...
 
+    def assign_sequence_uuids(
+        self, dataset_id: DatasetUID, samples: List[Sample]
+    ) -> None:
+        """
+        Give each sample the sequence UUID of its sequence in a dataset.
+
+        ``populate_samples`` does this itself; call it to know the UUIDs
+        before uploading. Studio files a sample under a sequence only when it
+        has a sequence UUID, and looks that UUID up across all datasets. A
+        sample's UUID is kept when it is one of the dataset's sequences or
+        the one ``sequence_uuid`` derives from the dataset and the sample's
+        sequence name. Otherwise a sample with a sequence name gets the UUID
+        of the dataset's sequence of that name, or the derived one when the
+        dataset has none, and the replaced UUIDs, such as those of samples
+        copied from another dataset, are named in a warning.
+
+        Args:
+            dataset_id: The dataset the samples will be uploaded to.
+            samples: Samples to update in place.
+
+        Raises:
+            RuntimeError: A sample has a sequence UUID that is not one of the
+                dataset's sequences and no sequence name. No sample is
+                changed.
+        """
+        ...
+
     def populate_samples(
         self,
         dataset_id: DatasetUID,
@@ -8346,6 +8373,29 @@ def is_polars_enabled() -> bool:
         ...     df = client.samples_dataframe(dataset_id)
         ... else:
         ...     annotations = client.annotations(annotation_set_id)
+    """
+    ...
+
+def sequence_uuid(dataset_id: DatasetUID, sequence_name: str) -> str:
+    """
+    The sequence UUID of a sequence name in a dataset.
+
+    Derived from the dataset ID and the name, so every upload of the same
+    sequence name to the same dataset joins one Studio sequence, while the
+    same name in another dataset is a different sequence.
+    ``populate_samples`` gives this UUID to samples whose sequence the
+    dataset does not have yet.
+
+    Args:
+        dataset_id: The dataset, as a ``DatasetID`` or a ``"ds-..."`` string.
+        sequence_name: The sequence name.
+
+    Returns:
+        str: The sequence UUID.
+
+    Example:
+        >>> sequence_uuid("ds-1", "seqA")
+        '8882ff41-caf7-512e-b999-970290aa1bd1'
     """
     ...
 

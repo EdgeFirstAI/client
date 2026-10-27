@@ -7071,6 +7071,45 @@ impl Client {
             .collect::<Vec<_>>())
     }
 
+    /// Give each sample the sequence UUID of its sequence in a dataset.
+    ///
+    /// `populate_samples` does this itself; call it to know the UUIDs before
+    /// uploading. Studio files a sample under a sequence only when it has a
+    /// sequence UUID, and looks that UUID up across all datasets. A sample's
+    /// UUID is kept when it is one of the dataset's sequences or the one
+    /// `sequence_uuid` derives from the dataset and the sample's sequence
+    /// name. Otherwise a sample with a sequence name gets the UUID of the
+    /// dataset's sequence of that name, or the derived one when the dataset
+    /// has none, and the replaced UUIDs, such as those of samples copied
+    /// from another dataset, are named in a warning.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset the samples will be uploaded to.
+    ///     samples: Samples to update in place.
+    ///
+    /// Raises:
+    ///     RuntimeError: A sample has a sequence UUID that is not one of the
+    ///         dataset's sequences and no sequence name. No sample is
+    ///         changed.
+    #[tokio_wrap::sync]
+    pub fn assign_sequence_uuids<'py>(
+        &self,
+        py: Python<'py>,
+        dataset_id: Bound<'py, PyAny>,
+        samples: Vec<Py<Sample>>,
+    ) -> Result<(), Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let mut resolved: Vec<edgefirst_client::Sample> =
+            samples.iter().map(|s| s.borrow(py).inner.clone()).collect();
+        self.0
+            .assign_sequence_uuids(dataset_id.0, &mut resolved)
+            .await?;
+        for (sample, resolved) in samples.iter().zip(resolved) {
+            sample.borrow_mut(py).inner.sequence_uuid = resolved.sequence_uuid;
+        }
+        Ok(())
+    }
+
     /// Populate samples into a dataset with automatic file uploads.
     ///
     /// This method creates new samples in the specified dataset and
@@ -9983,6 +10022,7 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(is_polars_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(collect_labels_from_samples, m)?)?;
+    m.add_function(wrap_pyfunction!(sequence_uuid, m)?)?;
 
     // COCO conversion functions (polars feature only)
     #[cfg(feature = "polars")]
@@ -10013,6 +10053,29 @@ pub fn is_polars_enabled() -> bool {
     {
         false
     }
+}
+
+/// The sequence UUID of a sequence name in a dataset.
+///
+/// Derived from the dataset ID and the name, so every upload of the same
+/// sequence name to the same dataset joins one Studio sequence, while the
+/// same name in another dataset is a different sequence. `populate_samples`
+/// gives this UUID to samples whose sequence the dataset does not have yet.
+///
+/// Args:
+///     dataset_id: The dataset, as a `DatasetID` or a `"ds-..."` string.
+///     sequence_name: The sequence name.
+///
+/// Returns:
+///     str: The sequence UUID.
+///
+/// Example:
+///     >>> sequence_uuid("ds-1", "seqA")
+///     '8882ff41-caf7-512e-b999-970290aa1bd1'
+#[pyfunction]
+pub fn sequence_uuid(dataset_id: Bound<'_, PyAny>, sequence_name: &str) -> Result<String, Error> {
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    Ok(edgefirst_client::sequence_uuid(dataset_id.0, sequence_name))
 }
 
 /// Collect parallel label name/index arrays from samples, for use with
