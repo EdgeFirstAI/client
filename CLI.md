@@ -2,8 +2,8 @@
 title: EDGEFIRST-CLIENT
 section: 1
 header: EdgeFirst Client Manual
-footer: edgefirst-client 2.19.0
-date: 2026-10-23
+footer: edgefirst-client 2.20.0
+date: 2026-10-27
 ---
 
 # NAME
@@ -519,6 +519,8 @@ edgefirst-client upload-dataset 12345 \
 retrying 50 samples) with progress tracking. Batch concurrency defaults to 4 and is
 configurable via **EDGEFIRST_UPLOAD_BATCHES**. Arrow files must conform to the
 EdgeFirst Dataset Format.
+
+**Note:** Within a dataset, a sequence is identified by its name. Frames whose sequence name the dataset already has are added to that sequence, even when they come from a different recording, so uploading a second dataset into one that has sequences of the same names merges them. Rename the incoming sequences, for example with a prefix for their source, to keep them apart. Each image name must be unique within its sequence: duplicates within one upload fail it, and an image whose name the sequence already has is skipped with a warning.
 
 **Note:** Annotations flagged `ignore` or `exclude` are dropped before upload and reported once as `⚠ Skipping N annotations flagged ignore/exclude: Studio does not support these flags yet`, since EdgeFirst Studio does not store these flags yet.
 

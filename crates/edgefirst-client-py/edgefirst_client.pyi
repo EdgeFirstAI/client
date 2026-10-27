@@ -2912,7 +2912,13 @@ class Sample:
         ...
 
     def set_image_name(self, image_name: Optional[str]) -> None:
-        """Set the image filename for this sample."""
+        """Set the image filename for this sample.
+
+        ``populate_samples`` stores the attached image under this name. A
+        name without an extension takes the image file's extension; a name
+        with a different extension or a path separator is not used, and the
+        image keeps its own file name with a warning logged.
+        """
         ...
 
     def set_group(self, group: Optional[str]) -> None:
@@ -2920,11 +2926,21 @@ class Sample:
         ...
 
     def set_sequence_name(self, sequence_name: Optional[str]) -> None:
-        """Set the sequence name for this sample."""
+        """Set the sequence name for this sample.
+
+        Within a dataset the name identifies the sequence: on upload, a
+        sample whose sequence name the dataset already has joins that
+        sequence.
+        """
         ...
 
     def set_sequence_uuid(self, sequence_uuid: Optional[str]) -> None:
-        """Set the unique sequence identifier for this sample."""
+        """Set the unique sequence identifier for this sample.
+
+        When uploading, a sample with a sequence name is given the UUID of
+        that sequence in the dataset unless this one is already a sequence
+        of the dataset.
+        """
         ...
 
     def set_sequence_description(
@@ -7073,6 +7089,34 @@ class Client:
         """
         ...
 
+    def assign_sequence_uuids(
+        self, dataset_id: DatasetUID, samples: List[Sample]
+    ) -> None:
+        """
+        Give each sample the sequence UUID of its sequence in a dataset.
+
+        ``populate_samples`` does this itself; call it to know the UUIDs
+        before uploading. Studio files a sample under a sequence only when it
+        has a sequence UUID, and looks that UUID up across all datasets.
+        Within the dataset, a sequence is identified by its name. A
+        sample's UUID is kept when it is one of the dataset's sequences or
+        the one ``sequence_uuid`` derives from the dataset and the sample's
+        sequence name. Otherwise a sample with a sequence name gets the UUID
+        of the dataset's sequence of that name, or the derived one when the
+        dataset has none, and the replaced UUIDs, such as those of samples
+        copied from another dataset, are named in a warning.
+
+        Args:
+            dataset_id: The dataset the samples will be uploaded to.
+            samples: Samples to update in place.
+
+        Raises:
+            RuntimeError: A sample has a sequence UUID that is not one of the
+                dataset's sequences and no sequence name. No sample is
+                changed.
+        """
+        ...
+
     def populate_samples(
         self,
         dataset_id: DatasetUID,
@@ -7118,6 +7162,23 @@ class Client:
             before upload, because EdgeFirst Studio does not store these flags
             yet. Labels used only by removed annotations are not created. A
             single warning with the count is logged.
+
+            Each image is stored under the sample's ``image_name`` when set
+            (see ``Sample.set_image_name``), otherwise under its file name,
+            in its sequence's folder. Within a dataset a sequence is
+            identified by its name: each sample is given the sequence UUID
+            of its sequence name in this dataset, so uploads of that name
+            join one sequence, even samples from a different recording, as
+            when merging datasets. Give such sequences distinct names, for
+            example with a prefix for their source, to keep them apart. A
+            sequence UUID that is not one of the
+            dataset's sequences, such as one copied from another dataset, is
+            replaced and named in a warning, or raises an error when the
+            sample has no sequence name. Two samples with the same name in
+            one folder, or two files with the same name in one sample, raise
+            an error before anything is uploaded. Samples that Studio skips
+            because the name is already in the dataset are reported in a
+            warning.
 
         Example:
             >>> from edgefirst_client import (
@@ -7184,6 +7245,23 @@ class Client:
             before upload, because EdgeFirst Studio does not store these flags
             yet. Labels used only by removed annotations are not created. A
             single warning with the count is logged.
+
+            Each image is stored under the sample's ``image_name`` when set
+            (see ``Sample.set_image_name``), otherwise under its file name,
+            in its sequence's folder. Within a dataset a sequence is
+            identified by its name: each sample is given the sequence UUID
+            of its sequence name in this dataset, so uploads of that name
+            join one sequence, even samples from a different recording, as
+            when merging datasets. Give such sequences distinct names, for
+            example with a prefix for their source, to keep them apart. A
+            sequence UUID that is not one of the
+            dataset's sequences, such as one copied from another dataset, is
+            replaced and named in a warning, or raises an error when the
+            sample has no sequence name. Two samples with the same name in
+            one folder, or two files with the same name in one sample, raise
+            an error before anything is uploaded. Samples that Studio skips
+            because the name is already in the dataset are reported in a
+            warning.
 
         Raises:
             Error: If the dataset does not exist or upload fails.
@@ -8309,6 +8387,29 @@ def is_polars_enabled() -> bool:
         ...     df = client.samples_dataframe(dataset_id)
         ... else:
         ...     annotations = client.annotations(annotation_set_id)
+    """
+    ...
+
+def sequence_uuid(dataset_id: DatasetUID, sequence_name: str) -> str:
+    """
+    The sequence UUID of a sequence name in a dataset.
+
+    Derived from the dataset ID and the name, so every upload of the same
+    sequence name to the same dataset joins one Studio sequence, while the
+    same name in another dataset is a different sequence.
+    ``populate_samples`` gives this UUID to samples whose sequence the
+    dataset does not have yet.
+
+    Args:
+        dataset_id: The dataset, as a ``DatasetID`` or a ``"ds-..."`` string.
+        sequence_name: The sequence name.
+
+    Returns:
+        str: The sequence UUID.
+
+    Example:
+        >>> sequence_uuid("ds-1", "seqA")
+        '8882ff41-caf7-512e-b999-970290aa1bd1'
     """
     ...
 

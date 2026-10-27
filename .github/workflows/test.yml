@@ -283,7 +283,7 @@ jobs:
           python3 -m slipcover --xml --out coverage.xml -m xmlrunner \
             test.test_coco_roundtrip test.test_storage test.test_parameter \
             test.test_ids.TestIDConversions test.test_ids.TestBackgroundTaskID \
-            test.test_sample_metadata test.test_example_paths test.test_set_platform test.test_recycle_bin test.test_mask_offset test.test_coco_rle_pycocotools test.test_ade20k test.test_dataset_metadata \
+            test.test_sample_metadata test.test_example_paths test.test_set_platform test.test_recycle_bin test.test_sequence_uuids test.test_mask_offset test.test_coco_rle_pycocotools test.test_ade20k test.test_dataset_metadata \
             -o target/python
 
       # Merges the deferred Rust run with the Python run into one lcov. Asserts

@@ -2173,59 +2173,21 @@ fn parse_location_from_dataframe(
     }
 }
 
-/// Generates deterministic UUIDs for sequences and samples during upload.
-///
-/// For sequences: Uses SHA-1 hash of "{dataset_id}/{sequence_name}" to generate
-/// a deterministic UUID conforming to RFC 4122 version 5. This ensures all
-/// samples in the same sequence across multiple uploads get the same
-/// sequence_uuid.
-///
-/// For samples: Generates a random UUID for each sample (required by Studio).
+/// Gives each sample a random UUID and the `sequence_uuid` of its sequence
+/// in the dataset (see [`Client::assign_sequence_uuids`]). Grouping batches
+/// by sequence needs the UUIDs before upload.
 ///
 /// These UUIDs are only set during upload and are not persisted to Arrow/JSON
 /// files as they are internal Studio details.
-///
-/// # Arguments
-///
-/// * `samples` - Mutable vector of samples to process
-/// * `dataset_id` - Dataset ID for hash generation
-fn generate_upload_uuids(samples: &mut [edgefirst_client::Sample], dataset_id: &str) {
-    use sha1::{Digest, Sha1};
-    use std::collections::HashMap;
-
-    let mut sequence_uuid_map: HashMap<String, String> = HashMap::new();
-
+async fn generate_upload_uuids(
+    client: &Client,
+    samples: &mut [edgefirst_client::Sample],
+    dataset_id: edgefirst_client::DatasetID,
+) -> Result<(), Error> {
     for sample in samples.iter_mut() {
-        // Generate sample UUID (required by Studio for all samples)
         sample.uuid = Some(uuid::Uuid::new_v4().to_string());
-
-        // Generate sequence_uuid if sample is part of a sequence
-        if let Some(seq_name) = &sample.sequence_name {
-            let seq_uuid = sequence_uuid_map
-                .entry(seq_name.clone())
-                .or_insert_with(|| {
-                    // Create deterministic UUID from hash of dataset_id/sequence_name
-                    // Server respects client-provided sequence_uuid values
-                    // Using SHA-1 to properly conform to RFC 4122 version 5 UUID
-                    let input = format!("{}/{}", dataset_id, seq_name);
-                    let hash = Sha1::digest(input.as_bytes());
-
-                    // Convert first 16 bytes of hash to UUID v5 format
-                    let uuid_bytes: [u8; 16] = hash[..16].try_into().unwrap();
-                    let mut uuid = uuid::Uuid::from_bytes(uuid_bytes);
-
-                    // Set version to 5 (SHA-1 name-based) and variant bits per RFC 4122
-                    let mut bytes = *uuid.as_bytes();
-                    bytes[6] = (bytes[6] & 0x0f) | 0x50; // Version 5
-                    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10
-                    uuid = uuid::Uuid::from_bytes(bytes);
-
-                    uuid.to_string()
-                })
-                .clone();
-            sample.sequence_uuid = Some(seq_uuid);
-        }
     }
+    client.assign_sequence_uuids(dataset_id, samples).await
 }
 
 /// Parse annotations from an Arrow IPC file into a sample map.
@@ -2255,17 +2217,10 @@ fn create_sequence_aware_batches(
 ) -> Vec<Vec<edgefirst_client::Sample>> {
     use std::collections::HashMap;
 
-    // Group samples by (sequence_uuid, group) to ensure consistent metadata within
-    // each batch. The server has bugs where it only reads certain metadata from
-    // the first sample in each batch:
-    // 1. Sequence metadata (sequence_uuid, sequence_name, sequence_description)
-    // 2. Group assignment
-    //
-    // Therefore, all samples in a batch must belong to the same sequence AND the
-    // same group.
-    //
-    // Non-sequence samples (sequence_uuid == None) are still grouped by group to
-    // avoid the group assignment bug.
+    // Each batch holds samples of one (sequence_uuid, group). Studio resolves
+    // both per sample, but releases before 4.0.1 took them from the first
+    // sample of a request, so homogeneous batches keep uploads to those
+    // servers correct.
 
     let mut by_sequence_and_group: HashMap<
         (Option<String>, Option<String>),
@@ -3512,7 +3467,7 @@ async fn handle_upload_dataset(
 
     // Generate UUIDs for upload (sample.uuid and sequence_uuid for sequences)
     // These are required by Studio but not persisted to Arrow/JSON files
-    generate_upload_uuids(&mut samples, &dataset_id);
+    generate_upload_uuids(client, &mut samples, dataset_id_parsed).await?;
 
     let total_samples = samples.len();
     println!(
@@ -3561,7 +3516,6 @@ async fn handle_upload_dataset(
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_BATCH_CONCURRENCY);
 
-    let dataset_id_parsed: edgefirst_client::DatasetID = dataset_id.try_into()?;
     let annotation_set_id_parsed = if should_upload_annotations {
         Some(annotation_set_id.unwrap().try_into()?)
     } else {
@@ -3621,14 +3575,12 @@ async fn handle_upload_dataset(
         }
     }
 
-    // Group samples by sequence to work around server bug where all samples in a
-    // batch are assigned to the sequence of the first sample only.
-    // Non-sequence samples (sequence_uuid == None) are grouped together.
+    // One sequence and group per batch; see create_sequence_aware_batches.
     let batches = create_sequence_aware_batches(samples, BATCH_SIZE);
     let total_batches = batches.len();
 
     log::debug!(
-        "Created {} batches (grouped by sequence+group to avoid server bugs), \
+        "Created {} batches (one sequence and group each), \
          uploading up to {} concurrently",
         total_batches,
         batch_concurrency

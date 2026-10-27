@@ -575,6 +575,11 @@ pub struct Sample {
         skip_serializing_if = "Option::is_none"
     )]
     pub group: Option<String>,
+    /// Name of the sequence the sample belongs to. Within a dataset the name
+    /// identifies the sequence: when uploading with
+    /// [`Client::populate_samples`](crate::Client::populate_samples), a
+    /// sample whose sequence name the dataset already has joins that
+    /// sequence, even when it comes from a different recording.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sequence_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -589,6 +594,12 @@ pub struct Sample {
     pub frame_number: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// Image file name in Studio. When uploading with
+    /// [`Client::populate_samples`](crate::Client::populate_samples), the
+    /// attached image is stored under this name; without an extension it
+    /// takes the image file's extension. A name with a different extension
+    /// or a path separator is not used: the image keeps its own file name
+    /// and a warning is logged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2178,6 +2189,119 @@ pub struct Group {
     ///
     /// Common names include "train", "val", "test", but any string is valid.
     pub name: String,
+}
+
+/// The `sequence_uuid` for the sequence `sequence_name` in `dataset_id`.
+///
+/// The UUID is derived from the SHA-1 of `"{dataset_id}/{sequence_name}"`
+/// with the RFC 4122 version 5 and variant bits set, so every upload of the
+/// same sequence name to the same dataset joins one Studio sequence, while
+/// the same name in another dataset is a different sequence.
+///
+/// # Example
+///
+/// ```rust
+/// use edgefirst_client::{DatasetID, sequence_uuid};
+///
+/// let a = sequence_uuid(DatasetID::from(1), "seqA");
+/// assert_eq!(a, sequence_uuid(DatasetID::from(1), "seqA"));
+/// assert_ne!(a, sequence_uuid(DatasetID::from(2), "seqA"));
+/// ```
+pub fn sequence_uuid(dataset_id: DatasetID, sequence_name: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    // SHA-1 is what RFC 4122 specifies for version 5 UUIDs and is not used for
+    // security here; another hash would change every existing sequence UUID.
+    let hash = Sha1::digest(format!("{dataset_id}/{sequence_name}").as_bytes()); // NOSONAR
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+/// A sequence of a dataset, as `sequences.list` returns it.
+#[derive(Deserialize, Debug)]
+pub(crate) struct DatasetSequence {
+    pub(crate) name: String,
+    pub(crate) uuid: String,
+}
+
+fn sample_sequence_name(sample: &Sample) -> Option<&str> {
+    sample.sequence_name.as_deref().filter(|n| !n.is_empty())
+}
+
+/// Whether resolving the samples' sequence UUIDs needs the dataset's
+/// sequences: false only when every `sequence_uuid` is the one derived from
+/// the dataset and the sample's `sequence_name`.
+pub(crate) fn needs_sequence_lookup(samples: &[Sample], dataset_id: DatasetID) -> bool {
+    samples.iter().any(
+        |s| match (s.sequence_uuid.as_deref(), sample_sequence_name(s)) {
+            (None, None) => false,
+            (Some(uuid), Some(name)) => uuid != sequence_uuid(dataset_id, name),
+            _ => true,
+        },
+    )
+}
+
+/// Gives each sample the `sequence_uuid` of its sequence in `dataset_id`.
+///
+/// Studio looks a `sequence_uuid` up across all datasets, so a UUID is kept
+/// only when it is one of `existing`, the dataset's sequences, or the
+/// [`sequence_uuid`] derived for the sample's `sequence_name`. A sample with
+/// a `sequence_name` and any other UUID, or none, gets the UUID of the
+/// dataset's sequence of that name, or the derived one when there is none.
+/// Returns the UUIDs replaced, and fails when a sample with such a UUID has
+/// no `sequence_name`.
+pub(crate) fn resolve_sequence_uuids(
+    samples: &mut [Sample],
+    dataset_id: DatasetID,
+    existing: &[DatasetSequence],
+) -> Result<Vec<String>, Error> {
+    let known: std::collections::HashSet<&str> =
+        existing.iter().map(|seq| seq.uuid.as_str()).collect();
+    let mut by_name: HashMap<&str, &str> = HashMap::new();
+    for seq in existing {
+        by_name
+            .entry(seq.name.as_str())
+            .or_insert(seq.uuid.as_str());
+    }
+
+    let mut replaced: Vec<String> = Vec::new();
+    let mut unnamed: Vec<String> = Vec::new();
+    for sample in samples.iter_mut() {
+        let name = sample_sequence_name(sample).map(str::to_string);
+        if let Some(uuid) = sample.sequence_uuid.as_deref() {
+            let derived = name.as_deref().map(|n| sequence_uuid(dataset_id, n));
+            if known.contains(uuid) || derived.as_deref() == Some(uuid) {
+                continue;
+            }
+            let list = if name.is_some() {
+                &mut replaced
+            } else {
+                &mut unnamed
+            };
+            if !list.iter().any(|u| u == uuid) {
+                list.push(uuid.to_string());
+            }
+        }
+        let Some(name) = name else { continue };
+        let derived = sequence_uuid(dataset_id, &name);
+        sample.sequence_uuid = Some(match by_name.get(name.as_str()) {
+            Some(uuid) if !known.contains(derived.as_str()) => uuid.to_string(),
+            _ => derived,
+        });
+    }
+
+    if !unnamed.is_empty() {
+        return Err(Error::InvalidParameters(format!(
+            "Samples have a sequence_uuid that is not a sequence of dataset {dataset_id} \
+             and no sequence_name to file them under: {}. Set their sequence_name, or \
+             clear their sequence_uuid.",
+            crate::client::summarize_names(&unnamed)
+        )));
+    }
+    Ok(replaced)
 }
 
 /// Remove annotations flagged `ignore` or `exclude`, returning how many were
@@ -5418,5 +5542,110 @@ mod versioning_deser_tests {
         let plain = Annotation::new();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json.get("attributes").is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_sequence_uuid {
+    use super::*;
+
+    /// Pinned to the values `upload-dataset` has always derived, so samples
+    /// uploaded later keep joining the sequences it created.
+    #[test]
+    fn test_sequence_uuid_is_derived_from_dataset_and_name() {
+        assert_eq!(
+            sequence_uuid(DatasetID::from(0x23fc), "seq"),
+            "aebd4cbd-0804-5673-a651-134626bd6556"
+        );
+        assert_eq!(
+            sequence_uuid(DatasetID::from(1), "seqA"),
+            "8882ff41-caf7-512e-b999-970290aa1bd1"
+        );
+        assert_ne!(
+            sequence_uuid(DatasetID::from(2), "seqA"),
+            sequence_uuid(DatasetID::from(1), "seqA")
+        );
+    }
+
+    fn sample(name: Option<&str>, uuid: Option<&str>) -> Sample {
+        let mut s = Sample::new();
+        s.sequence_name = name.map(str::to_string);
+        s.sequence_uuid = uuid.map(str::to_string);
+        s
+    }
+
+    fn existing(name: &str, uuid: &str) -> DatasetSequence {
+        DatasetSequence {
+            name: name.to_string(),
+            uuid: uuid.to_string(),
+        }
+    }
+
+    const SEQ_A: &str = "8882ff41-caf7-512e-b999-970290aa1bd1";
+
+    #[test]
+    fn test_sequence_lookup_is_skipped_only_for_derived_uuids() {
+        let dataset = DatasetID::from(1);
+        assert!(!needs_sequence_lookup(&[sample(None, None)], dataset));
+        assert!(!needs_sequence_lookup(
+            &[sample(Some("seqA"), Some(SEQ_A))],
+            dataset
+        ));
+        assert!(needs_sequence_lookup(
+            &[sample(Some("seqA"), None)],
+            dataset
+        ));
+        assert!(needs_sequence_lookup(
+            &[sample(Some("seqA"), Some("other"))],
+            dataset
+        ));
+        assert!(needs_sequence_lookup(
+            &[sample(None, Some("other"))],
+            dataset
+        ));
+    }
+
+    #[test]
+    fn test_resolve_sequence_uuids_keeps_only_the_datasets_sequences() {
+        let mut samples = vec![
+            sample(Some("seqA"), None),
+            sample(Some("seqC"), None),
+            sample(Some("seqD"), Some("studio-d")),
+            sample(Some("seqA"), Some("foreign")),
+            sample(None, Some("studio-d")),
+            sample(None, None),
+            sample(Some(""), None),
+        ];
+        let replaced = resolve_sequence_uuids(
+            &mut samples,
+            DatasetID::from(1),
+            &[existing("seqC", "studio-c"), existing("seqD", "studio-d")],
+        )
+        .unwrap();
+
+        let uuids: Vec<Option<&str>> = samples.iter().map(|s| s.sequence_uuid.as_deref()).collect();
+        assert_eq!(
+            uuids,
+            [
+                Some(SEQ_A),
+                Some("studio-c"),
+                Some("studio-d"),
+                Some(SEQ_A),
+                Some("studio-d"),
+                None,
+                None
+            ]
+        );
+        assert_eq!(replaced, ["foreign"]);
+    }
+
+    #[test]
+    fn test_resolve_sequence_uuids_rejects_foreign_uuid_without_name() {
+        let mut samples = vec![sample(None, Some("foreign"))];
+        let err = resolve_sequence_uuids(&mut samples, DatasetID::from(1), &[]).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidParameters(m) if m.contains("foreign")),
+            "got {err:?}"
+        );
     }
 }

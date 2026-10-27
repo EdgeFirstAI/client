@@ -95,7 +95,9 @@ pub use crate::{
 #[cfg(feature = "profiling")]
 pub use crate::client::upload_stats;
 
-pub use crate::dataset::{MaskConversion, drop_flagged_annotations, masks_to_polygons};
+pub use crate::dataset::{
+    MaskConversion, drop_flagged_annotations, masks_to_polygons, sequence_uuid,
+};
 
 #[cfg(feature = "polars")]
 pub use crate::dataset::samples_dataframe;
