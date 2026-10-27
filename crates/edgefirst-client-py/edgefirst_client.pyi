@@ -2926,7 +2926,12 @@ class Sample:
         ...
 
     def set_sequence_name(self, sequence_name: Optional[str]) -> None:
-        """Set the sequence name for this sample."""
+        """Set the sequence name for this sample.
+
+        Within a dataset the name identifies the sequence: on upload, a
+        sample whose sequence name the dataset already has joins that
+        sequence.
+        """
         ...
 
     def set_sequence_uuid(self, sequence_uuid: Optional[str]) -> None:
@@ -7092,7 +7097,8 @@ class Client:
 
         ``populate_samples`` does this itself; call it to know the UUIDs
         before uploading. Studio files a sample under a sequence only when it
-        has a sequence UUID, and looks that UUID up across all datasets. A
+        has a sequence UUID, and looks that UUID up across all datasets.
+        Within the dataset, a sequence is identified by its name. A
         sample's UUID is kept when it is one of the dataset's sequences or
         the one ``sequence_uuid`` derives from the dataset and the sample's
         sequence name. Otherwise a sample with a sequence name gets the UUID
@@ -7159,9 +7165,13 @@ class Client:
 
             Each image is stored under the sample's ``image_name`` when set
             (see ``Sample.set_image_name``), otherwise under its file name,
-            in its sequence's folder. Each sample is given the sequence UUID
+            in its sequence's folder. Within a dataset a sequence is
+            identified by its name: each sample is given the sequence UUID
             of its sequence name in this dataset, so uploads of that name
-            join one sequence. A sequence UUID that is not one of the
+            join one sequence, even samples from a different recording, as
+            when merging datasets. Give such sequences distinct names, for
+            example with a prefix for their source, to keep them apart. A
+            sequence UUID that is not one of the
             dataset's sequences, such as one copied from another dataset, is
             replaced and named in a warning, or raises an error when the
             sample has no sequence name. Two samples with the same name in
@@ -7238,9 +7248,13 @@ class Client:
 
             Each image is stored under the sample's ``image_name`` when set
             (see ``Sample.set_image_name``), otherwise under its file name,
-            in its sequence's folder. Each sample is given the sequence UUID
+            in its sequence's folder. Within a dataset a sequence is
+            identified by its name: each sample is given the sequence UUID
             of its sequence name in this dataset, so uploads of that name
-            join one sequence. A sequence UUID that is not one of the
+            join one sequence, even samples from a different recording, as
+            when merging datasets. Give such sequences distinct names, for
+            example with a prefix for their source, to keep them apart. A
+            sequence UUID that is not one of the
             dataset's sequences, such as one copied from another dataset, is
             replaced and named in a warning, or raises an error when the
             sample has no sequence name. Two samples with the same name in

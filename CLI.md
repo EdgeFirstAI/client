@@ -520,6 +520,8 @@ retrying 50 samples) with progress tracking. Batch concurrency defaults to 4 and
 configurable via **EDGEFIRST_UPLOAD_BATCHES**. Arrow files must conform to the
 EdgeFirst Dataset Format.
 
+**Note:** Within a dataset, a sequence is identified by its name. Frames whose sequence name the dataset already has are added to that sequence, even when they come from a different recording, so uploading a second dataset into one that has sequences of the same names merges them. Rename the incoming sequences, for example with a prefix for their source, to keep them apart. Each image name must be unique within its sequence: duplicates within one upload fail it, and an image whose name the sequence already has is skipped with a warning.
+
 **Note:** Annotations flagged `ignore` or `exclude` are dropped before upload and reported once as `⚠ Skipping N annotations flagged ignore/exclude: Studio does not support these flags yet`, since EdgeFirst Studio does not store these flags yet.
 
 **Note:** EdgeFirst Studio stores segmentation only as polygons. Labelled 1-bit instance masks in the `mask` column (including offset tiles) are traced to polygons before upload and reported once as `⚠ N raster masks were converted to polygons for upload: ...`; the outlines approximate the masks. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are reported in a second warning. The Arrow file keeps the original masks.

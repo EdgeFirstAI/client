@@ -3504,11 +3504,15 @@ impl Client {
     ///
     /// # Sequences
     ///
-    /// Samples are given the `sequence_uuid` of their sequence in this
-    /// dataset by [`assign_sequence_uuids`](Self::assign_sequence_uuids), so
-    /// every upload of a sequence name to the dataset joins one sequence and
-    /// a sample copied from another dataset does not join that dataset's
-    /// sequence.
+    /// Within a dataset, a sequence is identified by its name. Samples are
+    /// given the `sequence_uuid` of their sequence in this dataset by
+    /// [`assign_sequence_uuids`](Self::assign_sequence_uuids), so every
+    /// upload of a sequence name to the dataset joins one sequence, and a
+    /// sample copied from another dataset does not join that dataset's
+    /// sequence. Samples whose sequence name the dataset already has join
+    /// that sequence even when they come from a different recording, as can
+    /// happen when merging datasets; give such sequences distinct names, for
+    /// example with a prefix for their source, to keep them apart.
     ///
     /// # Progress
     ///
@@ -3588,7 +3592,8 @@ impl Client {
     /// to know the UUIDs before uploading.
     ///
     /// Studio files a sample under a sequence only when it has a
-    /// `sequence_uuid`, and looks that UUID up across all datasets. A sample's
+    /// `sequence_uuid`, and looks that UUID up across all datasets. Within the
+    /// dataset, a sequence is identified by its name. A sample's
     /// `sequence_uuid` is kept when it is one of the dataset's sequences or
     /// the [`sequence_uuid`](crate::sequence_uuid) derived from the dataset
     /// and the sample's `sequence_name`. Otherwise a sample with a

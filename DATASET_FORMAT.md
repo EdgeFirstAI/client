@@ -314,6 +314,7 @@ Clients should support both nested and flattened structures:
    - Try stripping `.camera` suffix for compatibility
 3. **Preserve sequence metadata** - Use Arrow file `name` and `frame` columns as authoritative source
 4. **Detect structure automatically** - No manual configuration needed
+5. **Identify sequences by name** - Within a Studio dataset, a sequence is identified by its name: frames uploaded with a sequence name the dataset already has join that sequence, even from a different recording. Rename sequences before merging datasets that share sequence names
 
 **For Download Operations:**
 

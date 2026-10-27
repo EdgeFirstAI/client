@@ -575,6 +575,11 @@ pub struct Sample {
         skip_serializing_if = "Option::is_none"
     )]
     pub group: Option<String>,
+    /// Name of the sequence the sample belongs to. Within a dataset the name
+    /// identifies the sequence: when uploading with
+    /// [`Client::populate_samples`](crate::Client::populate_samples), a
+    /// sample whose sequence name the dataset already has joins that
+    /// sequence, even when it comes from a different recording.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sequence_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
