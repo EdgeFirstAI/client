@@ -42,6 +42,7 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha1 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -62,7 +63,6 @@ rand = { workspace = true }
 # `serial_test` lets us mark process-wide-mutation tests (`std::env::
 # set_current_dir`) so they don't race other parallel tests.
 serial_test = { workspace = true }
-sha1 = { workspace = true }
 tempfile = { workspace = true }
 # Mock HTTP server for offline integration tests of the DE-2565 methods
 # (rpc_download, post_multipart, job_run/jobs/job_stop, task data

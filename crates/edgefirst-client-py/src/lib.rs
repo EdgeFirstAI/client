@@ -7108,7 +7108,12 @@ impl Client {
     ///
     ///     Each image is stored under the sample's `image_name` when set
     ///     (see `Sample.set_image_name`), otherwise under its file name, in
-    ///     its sequence's folder when the sample has a `sequence_uuid`.
+    ///     its sequence's folder. Each sample is given the sequence UUID of
+    ///     its sequence name in this dataset, so uploads of that name join
+    ///     one sequence. A sequence UUID that is not one of the dataset's
+    ///     sequences, such as one copied from another dataset, is replaced
+    ///     and named in a warning, or raises an error when the sample has
+    ///     no sequence name.
     ///     Two samples with the same name in one folder, or two files with
     ///     the same name in one sample, raise an error before anything is
     ///     uploaded. Samples that Studio skips because the name is already
@@ -9170,7 +9175,9 @@ impl Sample {
         self.inner.sequence_name = sequence_name;
     }
 
-    /// Sets the sequence UUID for this sample.
+    /// Sets the sequence UUID for this sample. When uploading, a sample with
+    /// a sequence name is given the UUID of that sequence in the dataset
+    /// unless this one is already a sequence of the dataset.
     pub fn set_sequence_uuid(&mut self, sequence_uuid: Option<String>) {
         self.inner.sequence_uuid = sequence_uuid;
     }

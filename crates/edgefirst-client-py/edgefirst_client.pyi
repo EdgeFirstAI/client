@@ -2930,7 +2930,12 @@ class Sample:
         ...
 
     def set_sequence_uuid(self, sequence_uuid: Optional[str]) -> None:
-        """Set the unique sequence identifier for this sample."""
+        """Set the unique sequence identifier for this sample.
+
+        When uploading, a sample with a sequence name is given the UUID of
+        that sequence in the dataset unless this one is already a sequence
+        of the dataset.
+        """
         ...
 
     def set_sequence_description(
@@ -7127,11 +7132,16 @@ class Client:
 
             Each image is stored under the sample's ``image_name`` when set
             (see ``Sample.set_image_name``), otherwise under its file name,
-            in its sequence's folder when the sample has a
-            ``sequence_uuid``. Two samples with the same name in one folder,
-            or two files with the same name in one sample, raise an error
-            before anything is uploaded. Samples that Studio skips because
-            the name is already in the dataset are reported in a warning.
+            in its sequence's folder. Each sample is given the sequence UUID
+            of its sequence name in this dataset, so uploads of that name
+            join one sequence. A sequence UUID that is not one of the
+            dataset's sequences, such as one copied from another dataset, is
+            replaced and named in a warning, or raises an error when the
+            sample has no sequence name. Two samples with the same name in
+            one folder, or two files with the same name in one sample, raise
+            an error before anything is uploaded. Samples that Studio skips
+            because the name is already in the dataset are reported in a
+            warning.
 
         Example:
             >>> from edgefirst_client import (
@@ -7201,11 +7211,16 @@ class Client:
 
             Each image is stored under the sample's ``image_name`` when set
             (see ``Sample.set_image_name``), otherwise under its file name,
-            in its sequence's folder when the sample has a
-            ``sequence_uuid``. Two samples with the same name in one folder,
-            or two files with the same name in one sample, raise an error
-            before anything is uploaded. Samples that Studio skips because
-            the name is already in the dataset are reported in a warning.
+            in its sequence's folder. Each sample is given the sequence UUID
+            of its sequence name in this dataset, so uploads of that name
+            join one sequence. A sequence UUID that is not one of the
+            dataset's sequences, such as one copied from another dataset, is
+            replaced and named in a warning, or raises an error when the
+            sample has no sequence name. Two samples with the same name in
+            one folder, or two files with the same name in one sample, raise
+            an error before anything is uploaded. Samples that Studio skips
+            because the name is already in the dataset are reported in a
+            warning.
 
         Raises:
             Error: If the dataset does not exist or upload fails.

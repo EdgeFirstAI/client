@@ -3494,13 +3494,21 @@ impl Client {
     /// Each sample's image is stored under its
     /// [`image_name`](Sample::image_name) when set (see that field for the
     /// rules), otherwise under the image file's own name, in its sequence's
-    /// folder when the sample has a `sequence_uuid` and in the dataset's root
-    /// folder otherwise. Studio keeps one image per name in each folder and
+    /// folder, or in the dataset's root folder for a sample without a
+    /// sequence. Studio keeps one image per name in each folder and
     /// silently skips a sample whose name is already there. A call fails with
     /// [`Error::InvalidParameters`] before anything is uploaded when two of
     /// its samples share a name in a folder, or when two files of one sample
     /// share a name. Samples that Studio skips because the name is already in
     /// the dataset are reported in a warning.
+    ///
+    /// # Sequences
+    ///
+    /// Samples are given the `sequence_uuid` of their sequence in this
+    /// dataset by [`assign_sequence_uuids`](Self::assign_sequence_uuids), so
+    /// every upload of a sequence name to the dataset joins one sequence and
+    /// a sample copied from another dataset does not join that dataset's
+    /// sequence.
     ///
     /// # Progress
     ///
@@ -3575,6 +3583,51 @@ impl Client {
         .await
     }
 
+    /// Gives each sample the `sequence_uuid` of its sequence in `dataset_id`.
+    /// [`populate_samples`](Self::populate_samples) does this itself; call it
+    /// to know the UUIDs before uploading.
+    ///
+    /// Studio files a sample under a sequence only when it has a
+    /// `sequence_uuid`, and looks that UUID up across all datasets. A sample's
+    /// `sequence_uuid` is kept when it is one of the dataset's sequences or
+    /// the [`sequence_uuid`](crate::sequence_uuid) derived from the dataset
+    /// and the sample's `sequence_name`. Otherwise a sample with a
+    /// `sequence_name` gets the UUID of the dataset's sequence of that name,
+    /// or the derived one when the dataset has none, and the UUIDs replaced
+    /// this way, such as those of samples copied from another dataset, are
+    /// named in a warning. The dataset's sequences are fetched only when a
+    /// sample's UUID is not already the derived one.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidParameters`] when a sample has a `sequence_uuid` that
+    /// is not one of the dataset's sequences and no `sequence_name`.
+    pub async fn assign_sequence_uuids(
+        &self,
+        dataset_id: DatasetID,
+        samples: &mut [Sample],
+    ) -> Result<(), Error> {
+        if !crate::dataset::needs_sequence_lookup(samples, dataset_id) {
+            return Ok(());
+        }
+        let existing: Vec<crate::dataset::DatasetSequence> = self
+            .rpc(
+                "sequences.list".to_owned(),
+                Some(serde_json::json!({ "dataset_id": dataset_id })),
+            )
+            .await?;
+        let replaced = crate::dataset::resolve_sequence_uuids(samples, dataset_id, &existing)?;
+        if !replaced.is_empty() {
+            log::warn!(
+                "Some samples have a sequence_uuid that is not a sequence of dataset {dataset_id}, \
+                 for example because they were copied from another dataset: {}. They are \
+                 uploaded to this dataset's sequence of their sequence_name instead.",
+                summarize_names(&replaced)
+            );
+        }
+        Ok(())
+    }
+
     /// Populate samples with custom upload concurrency.
     ///
     /// Same as [`populate_samples`](Self::populate_samples) but allows
@@ -3596,6 +3649,7 @@ impl Client {
 
         let mut samples = samples;
         crate::dataset::warn_flagged_not_uploaded(crate::drop_flagged_annotations(&mut samples));
+        self.assign_sequence_uuids(dataset_id, &mut samples).await?;
 
         // Track which files need to be uploaded
         let mut files_to_upload: Vec<(String, String, FileSource, String)> = Vec::new();
@@ -7090,7 +7144,7 @@ fn stored_image_key(sample: &Sample) -> Option<String> {
 }
 
 /// Lists up to five names, then how many more there are.
-fn summarize_names(names: &[String]) -> String {
+pub(crate) fn summarize_names(names: &[String]) -> String {
     const SHOWN: usize = 5;
     let mut list = names
         .iter()

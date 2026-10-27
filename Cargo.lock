@@ -1108,7 +1108,6 @@ dependencies = [
  "rayon",
  "serde_json",
  "serial_test",
- "sha1",
  "sha2",
  "tempfile",
  "tokio",
