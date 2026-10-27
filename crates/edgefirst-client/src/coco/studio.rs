@@ -642,7 +642,7 @@ fn convert_coco_image_to_sample(
     // under `image_name`.
     let image_name = Path::new(&image.file_name)
         .file_name()
-        .and_then(|s| s.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .map_or_else(|| image.file_name.clone(), String::from);
 
     Ok(Sample {

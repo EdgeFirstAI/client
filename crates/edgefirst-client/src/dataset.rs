@@ -2210,7 +2210,9 @@ pub struct Group {
 pub fn sequence_uuid(dataset_id: DatasetID, sequence_name: &str) -> String {
     use sha1::{Digest, Sha1};
 
-    let hash = Sha1::digest(format!("{dataset_id}/{sequence_name}").as_bytes());
+    // SHA-1 is what RFC 4122 specifies for version 5 UUIDs and is not used for
+    // security here; another hash would change every existing sequence UUID.
+    let hash = Sha1::digest(format!("{dataset_id}/{sequence_name}").as_bytes()); // NOSONAR
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x50;

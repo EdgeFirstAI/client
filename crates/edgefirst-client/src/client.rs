@@ -7113,7 +7113,9 @@ fn image_upload_name(image_name: &str, file_name: &str) -> String {
     if image_name.is_empty() || image_name == file_name {
         return file_name.to_string();
     }
-    let file_ext = Path::new(file_name).extension().and_then(|e| e.to_str());
+    let file_ext = Path::new(file_name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str);
     if !image_name.contains(['/', '\\']) {
         match (Path::new(image_name).extension(), file_ext) {
             (None, Some(ext)) => return format!("{image_name}.{ext}"),
