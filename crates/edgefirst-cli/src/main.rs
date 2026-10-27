@@ -2217,17 +2217,10 @@ fn create_sequence_aware_batches(
 ) -> Vec<Vec<edgefirst_client::Sample>> {
     use std::collections::HashMap;
 
-    // Group samples by (sequence_uuid, group) to ensure consistent metadata within
-    // each batch. The server has bugs where it only reads certain metadata from
-    // the first sample in each batch:
-    // 1. Sequence metadata (sequence_uuid, sequence_name, sequence_description)
-    // 2. Group assignment
-    //
-    // Therefore, all samples in a batch must belong to the same sequence AND the
-    // same group.
-    //
-    // Non-sequence samples (sequence_uuid == None) are still grouped by group to
-    // avoid the group assignment bug.
+    // Each batch holds samples of one (sequence_uuid, group). Studio resolves
+    // both per sample, but releases before 4.0.1 took them from the first
+    // sample of a request, so homogeneous batches keep uploads to those
+    // servers correct.
 
     let mut by_sequence_and_group: HashMap<
         (Option<String>, Option<String>),
@@ -3582,14 +3575,12 @@ async fn handle_upload_dataset(
         }
     }
 
-    // Group samples by sequence to work around server bug where all samples in a
-    // batch are assigned to the sequence of the first sample only.
-    // Non-sequence samples (sequence_uuid == None) are grouped together.
+    // One sequence and group per batch; see create_sequence_aware_batches.
     let batches = create_sequence_aware_batches(samples, BATCH_SIZE);
     let total_batches = batches.len();
 
     log::debug!(
-        "Created {} batches (grouped by sequence+group to avoid server bugs), \
+        "Created {} batches (one sequence and group each), \
          uploading up to {} concurrently",
         total_batches,
         batch_concurrency

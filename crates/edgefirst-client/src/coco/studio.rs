@@ -2165,7 +2165,11 @@ mod tests {
                 convert_coco_image_to_sample(image, &index, dir.path(), false, true, None).unwrap();
             let file = sample.files[0].filename().unwrap();
             assert_eq!(sample.image_name.as_deref(), Some(image.file_name.as_str()));
-            assert!(file.ends_with(&format!("/{}", image.file_name)), "{file}");
+            assert_eq!(
+                std::path::Path::new(file).file_name(),
+                Some(std::ffi::OsStr::new(&image.file_name)),
+                "{file}"
+            );
         }
     }
 

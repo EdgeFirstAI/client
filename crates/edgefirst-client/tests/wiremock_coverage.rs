@@ -4423,3 +4423,49 @@ async fn populate_samples_skips_sequence_lookup_for_derived_uuids() {
         .await
         .expect("populate should succeed");
 }
+
+/// The duplicate-name check keys each image on its resolved `sequence_uuid`,
+/// so samples given only a UUID of the dataset's sequences are checked in
+/// that sequence, whether or not they also have a `sequence_name`.
+#[tokio::test]
+#[serial]
+async fn populate_samples_checks_duplicate_names_by_sequence_uuid() {
+    let server = MockServer::start().await;
+    mock_dataset_sequences(&server, &[("seqA", "uuid-a"), ("seqB", "uuid-b")], 2).await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(rpc_method_body("samples.populate2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let make = |seq: Option<&str>, seq_uuid: &str, file: &str| {
+        let mut sample = sequence_sample(seq, Some(seq_uuid));
+        sample.image_name = Some("frame.jpg".to_string());
+        sample.files = vec![local_image(dir.path(), file)];
+        sample
+    };
+    let client = client_for(&server.uri());
+    let populate =
+        |samples: Vec<Sample>| client.populate_samples(DatasetID::from(1u64), None, samples, None);
+
+    let err = populate(vec![
+        make(Some("seqA"), "uuid-a", "a.jpg"),
+        make(None, "uuid-a", "b.jpg"),
+    ])
+    .await
+    .expect_err("the same name in one sequence, named or not, must be rejected");
+    assert!(
+        matches!(&err, Error::InvalidParameters(m) if m.contains("seqA/frame.jpg")),
+        "expected InvalidParameters naming seqA/frame.jpg, got {err:?}"
+    );
+
+    populate(vec![
+        make(None, "uuid-a", "a.jpg"),
+        make(None, "uuid-b", "b.jpg"),
+    ])
+    .await
+    .expect("the same name in different sequences given by UUID is allowed");
+}

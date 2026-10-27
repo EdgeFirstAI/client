@@ -3875,13 +3875,27 @@ impl Client {
             }
         }
 
-        let mut seen = HashSet::new();
-        let mut duplicates = Vec::new();
-        for key in samples.iter().filter_map(stored_image_key) {
-            if !seen.insert(key.clone()) && !duplicates.contains(&key) {
-                duplicates.push(key);
+        let mut first: HashMap<(Option<&str>, &str), &Sample> = HashMap::new();
+        let mut clashing: Vec<(Option<&str>, &str)> = Vec::new();
+        for sample in samples {
+            let Some(slot) = stored_image_slot(sample) else {
+                continue;
+            };
+            match first.entry(slot) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    if !clashing.contains(&slot) {
+                        clashing.push(slot);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(sample);
+                }
             }
         }
+        let duplicates: Vec<String> = clashing
+            .iter()
+            .filter_map(|slot| stored_image_key(first[slot]))
+            .collect();
         if duplicates.is_empty() {
             return Ok(());
         }
@@ -7133,21 +7147,32 @@ fn image_upload_name(image_name: &str, file_name: &str) -> String {
     file_name.to_string()
 }
 
-/// Where Studio stores a sample's image, as `sequence/name`, or `name` for
-/// the dataset's root folder. Studio files a sample under its sequence only
-/// when the sample has a `sequence_uuid`.
-fn stored_image_key(sample: &Sample) -> Option<String> {
+/// Where Studio stores a sample's image: its sequence's `sequence_uuid`, or
+/// `None` for the dataset's root folder, and the image file name. Studio
+/// files a sample under a sequence only when it has a `sequence_uuid`.
+fn stored_image_slot(sample: &Sample) -> Option<(Option<&str>, &str)> {
     let image = sample
         .files
         .iter()
         .find(|f| f.file_type() == "image")
         .and_then(|f| f.filename())?;
-    match sample.sequence_name.as_deref() {
-        Some(seq) if !seq.is_empty() && sample.sequence_uuid.is_some() => {
-            Some(format!("{seq}/{image}"))
-        }
-        _ => Some(image.to_string()),
-    }
+    Some((sample.sequence_uuid.as_deref(), image))
+}
+
+/// [`stored_image_slot`] for messages, as `sequence/name`, naming the
+/// sequence by its `sequence_name` or else its `sequence_uuid`, or `name` for
+/// the dataset's root folder.
+fn stored_image_key(sample: &Sample) -> Option<String> {
+    let (uuid, image) = stored_image_slot(sample)?;
+    let sequence = sample
+        .sequence_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .or(uuid);
+    Some(match (uuid, sequence) {
+        (Some(_), Some(seq)) => format!("{seq}/{image}"),
+        _ => image.to_string(),
+    })
 }
 
 /// Lists up to five names, then how many more there are.
