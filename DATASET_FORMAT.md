@@ -458,6 +458,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
     ('location', Array(Float32, shape=(2,))),  # [lat, lon]
     ('pose', Array(Float32, shape=(3,))),  # [roll, pitch, yaw], signed degrees
+    ('timestamp', Int64),  # OPTIONAL - capture time, nanoseconds since the Unix epoch, UTC
     ('degradation', String),
     ('neg_label_indices', List(UInt32)),  # OPTIONAL - label_index values verified absent (LVIS)
     ('not_exhaustive_label_indices', List(UInt32)),  # OPTIONAL - label_index values with incomplete annotation (LVIS)
@@ -1490,6 +1491,14 @@ The JSON representation uses named fields `{roll, pitch, yaw}` in the `sensors.i
 
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
 
+#### timestamp
+
+**Type**: `Int64` (nullable), nanoseconds since the Unix epoch, UTC
+
+The time the image was captured. A sample-level field, repeated on every annotation row of the sample.
+
+**Studio compatibility**: `upload-dataset` and `populate_samples` send it as the sample's `date`. Without it, Studio uses the upload time.
+
 #### degradation
 
 **Type**: `String` (nullable)  
@@ -1572,6 +1581,8 @@ Per-geometry confidence scores (0..1), independent for each geometry type on a r
 - A single row may have different scores for different geometry types
 - Raster masks additionally carry per-pixel scores via `mask_interpretation` metadata — `mask_score` is the per-instance aggregate
 - **Ground truth files**: Score columns should be **omitted entirely** (not filled with nulls). Readers must treat absent score columns as "not applicable."
+
+**Studio compatibility**: EdgeFirst Studio stores one score per annotation. `upload-dataset` and `populate_samples` send the first non-null of `mask_score`, `polygon_score`, `box3d_score` and `box2d_score`, and `upload-dataset` warns with the number of rows that had more than one. The Arrow file remains the source of truth for the others.
 
 ### Instrumentation (NEW in 2026.04)
 

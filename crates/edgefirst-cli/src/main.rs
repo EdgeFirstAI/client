@@ -1563,6 +1563,20 @@ async fn handle_download_annotations(
     Ok(())
 }
 
+/// Rows with more than one score column set. Studio stores one score per
+/// annotation, so the others do not survive an upload.
+#[cfg(feature = "polars")]
+fn rows_with_several_scores(df: &polars::prelude::DataFrame) -> usize {
+    let present: Vec<_> = ["box2d_score", "box3d_score", "polygon_score", "mask_score"]
+        .iter()
+        .filter_map(|c| df.column(c).ok())
+        .map(|c| c.as_materialized_series().is_not_null())
+        .collect();
+    (0..df.height())
+        .filter(|&i| present.iter().filter(|s| s.get(i) == Some(true)).count() > 1)
+        .count()
+}
+
 #[cfg(feature = "polars")]
 fn find_image_folder(base_dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     let folder = base_dir.join(name);
@@ -2259,6 +2273,7 @@ struct SampleMetadata {
     height: Option<u32>,
     location: Option<edgefirst_client::Location>,
     degradation: Option<String>,
+    date: Option<chrono::DateTime<chrono::Utc>>,
     annotations: Vec<edgefirst_client::Annotation>,
 }
 
@@ -2405,6 +2420,14 @@ fn parse_annotations_from_arrow(
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
+            // Optional capture time, nanoseconds since the Unix epoch, UTC.
+            let sample_date = df
+                .column("timestamp")
+                .ok()
+                .and_then(|c| c.i64().ok())
+                .and_then(|s| s.get(idx))
+                .map(chrono::DateTime::from_timestamp_nanos);
+
             // Get or create entry for this sample, validating group consistency
             let entry = match samples_map.entry(sample_name.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => {
@@ -2427,6 +2450,7 @@ fn parse_annotations_from_arrow(
                     height: sample_height,
                     location: sample_location,
                     degradation: sample_degradation,
+                    date: sample_date,
                     annotations: Vec::new(),
                 }),
             };
@@ -2484,11 +2508,11 @@ fn parse_annotations_from_arrow(
                     annotation.set_object_id(Some(obj_id.clone()));
                 }
 
-                // Optional annotation columns (2026.04 and later). Studio
-                // does not persist all of them yet. The attribute and score
-                // columns are carried so the payload is complete once the
-                // server does. `ignore`/`exclude` are read so flagged rows
-                // can be dropped before upload.
+                // Optional annotation columns (2026.04 and later). Scores are
+                // sent as the annotation's `score`. Studio does not persist
+                // the attribute columns yet; they are carried so the payload
+                // is complete once the server does. `ignore`/`exclude` are
+                // read so flagged rows can be dropped before upload.
                 // `truncation`/`occlusion` are UInt32 columns holding u8-range
                 // flags; anything wider is omitted rather than wrapped.
                 let u8_at = |col: &str| {
@@ -2656,6 +2680,7 @@ fn resolve_samples_sequential(
             height: metadata.height,
             location: metadata.location,
             degradation: metadata.degradation,
+            date: metadata.date,
             files,
             annotations,
             ..Default::default()
@@ -2842,6 +2867,7 @@ fn process_zip_entry(
         height: entry.metadata.height,
         location: entry.metadata.location,
         degradation: entry.metadata.degradation,
+        date: entry.metadata.date,
         files,
         annotations,
         ..Default::default()
@@ -3423,19 +3449,11 @@ async fn handle_upload_dataset(
     drop(_prep_span);
 
     // Studio's samples.populate2 stores label, label_index, object_reference,
-    // box2d, box3d and polygon; list which optional columns in this file
-    // will not survive the upload.
+    // score, box2d, box3d and polygon; list which optional columns in this
+    // file will not survive the upload.
     if let Some(arrow_path) = &annotations {
         let (df, _) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
-        const NOT_PERSISTED: [&str; 7] = [
-            "truncation",
-            "occlusion",
-            "category_frequency",
-            "box2d_score",
-            "box3d_score",
-            "polygon_score",
-            "mask_score",
-        ];
+        const NOT_PERSISTED: [&str; 3] = ["truncation", "occlusion", "category_frequency"];
         let present: Vec<&str> = NOT_PERSISTED
             .iter()
             .copied()
@@ -3445,6 +3463,12 @@ async fn handle_upload_dataset(
             println!(
                 "⚠ Studio does not yet store these annotation columns; keep the Arrow file as the source of truth: {}",
                 present.join(", ")
+            );
+        }
+        let several = rows_with_several_scores(&df);
+        if several > 0 {
+            println!(
+                "⚠ {several} annotations have more than one score; Studio stores one per annotation: the first of mask, polygon, box3d, box2d"
             );
         }
     }
@@ -8203,6 +8227,9 @@ mod tests {
                 image_name: Some("img.jpg".into()),
                 width: Some(100),
                 height: Some(100),
+                date: Some(chrono::DateTime::from_timestamp_nanos(
+                    1_785_637_518_051_835_416,
+                )),
                 annotations: vec![ann],
                 ..Default::default()
             };
@@ -8219,6 +8246,11 @@ mod tests {
             assert_eq!(parsed.ignore(), Some(true));
             assert_eq!(parsed.exclude(), Some(true));
             assert_eq!(parsed.box2d_score(), Some(0.5));
+            assert_eq!(serde_json::to_value(parsed).unwrap()["score"], 0.5);
+            assert_eq!(
+                serde_json::to_value(&samples[0]).unwrap()["date"],
+                "2026-08-02T02:25:18.051835416Z"
+            );
 
             // Legacy 2026.04 file: iscrowd only, as UInt32.
             let legacy = temp.path().join("legacy.arrow");
@@ -8332,6 +8364,22 @@ mod tests {
             let parsed = &samples[0].annotations[0];
             assert_eq!(parsed.truncation(), None);
             assert_eq!(parsed.occlusion(), Some(2));
+        }
+
+        #[test]
+        fn rows_with_several_scores_counts_rows_with_two_or_more() {
+            let df = DataFrame::new_infer_height(vec![
+                Series::new("box2d_score".into(), [Some(0.9f32), Some(0.8), None]).into_column(),
+                Series::new("mask_score".into(), [Some(0.4f32), None, None]).into_column(),
+            ])
+            .unwrap();
+            assert_eq!(rows_with_several_scores(&df), 1);
+
+            let one = DataFrame::new_infer_height(vec![
+                Series::new("box2d_score".into(), [Some(0.9f32), Some(0.8)]).into_column(),
+            ])
+            .unwrap();
+            assert_eq!(rows_with_several_scores(&one), 0);
         }
 
         #[test]
