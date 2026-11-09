@@ -1757,6 +1757,11 @@ pub struct Annotation {
     /// Confidence score for mask (0..1).
     #[serde(skip_serializing_if = "Option::is_none")]
     mask_score: Option<f32>,
+    /// The confidence `samples.populate2` stores. Studio keeps one score per
+    /// annotation under this key and ignores the per-geometry keys above.
+    /// Kept in step by the `set_*_score` setters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f32>,
 }
 
 impl<'de> serde::Deserialize<'de> for Annotation {
@@ -1796,6 +1801,7 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             box3d_score: None,
             polygon_score: None,
             mask_score: None,
+            score: None,
         })
     }
 }
@@ -1829,6 +1835,7 @@ impl Annotation {
             box3d_score: None,
             polygon_score: None,
             mask_score: None,
+            score: None,
         }
     }
 
@@ -2026,6 +2033,7 @@ impl Annotation {
 
     pub fn set_box2d_score(&mut self, score: Option<f32>) {
         self.box2d_score = score;
+        self.sync_score();
     }
 
     pub fn box3d_score(&self) -> Option<f32> {
@@ -2034,6 +2042,7 @@ impl Annotation {
 
     pub fn set_box3d_score(&mut self, score: Option<f32>) {
         self.box3d_score = score;
+        self.sync_score();
     }
 
     pub fn polygon_score(&self) -> Option<f32> {
@@ -2042,6 +2051,7 @@ impl Annotation {
 
     pub fn set_polygon_score(&mut self, score: Option<f32>) {
         self.polygon_score = score;
+        self.sync_score();
     }
 
     pub fn mask_score(&self) -> Option<f32> {
@@ -2050,6 +2060,18 @@ impl Annotation {
 
     pub fn set_mask_score(&mut self, score: Option<f32>) {
         self.mask_score = score;
+        self.sync_score();
+    }
+
+    /// Studio stores one score per annotation, so a row with scores on several
+    /// geometries keeps the first of mask, polygon, box3d, box2d, the order
+    /// `arrow-to-coco` uses for its single score.
+    fn sync_score(&mut self) {
+        self.score = self
+            .mask_score
+            .or(self.polygon_score)
+            .or(self.box3d_score)
+            .or(self.box2d_score);
     }
 }
 
@@ -5542,6 +5564,56 @@ mod versioning_deser_tests {
         let plain = Annotation::new();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json.get("attributes").is_none());
+    }
+
+    fn wire_score(ann: &Annotation) -> Option<f64> {
+        serde_json::to_value(ann).unwrap()["score"].as_f64()
+    }
+
+    #[test]
+    fn box2d_score_reaches_populate2_as_score() {
+        let mut ann = Annotation::new();
+        assert_eq!(wire_score(&ann), None);
+
+        ann.set_box2d_score(Some(0.5));
+        assert_eq!(wire_score(&ann), Some(0.5));
+
+        // A zero score is a score, and clearing it removes the key.
+        ann.set_box2d_score(Some(0.0));
+        assert_eq!(wire_score(&ann), Some(0.0));
+        ann.set_box2d_score(None);
+        assert!(serde_json::to_value(&ann).unwrap().get("score").is_none());
+    }
+
+    #[test]
+    fn score_prefers_mask_then_polygon_box3d_box2d() {
+        let mut ann = Annotation::new();
+        ann.set_box2d_score(Some(0.75));
+        assert_eq!(wire_score(&ann), Some(0.75));
+        ann.set_box3d_score(Some(0.5));
+        assert_eq!(wire_score(&ann), Some(0.5));
+        ann.set_polygon_score(Some(0.375));
+        assert_eq!(wire_score(&ann), Some(0.375));
+        ann.set_mask_score(Some(0.25));
+        assert_eq!(wire_score(&ann), Some(0.25));
+
+        // Clearing the preferred score falls back to the next one.
+        ann.set_mask_score(None);
+        assert_eq!(wire_score(&ann), Some(0.375));
+        ann.set_polygon_score(None);
+        ann.set_box3d_score(None);
+        assert_eq!(wire_score(&ann), Some(0.75));
+    }
+
+    #[test]
+    fn score_is_on_each_annotation_of_the_sample_payload() {
+        let mut ann = Annotation::new();
+        ann.set_box2d_score(Some(0.5));
+        let mut sample = Sample::new();
+        sample.annotations.push(ann);
+
+        let json = serde_json::to_value(&sample).unwrap();
+        assert_eq!(json["annotations"][0]["score"], 0.5);
     }
 }
 

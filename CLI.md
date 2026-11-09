@@ -526,6 +526,8 @@ EdgeFirst Dataset Format.
 
 **Note:** EdgeFirst Studio stores segmentation only as polygons. Labelled 1-bit instance masks in the `mask` column (including offset tiles) are traced to polygons before upload and reported once as `⚠ N raster masks were converted to polygons for upload: ...`; the outlines approximate the masks. Unlabelled masks (semantic class-index maps) and masks of other bit depths are not uploaded and are reported in a second warning. The Arrow file keeps the original masks.
 
+**Note:** EdgeFirst Studio stores one confidence score per annotation. A row with several score columns keeps the first of `mask_score`, `polygon_score`, `box3d_score`, `box2d_score`, and the upload warns with the number of such rows.
+
 ### update-dimensions
 
 Backfill missing image width/height metadata for an existing dataset. Useful for datasets uploaded before the client started extracting image dimensions at upload time, or for samples where dimensions could not be determined.

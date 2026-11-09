@@ -1573,6 +1573,8 @@ Per-geometry confidence scores (0..1), independent for each geometry type on a r
 - Raster masks additionally carry per-pixel scores via `mask_interpretation` metadata — `mask_score` is the per-instance aggregate
 - **Ground truth files**: Score columns should be **omitted entirely** (not filled with nulls). Readers must treat absent score columns as "not applicable."
 
+**Studio compatibility**: EdgeFirst Studio stores one score per annotation. `upload-dataset` and `populate_samples` send the first non-null of `mask_score`, `polygon_score`, `box3d_score` and `box2d_score`, and `upload-dataset` warns with the number of rows that had more than one. The Arrow file remains the source of truth for the others.
+
 ### Instrumentation (NEW in 2026.04)
 
 **Column**: `timing`

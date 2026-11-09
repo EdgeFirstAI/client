@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `upload-dataset`, `populate_samples` and `import-coco` send an annotation's confidence as `score`, the key `samples.populate2` stores. It was only sent as `box2d_score`, `box3d_score`, `polygon_score` or `mask_score`, which Studio ignores, and `import-coco` did not send it at all, so these uploads lost their confidence. Studio keeps one score per annotation: a row with scores on several geometries keeps the first of mask, polygon, box3d, box2d, and `upload-dataset` warns with the number of such rows. It no longer warns that score columns are not stored.
+
 ## [2.20.0] - 2026-10-27
 
 ### Added

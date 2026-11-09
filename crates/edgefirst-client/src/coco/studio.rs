@@ -612,6 +612,14 @@ fn convert_coco_image_to_sample(
                 ann.set_group(group.map(String::from));
                 ann.set_ignore(Some(coco_ann.iscrowd != 0));
                 ann.set_category_frequency(index.frequency(coco_ann.category_id).map(String::from));
+                if let Some(score) = coco_ann.score {
+                    let score = Some(score as f32);
+                    if ann.polygon().is_some() {
+                        ann.set_polygon_score(score);
+                    } else {
+                        ann.set_box2d_score(score);
+                    }
+                }
                 Some(ann)
             }
         })
@@ -2171,6 +2179,44 @@ mod tests {
                 "{file}"
             );
         }
+    }
+
+    #[test]
+    fn test_convert_coco_image_to_sample_keeps_score() {
+        let image = CocoImage {
+            id: 1,
+            width: 640,
+            height: 480,
+            file_name: "test.jpg".to_string(),
+            ..Default::default()
+        };
+        let ann = |id: u64, score: Option<f64>| CocoAnnotation {
+            id,
+            image_id: 1,
+            category_id: 3,
+            bbox: [100.0, 50.0, 200.0, 150.0],
+            area: 30000.0,
+            iscrowd: 0,
+            segmentation: None,
+            score,
+        };
+        let dataset = CocoDataset {
+            images: vec![image.clone()],
+            categories: vec![CocoCategory {
+                id: 3,
+                name: "person".to_string(),
+                ..Default::default()
+            }],
+            annotations: vec![ann(1, Some(0.5)), ann(2, None)],
+            ..Default::default()
+        };
+        let index = CocoIndex::from_dataset(&dataset);
+        let sample =
+            convert_coco_image_to_sample(&image, &index, Path::new("/tmp"), false, false, None)
+                .unwrap();
+
+        let scores: Vec<Option<f32>> = sample.annotations.iter().map(|a| a.box2d_score()).collect();
+        assert_eq!(scores, vec![Some(0.5), None]);
     }
 
     #[test]
