@@ -2587,6 +2587,7 @@ fn convert_polygon_to_nested_series(polygon: &Polygon) -> Series {
 /// - `neg_label_indices`: Verified-absent label indices (`List<UInt32>`)
 /// - `not_exhaustive_label_indices`: Incomplete label indices (`List<UInt32>`)
 /// - `timing`: Pipeline timing (`Struct{load, preprocess, inference, decode} of Int64`)
+/// - `timestamp`: Capture time, nanoseconds since the Unix epoch, UTC (`Int64`)
 ///
 /// # Example
 ///
@@ -2637,6 +2638,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     let mut timing_preprocess: Vec<Option<i64>> = Vec::new();
     let mut timing_inference: Vec<Option<i64>> = Vec::new();
     let mut timing_decode: Vec<Option<i64>> = Vec::new();
+    let mut timestamps: Vec<Option<i64>> = Vec::new();
 
     for sample in samples {
         // Extract sample metadata once per sample
@@ -2664,6 +2666,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         let t_preprocess = sample.timing.as_ref().and_then(|t| t.preprocess);
         let t_inference = sample.timing.as_ref().and_then(|t| t.inference);
         let t_decode = sample.timing.as_ref().and_then(|t| t.decode);
+        let timestamp = sample.date.and_then(|d| d.timestamp_nanos_opt());
 
         // Helper to push shared sample-level fields
         macro_rules! push_sample_fields {
@@ -2678,6 +2681,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
                 timing_preprocess.push(t_preprocess);
                 timing_inference.push(t_inference);
                 timing_decode.push(t_decode);
+                timestamps.push(timestamp);
             };
         }
 
@@ -2917,6 +2921,8 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
     .into_series()
     .into();
 
+    let timestamps_col: Column = Series::new("timestamp".into(), timestamps).into();
+
     // Collect all columns, then drop any where ALL values are null (except "name")
     let all_columns: Vec<Column> = vec![
         names_col,
@@ -2946,6 +2952,7 @@ pub fn samples_dataframe(samples: &[Sample]) -> Result<DataFrame, Error> {
         neg_label_indices_col,
         not_exhaustive_label_indices_col,
         timing_col,
+        timestamps_col,
     ];
 
     let height = all_columns.first().map(|c| c.len()).unwrap_or(0);
@@ -5564,6 +5571,19 @@ mod versioning_deser_tests {
         let plain = Annotation::new();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json.get("attributes").is_none());
+    }
+
+    #[cfg(feature = "polars")]
+    #[test]
+    fn sample_date_becomes_the_timestamp_column() {
+        const NS: i64 = 1_785_637_518_051_835_416;
+        let mut sample = Sample::new();
+        sample.image_name = Some("a.jpg".to_string());
+        sample.date = Some(chrono::DateTime::from_timestamp_nanos(NS));
+
+        let df = samples_dataframe(&[sample]).unwrap();
+        let column = df.column("timestamp").unwrap().i64().unwrap().clone();
+        assert_eq!(column.get(0), Some(NS));
     }
 
     fn wire_score(ann: &Annotation) -> Option<f64> {

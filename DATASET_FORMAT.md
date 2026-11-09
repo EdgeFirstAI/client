@@ -458,6 +458,7 @@ Both formats share the same logical schema. Arrow IPC is optimized for local per
     ('size', Array(UInt32, shape=(2,))),  # [width, height] - image dimensions
     ('location', Array(Float32, shape=(2,))),  # [lat, lon]
     ('pose', Array(Float32, shape=(3,))),  # [roll, pitch, yaw], signed degrees
+    ('timestamp', Int64),  # OPTIONAL - capture time, nanoseconds since the Unix epoch, UTC
     ('degradation', String),
     ('neg_label_indices', List(UInt32)),  # OPTIONAL - label_index values verified absent (LVIS)
     ('not_exhaustive_label_indices', List(UInt32)),  # OPTIONAL - label_index values with incomplete annotation (LVIS)
@@ -1489,6 +1490,14 @@ The JSON representation uses named fields `{roll, pitch, yaw}` in the `sensors.i
 ```
 
 **Rust type**: `Option<Location>` with `imu: Option<ImuData>`
+
+#### timestamp
+
+**Type**: `Int64` (nullable), nanoseconds since the Unix epoch, UTC
+
+The time the image was captured. A sample-level field, repeated on every annotation row of the sample.
+
+**Studio compatibility**: `upload-dataset` and `populate_samples` send it as the sample's `date`. Without it, Studio uses the upload time.
 
 #### degradation
 
