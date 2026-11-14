@@ -35,7 +35,8 @@ use base64::Engine as _;
 use edgefirst_client::{
     Annotation, AnnotationSetID, Client, DatasetID, Error, ExperimentID, FileType, GpsData,
     ImuData, Location, Parameter, ProjectID, RecycleBinItemID, Sample, SampleDimensionUpdate,
-    SampleFile, SampleID, TaskID, TrainingSessionID, ValidationSessionID,
+    SampleFile, SampleID, SampleSelection, SplitScope, SplitTarget, TaskID, TrainingSessionID,
+    ValidationSessionID,
 };
 use serde_json::json;
 use serial_test::serial;
@@ -4468,4 +4469,699 @@ async fn populate_samples_checks_duplicate_names_by_sequence_uuid() {
     ])
     .await
     .expect("the same name in different sequences given by UUID is allowed");
+}
+
+// ---------------------------------------------------------------------------
+// Dataset groups: summary, create, rename, delete
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn group_summary_parses_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "groups.summary",
+            "params": {"dataset_id": 1}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+            "total": 6,
+            "ungrouped": 1,
+            "groups": [{"id": 1, "name": "train", "images": 4, "sequences": 2}],
+            "mixed_sequences": 1
+        }))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let summary = client
+        .group_summary(DatasetID::from(1))
+        .await
+        .expect("groups.summary");
+    assert_eq!(summary.total, 6);
+    assert_eq!(summary.ungrouped, 1);
+    assert_eq!(summary.groups[0].name, "train");
+    assert_eq!(summary.groups[0].sequences, 2);
+    assert_eq!(summary.mixed_sequences, 1);
+}
+
+#[tokio::test]
+async fn create_groups_sends_zero_splits() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "groups.create"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!([
+            {"id": 1, "dataset_id": 1, "name": "train"},
+            {"id": 2, "dataset_id": 1, "name": "val"},
+            {"id": 3, "dataset_id": 1, "name": "test"}
+        ]))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let groups = client
+        .create_groups(DatasetID::from(1), &["train", "val", "test"])
+        .await
+        .expect("groups.create");
+    assert_eq!(groups.len(), 3);
+    assert_eq!(groups[2].name, "test");
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["params"],
+        json!({
+            "dataset_id": 1,
+            "group_names": ["train", "val", "test"],
+            "group_splits": [0.0, 0.0, 0.0]
+        })
+    );
+}
+
+#[tokio::test]
+async fn rename_group_sends_name_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "groups.update",
+            "params": {"group_id": 7, "name": "holdout"}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(
+            json!({"id": 7, "dataset_id": 1, "name": "holdout"}),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let group = client
+        .rename_group(7, "holdout")
+        .await
+        .expect("groups.update");
+    assert_eq!(group.id, 7);
+    assert_eq!(group.name, "holdout");
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["params"], json!({"group_id": 7, "name": "holdout"}));
+}
+
+#[tokio::test]
+async fn delete_group_returns_ungrouped() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({
+            "method": "groups.delete",
+            "params": {"group_id": 7}
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_result(json!({"group_id": 7, "ungrouped": 12}))),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let ungrouped = client.delete_group(7).await.expect("groups.delete");
+    assert_eq!(ungrouped, 12);
+}
+
+#[tokio::test]
+async fn delete_group_string_reply_reports_old_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "groups.delete"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!("Group deleted"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client.delete_group(7).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::InvalidParameters(m) if m.contains("was deleted") && m.contains("too old")),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn new_group_methods_report_unsupported_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_error(10, "Invalid Method 'groups.summary'")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let check = |err: Error, method: &str| match err {
+        Error::RpcError(10, msg) => {
+            assert!(msg.contains("not supported by this Studio server"), "{msg}");
+            assert!(msg.starts_with(method), "{msg}");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    };
+    check(
+        client.group_summary(DatasetID::from(1)).await.unwrap_err(),
+        "groups.summary",
+    );
+    check(
+        client
+            .create_groups(DatasetID::from(1), &["a"])
+            .await
+            .unwrap_err(),
+        "groups.create",
+    );
+    check(
+        client.rename_group(1, "a").await.unwrap_err(),
+        "groups.update",
+    );
+    check(client.delete_group(1).await.unwrap_err(), "groups.delete");
+}
+
+// ---------------------------------------------------------------------------
+// Dataset groups: split
+// ---------------------------------------------------------------------------
+
+fn split_targets() -> Vec<SplitTarget> {
+    vec![
+        SplitTarget {
+            name: "train".into(),
+            percent: 70.0,
+        },
+        SplitTarget {
+            name: "val".into(),
+            percent: 20.0,
+        },
+        SplitTarget {
+            name: "test".into(),
+            percent: 10.0,
+        },
+    ]
+}
+
+fn split_report_body() -> serde_json::Value {
+    json!({
+        "seed": "abc",
+        "scope": "ungrouped",
+        "groups": [
+            {"id": null, "name": "train", "created": false, "target_percent": 70.0,
+             "achieved_percent": 0.0, "images": 0, "sequences": 0},
+            {"id": 5, "name": "val", "created": true, "target_percent": 20.0,
+             "achieved_percent": 66.7, "images": 4, "sequences": 2},
+            {"id": 6, "name": "test", "created": false, "target_percent": 10.0,
+             "achieved_percent": 33.3, "images": 2, "sequences": 1}
+        ],
+        "ungrouped": 3,
+        "skipped_mixed_sequences": 2
+    })
+}
+
+#[tokio::test]
+async fn split_groups_ungrouped_request_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "groups.split"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(split_report_body())))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::Ungrouped,
+            None,
+            false,
+        )
+        .await
+        .expect("groups.split");
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["params"],
+        json!({
+            "dataset_id": 1,
+            "groups": [
+                {"name": "train", "percent": 70.0},
+                {"name": "val", "percent": 20.0},
+                {"name": "test", "percent": 10.0}
+            ],
+            "scope": "ungrouped",
+            "dry_run": false
+        })
+    );
+}
+
+#[tokio::test]
+async fn split_groups_groups_scope_request_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "groups.split"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(split_report_body())))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::Groups {
+                from: vec!["train".into(), "val".into()],
+                include_ungrouped: false,
+            },
+            Some("s1"),
+            true,
+        )
+        .await
+        .expect("groups.split");
+    client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::All,
+            None,
+            false,
+        )
+        .await
+        .expect("groups.split");
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["params"]["scope"], "groups");
+    assert_eq!(body["params"]["from_groups"], json!(["train", "val"]));
+    assert_eq!(body["params"]["include_ungrouped"], false);
+    assert_eq!(body["params"]["seed"], "s1");
+    assert_eq!(body["params"]["dry_run"], true);
+
+    let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(body["params"]["scope"], "all");
+    let params = body["params"].as_object().unwrap();
+    assert!(!params.contains_key("from_groups"));
+    assert!(!params.contains_key("include_ungrouped"));
+    assert!(!params.contains_key("seed"));
+}
+
+#[tokio::test]
+async fn split_groups_parses_report() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "groups.split"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(split_report_body())))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let report = client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::Ungrouped,
+            None,
+            true,
+        )
+        .await
+        .expect("groups.split");
+    assert_eq!(report.seed, "abc");
+    assert_eq!(report.scope, "ungrouped");
+    assert_eq!(report.ungrouped, 3);
+    assert_eq!(report.skipped_mixed_sequences, 2);
+    assert_eq!(report.groups[0].id, None);
+    assert!(!report.groups[0].created);
+    assert_eq!(report.groups[1].id, Some(5));
+    assert!(report.groups[1].created);
+    assert_eq!(report.groups[1].achieved_percent, 66.7);
+    assert_eq!(report.groups[1].target_percent, 20.0);
+    assert_eq!(report.groups[1].images, 4);
+    assert_eq!(report.groups[1].sequences, 2);
+}
+
+#[tokio::test]
+async fn split_groups_surfaces_empty_group_error() {
+    let server = MockServer::start().await;
+    let text = "group 'val' is empty but has a non-zero target";
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(101, text)))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::Ungrouped,
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::RpcError(101, m) if m == text),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn split_groups_reports_unsupported_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_error(10, "Invalid Method 'groups.split'")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .split_groups(
+            DatasetID::from(1),
+            &split_targets(),
+            &SplitScope::All,
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::RpcError(10, m) if m.starts_with("groups.split is not supported")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn split_groups_rejects_invalid_targets_before_any_request() {
+    let server = MockServer::start().await;
+    let client = client_for(&server.uri());
+    let target = |percent: f64| SplitTarget {
+        name: "train".into(),
+        percent,
+    };
+
+    let split = |targets: Vec<SplitTarget>| {
+        let client = &client;
+        async move {
+            client
+                .split_groups(
+                    DatasetID::from(1),
+                    &targets,
+                    &SplitScope::Ungrouped,
+                    None,
+                    false,
+                )
+                .await
+        }
+    };
+    for targets in [
+        vec![],
+        vec![target(f64::NAN)],
+        vec![target(f64::INFINITY)],
+        vec![target(-1.0)],
+        vec![target(50.0), target(-0.5)],
+    ] {
+        let err = split(targets.clone()).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidParameters(_)),
+            "{targets:?}: {err:?}"
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Dataset groups: set_samples_group
+// ---------------------------------------------------------------------------
+
+fn set_group_reply(group_id: Option<u64>, updated: u64) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+        "group_id": group_id,
+        "group_created": false,
+        "updated": updated
+    })))
+}
+
+#[tokio::test]
+async fn set_samples_group_by_samples() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "samples.set_group"})))
+        .respond_with(set_group_reply(Some(7), 3))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Samples(vec![
+        SampleID::from(10u64),
+        SampleID::from(11u64),
+        SampleID::from(12u64),
+    ]);
+    let updated = client
+        .set_samples_group(DatasetID::from(1), Some("val"), &selection)
+        .await
+        .expect("samples.set_group");
+    assert_eq!(updated, 3);
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["params"],
+        json!({"dataset_id": 1, "group": "val", "sample_ids": [10, 11, 12]})
+    );
+}
+
+#[tokio::test]
+async fn set_samples_group_unassign_sends_null() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "samples.set_group"})))
+        .respond_with(set_group_reply(None, 1))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Samples(vec![SampleID::from(10u64)]);
+    let updated = client
+        .set_samples_group(DatasetID::from(1), None, &selection)
+        .await
+        .expect("samples.set_group");
+    assert_eq!(updated, 1);
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let params = body["params"].as_object().unwrap();
+    assert!(params.contains_key("group"));
+    assert_eq!(body["params"]["group"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn set_samples_group_by_sequences() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "samples.set_group"})))
+        .respond_with(set_group_reply(Some(7), 9))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Sequences(vec!["uuid-a".into(), "uuid-b".into()]);
+    let updated = client
+        .set_samples_group(DatasetID::from(1), Some("train"), &selection)
+        .await
+        .expect("samples.set_group");
+    assert_eq!(updated, 9);
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["params"],
+        json!({"dataset_id": 1, "group": "train", "sequence_uuids": ["uuid-a", "uuid-b"]})
+    );
+}
+
+/// Replies with `updated` equal to the number of ids in the request.
+struct EchoCount;
+
+impl wiremock::Respond for EchoCount {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let params = &body["params"];
+        let n = params
+            .get("sample_ids")
+            .or_else(|| params.get("sequence_uuids"))
+            .and_then(|v| v.as_array())
+            .map_or(0, Vec::len);
+        set_group_reply(Some(7), n as u64)
+    }
+}
+
+#[tokio::test]
+async fn set_samples_group_chunks_large_selections() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "samples.set_group"})))
+        .respond_with(EchoCount)
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Samples((0..250_001u64).map(SampleID::from).collect());
+    let updated = client
+        .set_samples_group(DatasetID::from(1), Some("train"), &selection)
+        .await
+        .expect("samples.set_group");
+    assert_eq!(updated, 250_001);
+
+    let sizes: Vec<usize> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            body["params"]["sample_ids"].as_array().unwrap().len()
+        })
+        .collect();
+    assert_eq!(sizes, vec![100_000, 100_000, 50_001]);
+}
+
+#[tokio::test]
+async fn set_samples_group_chunks_large_sequence_selections() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .and(body_partial_json(json!({"method": "samples.set_group"})))
+        .respond_with(EchoCount)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Sequences((0..100_001).map(|i| format!("u{i}")).collect());
+    let updated = client
+        .set_samples_group(DatasetID::from(1), None, &selection)
+        .await
+        .expect("samples.set_group");
+    assert_eq!(updated, 100_001);
+}
+
+#[tokio::test]
+async fn set_samples_group_empty_selection_is_noop() {
+    let server = MockServer::start().await;
+    let client = client_for(&server.uri());
+    for selection in [
+        SampleSelection::Samples(vec![]),
+        SampleSelection::Sequences(vec![]),
+    ] {
+        let updated = client
+            .set_samples_group(DatasetID::from(1), Some("val"), &selection)
+            .await
+            .expect("empty selection");
+        assert_eq!(updated, 0);
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn set_samples_group_rejects_blank_uuids() {
+    let server = MockServer::start().await;
+    let client = client_for(&server.uri());
+    for bad in ["", "   ", "a\0b"] {
+        let selection = SampleSelection::Sequences(vec!["ok".into(), bad.into()]);
+        let err = client
+            .set_samples_group(DatasetID::from(1), Some("val"), &selection)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidParameters(_)),
+            "{bad:?}: {err:?}"
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn set_samples_group_failure_reports_applied_count() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(set_group_reply(Some(7), 100_000))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(101, "boom")))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Samples((0..150_000u64).map(SampleID::from).collect());
+    let err = client
+        .set_samples_group(DatasetID::from(1), Some("val"), &selection)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::RpcError(101, m)
+            if m == "boom (1 earlier requests completed, 100000 samples updated)"),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn set_samples_group_reports_unsupported_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rpc_error(10, "Invalid Method 'samples.set_group'")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let err = client
+        .set_samples_group(
+            DatasetID::from(1),
+            None,
+            &SampleSelection::Samples(vec![SampleID::from(1u64)]),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::RpcError(10, m)
+            if m == "samples.set_group is not supported by this Studio server; it needs updating"),
+        "{err:?}"
+    );
 }

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright © 2025 Au-Zone Technologies. All Rights Reserved.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use edgefirst_client::{
     AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Parameter,
-    Progress, SchemaField, SnapshotID, StartTrainingRequest, TaskID, TrainingSession,
+    Progress, SampleSelection, SchemaField, SnapshotID, SplitReport, SplitScope, SplitTarget,
+    StartTrainingRequest, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -160,6 +161,111 @@ enum Command {
         #[clap(required = true)]
         sample_ids: Vec<String>,
     },
+    /// Show how many images and sequences each group of a dataset holds, plus
+    /// the ungrouped and total image counts and the number of sequences whose
+    /// images are spread over several groups.
+    Groups {
+        /// Dataset ID
+        dataset_id: String,
+    },
+    /// Create groups in a dataset. Groups that already exist are returned
+    /// unchanged.
+    CreateGroups {
+        /// Dataset ID
+        dataset_id: String,
+
+        /// Names of the groups to create
+        #[clap(required = true)]
+        names: Vec<String>,
+    },
+    /// Rename a group. Group IDs are shown by the `groups` and `create-groups`
+    /// commands.
+    RenameGroup {
+        /// Group ID
+        group_id: u64,
+
+        /// New group name
+        name: String,
+    },
+    /// Delete a group. Its images become ungrouped.
+    DeleteGroup {
+        /// Group ID
+        group_id: u64,
+    },
+    /// Randomly split a dataset's samples into groups by percentage, e.g.
+    /// `--group train=70 --group val=20 --group test=10`.
+    ///
+    /// Random splits keep each sequence in one group by default; individual
+    /// samples can still be moved to any group.
+    ///
+    /// By default only ungrouped samples are split. Use --from to redistribute
+    /// the samples of existing groups (plus the ungrouped samples unless
+    /// --no-ungrouped is given), or --all to split every sample. Reuse the
+    /// reported seed to reproduce an assignment. Use --dry-run to preview the
+    /// result without changing anything.
+    SplitGroups {
+        /// Dataset ID
+        dataset_id: String,
+
+        /// Target group as NAME=PERCENT (repeatable)
+        #[clap(long = "group", required = true, value_name = "NAME=PERCENT", value_parser = parse_split_target)]
+        groups: Vec<SplitTarget>,
+
+        /// Redistribute the samples of these existing groups (comma separated)
+        #[clap(long, value_delimiter = ',', conflicts_with = "all")]
+        from: Vec<String>,
+
+        /// With --from, leave ungrouped samples out of the split
+        #[clap(long, requires = "from")]
+        no_ungrouped: bool,
+
+        /// Split every sample in the dataset
+        #[clap(long)]
+        all: bool,
+
+        /// Seed for a reproducible split
+        #[clap(long)]
+        seed: Option<String>,
+
+        /// Report the result without changing any assignment
+        #[clap(long)]
+        dry_run: bool,
+
+        /// Create a version tag with this name after a successful split
+        #[clap(long, conflicts_with = "dry_run")]
+        tag: Option<String>,
+    },
+    /// Assign samples or whole sequences to a group, or remove them from
+    /// their group with --none.
+    #[command(group(
+        ArgGroup::new("selection")
+            .required(true)
+            .args(["samples", "sequences", "from_file"])
+    ))]
+    SetGroup {
+        /// Dataset ID
+        dataset_id: String,
+
+        /// Group name (created if missing)
+        #[clap(required_unless_present = "none", conflicts_with = "none")]
+        group: Option<String>,
+
+        /// Remove the selected samples from their group
+        #[clap(long)]
+        none: bool,
+
+        /// Sample IDs to assign
+        #[clap(long, num_args = 1..)]
+        samples: Vec<String>,
+
+        /// Sequence UUIDs whose samples are assigned
+        #[clap(long, num_args = 1..)]
+        sequences: Vec<String>,
+
+        /// File with one sample ID per line
+        #[clap(long)]
+        from_file: Option<PathBuf>,
+    },
     /// Create a new annotation set for the specified dataset.
     CreateAnnotationSet {
         /// Dataset ID
@@ -278,6 +384,18 @@ enum Command {
         /// Required if Arrow file contains annotations.
         #[clap(long)]
         annotation_set_id: Option<String>,
+
+        /// After the upload, split the ungrouped samples into groups, given
+        /// as NAME=PERCENT[,NAME=PERCENT...] (e.g. train=70,val=20,test=10).
+        /// Samples that already have a group keep it. Random splits keep each
+        /// sequence in one group by default; individual samples can still be
+        /// moved to any group.
+        #[clap(long, value_delimiter = ',', value_name = "NAME=PERCENT", value_parser = parse_split_target)]
+        split: Vec<SplitTarget>,
+
+        /// Seed for a reproducible split
+        #[clap(long, requires = "split")]
+        seed: Option<String>,
     },
     /// List training experiments for the provided project ID (optional).  The
     /// experiments are a method of grouping training sessions together.
@@ -3326,8 +3444,12 @@ async fn handle_upload_dataset(
     annotation_set_id: Option<String>,
     annotations: Option<PathBuf>,
     images: Option<PathBuf>,
+    split: Vec<SplitTarget>,
+    seed: Option<String>,
 ) -> Result<(), Error> {
-    // Validate inputs
+    // Fail before anything is uploaded.
+    validate_targets(&split)?;
+
     if annotations.is_none() && images.is_none() {
         return Err(Error::InvalidParameters(
             "Must provide at least one of --annotations or --images".to_owned(),
@@ -3733,6 +3855,20 @@ async fn handle_upload_dataset(
         println!("  ... and {} more", all_results.len() - 10);
     }
 
+    if !split.is_empty() {
+        print!(
+            "{}",
+            split_uploaded_dataset(
+                client,
+                dataset_id_parsed,
+                &split,
+                seed.as_deref(),
+                all_results.len(),
+            )
+            .await?
+        );
+    }
+
     Ok(())
 }
 
@@ -3743,6 +3879,8 @@ async fn handle_upload_dataset(
     _annotation_set_id: Option<String>,
     _annotations: Option<PathBuf>,
     _images: Option<PathBuf>,
+    _split: Vec<SplitTarget>,
+    _seed: Option<String>,
 ) -> Result<(), Error> {
     Err(Error::FeatureNotEnabled("polars".to_owned()))
 }
@@ -6082,6 +6220,360 @@ fn init_tracing(args: &Args) -> Option<()> {
     None
 }
 
+/// Parses a `NAME=PERCENT` split target. The percentage must be a number in
+/// `[0, 100]` and the name must not be empty.
+fn parse_split_target(s: &str) -> Result<SplitTarget, String> {
+    let (name, pct) = s
+        .rsplit_once('=')
+        .ok_or_else(|| format!("expected NAME=PERCENT, got '{s}'"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("group name is empty in '{s}'"));
+    }
+    let percent: f64 = pct
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid percentage '{pct}' for group '{name}'"))?;
+    if !(0.0..=100.0).contains(&percent) {
+        return Err(format!(
+            "percentage for group '{name}' must be between 0 and 100, got {pct}"
+        ));
+    }
+    Ok(SplitTarget {
+        name: name.to_owned(),
+        percent,
+    })
+}
+
+/// Rejects target lists the server would refuse: duplicate names, percentages
+/// summing above 100, or every percentage zero.
+fn validate_targets(targets: &[SplitTarget]) -> Result<(), Error> {
+    let mut seen = std::collections::HashSet::new();
+    for target in targets {
+        if !seen.insert(target.name.as_str()) {
+            return Err(Error::InvalidParameters(format!(
+                "group '{}' is given more than once",
+                target.name
+            )));
+        }
+    }
+    let total: f64 = targets.iter().map(|t| t.percent).sum();
+    if total > 100.0 + 1e-9 {
+        return Err(Error::InvalidParameters(format!(
+            "group percentages sum to {total}, which exceeds 100"
+        )));
+    }
+    if total <= 0.0 {
+        return Err(Error::InvalidParameters(
+            "group percentages must not all be zero".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Builds the `split-groups` invocation that repeats a split on the ungrouped
+/// samples of `dataset_id`.
+fn split_groups_command(
+    dataset_id: DatasetID,
+    targets: &[SplitTarget],
+    seed: Option<&str>,
+) -> String {
+    let mut cmd = format!("split-groups {dataset_id}");
+    for t in targets {
+        cmd.push_str(&format!(
+            " --group {}",
+            shell_quote(&format!("{}={}", t.name, t.percent))
+        ));
+    }
+    if let Some(seed) = seed {
+        cmd.push_str(&format!(" --seed {}", shell_quote(seed)));
+    }
+    cmd
+}
+
+/// Quotes `value` for a POSIX shell when it contains anything but safe
+/// characters.
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "=._-+:/,".contains(c))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+async fn handle_groups(client: &Client, dataset_id: String) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    let summary = client.group_summary(dataset_id).await?;
+    let width = summary
+        .groups
+        .iter()
+        .map(|g| g.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("ungrouped".len());
+    println!("{:<width$}  {:>10}  {:>10}", "GROUP", "IMAGES", "SEQUENCES");
+    for group in &summary.groups {
+        println!(
+            "{:<width$}  {:>10}  {:>10}",
+            group.name, group.images, group.sequences
+        );
+    }
+    println!("{:<width$}  {:>10}", "ungrouped", summary.ungrouped);
+    println!("{:<width$}  {:>10}", "total", summary.total);
+    println!(
+        "Sequences spanning several groups: {}",
+        summary.mixed_sequences
+    );
+    Ok(())
+}
+
+async fn handle_create_groups(
+    client: &Client,
+    dataset_id: String,
+    names: Vec<String>,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for group in client.create_groups(dataset_id, &names).await? {
+        println!("[{}] {}", group.id, group.name);
+    }
+    Ok(())
+}
+
+async fn handle_rename_group(client: &Client, group_id: u64, name: String) -> Result<(), Error> {
+    let group = client.rename_group(group_id, &name).await?;
+    println!("Renamed group {} to '{}'", group.id, group.name);
+    Ok(())
+}
+
+async fn handle_delete_group(client: &Client, group_id: u64) -> Result<(), Error> {
+    let ungrouped = client.delete_group(group_id).await?;
+    println!("Deleted group {group_id}; {ungrouped} images are now ungrouped");
+    Ok(())
+}
+
+struct SplitGroupsArgs {
+    targets: Vec<SplitTarget>,
+    from: Vec<String>,
+    no_ungrouped: bool,
+    all: bool,
+    seed: Option<String>,
+    dry_run: bool,
+    tag: Option<String>,
+}
+
+fn format_split_report(report: &SplitReport, dry_run: bool) -> String {
+    let width = report
+        .groups
+        .iter()
+        .map(|g| g.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("GROUP".len());
+    let mut out = format!(
+        "{}Split (scope: {}, seed: {})\n",
+        if dry_run { "Dry run: " } else { "" },
+        report.scope,
+        report.seed
+    );
+    out.push_str(&format!(
+        "{:>8}  {:<width$}  {:>8}  {:>8}  {:>8}  {:>9}\n",
+        "ID", "GROUP", "TARGET%", "ACTUAL%", "IMAGES", "SEQUENCES"
+    ));
+    for g in &report.groups {
+        let id = g.id.map_or_else(|| "-".to_owned(), |id| id.to_string());
+        let note = match (g.created, g.id) {
+            (true, _) => "  (created)",
+            (false, None) if dry_run => "  (new)",
+            (false, None) => "  (not created)",
+            (false, Some(_)) => "",
+        };
+        out.push_str(&format!(
+            "{:>8}  {:<width$}  {:>8.1}  {:>8.1}  {:>8}  {:>9}{}\n",
+            id, g.name, g.target_percent, g.achieved_percent, g.images, g.sequences, note
+        ));
+    }
+    out.push_str(&format!("Ungrouped images: {}\n", report.ungrouped));
+    out.push_str(&format!(
+        "Mixed sequences skipped: {}\n",
+        report.skipped_mixed_sequences
+    ));
+    out
+}
+
+/// Splits the ungrouped samples of a freshly uploaded dataset and returns the
+/// text to print.
+async fn run_post_upload_split(
+    client: &Client,
+    dataset_id: DatasetID,
+    targets: &[SplitTarget],
+    seed: Option<&str>,
+) -> Result<String, Error> {
+    validate_targets(targets)?;
+    let report = client
+        .split_groups(dataset_id, targets, &SplitScope::Ungrouped, seed, false)
+        .await?;
+    if report.groups.iter().all(|g| g.images == 0) {
+        return Ok(
+            "No changes: all samples already had a group; split made no changes\n".to_owned(),
+        );
+    }
+    Ok(format_split_report(&report, false))
+}
+
+/// Prefixes an error with a statement of what had already succeeded, keeping
+/// the error variant. Variants without a free-form message get the context on
+/// stderr instead.
+fn with_context(err: Error, context: &str) -> Error {
+    match err {
+        Error::RpcError(code, msg) => Error::RpcError(code, format!("{context}: {msg}")),
+        other => {
+            eprintln!("{context}");
+            other
+        }
+    }
+}
+
+/// Runs the post-upload split; on failure the error states that the upload
+/// itself succeeded and how to run the split separately.
+async fn split_uploaded_dataset(
+    client: &Client,
+    dataset_id: DatasetID,
+    targets: &[SplitTarget],
+    seed: Option<&str>,
+    uploaded: usize,
+) -> Result<String, Error> {
+    run_post_upload_split(client, dataset_id, targets, seed)
+        .await
+        .map_err(|e| {
+            with_context(
+                e,
+                &format!(
+                    "the upload succeeded ({uploaded} samples in dataset {dataset_id}) but the \
+                     split was not applied; run `{}` to split the ungrouped samples",
+                    split_groups_command(dataset_id, targets, seed)
+                ),
+            )
+        })
+}
+
+/// Parses sample IDs from command-line values.
+fn parse_sample_ids(values: &[String]) -> Result<Vec<edgefirst_client::SampleID>, Error> {
+    values
+        .iter()
+        .map(|v| {
+            v.trim()
+                .parse()
+                .map_err(|_| Error::InvalidParameters(format!("invalid sample ID '{v}'")))
+        })
+        .collect()
+}
+
+/// Parses a file with one sample ID per line. Blank lines and surrounding
+/// whitespace (including CRLF endings) are ignored.
+fn parse_sample_ids_file(content: &str) -> Result<Vec<edgefirst_client::SampleID>, Error> {
+    content
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, l)| {
+            l.trim().parse().map_err(|_| {
+                Error::InvalidParameters(format!(
+                    "invalid sample ID '{}' on line {}",
+                    l.trim(),
+                    i + 1
+                ))
+            })
+        })
+        .collect()
+}
+
+async fn handle_split_groups(
+    client: &Client,
+    dataset_id: String,
+    args: SplitGroupsArgs,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    validate_targets(&args.targets)?;
+    let scope = if args.all {
+        SplitScope::All
+    } else if !args.from.is_empty() {
+        SplitScope::Groups {
+            from: args.from,
+            include_ungrouped: !args.no_ungrouped,
+        }
+    } else {
+        SplitScope::Ungrouped
+    };
+    let report = client
+        .split_groups(
+            dataset_id,
+            &args.targets,
+            &scope,
+            args.seed.as_deref(),
+            args.dry_run,
+        )
+        .await?;
+    print!("{}", format_split_report(&report, args.dry_run));
+
+    // The tag is only created once the split has succeeded, so it always
+    // captures the new assignment.
+    if let Some(tag) = args.tag.filter(|_| !args.dry_run) {
+        let tag = client
+            .version_tag_create(dataset_id, &tag, None)
+            .await
+            .map_err(|e| {
+                with_context(
+                    e,
+                    &format!("the split was applied but tag '{tag}' was not created"),
+                )
+            })?;
+        println!("Created tag '{}' at serial {}", tag.name(), tag.serial());
+    }
+    Ok(())
+}
+
+async fn handle_set_group(
+    client: &Client,
+    dataset_id: String,
+    group: Option<String>,
+    samples: Vec<String>,
+    sequences: Vec<String>,
+    from_file: Option<PathBuf>,
+) -> Result<(), Error> {
+    let dataset_id: DatasetID = dataset_id.try_into()?;
+    let selection = if let Some(path) = from_file {
+        let content = tokio::fs::read_to_string(&path).await?;
+        SampleSelection::Samples(parse_sample_ids_file(&content)?)
+    } else if !sequences.is_empty() {
+        SampleSelection::Sequences(sequences)
+    } else {
+        SampleSelection::Samples(parse_sample_ids(&samples)?)
+    };
+    let empty = match &selection {
+        SampleSelection::Samples(ids) => ids.is_empty(),
+        SampleSelection::Sequences(ids) => ids.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return Err(Error::InvalidParameters(
+            "no samples or sequences were selected".to_owned(),
+        ));
+    }
+    let updated = client
+        .set_samples_group(dataset_id, group.as_deref(), &selection)
+        .await?;
+    match group {
+        Some(group) => println!("Assigned {updated} images to group '{group}'"),
+        None => println!("Removed {updated} images from their group"),
+    }
+    Ok(())
+}
+
 // Version subcommand handlers
 
 async fn handle_version_tag_create(
@@ -6571,6 +7063,47 @@ async fn main() -> Result<(), Error> {
             dataset_id,
             sample_ids,
         } => handle_delete_samples(&client, dataset_id, sample_ids).await,
+        Command::Groups { dataset_id } => handle_groups(&client, dataset_id).await,
+        Command::CreateGroups { dataset_id, names } => {
+            handle_create_groups(&client, dataset_id, names).await
+        }
+        Command::RenameGroup { group_id, name } => {
+            handle_rename_group(&client, group_id, name).await
+        }
+        Command::DeleteGroup { group_id } => handle_delete_group(&client, group_id).await,
+        Command::SplitGroups {
+            dataset_id,
+            groups,
+            from,
+            no_ungrouped,
+            all,
+            seed,
+            dry_run,
+            tag,
+        } => {
+            handle_split_groups(
+                &client,
+                dataset_id,
+                SplitGroupsArgs {
+                    targets: groups,
+                    from,
+                    no_ungrouped,
+                    all,
+                    seed,
+                    dry_run,
+                    tag,
+                },
+            )
+            .await
+        }
+        Command::SetGroup {
+            dataset_id,
+            group,
+            none: _,
+            samples,
+            sequences,
+            from_file,
+        } => handle_set_group(&client, dataset_id, group, samples, sequences, from_file).await,
         Command::CreateAnnotationSet {
             dataset_id,
             name,
@@ -6636,8 +7169,19 @@ async fn main() -> Result<(), Error> {
             annotation_set_id,
             annotations,
             images,
+            split,
+            seed,
         } => {
-            handle_upload_dataset(&client, dataset_id, annotation_set_id, annotations, images).await
+            handle_upload_dataset(
+                &client,
+                dataset_id,
+                annotation_set_id,
+                annotations,
+                images,
+                split,
+                seed,
+            )
+            .await
         }
         Command::Experiments { project_id, name } => {
             handle_experiments(&client, project_id, name).await
@@ -8355,6 +8899,470 @@ mod tests {
             let gps = parsed.gps.expect("gps");
             assert!((gps.lat - 45.5).abs() < 1e-4);
             assert!((gps.lon + 73.5).abs() < 1e-4);
+        }
+    }
+
+    mod group_commands {
+        use super::super::*;
+        use base64::Engine;
+        use serde_json::json;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_partial_json, method, path},
+        };
+
+        fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+            let mut full = vec!["edgefirst-client"];
+            full.extend_from_slice(args);
+            Args::try_parse_from(full)
+        }
+
+        #[test]
+        fn parse_split_target_accepts_name_eq_pct() {
+            let target = parse_split_target("val=20.5").unwrap();
+            assert_eq!(target.name, "val");
+            assert_eq!(target.percent, 20.5);
+            assert_eq!(parse_split_target("a=0").unwrap().percent, 0.0);
+            assert_eq!(parse_split_target("a=100").unwrap().percent, 100.0);
+        }
+
+        #[test]
+        fn split_groups_rejects_bad_targets() {
+            for bad in [
+                "train70",
+                "=10",
+                "train=",
+                "train=101",
+                "train=-1",
+                "train=abc",
+                "train=NaN",
+            ] {
+                assert!(parse_split_target(bad).is_err(), "{bad} should fail");
+            }
+            let dup = [
+                parse_split_target("a=10").unwrap(),
+                parse_split_target("a=20").unwrap(),
+            ];
+            assert!(validate_targets(&dup).is_err());
+            assert!(validate_targets(&dup[..1]).is_ok());
+        }
+
+        #[test]
+        fn validate_targets_rejects_excess_and_all_zero_sums() {
+            let t = |specs: &[&str]| -> Vec<SplitTarget> {
+                specs
+                    .iter()
+                    .map(|s| parse_split_target(s).unwrap())
+                    .collect()
+            };
+            let err = validate_targets(&t(&["train=80", "val=30"])).unwrap_err();
+            assert!(matches!(&err, Error::InvalidParameters(m) if m.contains("exceeds 100")));
+            let err = validate_targets(&t(&["train=0", "val=0"])).unwrap_err();
+            assert!(matches!(&err, Error::InvalidParameters(m) if m.contains("all be zero")));
+            assert!(validate_targets(&t(&["train=70", "val=20", "test=10"])).is_ok());
+            assert!(validate_targets(&t(&["a=33.3", "b=33.3", "c=33.4"])).is_ok());
+        }
+
+        #[test]
+        fn split_groups_command_is_runnable() {
+            let targets = [
+                parse_split_target("train=80").unwrap(),
+                parse_split_target("my val=20.5").unwrap(),
+            ];
+            assert_eq!(
+                split_groups_command("ds-1".parse().unwrap(), &targets, Some("s1")),
+                "split-groups ds-1 --group train=80 --group 'my val=20.5' --seed s1"
+            );
+            assert_eq!(
+                split_groups_command("ds-1".parse().unwrap(), &targets[..1], None),
+                "split-groups ds-1 --group train=80"
+            );
+        }
+
+        #[test]
+        fn split_report_labels_missing_group_by_run_kind() {
+            let report: SplitReport = serde_json::from_value(json!({
+                "seed": "abc", "scope": "ungrouped",
+                "groups": [
+                    {"id": null, "name": "train", "created": false, "target_percent": 100.0,
+                     "achieved_percent": 0.0, "images": 0, "sequences": 0}
+                ],
+                "ungrouped": 0, "skipped_mixed_sequences": 0
+            }))
+            .unwrap();
+            assert!(format_split_report(&report, false).contains("(not created)"));
+            assert!(!format_split_report(&report, true).contains("(not created)"));
+        }
+
+        #[test]
+        fn split_groups_tag_conflicts_with_dry_run() {
+            let base = ["split-groups", "ds-1", "--group", "a=1"];
+            assert!(parse(&[&base[..], &["--dry-run", "--tag", "v1"]].concat()).is_err());
+            assert!(parse(&[&base[..], &["--tag", "v1"]].concat()).is_ok());
+            assert!(parse(&[&base[..], &["--dry-run"]].concat()).is_ok());
+        }
+
+        #[test]
+        fn split_groups_from_conflicts_with_all() {
+            let base = ["split-groups", "ds-1", "--group", "a=1"];
+            assert!(parse(&[&base[..], &["--from", "x", "--all"]].concat()).is_err());
+            assert!(parse(&[&base[..], &["--from", "x,y", "--no-ungrouped"]].concat()).is_ok());
+            assert!(parse(&[&base[..], &["--no-ungrouped"]].concat()).is_err());
+        }
+
+        #[test]
+        fn set_group_requires_group_or_none_and_a_selection() {
+            assert!(parse(&["set-group", "ds-1", "train", "--samples", "s-1", "s-2"]).is_ok());
+            assert!(parse(&["set-group", "ds-1", "--none", "--sequences", "u1"]).is_ok());
+            assert!(parse(&["set-group", "ds-1", "--samples", "s-1"]).is_err());
+            assert!(parse(&["set-group", "ds-1", "train", "--none", "--samples", "s-1"]).is_err());
+            assert!(parse(&["set-group", "ds-1", "train"]).is_err());
+            assert!(
+                parse(&[
+                    "set-group",
+                    "ds-1",
+                    "train",
+                    "--samples",
+                    "s-1",
+                    "--from-file",
+                    "f"
+                ])
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn split_report_marks_missing_and_created_groups() {
+            let report: SplitReport = serde_json::from_value(json!({
+                "seed": "abc", "scope": "ungrouped",
+                "groups": [
+                    {"id": null, "name": "train", "created": false, "target_percent": 70.0,
+                     "achieved_percent": 0.0, "images": 0, "sequences": 0},
+                    {"id": 5, "name": "val", "created": true, "target_percent": 20.0,
+                     "achieved_percent": 66.7, "images": 4, "sequences": 2},
+                    {"id": 6, "name": "test", "created": false, "target_percent": 10.0,
+                     "achieved_percent": 33.3, "images": 2, "sequences": 1}
+                ],
+                "ungrouped": 3, "skipped_mixed_sequences": 2
+            }))
+            .unwrap();
+            let text = format_split_report(&report, true);
+            assert!(text.starts_with("Dry run: "));
+            assert!(text.contains("seed: abc"));
+            let lines: Vec<&str> = text.lines().collect();
+            assert!(lines[2].contains(" - ") && lines[2].ends_with("(new)"));
+            assert!(lines[3].ends_with("(created)"));
+            assert!(!lines[4].contains('('));
+        }
+
+        fn fake_jwt() -> String {
+            let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD_NO_PAD.encode(b);
+            format!(
+                "{}.{}.{}",
+                b64(b"{\"alg\":\"none\",\"typ\":\"JWT\"}"),
+                b64(b"{\"server\":\"test\",\"exp\":2000000000}"),
+                b64(b"signature")
+            )
+        }
+
+        fn client_for(url: &str) -> Client {
+            Client::new()
+                .unwrap()
+                .with_memory_storage()
+                .with_token(&fake_jwt())
+                .unwrap()
+                .with_url(url)
+                .unwrap()
+        }
+
+        fn rpc_result(result: serde_json::Value) -> serde_json::Value {
+            json!({"jsonrpc": "2.0", "id": "0", "result": result})
+        }
+
+        fn split_args(tag: Option<&str>) -> SplitGroupsArgs {
+            SplitGroupsArgs {
+                targets: vec![parse_split_target("train=100").unwrap()],
+                from: vec![],
+                no_ungrouped: false,
+                all: false,
+                seed: None,
+                dry_run: false,
+                tag: tag.map(str::to_owned),
+            }
+        }
+
+        async fn requests_for(server: &MockServer, rpc_method: &str) -> Vec<serde_json::Value> {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).unwrap())
+                .filter(|b| b["method"] == rpc_method)
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn split_groups_tag_not_created_on_failure() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .and(body_partial_json(json!({"method": "groups.split"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0", "id": "0",
+                    "error": {"code": 101, "message": "no samples to split: empty scope"}
+                })))
+                .mount(&server)
+                .await;
+
+            let client = client_for(&server.uri());
+            let result = handle_split_groups(&client, "ds-1".into(), split_args(Some("v1"))).await;
+
+            assert!(result.is_err());
+            assert_eq!(requests_for(&server, "groups.split").await.len(), 1);
+            assert_eq!(requests_for(&server, "version.tag.create").await.len(), 0);
+        }
+
+        #[tokio::test]
+        async fn split_groups_tag_created_after_success() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .and(body_partial_json(json!({"method": "groups.split"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+                    "seed": "abc", "scope": "ungrouped",
+                    "groups": [{"id": 5, "name": "train", "created": true,
+                        "target_percent": 100.0, "achieved_percent": 100.0,
+                        "images": 4, "sequences": 2}],
+                    "ungrouped": 0, "skipped_mixed_sequences": 0
+                }))))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .and(body_partial_json(json!({"method": "version.tag.create"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+                    "id": 1, "dataset_id": 1, "name": "v1", "serial": 7,
+                    "created_by": "me", "created_at": "2026-01-01T00:00:00Z"
+                }))))
+                .mount(&server)
+                .await;
+
+            let client = client_for(&server.uri());
+            handle_split_groups(&client, "ds-1".into(), split_args(Some("v1")))
+                .await
+                .unwrap();
+
+            let tags = requests_for(&server, "version.tag.create").await;
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0]["params"]["name"], "v1");
+        }
+
+        #[tokio::test]
+        async fn split_groups_dry_run_never_tags() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(rpc_result(json!({
+                    "seed": "abc", "scope": "ungrouped", "groups": [],
+                    "ungrouped": 0, "skipped_mixed_sequences": 0
+                }))))
+                .mount(&server)
+                .await;
+            let mut args = split_args(Some("v1"));
+            args.dry_run = true;
+            let client = client_for(&server.uri());
+            handle_split_groups(&client, "ds-1".into(), args)
+                .await
+                .unwrap();
+            assert_eq!(requests_for(&server, "version.tag.create").await.len(), 0);
+        }
+
+        #[test]
+        fn upload_split_parses_comma_list() {
+            let args = parse(&[
+                "upload-dataset",
+                "ds-1",
+                "--images",
+                "imgs",
+                "--split",
+                "train=70,val=20,test=10",
+                "--seed",
+                "abc",
+            ])
+            .unwrap();
+            match args.cmd {
+                Command::UploadDataset { split, seed, .. } => {
+                    let names: Vec<_> = split.iter().map(|t| t.name.as_str()).collect();
+                    assert_eq!(names, ["train", "val", "test"]);
+                    assert_eq!(split[1].percent, 20.0);
+                    assert_eq!(seed.as_deref(), Some("abc"));
+                }
+                _ => panic!("expected UploadDataset"),
+            }
+        }
+
+        #[test]
+        fn upload_split_rejects_bad_target_and_seed_without_split() {
+            assert!(parse(&["upload-dataset", "ds-1", "--split", "train70"]).is_err());
+            assert!(parse(&["upload-dataset", "ds-1", "--seed", "abc"]).is_err());
+        }
+
+        fn split_mock(images: [u64; 2], ungrouped: u64) -> serde_json::Value {
+            rpc_result(json!({
+                "seed": "abc", "scope": "ungrouped",
+                "groups": [
+                    {"id": 5, "name": "train", "created": false, "target_percent": 80.0,
+                     "achieved_percent": 80.0, "images": images[0], "sequences": 0},
+                    {"id": 6, "name": "val", "created": false, "target_percent": 20.0,
+                     "achieved_percent": 20.0, "images": images[1], "sequences": 0}
+                ],
+                "ungrouped": ungrouped, "skipped_mixed_sequences": 0
+            }))
+        }
+
+        #[tokio::test]
+        async fn upload_split_respects_existing_groups() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(split_mock([0, 0], 0)))
+                .mount(&server)
+                .await;
+            let client = client_for(&server.uri());
+            let targets = vec![
+                parse_split_target("train=80").unwrap(),
+                parse_split_target("val=20").unwrap(),
+            ];
+            let out =
+                run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, Some("abc"))
+                    .await
+                    .unwrap();
+            assert!(out.contains("all samples already had a group; split made no changes"));
+            let reqs = requests_for(&server, "groups.split").await;
+            assert_eq!(reqs.len(), 1);
+            assert_eq!(reqs[0]["params"]["scope"], "ungrouped");
+            assert_eq!(reqs[0]["params"]["seed"], "abc");
+            assert_eq!(reqs[0]["params"]["dry_run"], false);
+        }
+
+        #[tokio::test]
+        async fn upload_split_prints_report_when_samples_were_split() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(split_mock([8, 2], 0)))
+                .mount(&server)
+                .await;
+            let client = client_for(&server.uri());
+            let targets = vec![parse_split_target("train=80").unwrap()];
+            let out = run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, None)
+                .await
+                .unwrap();
+            assert!(out.contains("train"));
+            assert!(!out.contains("already had a group"));
+        }
+
+        #[tokio::test]
+        async fn upload_split_rejects_duplicate_targets() {
+            let server = MockServer::start().await;
+            let client = client_for(&server.uri());
+            let targets = vec![
+                parse_split_target("train=80").unwrap(),
+                parse_split_target("train=20").unwrap(),
+            ];
+            let result =
+                run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, None).await;
+            assert!(result.is_err());
+            assert!(requests_for(&server, "groups.split").await.is_empty());
+        }
+
+        #[test]
+        fn sample_ids_from_file_skip_blank_lines_and_crlf() {
+            let ids = parse_sample_ids_file("s-1\r\n\r\n  s-2  \n\n\t\ns-a\r\n").unwrap();
+            let got: Vec<String> = ids.iter().map(ToString::to_string).collect();
+            assert_eq!(got, ["s-1", "s-2", "s-a"]);
+        }
+
+        #[test]
+        fn sample_ids_from_empty_file_is_empty() {
+            assert!(parse_sample_ids_file("").unwrap().is_empty());
+            assert!(parse_sample_ids_file("\n  \r\n").unwrap().is_empty());
+        }
+
+        #[test]
+        fn sample_ids_from_file_report_line_number() {
+            let err = parse_sample_ids_file("s-1\n\nbogus\ns-2\n").unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("line 3"), "{msg}");
+            assert!(msg.contains("bogus"), "{msg}");
+        }
+
+        #[test]
+        fn sample_ids_from_args_report_offending_value() {
+            let err = parse_sample_ids(&["s-1".to_owned(), "nope".to_owned()]).unwrap_err();
+            assert!(err.to_string().contains("nope"));
+        }
+
+        #[tokio::test]
+        async fn split_groups_tag_failure_says_split_was_applied() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .and(body_partial_json(json!({"method": "groups.split"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(split_mock([8, 2], 0)))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .and(body_partial_json(json!({"method": "version.tag.create"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0", "id": "0",
+                    "error": {"code": 101, "message": "tag exists"}
+                })))
+                .mount(&server)
+                .await;
+            let client = client_for(&server.uri());
+            let err = handle_split_groups(&client, "ds-1".into(), split_args(Some("v1")))
+                .await
+                .unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                matches!(&err, Error::RpcError(101, _)),
+                "variant not preserved: {err:?}"
+            );
+            assert!(msg.contains("split was applied"), "{msg}");
+            assert!(msg.contains("tag 'v1' was not created"), "{msg}");
+            assert!(msg.contains("tag exists"), "{msg}");
+        }
+
+        #[tokio::test]
+        async fn upload_split_failure_says_upload_succeeded_and_keeps_code() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0", "id": "0",
+                    "error": {"code": 101, "message": "no samples to split"}
+                })))
+                .mount(&server)
+                .await;
+            let client = client_for(&server.uri());
+            let targets = vec![parse_split_target("train=100").unwrap()];
+            let err =
+                split_uploaded_dataset(&client, "ds-1".parse().unwrap(), &targets, Some("s9"), 12)
+                    .await
+                    .unwrap_err();
+            assert!(matches!(&err, Error::RpcError(101, _)), "{err:?}");
+            let msg = err.to_string();
+            assert!(msg.contains("upload succeeded"), "{msg}");
+            assert!(msg.contains("12 samples"), "{msg}");
+            assert!(msg.contains("split was not applied"), "{msg}");
+            assert!(
+                msg.contains("`split-groups ds-1 --group train=100 --seed s9`"),
+                "{msg}"
+            );
+            assert!(msg.contains("no samples to split"), "{msg}");
         }
     }
 }
