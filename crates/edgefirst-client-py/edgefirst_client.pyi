@@ -1253,6 +1253,106 @@ class Group:
         """
         ...
 
+class GroupCount:
+    """
+    Image and sequence counts for one group in a :class:`GroupSummary`.
+
+    Attributes:
+        id: The group ID.
+        name: The group name.
+        images: Number of images assigned to the group.
+        sequences: Number of distinct sequences with at least one image in
+            the group.
+    """
+
+    @property
+    def id(self) -> int: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def images(self) -> int: ...
+    @property
+    def sequences(self) -> int: ...
+
+class GroupSummary:
+    """
+    Group membership counts for a dataset.
+
+    Attributes:
+        total: Total number of images in the dataset.
+        ungrouped: Number of images that belong to no group.
+        groups: Counts for each group in the dataset.
+        mixed_sequences: Number of sequences whose images are spread over
+            more than one group.
+
+    See Also:
+        Client.group_summary: Retrieve the summary for a dataset.
+    """
+
+    @property
+    def total(self) -> int: ...
+    @property
+    def ungrouped(self) -> int: ...
+    @property
+    def groups(self) -> List[GroupCount]: ...
+    @property
+    def mixed_sequences(self) -> int: ...
+
+class SplitGroupResult:
+    """
+    The outcome of a split for one target group.
+
+    Attributes:
+        id: The group ID, or None if the group does not exist (a dry run, or
+            a split that moved no image at all).
+        name: The group name.
+        created: Whether the call created the group.
+        target_percent: The requested share, in percent of the split samples.
+        achieved_percent: The share actually achieved, in percent.
+        images: Number of images assigned to the group by the split.
+        sequences: Number of sequences assigned to the group by the split.
+    """
+
+    @property
+    def id(self) -> Optional[int]: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def created(self) -> bool: ...
+    @property
+    def target_percent(self) -> float: ...
+    @property
+    def achieved_percent(self) -> float: ...
+    @property
+    def images(self) -> int: ...
+    @property
+    def sequences(self) -> int: ...
+
+class SplitReport:
+    """
+    The result of :meth:`Client.split_groups`.
+
+    Attributes:
+        seed: The seed used; pass it back to reproduce the same assignment.
+        scope: The scope the server applied.
+        groups: Target groups in request order, followed by any non-target
+            group that ungrouped frames joined.
+        ungrouped: Number of images left without a group.
+        skipped_mixed_sequences: Number of sequences skipped because their
+            images already span several groups.
+    """
+
+    @property
+    def seed(self) -> str: ...
+    @property
+    def scope(self) -> str: ...
+    @property
+    def groups(self) -> List[SplitGroupResult]: ...
+    @property
+    def ungrouped(self) -> int: ...
+    @property
+    def skipped_mixed_sequences(self) -> int: ...
+
 class Tag:
     """
     A legacy free-form tag on a dataset (`tags.list_dataset`).
@@ -1804,6 +1904,8 @@ class Dataset:
 
         Requires an embedded client reference (datasets returned by the
         client methods automatically have one).
+
+        See :meth:`Client.group_summary` for per-group counts.
 
         Returns:
             List[Group]: Groups in this dataset.
@@ -3248,6 +3350,9 @@ class Sample:
 
         Requires an embedded client reference (samples returned by the client
         methods automatically have one).
+
+        To assign many samples at once, or to unassign, use
+        :meth:`Client.set_samples_group`.
 
         Note:
             This updates the group assignment on the server. To set the
@@ -6171,6 +6276,141 @@ class Client:
         """
         ...
 
+    def group_summary(self, dataset_id: DatasetUID) -> GroupSummary:
+        """
+        Count the images and sequences in each group of a dataset.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier.
+
+        Returns:
+            GroupSummary: Totals, per-group counts and the number of
+                sequences spread over more than one group.
+
+        Examples:
+            >>> summary = client.group_summary(dataset_id)
+            >>> for g in summary.groups:
+            ...     print(g.name, g.images, g.sequences)
+        """
+        ...
+
+    def create_groups(
+        self, dataset_id: DatasetUID, names: List[str]
+    ) -> List[Group]:
+        """
+        Create groups in a dataset. Existing names are returned unchanged.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier.
+            names (List[str]): The group names to create.
+
+        Returns:
+            List[Group]: The requested groups.
+        """
+        ...
+
+    def rename_group(self, group_id: int, name: str) -> Group:
+        """
+        Rename a group.
+
+        Args:
+            group_id (int): The numeric group ID.
+            name (str): The new group name.
+
+        Returns:
+            Group: The renamed group.
+        """
+        ...
+
+    def delete_group(self, group_id: int) -> int:
+        """
+        Delete a group. Its samples become ungrouped.
+
+        Args:
+            group_id (int): The numeric group ID.
+
+        Returns:
+            int: The number of samples that became ungrouped.
+        """
+        ...
+
+    def split_groups(
+        self,
+        dataset_id: DatasetUID,
+        targets: Union[Dict[str, float], List[Tuple[str, float]]],
+        scope: str = "ungrouped",
+        from_groups: Optional[List[str]] = None,
+        include_ungrouped: bool = True,
+        seed: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> SplitReport:
+        """
+        Randomly split a dataset's samples into groups by percentage.
+
+        Random splits keep each sequence in one group by default; individual
+        samples can still be moved to any group.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier.
+            targets: Group names and their percentages, as a dict (insertion
+                order is kept) or a list of ``(name, percent)`` tuples.
+            scope (str): ``"ungrouped"`` (default), ``"groups"`` or
+                ``"all"``.
+            from_groups (Optional[List[str]]): Groups to redistribute.
+                Required when ``scope`` is ``"groups"``; invalid otherwise.
+            include_ungrouped (bool): With ``scope="groups"``, also split
+                the ungrouped samples. Defaults to True.
+            seed (Optional[str]): Seed for a reproducible split. The server
+                picks one if omitted.
+            dry_run (bool): Report the outcome without changing anything.
+
+        Returns:
+            SplitReport: The seed, scope and per-group outcome.
+
+        Raises:
+            ValueError: If ``scope`` is unknown, ``from_groups`` does not
+                match ``scope``, ``targets`` is empty, or a percent is
+                negative or not finite.
+
+        Examples:
+            >>> report = client.split_groups(
+            ...     dataset_id, {"train": 70, "val": 20, "test": 10}
+            ... )
+            >>> print(report.seed)
+        """
+        ...
+
+    def set_samples_group(
+        self,
+        dataset_id: DatasetUID,
+        group: Optional[str],
+        sample_ids: Optional[List[Union[str, int, SampleID]]] = None,
+        sequence_uuids: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Assign samples, or whole sequences, to a group; None unassigns them.
+
+        Provide exactly one of ``sample_ids`` and ``sequence_uuids``. The
+        group is created if it does not exist. Large selections are sent in
+        chunks of 100,000 ids.
+
+        Args:
+            dataset_id (DatasetUID): The dataset identifier.
+            group (Optional[str]): The group name, or None to remove the
+                samples from their group.
+            sample_ids: Sample identifiers (string, int, or SampleID).
+            sequence_uuids (Optional[List[str]]): Sequence UUIDs; every
+                sample of each sequence is affected.
+
+        Returns:
+            int: The number of samples updated.
+
+        Raises:
+            ValueError: If not exactly one selector is given, or a sequence
+                UUID is blank or contains a NUL character.
+        """
+        ...
+
     def groups(self, dataset_id: DatasetUID) -> List[Group]:
         """
         List all groups for a dataset.
@@ -6209,6 +6449,7 @@ class Client:
 
         See Also:
             get_or_create_group: Create or retrieve a group by name.
+            group_summary: Per-group image and sequence counts.
             Group: The group class with id and name properties.
         """
         ...
