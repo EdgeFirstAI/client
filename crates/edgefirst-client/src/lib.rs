@@ -60,6 +60,7 @@ pub mod coco;
 mod dataset;
 mod error;
 pub mod format;
+mod groups;
 #[cfg(feature = "profiling")]
 pub mod instrument;
 mod mask;
@@ -87,6 +88,10 @@ pub use crate::{
         FileType, GpsData, Group, ImuData, Label, Location, Polygon, Sample, SampleFile, Timing,
     },
     error::Error,
+    groups::{
+        GroupCount, GroupSummary, SET_GROUP_MAX_IDS, SampleSelection, SplitGroupResult,
+        SplitReport, SplitScope, SplitTarget,
+    },
     mask::MaskData,
     retry::{RetryScope, classify_url},
     storage::{FileTokenStorage, MemoryTokenStorage, StorageError, TokenStorage},
@@ -171,6 +176,270 @@ mod tests {
         client.verify_token().await?;
 
         Ok(client)
+    }
+
+    /// Encodes a small grayscale PNG whose pixels depend on `seed`, so every
+    /// uploaded image has distinct content.
+    fn tiny_png(seed: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 8, 8);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            let pixels: Vec<u8> = (0..64u8).map(|p| p.wrapping_add(seed)).collect();
+            writer.write_image_data(&pixels).expect("png data");
+        }
+        out
+    }
+
+    /// Reads every sample of a dataset keyed by sample id, so each sample is
+    /// counted once however many annotations it has.
+    async fn samples_by_id(
+        client: &Client,
+        dataset_id: DatasetID,
+    ) -> Result<HashMap<u64, Sample>, Error> {
+        let samples = client
+            .samples(dataset_id, None, &[], &[], &[], None, None)
+            .await?;
+        Ok(samples
+            .into_iter()
+            .filter_map(|s| s.id().map(|id| (u64::from(id), s)))
+            .collect())
+    }
+
+    /// The group name of every sequence, collecting the set of groups each
+    /// sequence's samples belong to.
+    fn groups_per_sequence(
+        samples: &HashMap<u64, Sample>,
+    ) -> HashMap<String, std::collections::HashSet<Option<String>>> {
+        let mut map: HashMap<String, std::collections::HashSet<Option<String>>> = HashMap::new();
+        for s in samples.values() {
+            if let Some(uuid) = s.sequence_uuid() {
+                map.entry(uuid.clone())
+                    .or_default()
+                    .insert(s.group().cloned());
+            }
+        }
+        map
+    }
+
+    async fn groups_split_flow(client: &Client, dataset_id: DatasetID) -> Result<(), Error> {
+        let annotation_set = client
+            .create_annotation_set(dataset_id, "Default", Some("group split test"))
+            .await?;
+
+        // 12 sequences of 3..=14 frames plus 10 loose samples.
+        let mut samples = Vec::new();
+        let mut seed = 0u8;
+        for seq in 0..12u32 {
+            let name = format!("seq{seq:02}");
+            for frame in 0..(3 + seq) {
+                let image_name = format!("{name}_{frame:03}.png");
+                let mut sample = Sample::new();
+                sample.image_name = Some(image_name.clone());
+                sample.sequence_name = Some(name.clone());
+                sample.frame_number = Some(frame);
+                sample.files = vec![SampleFile::with_bytes(
+                    "image".to_string(),
+                    image_name,
+                    tiny_png(seed),
+                )];
+                seed = seed.wrapping_add(1);
+                samples.push(sample);
+            }
+        }
+        for i in 0..10 {
+            let image_name = format!("loose_{i:02}.png");
+            let mut sample = Sample::new();
+            sample.image_name = Some(image_name.clone());
+            sample.files = vec![SampleFile::with_bytes(
+                "image".to_string(),
+                image_name,
+                tiny_png(seed),
+            )];
+            seed = seed.wrapping_add(1);
+            samples.push(sample);
+        }
+        let total = samples.len() as u64;
+        client
+            .populate_samples(dataset_id, Some(annotation_set), samples, None)
+            .await?;
+
+        let targets = |train: f64, val: f64, test: f64| {
+            vec![
+                SplitTarget {
+                    name: "train".into(),
+                    percent: train,
+                },
+                SplitTarget {
+                    name: "val".into(),
+                    percent: val,
+                },
+                SplitTarget {
+                    name: "test".into(),
+                    percent: test,
+                },
+            ]
+        };
+
+        let before = client.group_summary(dataset_id).await?;
+        assert_eq!(before.total, total);
+        assert_eq!(before.ungrouped, total);
+        assert!(before.groups.is_empty());
+
+        // The dry run reports the plan without creating groups.
+        let dry = client
+            .split_groups(
+                dataset_id,
+                &targets(70.0, 20.0, 10.0),
+                &SplitScope::Ungrouped,
+                Some("it-seed"),
+                true,
+            )
+            .await?;
+        assert!(dry.groups.iter().all(|g| g.id.is_none() && !g.created));
+        assert_eq!(client.group_summary(dataset_id).await?.groups.len(), 0);
+
+        let report = client
+            .split_groups(
+                dataset_id,
+                &targets(70.0, 20.0, 10.0),
+                &SplitScope::Ungrouped,
+                Some("it-seed"),
+                false,
+            )
+            .await?;
+        assert_eq!(report.seed, "it-seed");
+        assert_eq!(report.ungrouped, 0);
+        assert!(report.groups.iter().all(|g| g.id.is_some() && g.created));
+        assert_eq!(report.groups.iter().map(|g| g.images).sum::<u64>(), total);
+
+        let summary = client.group_summary(dataset_id).await?;
+        assert_eq!(summary.mixed_sequences, 0);
+        assert_eq!(summary.ungrouped, 0);
+        assert_eq!(summary.groups.iter().map(|g| g.images).sum::<u64>(), total);
+
+        let by_id = samples_by_id(client, dataset_id).await?;
+        assert_eq!(by_id.len() as u64, total);
+        let per_sequence = groups_per_sequence(&by_id);
+        assert_eq!(per_sequence.len(), 12);
+        for (uuid, groups) in &per_sequence {
+            assert_eq!(groups.len(), 1, "sequence {uuid} spans groups {groups:?}");
+        }
+
+        // Re-splitting train and val leaves the test group alone.
+        let former_test: Vec<u64> = by_id
+            .iter()
+            .filter(|(_, s)| s.group().map(String::as_str) == Some("test"))
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(!former_test.is_empty(), "the first split left test empty");
+        client
+            .split_groups(
+                dataset_id,
+                &targets(80.0, 20.0, 0.0),
+                &SplitScope::Groups {
+                    from: vec!["train".into(), "val".into()],
+                    include_ungrouped: true,
+                },
+                Some("it-seed-2"),
+                false,
+            )
+            .await?;
+        let by_id = samples_by_id(client, dataset_id).await?;
+        for id in &former_test {
+            assert_eq!(by_id[id].group().map(String::as_str), Some("test"));
+        }
+        let summary = client.group_summary(dataset_id).await?;
+        assert_eq!(summary.mixed_sequences, 0);
+        assert_eq!(summary.ungrouped, 0);
+        assert_eq!(summary.groups.iter().map(|g| g.images).sum::<u64>(), total);
+
+        // Moving a sequence moves all its samples.
+        let mut sequence_uuids: Vec<&String> = per_sequence.keys().collect();
+        sequence_uuids.sort();
+        let uuid = sequence_uuids
+            .into_iter()
+            .find(|uuid| {
+                by_id.values().any(|s| {
+                    s.sequence_uuid() == Some(*uuid) && s.group().map(String::as_str) != Some("val")
+                })
+            })
+            .expect("a sequence outside val");
+        let moved = client
+            .set_samples_group(
+                dataset_id,
+                Some("val"),
+                &SampleSelection::Sequences(vec![uuid.clone()]),
+            )
+            .await?;
+        assert!(moved > 0);
+        let by_id = samples_by_id(client, dataset_id).await?;
+        assert!(
+            by_id
+                .values()
+                .filter(|s| s.sequence_uuid() == Some(uuid))
+                .all(|s| s.group().map(String::as_str) == Some("val"))
+        );
+
+        // Unassigning one sample leaves it without a group.
+        let loose = by_id
+            .iter()
+            .find(|(_, s)| s.sequence_uuid().is_none())
+            .map(|(id, _)| *id)
+            .expect("a loose sample");
+        let updated = client
+            .set_samples_group(
+                dataset_id,
+                None,
+                &SampleSelection::Samples(vec![SampleID::from(loose)]),
+            )
+            .await?;
+        assert_eq!(updated, 1);
+        let by_id = samples_by_id(client, dataset_id).await?;
+        assert_eq!(by_id[&loose].group(), None);
+        assert_eq!(client.group_summary(dataset_id).await?.ungrouped, 1);
+        Ok(())
+    }
+
+    /// Studio integration test; needs server credentials and a server with
+    /// the group split methods (dve-database v4.6.17 or later).
+    #[tokio::test]
+    #[ignore = "requires a live Studio server -- run by studio.yml, not on PRs"]
+    async fn groups_split_keeps_sequences_whole() -> Result<(), Error> {
+        let client = get_client().await?;
+        let project = client
+            .projects(Some("Unit Testing"))
+            .await?
+            .into_iter()
+            .next()
+            .expect("'Unit Testing' project should exist");
+        let name = format!("Test Groups {}", uuid::Uuid::new_v4().simple());
+        let dataset_id = client
+            .create_dataset(&project.id().to_string(), &name, Some("group split test"))
+            .await?;
+
+        // The flow runs in its own task so a failed assertion still reaches
+        // the cleanup below.
+        let task_client = client.clone();
+        let outcome =
+            tokio::spawn(async move { groups_split_flow(&task_client, dataset_id).await }).await;
+
+        let deleted = client.delete_dataset(dataset_id).await;
+        let purged = client.purge_recycle_bin(&[dataset_id.into()]).await;
+
+        match outcome {
+            Ok(Err(Error::RpcError(10, msg)))
+                if msg.contains("is not supported by this Studio server") =>
+            {
+                eprintln!("skipping: {msg}");
+            }
+            Ok(result) => result?,
+            Err(join) => std::panic::resume_unwind(join.into_panic()),
+        }
+        deleted?;
+        purged
     }
 
     /// Helper: Get training session for "Unit Testing" project

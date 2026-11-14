@@ -488,6 +488,12 @@ Upload samples to a dataset from images and/or Arrow annotations file. Supports 
 **\--annotation-set-id** *ANNOTATION_SET_ID*
 :   Annotation Set ID for the annotations. Required if Arrow file contains annotations.
 
+**\--split** *NAME=PERCENT[,NAME=PERCENT...]*
+:   After the upload, split the ungrouped samples into groups, for example `train=70,val=20,test=10`. Samples that already have a group keep it. Random splits keep each sequence in one group by default; individual samples can still be moved to any group. Requires Studio server v4.6.17 or later.
+
+**\--seed** *SEED*
+:   Seed for a reproducible split. Used with `--split`.
+
 **Image Discovery (when \--images not provided):**
 
 The tool automatically searches for images in the following order:
@@ -513,6 +519,10 @@ edgefirst-client upload-dataset 12345 \
     --annotations labels.arrow \
     --images ./images/ \
     --annotation-set-id 54321
+
+# Upload images and split them into train, val and test
+edgefirst-client upload-dataset 12345 --images ./photos/ \
+    --split train=70,val=20,test=10 --seed my-seed
 ```
 
 **Note:** Uploads are batched (50 samples per batch, so a failed batch only requires
@@ -598,6 +608,130 @@ edgefirst-client delete-samples 12345 1001 1002
 ```
 
 **Note:** Annotations belonging to the deleted samples are removed automatically by the server (cascade delete) — no separate step is needed. Deletion is asynchronous on the server: the command returns once the request is accepted, before the delete has actually completed, so samples may not disappear from subsequent queries immediately.
+
+## DATASET GROUPS
+
+Groups (commonly `train`, `val` and `test`) assign each sample of a dataset to a subset. Random splits keep each sequence in one group by default; individual samples can still be moved to any group. All six commands require Studio server v4.6.17 or later. Older servers report that `groups`, `split-groups` and `set-group` are not supported and need updating; `create-groups`, `rename-group` and `delete-group` fail with server-specific errors instead, and `delete-group` still deletes the group before reporting that the server cannot return the ungrouped count.
+
+### groups
+
+Show how many images and sequences each group of a dataset holds, plus the ungrouped and total image counts and the number of sequences whose images are spread over several groups.
+
+**edgefirst-client groups** *DATASET_ID*
+
+### create-groups
+
+Create groups in a dataset. Groups that already exist are returned unchanged.
+
+**edgefirst-client create-groups** *DATASET_ID* *NAMES*...
+
+### rename-group
+
+Rename a group. Group IDs are shown by the `groups` and `create-groups` commands.
+
+**edgefirst-client rename-group** *GROUP_ID* *NAME*
+
+### delete-group
+
+Delete a group. Its images become ungrouped.
+
+**edgefirst-client delete-group** *GROUP_ID*
+
+### split-groups
+
+Randomly split a dataset's samples into groups by percentage.
+
+**edgefirst-client split-groups** [*OPTIONS*] *DATASET_ID* \--group *NAME=PERCENT*...
+
+**Arguments:**
+
+*DATASET_ID*
+:   Dataset ID.
+
+**Options:**
+
+**\--group** *NAME=PERCENT*
+:   Target group and its share, repeatable. The percentages must not sum to more than 100, and at least one must be non-zero. When a split moves at least one image, every target group that does not exist is created, including a 0% target; a dry run, or a split that moves nothing, creates no group.
+
+**\--from** *GROUPS*
+:   Redistribute the samples of these existing groups (comma separated), plus the ungrouped samples.
+
+**\--no-ungrouped**
+:   Leave the ungrouped samples out of the split. Requires `--from`.
+
+**\--all**
+:   Split every sample in the dataset.
+
+**\--seed** *SEED*
+:   Seed for a reproducible split. The seed used is reported, and passing it back with the same scope reproduces the assignment.
+
+**\--dry-run**
+:   Report the result without changing any assignment.
+
+**\--tag** *TAG*
+:   Create a version tag with this name after a successful split. Cannot be combined with `--dry-run`.
+
+By default only ungrouped samples are split.
+
+**Examples:**
+
+```bash
+# Split the ungrouped samples 70/20/10
+edgefirst-client split-groups ds-1a --group train=70 --group val=20 --group test=10
+
+# Preview the result without changing anything
+edgefirst-client split-groups ds-1a --group train=70 --group val=20 --group test=10 --dry-run
+
+# Re-split train and val 80/20 (and any ungrouped samples), leaving test untouched
+edgefirst-client split-groups ds-1a --from train,val --group train=80 --group val=20
+
+# Reproduce a split exactly
+edgefirst-client split-groups ds-1a --all --seed my-seed \
+    --group train=70 --group val=20 --group test=10
+```
+
+### set-group
+
+Assign samples or whole sequences to a group, or remove them from their group with `--none`.
+
+**edgefirst-client set-group** [*OPTIONS*] *DATASET_ID* [*GROUP*]
+
+**Arguments:**
+
+*DATASET_ID*
+:   Dataset ID.
+
+*GROUP*
+:   Group name, created if missing. Omit it when using `--none`.
+
+**Options:**
+
+**\--none**
+:   Remove the selected samples from their group.
+
+**\--samples** *SAMPLES*...
+:   Sample IDs to assign.
+
+**\--sequences** *SEQUENCES*...
+:   Sequence UUIDs whose samples are all assigned.
+
+**\--from-file** *FROM_FILE*
+:   File with one sample ID per line.
+
+Exactly one of `--samples`, `--sequences` and `--from-file` is required. Selections larger than 100,000 ids are sent in several requests.
+
+**Examples:**
+
+```bash
+# Move two samples to val
+edgefirst-client set-group ds-1a val --samples s-10 s-11
+
+# Move every frame of a sequence to test
+edgefirst-client set-group ds-1a test --sequences 3f2b9c1e-0000-4000-8000-000000000001
+
+# Remove samples from their group
+edgefirst-client set-group ds-1a --none --from-file sample_ids.txt
+```
 
 ## DATASET VERSIONING
 

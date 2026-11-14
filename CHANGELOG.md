@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+All six group commands (`groups`, `create-groups`, `rename-group`, `delete-group`, `split-groups`, `set-group`) and their client methods need Studio server v4.6.17 or later. Against an older server the summary, split and set-group calls fail with an RPC error stating that the method is not supported and the server needs updating; create, rename and delete fail with server errors, and delete removes the group before reporting that the server cannot return the ungrouped count.
+
+### Added
+
+- `Client::group_summary` (Python `Client.group_summary`, CLI `groups`) returns the total, ungrouped and per-group image and sequence counts of a dataset, and the number of sequences whose images are spread over more than one group.
+- `Client::create_groups`, `Client::rename_group` and `Client::delete_group` (Python `Client.create_groups`, `Client.rename_group`, `Client.delete_group`, CLI `create-groups`, `rename-group`, `delete-group`) manage the groups of a dataset. Creating an existing group returns it unchanged, and deleting a group reports how many images became ungrouped.
+- `Client::split_groups` (Python `Client.split_groups`, CLI `split-groups`) randomly splits a dataset's samples into groups by percentage, for example `train=70 val=20 test=10`. The scope is the ungrouped samples by default, the samples of named groups with `--from` (Python `scope="groups"`), or every sample with `--all`. A seed makes the split reproducible and is reported in the result, `--dry-run` previews the result without changing anything, and `--tag` creates a version tag after a successful split. Random splits keep each sequence in one group by default; individual samples can still be moved to any group.
+- `Client::set_samples_group` (Python `Client.set_samples_group`, CLI `set-group`) assigns individual samples or whole sequences to a group, or removes them from their group. Selections larger than 100,000 ids are sent in several requests.
+- `upload-dataset --split NAME=PERCENT[,...]` with `--seed` splits the ungrouped samples into groups after the upload, keeping each sequence in one group. Samples that already have a group keep it.
+- New Rust types `GroupSummary`, `GroupCount`, `SplitTarget`, `SplitScope`, `SplitReport`, `SplitGroupResult` and `SampleSelection`, and the constant `SET_GROUP_MAX_IDS` (all but `SplitTarget` are `#[non_exhaustive]`), with the matching Python classes `GroupSummary`, `GroupCount`, `SplitReport` and `SplitGroupResult`.
+
 ## [2.20.0] - 2026-10-27
 
 ### Added

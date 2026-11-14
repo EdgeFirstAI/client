@@ -19,6 +19,10 @@ use crate::{
     dataset::{
         AnnotationSet, AnnotationType, Dataset, FileType, Group, Label, NewLabel, NewLabelObject,
     },
+    groups::{
+        GroupSummary, SET_GROUP_MAX_IDS, SampleSelection, SplitReport, SplitScope, SplitTarget,
+        map_unsupported,
+    },
     retry::{create_retry_policy, log_retry_configuration},
     storage::{FileTokenStorage, MemoryTokenStorage, TokenStorage},
 };
@@ -2156,6 +2160,402 @@ impl Client {
         self.rpc("groups.list".to_owned(), Some(params)).await
     }
 
+    /// Returns the group membership counts for a dataset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dataset cannot be accessed, or an
+    /// [`Error::RpcError`] with code 10 if the Studio server is too old to
+    /// support group summaries.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// let summary = client.group_summary(dataset_id).await?;
+    /// println!("{} of {} images ungrouped", summary.ungrouped, summary.total);
+    /// for group in summary.groups {
+    ///     println!("{}: {} images", group.name, group.images);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn group_summary(&self, dataset_id: DatasetID) -> Result<GroupSummary, Error> {
+        let params = HashMap::from([("dataset_id", dataset_id)]);
+        self.rpc("groups.summary".to_owned(), Some(params))
+            .await
+            .map_err(|e| map_unsupported("groups.summary", e))
+    }
+
+    /// Creates groups with the given names in a dataset.
+    ///
+    /// The groups are created empty; no samples are assigned to them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dataset cannot be accessed or a name is
+    /// rejected by the server, or an [`Error::RpcError`] with code 10 if the
+    /// Studio server is too old to support this call.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// let groups = client
+    ///     .create_groups(dataset_id, &["train", "val", "test"])
+    ///     .await?;
+    /// assert_eq!(groups.len(), 3);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self), fields(dataset_id = %dataset_id)))]
+    pub async fn create_groups(
+        &self,
+        dataset_id: DatasetID,
+        names: &[&str],
+    ) -> Result<Vec<Group>, Error> {
+        #[derive(Serialize)]
+        struct CreateGroupsParams<'a> {
+            dataset_id: DatasetID,
+            group_names: &'a [&'a str],
+            // All-zero splits create the groups without assigning samples.
+            // Servers older than v4.6.17 reject a request without the key.
+            group_splits: Vec<f64>,
+        }
+
+        let params = CreateGroupsParams {
+            dataset_id,
+            group_names: names,
+            group_splits: vec![0.0; names.len()],
+        };
+        self.rpc("groups.create".to_owned(), Some(params))
+            .await
+            .map_err(|e| map_unsupported("groups.create", e))
+    }
+
+    /// Randomly distributes a dataset's samples across groups.
+    ///
+    /// Random splits keep each sequence in one group by default; individual
+    /// samples can still be moved to any group.
+    ///
+    /// On a run that is not a dry run and moves at least one image, every
+    /// target group that does not exist is created, including targets of 0%.
+    /// A dry run, or a split that moves nothing, creates no groups. Pass
+    /// `seed` to reproduce an earlier assignment; the report returns the seed
+    /// used.
+    ///
+    /// The split runs as one server transaction over the whole scope, so it
+    /// uses the bulk HTTP client: there is no total-request deadline, only
+    /// the idle `EDGEFIRST_READ_TIMEOUT`.
+    /// With `dry_run` set, nothing is changed and the report shows the
+    /// assignment that would result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dataset cannot be accessed or the request is
+    /// rejected by the server (for example, all percentages are zero or a
+    /// non-zero target would be empty), or an [`Error::RpcError`] with code
+    /// 10 if the Studio server is too old to support this call.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID, SplitScope, SplitTarget};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// let targets = [
+    ///     SplitTarget { name: "train".into(), percent: 80.0 },
+    ///     SplitTarget { name: "val".into(), percent: 20.0 },
+    /// ];
+    /// let report = client
+    ///     .split_groups(dataset_id, &targets, &SplitScope::Ungrouped, None, true)
+    ///     .await?;
+    /// for group in report.groups {
+    ///     println!("{}: {:.1}%", group.name, group.achieved_percent);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, targets), fields(dataset_id = %dataset_id)))]
+    pub async fn split_groups(
+        &self,
+        dataset_id: DatasetID,
+        targets: &[SplitTarget],
+        scope: &SplitScope,
+        seed: Option<&str>,
+        dry_run: bool,
+    ) -> Result<SplitReport, Error> {
+        if targets.is_empty() {
+            return Err(Error::InvalidParameters(
+                "split requires at least one target group".to_owned(),
+            ));
+        }
+        if let Some(t) = targets
+            .iter()
+            .find(|t| !t.percent.is_finite() || t.percent < 0.0)
+        {
+            return Err(Error::InvalidParameters(format!(
+                "split percent for group '{}' must be a finite, non-negative number",
+                t.name
+            )));
+        }
+        #[derive(Serialize)]
+        struct SplitGroupsParams<'a> {
+            dataset_id: DatasetID,
+            groups: &'a [SplitTarget],
+            scope: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            from_groups: Option<&'a [String]>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            include_ungrouped: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            seed: Option<&'a str>,
+            dry_run: bool,
+        }
+
+        let (scope_name, from_groups, include_ungrouped) = match scope {
+            SplitScope::Ungrouped => ("ungrouped", None, None),
+            SplitScope::Groups {
+                from,
+                include_ungrouped,
+            } => ("groups", Some(from.as_slice()), Some(*include_ungrouped)),
+            SplitScope::All => ("all", None, None),
+        };
+        let params = SplitGroupsParams {
+            dataset_id,
+            groups: targets,
+            scope: scope_name,
+            from_groups,
+            include_ungrouped,
+            seed,
+            dry_run,
+        };
+        self.rpc_bulk("groups.split".to_owned(), Some(params))
+            .await
+            .map_err(|e| map_unsupported("groups.split", e))
+    }
+
+    /// Moves samples into a group, or back to ungrouped, and returns the
+    /// number of samples updated.
+    ///
+    /// Pass `group = None` to return the samples to ungrouped. A named group
+    /// that does not exist is created. The selection is either individual
+    /// samples or whole sequences (by sequence UUID); an empty selection
+    /// sends nothing and returns 0.
+    ///
+    /// The server accepts at most [`SET_GROUP_MAX_IDS`] ids per call, so a
+    /// larger selection is sent as several requests, one after another. Each
+    /// request is its own server transaction: if one fails part-way, the
+    /// earlier requests stay applied. If at least one request had completed,
+    /// the [`Error::RpcError`] message gets a parenthetical suffix such as
+    /// "(1 earlier requests completed, 100000 samples updated)"; this note
+    /// is only attached to that error kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameters`], before any request, if a
+    /// sequence UUID is blank or contains a NUL character. Returns an error
+    /// if the dataset or group cannot be accessed, or an [`Error::RpcError`]
+    /// with code 10 if the Studio server is too old to support this call.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::{Client, DatasetID, SampleID, SampleSelection};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    /// let dataset_id: DatasetID = "ds-123".try_into()?;
+    ///
+    /// let selection = SampleSelection::Samples(vec![SampleID::from(1), SampleID::from(2)]);
+    /// let updated = client
+    ///     .set_samples_group(dataset_id, Some("val"), &selection)
+    ///     .await?;
+    /// println!("{updated} samples moved to val");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self, selection), fields(dataset_id = %dataset_id)))]
+    pub async fn set_samples_group(
+        &self,
+        dataset_id: DatasetID,
+        group: Option<&str>,
+        selection: &SampleSelection,
+    ) -> Result<u64, Error> {
+        #[derive(Serialize)]
+        struct SetGroupParams<'a> {
+            dataset_id: DatasetID,
+            // Always serialized: the server rejects a request without the
+            // key, and null means unassign.
+            group: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sample_ids: Option<&'a [SampleID]>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sequence_uuids: Option<&'a [String]>,
+        }
+
+        #[derive(Deserialize)]
+        struct SetGroupResult {
+            updated: u64,
+        }
+
+        if let SampleSelection::Sequences(uuids) = selection
+            && let Some(bad) = uuids
+                .iter()
+                .find(|u| u.trim().is_empty() || u.contains('\0'))
+        {
+            return Err(Error::InvalidParameters(format!(
+                "sequence uuid must not be blank or contain NUL: {bad:?}"
+            )));
+        }
+
+        let mut updated = 0u64;
+        let mut completed = 0usize;
+        let chunks: Vec<SetGroupParams<'_>> = match selection {
+            SampleSelection::Samples(ids) => ids
+                .chunks(SET_GROUP_MAX_IDS)
+                .map(|c| SetGroupParams {
+                    dataset_id,
+                    group,
+                    sample_ids: Some(c),
+                    sequence_uuids: None,
+                })
+                .collect(),
+            SampleSelection::Sequences(uuids) => uuids
+                .chunks(SET_GROUP_MAX_IDS)
+                .map(|c| SetGroupParams {
+                    dataset_id,
+                    group,
+                    sample_ids: None,
+                    sequence_uuids: Some(c),
+                })
+                .collect(),
+        };
+        for params in chunks {
+            match self
+                .rpc_bulk::<_, SetGroupResult>("samples.set_group".to_owned(), Some(params))
+                .await
+                .map_err(|e| map_unsupported("samples.set_group", e))
+            {
+                Ok(r) => {
+                    updated += r.updated;
+                    completed += 1;
+                }
+                Err(Error::RpcError(code, msg)) if completed > 0 => {
+                    return Err(Error::RpcError(
+                        code,
+                        format!(
+                            "{msg} ({completed} earlier requests completed, {updated} samples updated)"
+                        ),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Renames a group and returns the updated group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group does not exist or the name is rejected,
+    /// or an [`Error::RpcError`] with code 10 if the Studio server is too old
+    /// to support this call.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::Client;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    ///
+    /// let group = client.rename_group(7, "holdout").await?;
+    /// assert_eq!(group.name, "holdout");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn rename_group(&self, group_id: u64, name: &str) -> Result<Group, Error> {
+        #[derive(Serialize)]
+        struct RenameGroupParams<'a> {
+            group_id: u64,
+            name: &'a str,
+        }
+
+        let params = RenameGroupParams { group_id, name };
+        self.rpc("groups.update".to_owned(), Some(params))
+            .await
+            .map_err(|e| map_unsupported("groups.update", e))
+    }
+
+    /// Deletes a group and returns the number of samples that became
+    /// ungrouped as a result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group does not exist, or an
+    /// [`Error::RpcError`] with code 10 if the Studio server is too old to
+    /// support this call.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use edgefirst_client::Client;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new()?.with_token_path(None)?;
+    ///
+    /// let ungrouped = client.delete_group(7).await?;
+    /// println!("{ungrouped} samples are now ungrouped");
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip(self)))]
+    pub async fn delete_group(&self, group_id: u64) -> Result<u64, Error> {
+        #[derive(Serialize)]
+        struct DeleteGroupParams {
+            group_id: u64,
+        }
+
+        #[derive(Deserialize)]
+        struct DeleteGroupResult {
+            ungrouped: u64,
+        }
+
+        // Servers older than v4.6.17 reply with a plain string.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum DeleteGroupReply {
+            Counts(DeleteGroupResult),
+            Legacy(#[allow(dead_code)] String),
+        }
+
+        let reply: DeleteGroupReply = self
+            .rpc(
+                "groups.delete".to_owned(),
+                Some(DeleteGroupParams { group_id }),
+            )
+            .await
+            .map_err(|e| map_unsupported("groups.delete", e))?;
+        match reply {
+            DeleteGroupReply::Counts(r) => Ok(r.ungrouped),
+            DeleteGroupReply::Legacy(_) => Err(Error::InvalidParameters(format!(
+                "group {group_id} was deleted, but this Studio server is too old to report \
+                 the ungrouped sample count; it needs updating"
+            ))),
+        }
+    }
+
     /// Gets an existing group by name or creates a new one.
     ///
     /// This is a convenience method that first checks if a group with the
@@ -2215,21 +2615,7 @@ impl Client {
             return Ok(group.id);
         }
 
-        // Create the group
-        #[derive(Serialize)]
-        struct CreateGroupParams {
-            dataset_id: DatasetID,
-            group_names: Vec<String>,
-            group_splits: Vec<i64>,
-        }
-
-        let params = CreateGroupParams {
-            dataset_id,
-            group_names: vec![name.to_string()],
-            group_splits: vec![0], // No automatic splitting
-        };
-
-        let created_groups: Vec<Group> = self.rpc("groups.create".to_owned(), Some(params)).await?;
+        let created_groups = self.create_groups(dataset_id, &[name]).await?;
         if let Some(group) = created_groups.into_iter().find(|g| g.name == name) {
             Ok(group.id)
         } else {
