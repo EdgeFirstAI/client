@@ -129,8 +129,8 @@ build.yml
 |---|---|---|---|---|
 | ubuntu-24.04 | linux | x86_64-unknown-linux-gnu | edgefirst-client-linux-amd64 | wheels-linux-x86_64 |
 | ubuntu-24.04 | linux | aarch64-unknown-linux-gnu | edgefirst-client-linux-arm64 | wheels-linux-aarch64 |
-| macos-14 | macos | x86_64-apple-darwin | edgefirst-client-macos-amd64 | wheels-macos-x86_64 |
-| macos-14 | macos | aarch64-apple-darwin | edgefirst-client-macos-arm64 | wheels-macos-aarch64 |
+| macos-26 | macos | x86_64-apple-darwin | edgefirst-client-macos-amd64 | wheels-macos-x86_64 |
+| macos-26 | macos | aarch64-apple-darwin | edgefirst-client-macos-arm64 | wheels-macos-aarch64 |
 | windows-2025 | windows | x86_64-pc-windows-msvc | edgefirst-client-windows-amd64.exe | wheels-windows-x86_64 |
 
 Steps branch on the `platform` field, never on the runner label. Keying on
