@@ -58,14 +58,14 @@ jobs:
             asset_name: edgefirst-client-linux-arm64
 
           # macOS x86_64
-          - os: macos-14
+          - os: macos-26
             target: x86_64-apple-darwin
             platform: macos
             artifact_name: edgefirst-client
             asset_name: edgefirst-client-macos-amd64
 
           # macOS aarch64 (Apple Silicon)
-          - os: macos-14
+          - os: macos-26
             target: aarch64-apple-darwin
             platform: macos
             artifact_name: edgefirst-client
@@ -212,7 +212,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # macOS x86_64
-          - os: macos-14
+          - os: macos-26
             target: x86_64-apple-darwin
             platform: macos
             arch: x86_64
@@ -220,7 +220,7 @@ jobs:
             cli_binary: edgefirst-client
 
           # macOS aarch64 (Apple Silicon)
-          - os: macos-14
+          - os: macos-26
             target: aarch64-apple-darwin
             platform: macos
             arch: aarch64
