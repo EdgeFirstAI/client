@@ -2359,8 +2359,10 @@ impl Client {
     /// request is its own server transaction: if one fails part-way, the
     /// earlier requests stay applied. If at least one request had completed,
     /// the [`Error::RpcError`] message gets a parenthetical suffix such as
-    /// "(1 earlier requests completed, 100000 samples updated)"; this note
-    /// is only attached to that error kind.
+    /// "(1 earlier requests completed, 100000 samples updated)". Other errors
+    /// are returned unchanged and the same counts are logged as a warning.
+    /// Setting a sample's group is idempotent, so the whole call can be
+    /// repeated after a failure.
     ///
     /// # Errors
     ///
@@ -2459,7 +2461,15 @@ impl Client {
                         ),
                     ));
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if completed > 0 {
+                        log::warn!(
+                            "samples.set_group failed after {completed} earlier requests completed, \
+                             {updated} samples updated: {e}"
+                        );
+                    }
+                    return Err(e);
+                }
             }
         }
         Ok(updated)

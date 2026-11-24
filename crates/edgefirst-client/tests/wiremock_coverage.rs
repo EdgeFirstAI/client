@@ -5139,6 +5139,44 @@ async fn set_samples_group_failure_reports_applied_count() {
 }
 
 #[tokio::test]
+#[serial]
+async fn set_samples_group_logs_progress_for_errors_without_a_message() {
+    install_warning_capture();
+    CAPTURED_WARNINGS.lock().unwrap().clear();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(set_group_reply(Some(7), 100_000))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rpc_error(403, "denied")))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri());
+    let selection = SampleSelection::Samples((0..150_000u64).map(SampleID::from).collect());
+    let err = client
+        .set_samples_group(DatasetID::from(1), Some("val"), &selection)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::PermissionDenied(m) if m == "samples.set_group"),
+        "{err:?}"
+    );
+    let warnings = CAPTURED_WARNINGS.lock().unwrap().clone();
+    assert!(
+        warnings.iter().any(|w| w.contains("samples.set_group")
+            && w.contains("1 earlier requests completed, 100000 samples updated")),
+        "{warnings:?}"
+    );
+}
+
+#[tokio::test]
 async fn set_samples_group_reports_unsupported_server() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
