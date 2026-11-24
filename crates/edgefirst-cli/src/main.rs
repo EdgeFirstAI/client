@@ -391,7 +391,9 @@ enum Command {
         /// one. With --group, that column is ignored with a warning and each
         /// uploaded sample is assigned a group at random by these percentages
         /// before it is sent; samples already in the dataset are not changed.
-        /// Random assignment keeps each sequence in one group; individual
+        /// Random assignment keeps each sequence of the upload in one group;
+        /// frames added to a sequence the dataset already has are assigned on
+        /// their own, with a warning naming those sequences. Individual
         /// samples can still be moved to any group with `set-group`.
         #[clap(long = "group", value_name = "NAME=PERCENT", value_parser = parse_split_target)]
         groups: Vec<SplitTarget>,
@@ -3545,6 +3547,36 @@ fn assign_upload_groups(
     Ok(tallies)
 }
 
+/// Returns the warning naming the upload's sequences that are already in the
+/// dataset, given the names of the dataset's sequences.
+#[cfg(feature = "polars")]
+fn appended_sequences_warning(
+    existing: &[String],
+    samples: &[edgefirst_client::Sample],
+) -> Option<String> {
+    let existing: std::collections::HashSet<&str> = existing.iter().map(String::as_str).collect();
+    let appended: Vec<&str> = samples
+        .iter()
+        .filter_map(|s| s.sequence_name.as_deref())
+        .filter(|name| existing.contains(name))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if appended.is_empty() {
+        return None;
+    }
+    const SHOWN: usize = 5;
+    let mut names = appended[..appended.len().min(SHOWN)].join(", ");
+    if appended.len() > SHOWN {
+        names.push_str(&format!(" and {} more", appended.len() - SHOWN));
+    }
+    Some(format!(
+        "⚠ The upload adds frames to sequences already in the dataset: {names}. --group assigns \
+         the new frames on their own, so they may get a different group from the sequence's \
+         existing frames; use `set-group --sequences` to put a whole sequence in one group"
+    ))
+}
+
 /// Formats the result of [`assign_upload_groups`] for printing.
 #[cfg(feature = "polars")]
 fn format_upload_groups(seed: &str, tallies: &[UploadGroupTally], samples: usize) -> String {
@@ -3751,6 +3783,21 @@ async fn handle_upload_dataset(
     }
 
     if !groups.is_empty() {
+        if samples.iter().any(|s| s.sequence_name.is_some()) {
+            let sequences: Vec<serde_json::Value> = client
+                .rpc(
+                    "sequences.list".to_owned(),
+                    Some(serde_json::json!({ "dataset_id": dataset_id_parsed })),
+                )
+                .await?;
+            let names: Vec<String> = sequences
+                .iter()
+                .filter_map(|s| s["name"].as_str().map(str::to_owned))
+                .collect();
+            if let Some(warning) = appended_sequences_warning(&names, &samples) {
+                println!("{warning}");
+            }
+        }
         let seed =
             seed.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..16].to_owned());
         let tallies = assign_upload_groups(&mut samples, &groups, &seed)?;
@@ -9510,6 +9557,24 @@ mod tests {
                 groups_by_image(&other) != groups_by_image(&samples)
             });
             assert!(differs);
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn appended_sequences_warning_names_existing_sequences() {
+            let samples = upload_samples(8, 2, 3);
+            let existing: Vec<String> = ["seq1", "seq3", "seq4", "seq5", "seq6", "seq7", "other"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let warning = appended_sequences_warning(&existing, &samples).expect("warning");
+            assert!(
+                warning.contains("seq1, seq3, seq4, seq5, seq6 and 1 more"),
+                "{warning}"
+            );
+            assert!(!warning.contains("other"), "{warning}");
+            assert!(warning.contains("set-group"), "{warning}");
+            assert!(appended_sequences_warning(&["other".to_owned()], &samples).is_none());
         }
 
         #[test]
