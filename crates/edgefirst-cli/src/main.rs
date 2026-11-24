@@ -2384,10 +2384,31 @@ struct SampleMetadata {
     annotations: Vec<edgefirst_client::Annotation>,
 }
 
+/// [`parse_arrow_samples`] reading the `group` column.
+#[cfg(test)]
 fn parse_annotations_from_arrow(
     annotations: &Option<PathBuf>,
     images_path: &Path,
     should_upload_annotations: bool,
+    progress: &indicatif::ProgressBar,
+) -> Result<Vec<edgefirst_client::Sample>, Error> {
+    parse_arrow_samples(
+        annotations,
+        images_path,
+        should_upload_annotations,
+        true,
+        progress,
+    )
+}
+
+/// Reads the samples of an Arrow annotation file for upload. When
+/// `read_groups` is false the `group` column is neither read nor checked and
+/// every sample is ungrouped.
+fn parse_arrow_samples(
+    annotations: &Option<PathBuf>,
+    images_path: &Path,
+    should_upload_annotations: bool,
+    read_groups: bool,
     progress: &indicatif::ProgressBar,
 ) -> Result<Vec<edgefirst_client::Sample>, Error> {
     use polars::prelude::*;
@@ -2423,6 +2444,7 @@ fn parse_annotations_from_arrow(
         let group_col = df
             .column("group")
             .ok()
+            .filter(|_| read_groups)
             .and_then(|c| c.cast(&DataType::String).ok());
         let group_str = group_col.as_ref().and_then(|c| c.str().ok());
         let label_col = df
@@ -3411,22 +3433,18 @@ fn drop_flagged_for_upload(samples: &mut [edgefirst_client::Sample]) -> Option<S
     })
 }
 
-/// Clears the group of every sample and its annotations, returning the
-/// user-facing warning when any sample had one.
+/// Returns the warning that the Arrow `group` column is ignored when the
+/// file has a `group` column holding at least one value.
 #[cfg(feature = "polars")]
-fn ignore_arrow_groups(samples: &mut [edgefirst_client::Sample]) -> Option<String> {
-    let mut grouped = 0usize;
-    for sample in samples.iter_mut() {
-        grouped += usize::from(sample.group.take().is_some());
-        for annotation in &mut sample.annotations {
-            annotation.set_group(None);
-        }
-    }
-    (grouped > 0).then(|| {
-        format!(
-            "⚠ Ignoring the Arrow `group` column for {grouped} samples because --group was given; the uploaded samples are assigned groups by the --group percentages instead"
-        )
-    })
+fn arrow_group_warning(df: &polars::prelude::DataFrame) -> Option<String> {
+    df.column("group")
+        .ok()
+        .filter(|c| c.null_count() < c.len())
+        .map(|_| {
+            "⚠ Ignoring the Arrow `group` column because --group was given; the uploaded \
+             samples are assigned groups by the --group percentages instead"
+                .to_owned()
+        })
 }
 
 /// Number of uploaded images and sequences assigned to one `--group` target.
@@ -3666,10 +3684,11 @@ async fn handle_upload_dataset(
         #[cfg(feature = "profiling")]
         let _arrow_span = tracing::info_span!("parse_arrow").entered();
         prep_bar.set_message("Reading Arrow file...");
-        parse_annotations_from_arrow(
+        parse_arrow_samples(
             &annotations,
             &images_path,
             should_upload_annotations,
+            groups.is_empty(),
             &prep_bar,
         )?
     } else {
@@ -3688,6 +3707,11 @@ async fn handle_upload_dataset(
     // will not survive the upload.
     if let Some(arrow_path) = &annotations {
         let (df, _) = edgefirst_client::format::read_dataset_dataframe(arrow_path)?;
+        if !groups.is_empty()
+            && let Some(warning) = arrow_group_warning(&df)
+        {
+            println!("{warning}");
+        }
         const NOT_PERSISTED: [&str; 7] = [
             "truncation",
             "occlusion",
@@ -3727,9 +3751,6 @@ async fn handle_upload_dataset(
     }
 
     if !groups.is_empty() {
-        if let Some(warning) = ignore_arrow_groups(&mut samples) {
-            println!("{warning}");
-        }
         let seed =
             seed.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..16].to_owned());
         let tallies = assign_upload_groups(&mut samples, &groups, &seed)?;
@@ -8637,6 +8658,63 @@ mod tests {
         }
 
         #[test]
+        fn parse_annotations_without_groups_ignores_group_column() {
+            let test_dir = tempfile::tempdir().unwrap();
+            let arrow_file = test_dir.path().join("annotations.arrow");
+            let images_dir = test_dir.path().join("images");
+            create_test_arrow_file(
+                &arrow_file,
+                vec!["image1.jpg", "image1.jpg"],
+                Some(vec![Some("train"), Some("val")]),
+                Some(vec![Some("cat"), Some("dog")]),
+                Some(vec![
+                    Some((10.0, 10.0, 20.0, 20.0)),
+                    Some((30.0, 30.0, 40.0, 40.0)),
+                ]),
+                None,
+            )
+            .unwrap();
+            create_test_images_dir(&images_dir, vec!["image1.jpg"]).unwrap();
+
+            let progress = indicatif::ProgressBar::hidden();
+            let samples =
+                parse_arrow_samples(&Some(arrow_file), &images_dir, true, false, &progress)
+                    .unwrap();
+            assert_eq!(samples.len(), 1);
+            assert!(samples[0].group.is_none());
+            assert_eq!(samples[0].annotations.len(), 2);
+            assert!(samples[0].annotations.iter().all(|a| a.group().is_none()));
+        }
+
+        #[test]
+        fn arrow_group_warning_only_when_column_has_values() {
+            let test_dir = tempfile::tempdir().unwrap();
+            let read = |name: &str, groups: Option<Vec<Option<&str>>>| {
+                let path = test_dir.path().join(name);
+                create_test_arrow_file(
+                    &path,
+                    vec!["image1.jpg", "image2.jpg"],
+                    groups,
+                    Some(vec![Some("cat"), Some("dog")]),
+                    None,
+                    None,
+                )
+                .unwrap();
+                edgefirst_client::format::read_dataset_dataframe(&path)
+                    .unwrap()
+                    .0
+            };
+
+            let warning =
+                arrow_group_warning(&read("grouped.arrow", Some(vec![Some("train"), None])))
+                    .expect("warning");
+            assert!(warning.contains("`group` column"), "{warning}");
+            assert!(warning.contains("--group"), "{warning}");
+            assert!(arrow_group_warning(&read("empty.arrow", Some(vec![None, None]))).is_none());
+            assert!(arrow_group_warning(&read("none.arrow", None)).is_none());
+        }
+
+        #[test]
         fn test_parse_annotations_consistent_groups_succeeds() {
             // Test that parsing succeeds when same image has consistent group values
             let test_dir = std::env::temp_dir().join("arrow_test_consistent_groups");
@@ -9345,33 +9423,6 @@ mod tests {
             assert!(parse(&["upload-dataset", "ds-1", "--group", "train70"]).is_err());
             assert!(parse(&["upload-dataset", "ds-1", "--seed", "abc"]).is_err());
             assert!(parse(&["upload-dataset", "ds-1", "--split", "train=70"]).is_err());
-        }
-
-        #[test]
-        #[cfg(feature = "polars")]
-        fn ignore_arrow_groups_clears_groups_and_warns() {
-            use edgefirst_client::{Annotation, Sample};
-
-            let grouped = |group: Option<&str>| {
-                let mut annotation = Annotation::new();
-                annotation.set_group(group.map(str::to_owned));
-                let mut sample = Sample::new();
-                sample.group = group.map(str::to_owned);
-                sample.annotations = vec![annotation];
-                sample
-            };
-            let mut samples = vec![grouped(Some("train")), grouped(Some("val")), grouped(None)];
-            let warning = ignore_arrow_groups(&mut samples).expect("warning");
-            assert!(warning.contains("`group` column"), "{warning}");
-            assert!(warning.contains("--group"), "{warning}");
-            assert!(warning.contains(" 2 "), "{warning}");
-            for sample in &samples {
-                assert!(sample.group.is_none());
-                assert!(sample.annotations.iter().all(|a| a.group().is_none()));
-            }
-
-            let mut ungrouped = vec![grouped(None)];
-            assert!(ignore_arrow_groups(&mut ungrouped).is_none());
         }
 
         #[cfg(feature = "polars")]
