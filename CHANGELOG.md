@@ -18,6 +18,10 @@ All six group commands (`groups`, `create-groups`, `rename-group`, `delete-group
 - `upload-dataset --group NAME[=PERCENT]` (repeatable) with `--seed` assigns each uploaded sample to a group at random by percentage, keeping each sequence in one group, in place of the Arrow `group` column. A name without a percentage takes every sample, as in `--group train`, and `split-groups --group` accepts the same form. When the upload has too few sequences to give every group samples, sequences are split across groups with a warning naming them. A file's `group` column is ignored with a warning when `--group` is given and used as before otherwise. Samples already in the dataset are not changed; frames added to a sequence the dataset already has are assigned on their own, with a warning naming those sequences.
 - New Rust types `GroupSummary`, `GroupCount`, `SplitTarget`, `SplitScope`, `SplitReport`, `SplitGroupResult` and `SampleSelection`, and the constant `SET_GROUP_MAX_IDS` (all but `SplitTarget` are `#[non_exhaustive]`), with the matching Python classes `GroupSummary`, `GroupCount`, `SplitReport` and `SplitGroupResult`.
 
+### Security
+
+- Dependencies are updated, including zstd 0.13.6 and zstd-safe 7.4.2 (RUSTSEC-2026-0391, RUSTSEC-2026-0398, RUSTSEC-2026-0403, and the zstd-safe soundness advisories RUSTSEC-2026-0395 to RUSTSEC-2026-0406), url 2.5.9 (RUSTSEC-2026-0592) and rustix 1.1.6 (RUSTSEC-2026-0486).
+
 ## [2.20.0] - 2026-10-27
 
 ### Added
