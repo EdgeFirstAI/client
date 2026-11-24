@@ -98,6 +98,17 @@ impl From<pyo3::PyErr> for Error {
     }
 }
 
+/// Maps a client-side validation failure to `ValueError`; other errors keep
+/// the generic conversion.
+fn invalid_as_value_error(err: edgefirst_client::Error) -> Error {
+    match err {
+        edgefirst_client::Error::InvalidParameters(msg) => {
+            Error::PyErr(pyo3::exceptions::PyValueError::new_err(msg))
+        }
+        other => other.into(),
+    }
+}
+
 impl From<Error> for PyErr {
     fn from(err: Error) -> PyErr {
         match err {
@@ -2732,6 +2743,8 @@ impl Dataset {
     }
 
     /// List all groups in this dataset.
+    ///
+    /// See `Client.group_summary` for per-group counts.
     #[tokio_wrap::sync]
     pub fn groups(&self) -> Result<Vec<Group>, Error> {
         let client_ref = self.client.as_ref().ok_or_else(|| {
@@ -3352,6 +3365,211 @@ fn recycle_bin_item_id(
          AnnotationSetID, ExperimentID, TrainingSessionID or ValidationSessionID"
             .into(),
     ))
+}
+
+/// Group membership count within a :class:`GroupSummary`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct GroupCount(edgefirst_client::GroupCount);
+
+#[pymethods]
+impl GroupCount {
+    /// The group ID.
+    #[getter]
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    /// The group name.
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    /// Number of images assigned to the group.
+    #[getter]
+    pub fn images(&self) -> u64 {
+        self.0.images
+    }
+
+    /// Number of distinct sequences with at least one image in the group.
+    #[getter]
+    pub fn sequences(&self) -> u64 {
+        self.0.sequences
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "GroupCount(id={}, name={:?}, images={}, sequences={})",
+            self.0.id, self.0.name, self.0.images, self.0.sequences
+        )
+    }
+}
+
+/// Group membership counts for a dataset.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct GroupSummary(edgefirst_client::GroupSummary);
+
+#[pymethods]
+impl GroupSummary {
+    /// Total number of images in the dataset.
+    #[getter]
+    pub fn total(&self) -> u64 {
+        self.0.total
+    }
+
+    /// Number of images that belong to no group.
+    #[getter]
+    pub fn ungrouped(&self) -> u64 {
+        self.0.ungrouped
+    }
+
+    /// Counts for each group in the dataset.
+    #[getter]
+    pub fn groups(&self) -> Vec<GroupCount> {
+        self.0.groups.iter().cloned().map(GroupCount).collect()
+    }
+
+    /// Number of sequences whose images are spread over more than one group.
+    #[getter]
+    pub fn mixed_sequences(&self) -> u64 {
+        self.0.mixed_sequences
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "GroupSummary(total={}, ungrouped={}, groups={}, mixed_sequences={})",
+            self.0.total,
+            self.0.ungrouped,
+            self.0.groups.len(),
+            self.0.mixed_sequences
+        )
+    }
+}
+
+/// The outcome of a split for one target group.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct SplitGroupResult(edgefirst_client::SplitGroupResult);
+
+#[pymethods]
+impl SplitGroupResult {
+    /// The group ID, or None if the group does not exist (a dry run, or a
+    /// split that moved no image at all).
+    #[getter]
+    pub fn id(&self) -> Option<u64> {
+        self.0.id
+    }
+
+    /// The group name.
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    /// Whether this call created the group.
+    #[getter]
+    pub fn created(&self) -> bool {
+        self.0.created
+    }
+
+    /// The requested share, as a percentage of the split samples.
+    #[getter]
+    pub fn target_percent(&self) -> f64 {
+        self.0.target_percent
+    }
+
+    /// The share actually achieved, as a percentage of the split samples.
+    #[getter]
+    pub fn achieved_percent(&self) -> f64 {
+        self.0.achieved_percent
+    }
+
+    /// Number of images assigned to the group by the split.
+    #[getter]
+    pub fn images(&self) -> u64 {
+        self.0.images
+    }
+
+    /// Number of sequences assigned to the group by the split.
+    #[getter]
+    pub fn sequences(&self) -> u64 {
+        self.0.sequences
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "SplitGroupResult(id={}, name={:?}, created={}, target_percent={}, \
+             achieved_percent={}, images={}, sequences={})",
+            self.0
+                .id
+                .map_or_else(|| "None".to_string(), |id| id.to_string()),
+            self.0.name,
+            if self.0.created { "True" } else { "False" },
+            self.0.target_percent,
+            self.0.achieved_percent,
+            self.0.images,
+            self.0.sequences
+        )
+    }
+}
+
+/// The result of :meth:`Client.split_groups`.
+#[pyclass(module = "edgefirst_client", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct SplitReport(edgefirst_client::SplitReport);
+
+#[pymethods]
+impl SplitReport {
+    /// The seed used; pass it back to reproduce the same assignment.
+    #[getter]
+    pub fn seed(&self) -> &str {
+        &self.0.seed
+    }
+
+    /// The scope the server applied.
+    #[getter]
+    pub fn scope(&self) -> &str {
+        &self.0.scope
+    }
+
+    /// Target groups in request order, followed by any non-target group that
+    /// ungrouped frames joined.
+    #[getter]
+    pub fn groups(&self) -> Vec<SplitGroupResult> {
+        self.0
+            .groups
+            .iter()
+            .cloned()
+            .map(SplitGroupResult)
+            .collect()
+    }
+
+    /// Number of images left without a group.
+    #[getter]
+    pub fn ungrouped(&self) -> u64 {
+        self.0.ungrouped
+    }
+
+    /// Number of sequences skipped because their images already span several
+    /// groups.
+    #[getter]
+    pub fn skipped_mixed_sequences(&self) -> u64 {
+        self.0.skipped_mixed_sequences
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "SplitReport(seed={:?}, scope={:?}, groups={}, ungrouped={}, \
+             skipped_mixed_sequences={})",
+            self.0.seed,
+            self.0.scope,
+            self.0.groups.len(),
+            self.0.ungrouped,
+            self.0.skipped_mixed_sequences
+        )
+    }
 }
 
 impl Display for Group {
@@ -6365,6 +6583,205 @@ impl Client {
             .map(Group)
             .collect::<Vec<_>>();
         Ok(groups)
+    }
+
+    /// Count the images and sequences in each group of a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///
+    /// Returns:
+    ///     GroupSummary: Totals, per-group counts and the number of
+    ///     sequences spread over more than one group.
+    #[tokio_wrap::sync]
+    pub fn group_summary<'py>(&self, dataset_id: Bound<'py, PyAny>) -> Result<GroupSummary, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        Ok(GroupSummary(self.0.group_summary(dataset_id.0).await?))
+    }
+
+    /// Create groups in a dataset. Existing names are returned unchanged.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     names: The group names to create.
+    ///
+    /// Returns:
+    ///     List[Group]: The requested groups.
+    #[tokio_wrap::sync]
+    pub fn create_groups<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        names: Vec<String>,
+    ) -> Result<Vec<Group>, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        Ok(self
+            .0
+            .create_groups(dataset_id.0, &names)
+            .await?
+            .into_iter()
+            .map(Group)
+            .collect())
+    }
+
+    /// Rename a group.
+    ///
+    /// Args:
+    ///     group_id: The numeric group ID.
+    ///     name: The new group name.
+    ///
+    /// Returns:
+    ///     Group: The renamed group.
+    #[tokio_wrap::sync]
+    pub fn rename_group(&self, group_id: u64, name: &str) -> Result<Group, Error> {
+        Ok(Group(self.0.rename_group(group_id, name).await?))
+    }
+
+    /// Delete a group. Its samples become ungrouped.
+    ///
+    /// Args:
+    ///     group_id: The numeric group ID.
+    ///
+    /// Returns:
+    ///     int: The number of samples that became ungrouped.
+    #[tokio_wrap::sync]
+    pub fn delete_group(&self, group_id: u64) -> Result<u64, Error> {
+        Ok(self.0.delete_group(group_id).await?)
+    }
+
+    /// Randomly split a dataset's samples into groups by percentage.
+    ///
+    /// Random splits keep each sequence in one group by default; individual
+    /// samples can still be moved to any group.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     targets: Group names and their percentages, as a dict (insertion
+    ///         order is kept) or a list of ``(name, percent)`` tuples.
+    ///     scope: ``"ungrouped"`` (default), ``"groups"`` or ``"all"``.
+    ///     from_groups: Groups to redistribute. Required when ``scope`` is
+    ///         ``"groups"``; invalid otherwise.
+    ///     include_ungrouped: With ``scope="groups"``, also split the
+    ///         ungrouped samples.
+    ///     seed: Seed for a reproducible split. The server picks one if
+    ///         omitted.
+    ///     dry_run: Report the outcome without changing anything.
+    ///
+    /// Returns:
+    ///     SplitReport: The seed, scope and per-group outcome.
+    ///
+    /// Raises:
+    ///     ValueError: If ``scope`` is unknown, ``from_groups`` does not
+    ///         match ``scope``, ``targets`` is empty, or a percent is
+    ///         negative or not finite.
+    #[pyo3(signature = (dataset_id, targets, scope = "ungrouped", from_groups = None, include_ungrouped = true, seed = None, dry_run = false))]
+    #[tokio_wrap::sync]
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_groups<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        targets: Bound<'py, PyAny>,
+        scope: &str,
+        from_groups: Option<Vec<String>>,
+        include_ungrouped: bool,
+        seed: Option<String>,
+        dry_run: bool,
+    ) -> Result<SplitReport, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let pairs: Vec<(String, f64)> = if let Ok(dict) = targets.cast::<PyDict>() {
+            dict.iter()
+                .map(|(k, v)| Ok((k.extract::<String>()?, v.extract::<f64>()?)))
+                .collect::<PyResult<_>>()?
+        } else {
+            targets.extract()?
+        };
+        let targets: Vec<edgefirst_client::SplitTarget> = pairs
+            .into_iter()
+            .map(|(name, percent)| edgefirst_client::SplitTarget { name, percent })
+            .collect();
+        let scope = match (scope, from_groups) {
+            ("ungrouped", None) => edgefirst_client::SplitScope::Ungrouped,
+            ("all", None) => edgefirst_client::SplitScope::All,
+            ("groups", Some(from)) => edgefirst_client::SplitScope::Groups {
+                from,
+                include_ungrouped,
+            },
+            ("ungrouped" | "all", Some(_)) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "from_groups is only valid with scope='groups'",
+                )
+                .into());
+            }
+            ("groups", None) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "scope='groups' requires from_groups",
+                )
+                .into());
+            }
+            (other, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown scope {other:?}; expected 'ungrouped', 'groups' or 'all'"
+                ))
+                .into());
+            }
+        };
+        Ok(SplitReport(
+            self.0
+                .split_groups(dataset_id.0, &targets, &scope, seed.as_deref(), dry_run)
+                .await
+                .map_err(invalid_as_value_error)?,
+        ))
+    }
+
+    /// Assign samples, or whole sequences, to a group; None unassigns them.
+    ///
+    /// Provide exactly one of ``sample_ids`` and ``sequence_uuids``. The
+    /// group is created if it does not exist. Large selections are sent in
+    /// chunks of 100,000 ids.
+    ///
+    /// Args:
+    ///     dataset_id: The dataset identifier (string, int, or DatasetID).
+    ///     group: The group name, or None to remove the samples from their
+    ///         group.
+    ///     sample_ids: Sample identifiers (string, int, or SampleID).
+    ///     sequence_uuids: Sequence UUIDs; every sample of each sequence is
+    ///         affected.
+    ///
+    /// Returns:
+    ///     int: The number of samples updated.
+    ///
+    /// Raises:
+    ///     ValueError: If not exactly one selector is given, or a sequence
+    ///         UUID is blank or contains a NUL character.
+    #[pyo3(signature = (dataset_id, group, sample_ids = None, sequence_uuids = None))]
+    #[tokio_wrap::sync]
+    pub fn set_samples_group<'py>(
+        &self,
+        dataset_id: Bound<'py, PyAny>,
+        group: Option<String>,
+        sample_ids: Option<Vec<Bound<'py, PyAny>>>,
+        sequence_uuids: Option<Vec<String>>,
+    ) -> Result<u64, Error> {
+        let dataset_id: DatasetID = dataset_id.try_into()?;
+        let selection = match (sample_ids, sequence_uuids) {
+            (Some(ids), None) => edgefirst_client::SampleSelection::Samples(
+                ids.into_iter()
+                    .map(|id| Ok(SampleID::try_from(id)?.0))
+                    .collect::<Result<Vec<_>, Error>>()?,
+            ),
+            (None, Some(uuids)) => edgefirst_client::SampleSelection::Sequences(uuids),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "provide exactly one of sample_ids and sequence_uuids",
+                )
+                .into());
+            }
+        };
+        Ok(self
+            .0
+            .set_samples_group(dataset_id.0, group.as_deref(), &selection)
+            .await
+            .map_err(invalid_as_value_error)?)
     }
 
     /// List the legacy free-form tags for a dataset (`tags.list_dataset`).
@@ -9496,6 +9913,9 @@ impl Sample {
     /// Requires an embedded client reference (samples returned by the client
     /// methods automatically have one).
     ///
+    /// To assign many samples at once, or to unassign, use
+    /// `Client.set_samples_group`.
+    ///
     /// Note: This updates the group assignment on the server. To set the local
     /// in-memory group name (for building new samples), use :meth:`set_group`.
     ///
@@ -9991,6 +10411,10 @@ fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SnapshotFromDatasetResult>()?;
     m.add_class::<AnnotationSet>()?;
     m.add_class::<Group>()?;
+    m.add_class::<GroupCount>()?;
+    m.add_class::<GroupSummary>()?;
+    m.add_class::<SplitGroupResult>()?;
+    m.add_class::<SplitReport>()?;
     m.add_class::<Tag>()?;
     m.add_class::<UsageSummary>()?;
     m.add_class::<RecycleBinItem>()?;

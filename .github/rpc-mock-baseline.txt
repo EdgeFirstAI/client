@@ -25,7 +25,6 @@ auth.refresh
 dataset.create
 dataset.delete
 docker.update.status
-groups.create
 groups.list
 image.delete_from_dataset
 image.set_group_id
