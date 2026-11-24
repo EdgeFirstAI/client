@@ -488,11 +488,11 @@ Upload samples to a dataset from images and/or Arrow annotations file. Supports 
 **\--annotation-set-id** *ANNOTATION_SET_ID*
 :   Annotation Set ID for the annotations. Required if Arrow file contains annotations.
 
-**\--split** *NAME=PERCENT[,NAME=PERCENT...]*
-:   After the upload, split the ungrouped samples into groups, for example `train=70,val=20,test=10`. Samples that already have a group keep it. Random splits keep each sequence in one group by default; individual samples can still be moved to any group. Requires Studio server v4.6.17 or later.
+**\--group** *NAME=PERCENT*
+:   Target group and its share of the uploaded samples, repeatable, for example `--group train=70 --group val=20 --group test=10`. Without `--group`, each sample takes its group from the Arrow `group` column when the file has one. With `--group`, that column is ignored with a warning and each uploaded sample is assigned a group at random by these percentages before it is sent; samples already in the dataset are not changed. Random assignment keeps each sequence in one group; individual samples can still be moved to any group with `set-group`. Percentages may add up to less than 100, leaving the rest of the uploaded samples ungrouped. The upload is rejected before anything is sent when a group with a percentage above 0 would receive no samples.
 
 **\--seed** *SEED*
-:   Seed for a reproducible split. Used with `--split`.
+:   Seed for a reproducible `--group` assignment: the same seed over the same samples gives the same groups. Without it a random seed is used and printed.
 
 **Image Discovery (when \--images not provided):**
 
@@ -520,9 +520,9 @@ edgefirst-client upload-dataset 12345 \
     --images ./images/ \
     --annotation-set-id 54321
 
-# Upload images and split them into train, val and test
+# Upload images and assign them to train, val and test
 edgefirst-client upload-dataset 12345 --images ./photos/ \
-    --split train=70,val=20,test=10 --seed my-seed
+    --group train=70 --group val=20 --group test=10 --seed my-seed
 ```
 
 **Note:** Uploads are batched (50 samples per batch, so a failed batch only requires

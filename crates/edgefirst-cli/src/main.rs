@@ -385,16 +385,20 @@ enum Command {
         #[clap(long)]
         annotation_set_id: Option<String>,
 
-        /// After the upload, split the ungrouped samples into groups, given
-        /// as NAME=PERCENT[,NAME=PERCENT...] (e.g. train=70,val=20,test=10).
-        /// Samples that already have a group keep it. Random splits keep each
-        /// sequence in one group by default; individual samples can still be
-        /// moved to any group.
-        #[clap(long, value_delimiter = ',', value_name = "NAME=PERCENT", value_parser = parse_split_target)]
-        split: Vec<SplitTarget>,
+        /// Target group as NAME=PERCENT (repeatable, e.g. `--group train=70
+        /// --group val=20 --group test=10`). Without --group, each sample
+        /// takes its group from the Arrow `group` column when the file has
+        /// one. With --group, that column is ignored with a warning and each
+        /// uploaded sample is assigned a group at random by these percentages
+        /// before it is sent; samples already in the dataset are not changed.
+        /// Random assignment keeps each sequence in one group; individual
+        /// samples can still be moved to any group with `set-group`.
+        #[clap(long = "group", value_name = "NAME=PERCENT", value_parser = parse_split_target)]
+        groups: Vec<SplitTarget>,
 
-        /// Seed for a reproducible split
-        #[clap(long, requires = "split")]
+        /// Seed for a reproducible --group assignment; a random seed is used
+        /// and printed when omitted
+        #[clap(long, requires = "groups")]
         seed: Option<String>,
     },
     /// List training experiments for the provided project ID (optional).  The
@@ -3407,6 +3411,139 @@ fn drop_flagged_for_upload(samples: &mut [edgefirst_client::Sample]) -> Option<S
     })
 }
 
+/// Clears the group of every sample and its annotations, returning the
+/// user-facing warning when any sample had one.
+#[cfg(feature = "polars")]
+fn ignore_arrow_groups(samples: &mut [edgefirst_client::Sample]) -> Option<String> {
+    let mut grouped = 0usize;
+    for sample in samples.iter_mut() {
+        grouped += usize::from(sample.group.take().is_some());
+        for annotation in &mut sample.annotations {
+            annotation.set_group(None);
+        }
+    }
+    (grouped > 0).then(|| {
+        format!(
+            "⚠ Ignoring the Arrow `group` column for {grouped} samples because --group was given; the uploaded samples are assigned groups by the --group percentages instead"
+        )
+    })
+}
+
+/// Number of uploaded images and sequences assigned to one `--group` target.
+#[cfg(feature = "polars")]
+#[derive(Debug, PartialEq)]
+struct UploadGroupTally {
+    name: String,
+    images: usize,
+    sequences: usize,
+}
+
+/// Assigns each sample to one of `targets` at random, keeping every sequence
+/// in a single group, and returns the counts for each target in order.
+///
+/// Units (a sequence, or a sample without one) are ordered by
+/// SHA-256(seed || ':' || unit key) and each unit goes to the target whose
+/// cumulative percentage band contains its sample-weighted midpoint; units past
+/// the last band stay ungrouped. The same seed over the same samples gives the
+/// same assignment whatever their order. Fails without changing any sample
+/// when a target with a percentage above zero would receive no samples.
+#[cfg(feature = "polars")]
+fn assign_upload_groups(
+    samples: &mut [edgefirst_client::Sample],
+    targets: &[SplitTarget],
+    seed: &str,
+) -> Result<Vec<UploadGroupTally>, Error> {
+    use sha2::{Digest, Sha256};
+
+    let mut units: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    for (index, sample) in samples.iter().enumerate() {
+        let key = match (&sample.sequence_name, &sample.image_name) {
+            (Some(sequence), _) => format!("s{sequence}"),
+            (None, Some(image)) => format!("i{image}"),
+            (None, None) => format!("n{index}"),
+        };
+        units.entry(key).or_default().push(index);
+    }
+    let mut order: Vec<([u8; 32], String, Vec<usize>)> = units
+        .into_iter()
+        .map(|(key, members)| {
+            let digest: [u8; 32] = Sha256::digest(format!("{seed}:{key}")).into();
+            (digest, key, members)
+        })
+        .collect();
+    order.sort();
+
+    let mut bounds = Vec::with_capacity(targets.len());
+    let mut cumulative = 0.0;
+    for target in targets {
+        cumulative += target.percent;
+        bounds.push(cumulative);
+    }
+
+    let total = samples.len() as f64;
+    let mut tallies: Vec<UploadGroupTally> = targets
+        .iter()
+        .map(|t| UploadGroupTally {
+            name: t.name.clone(),
+            images: 0,
+            sequences: 0,
+        })
+        .collect();
+    let mut assignment = vec![None; samples.len()];
+    let mut position = 0usize;
+    for (_, key, members) in &order {
+        position += members.len();
+        let midpoint = (position as f64 - members.len() as f64 / 2.0) / total * 100.0;
+        if let Some(k) = bounds.iter().position(|&bound| midpoint < bound) {
+            tallies[k].images += members.len();
+            tallies[k].sequences += usize::from(key.starts_with('s'));
+            for &index in members {
+                assignment[index] = Some(k);
+            }
+        }
+    }
+
+    if let Some((target, _)) = targets
+        .iter()
+        .zip(&tallies)
+        .find(|(target, tally)| target.percent > 0.0 && tally.images == 0)
+    {
+        return Err(Error::InvalidParameters(format!(
+            "group '{}' would receive no samples: the upload holds {} samples in {} sequences \
+             or single images, too few for the --group percentages",
+            target.name,
+            samples.len(),
+            order.len()
+        )));
+    }
+
+    for (sample, k) in samples.iter_mut().zip(assignment) {
+        let group = k.map(|k| targets[k].name.clone());
+        for annotation in &mut sample.annotations {
+            annotation.set_group(group.clone());
+        }
+        sample.group = group;
+    }
+    Ok(tallies)
+}
+
+/// Formats the result of [`assign_upload_groups`] for printing.
+#[cfg(feature = "polars")]
+fn format_upload_groups(seed: &str, tallies: &[UploadGroupTally], samples: usize) -> String {
+    let mut out = format!("Assigning groups to the uploaded samples (seed: {seed}):\n");
+    for tally in tallies {
+        out.push_str(&format!(
+            "  {}: {} samples, {} sequences\n",
+            tally.name, tally.images, tally.sequences
+        ));
+    }
+    let grouped: usize = tallies.iter().map(|t| t.images).sum();
+    if grouped < samples {
+        out.push_str(&format!("  ungrouped: {} samples\n", samples - grouped));
+    }
+    out
+}
+
 /// Removes the semantic label maps of a `class_index` file, which Studio
 /// cannot store, and returns a warning with their count.
 #[cfg(feature = "polars")]
@@ -3444,12 +3581,12 @@ async fn handle_upload_dataset(
     annotation_set_id: Option<String>,
     annotations: Option<PathBuf>,
     images: Option<PathBuf>,
-    split: Vec<SplitTarget>,
+    groups: Vec<SplitTarget>,
     seed: Option<String>,
 ) -> Result<(), Error> {
     // Fail before anything is uploaded.
-    if !split.is_empty() {
-        validate_targets(&split)?;
+    if !groups.is_empty() {
+        validate_targets(&groups)?;
     }
 
     if annotations.is_none() && images.is_none() {
@@ -3587,6 +3724,16 @@ async fn handle_upload_dataset(
         return Err(Error::InvalidParameters(
             "No samples to upload. Check that images exist.".to_owned(),
         ));
+    }
+
+    if !groups.is_empty() {
+        if let Some(warning) = ignore_arrow_groups(&mut samples) {
+            println!("{warning}");
+        }
+        let seed =
+            seed.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..16].to_owned());
+        let tallies = assign_upload_groups(&mut samples, &groups, &seed)?;
+        print!("{}", format_upload_groups(&seed, &tallies, samples.len()));
     }
 
     // Generate UUIDs for upload (sample.uuid and sequence_uuid for sequences)
@@ -3857,20 +4004,6 @@ async fn handle_upload_dataset(
         println!("  ... and {} more", all_results.len() - 10);
     }
 
-    if !split.is_empty() {
-        print!(
-            "{}",
-            split_uploaded_dataset(
-                client,
-                dataset_id_parsed,
-                &split,
-                seed.as_deref(),
-                all_results.len(),
-            )
-            .await?
-        );
-    }
-
     Ok(())
 }
 
@@ -3881,7 +4014,7 @@ async fn handle_upload_dataset(
     _annotation_set_id: Option<String>,
     _annotations: Option<PathBuf>,
     _images: Option<PathBuf>,
-    _split: Vec<SplitTarget>,
+    _groups: Vec<SplitTarget>,
     _seed: Option<String>,
 ) -> Result<(), Error> {
     Err(Error::FeatureNotEnabled("polars".to_owned()))
@@ -6273,40 +6406,6 @@ fn validate_targets(targets: &[SplitTarget]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Builds the `split-groups` invocation that repeats a split on the ungrouped
-/// samples of `dataset_id`.
-fn split_groups_command(
-    dataset_id: DatasetID,
-    targets: &[SplitTarget],
-    seed: Option<&str>,
-) -> String {
-    let mut cmd = format!("split-groups {dataset_id}");
-    for t in targets {
-        cmd.push_str(&format!(
-            " --group {}",
-            shell_quote(&format!("{}={}", t.name, t.percent))
-        ));
-    }
-    if let Some(seed) = seed {
-        cmd.push_str(&format!(" --seed {}", shell_quote(seed)));
-    }
-    cmd
-}
-
-/// Quotes `value` for a POSIX shell when it contains anything but safe
-/// characters.
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "=._-+:/,".contains(c))
-    {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
 async fn handle_groups(client: &Client, dataset_id: String) -> Result<(), Error> {
     let dataset_id: DatasetID = dataset_id.try_into()?;
     let summary = client.group_summary(dataset_id).await?;
@@ -6428,26 +6527,6 @@ fn format_split_report(report: &SplitReport, dry_run: bool) -> String {
     out
 }
 
-/// Splits the ungrouped samples of a freshly uploaded dataset and returns the
-/// text to print.
-async fn run_post_upload_split(
-    client: &Client,
-    dataset_id: DatasetID,
-    targets: &[SplitTarget],
-    seed: Option<&str>,
-) -> Result<String, Error> {
-    validate_targets(targets)?;
-    let report = client
-        .split_groups(dataset_id, targets, &SplitScope::Ungrouped, seed, false)
-        .await?;
-    if report.groups.iter().all(|g| g.images == 0) {
-        return Ok(
-            "No changes: all samples already had a group; split made no changes\n".to_owned(),
-        );
-    }
-    Ok(format_split_report(&report, false))
-}
-
 /// Prefixes an error with a statement of what had already succeeded, keeping
 /// the error variant. Variants without a free-form message get the context on
 /// stderr instead.
@@ -6459,29 +6538,6 @@ fn with_context(err: Error, context: &str) -> Error {
             other
         }
     }
-}
-
-/// Runs the post-upload split; on failure the error states that the upload
-/// itself succeeded and how to run the split separately.
-async fn split_uploaded_dataset(
-    client: &Client,
-    dataset_id: DatasetID,
-    targets: &[SplitTarget],
-    seed: Option<&str>,
-    uploaded: usize,
-) -> Result<String, Error> {
-    run_post_upload_split(client, dataset_id, targets, seed)
-        .await
-        .map_err(|e| {
-            with_context(
-                e,
-                &format!(
-                    "the upload succeeded ({uploaded} samples in dataset {dataset_id}) but the \
-                     split was not applied; run `{}` to split the ungrouped samples",
-                    split_groups_command(dataset_id, targets, seed)
-                ),
-            )
-        })
 }
 
 /// Parses sample IDs from command-line values.
@@ -7192,7 +7248,7 @@ async fn main() -> Result<(), Error> {
             annotation_set_id,
             annotations,
             images,
-            split,
+            groups,
             seed,
         } => {
             handle_upload_dataset(
@@ -7201,7 +7257,7 @@ async fn main() -> Result<(), Error> {
                 annotation_set_id,
                 annotations,
                 images,
-                split,
+                groups,
                 seed,
             )
             .await
@@ -8987,22 +9043,6 @@ mod tests {
         }
 
         #[test]
-        fn split_groups_command_is_runnable() {
-            let targets = [
-                parse_split_target("train=80").unwrap(),
-                parse_split_target("my val=20.5").unwrap(),
-            ];
-            assert_eq!(
-                split_groups_command("ds-1".parse().unwrap(), &targets, Some("s1")),
-                "split-groups ds-1 --group train=80 --group 'my val=20.5' --seed s1"
-            );
-            assert_eq!(
-                split_groups_command("ds-1".parse().unwrap(), &targets[..1], None),
-                "split-groups ds-1 --group train=80"
-            );
-        }
-
-        #[test]
         fn split_report_labels_missing_group_by_run_kind() {
             let report: SplitReport = serde_json::from_value(json!({
                 "seed": "abc", "scope": "ungrouped",
@@ -9111,7 +9151,32 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn upload_dataset_without_split_skips_split_validation() {
+        async fn upload_dataset_rejects_invalid_group_targets_before_upload() {
+            let server = MockServer::start().await;
+            let client = client_for(&server.uri());
+            for targets in [["train=70", "train=30"], ["train=80", "val=30"]] {
+                let targets = targets
+                    .iter()
+                    .map(|t| parse_split_target(t).unwrap())
+                    .collect();
+                let err = handle_upload_dataset(
+                    &client,
+                    "ds-1".into(),
+                    None,
+                    None,
+                    Some("imgs".into()),
+                    targets,
+                    None,
+                )
+                .await
+                .unwrap_err();
+                assert!(matches!(&err, Error::InvalidParameters(_)), "{err}");
+            }
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn upload_dataset_without_group_skips_split_validation() {
             let server = MockServer::start().await;
             let client = client_for(&server.uri());
             let err = handle_upload_dataset(&client, "ds-1".into(), None, None, None, vec![], None)
@@ -9248,23 +9313,27 @@ mod tests {
         }
 
         #[test]
-        fn upload_split_parses_comma_list() {
+        fn upload_group_parses_repeated_targets() {
             let args = parse(&[
                 "upload-dataset",
                 "ds-1",
                 "--images",
                 "imgs",
-                "--split",
-                "train=70,val=20,test=10",
+                "--group",
+                "train=70",
+                "--group",
+                "val=20",
+                "--group",
+                "test=10",
                 "--seed",
                 "abc",
             ])
             .unwrap();
             match args.cmd {
-                Command::UploadDataset { split, seed, .. } => {
-                    let names: Vec<_> = split.iter().map(|t| t.name.as_str()).collect();
+                Command::UploadDataset { groups, seed, .. } => {
+                    let names: Vec<_> = groups.iter().map(|t| t.name.as_str()).collect();
                     assert_eq!(names, ["train", "val", "test"]);
-                    assert_eq!(split[1].percent, 20.0);
+                    assert_eq!(groups[1].percent, 20.0);
                     assert_eq!(seed.as_deref(), Some("abc"));
                 }
                 _ => panic!("expected UploadDataset"),
@@ -9272,9 +9341,156 @@ mod tests {
         }
 
         #[test]
-        fn upload_split_rejects_bad_target_and_seed_without_split() {
-            assert!(parse(&["upload-dataset", "ds-1", "--split", "train70"]).is_err());
+        fn upload_group_rejects_bad_target_seed_without_group_and_split_flag() {
+            assert!(parse(&["upload-dataset", "ds-1", "--group", "train70"]).is_err());
             assert!(parse(&["upload-dataset", "ds-1", "--seed", "abc"]).is_err());
+            assert!(parse(&["upload-dataset", "ds-1", "--split", "train=70"]).is_err());
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn ignore_arrow_groups_clears_groups_and_warns() {
+            use edgefirst_client::{Annotation, Sample};
+
+            let grouped = |group: Option<&str>| {
+                let mut annotation = Annotation::new();
+                annotation.set_group(group.map(str::to_owned));
+                let mut sample = Sample::new();
+                sample.group = group.map(str::to_owned);
+                sample.annotations = vec![annotation];
+                sample
+            };
+            let mut samples = vec![grouped(Some("train")), grouped(Some("val")), grouped(None)];
+            let warning = ignore_arrow_groups(&mut samples).expect("warning");
+            assert!(warning.contains("`group` column"), "{warning}");
+            assert!(warning.contains("--group"), "{warning}");
+            assert!(warning.contains(" 2 "), "{warning}");
+            for sample in &samples {
+                assert!(sample.group.is_none());
+                assert!(sample.annotations.iter().all(|a| a.group().is_none()));
+            }
+
+            let mut ungrouped = vec![grouped(None)];
+            assert!(ignore_arrow_groups(&mut ungrouped).is_none());
+        }
+
+        #[cfg(feature = "polars")]
+        fn upload_samples(
+            sequences: usize,
+            frames: usize,
+            singles: usize,
+        ) -> Vec<edgefirst_client::Sample> {
+            use edgefirst_client::{Annotation, Sample};
+            let sample = |sequence: Option<String>, image: String| {
+                let mut sample = Sample::new();
+                sample.sequence_name = sequence;
+                sample.image_name = Some(image);
+                sample.annotations = vec![Annotation::new()];
+                sample
+            };
+            let mut samples = Vec::new();
+            for s in 0..sequences {
+                for f in 0..frames {
+                    samples.push(sample(Some(format!("seq{s}")), format!("seq{s}_{f}.jpg")));
+                }
+            }
+            for i in 0..singles {
+                samples.push(sample(None, format!("img{i}.jpg")));
+            }
+            samples
+        }
+
+        #[cfg(feature = "polars")]
+        fn groups_by_image(
+            samples: &[edgefirst_client::Sample],
+        ) -> std::collections::BTreeMap<String, Option<String>> {
+            samples
+                .iter()
+                .map(|s| (s.image_name.clone().unwrap(), s.group.clone()))
+                .collect()
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn assign_upload_groups_keeps_sequences_whole_and_is_reproducible() {
+            let targets: Vec<SplitTarget> = ["train=70", "val=20", "test=10"]
+                .iter()
+                .map(|t| parse_split_target(t).unwrap())
+                .collect();
+            let mut samples = upload_samples(20, 10, 100);
+            let tallies = assign_upload_groups(&mut samples, &targets, "abc").unwrap();
+
+            for s in 0..20 {
+                let name = format!("seq{s}");
+                let groups: std::collections::BTreeSet<_> = samples
+                    .iter()
+                    .filter(|x| x.sequence_name.as_deref() == Some(name.as_str()))
+                    .map(|x| x.group.clone())
+                    .collect();
+                assert_eq!(groups.len(), 1, "sequence {name} spans {groups:?}");
+            }
+            for sample in &samples {
+                let group = sample
+                    .group
+                    .as_deref()
+                    .expect("every sample grouped at 100%");
+                assert!(
+                    sample
+                        .annotations
+                        .iter()
+                        .all(|a| a.group().map(String::as_str) == Some(group))
+                );
+            }
+            let images: Vec<usize> = tallies.iter().map(|t| t.images).collect();
+            assert_eq!(images.iter().sum::<usize>(), 300);
+            assert!((180..=240).contains(&images[0]), "{images:?}");
+            assert!((30..=90).contains(&images[1]), "{images:?}");
+            assert!((10..=60).contains(&images[2]), "{images:?}");
+            assert_eq!(tallies.iter().map(|t| t.sequences).sum::<usize>(), 20);
+
+            let mut reordered = upload_samples(20, 10, 100);
+            reordered.reverse();
+            assign_upload_groups(&mut reordered, &targets, "abc").unwrap();
+            assert_eq!(groups_by_image(&reordered), groups_by_image(&samples));
+
+            let differs = ["def", "ghi", "jkl"].iter().any(|seed| {
+                let mut other = upload_samples(20, 10, 100);
+                assign_upload_groups(&mut other, &targets, seed).unwrap();
+                groups_by_image(&other) != groups_by_image(&samples)
+            });
+            assert!(differs);
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn assign_upload_groups_leaves_remainder_ungrouped() {
+            let targets = vec![parse_split_target("train=50").unwrap()];
+            let mut samples = upload_samples(0, 0, 200);
+            let tallies = assign_upload_groups(&mut samples, &targets, "abc").unwrap();
+            let grouped = samples.iter().filter(|s| s.group.is_some()).count();
+            assert_eq!(grouped, tallies[0].images);
+            assert!((80..=120).contains(&grouped), "{grouped}");
+            assert!(
+                samples
+                    .iter()
+                    .all(|s| s.group.is_none() || s.group.as_deref() == Some("train"))
+            );
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn assign_upload_groups_rejects_target_left_empty() {
+            let targets: Vec<SplitTarget> = ["train=70", "val=20", "test=10"]
+                .iter()
+                .map(|t| parse_split_target(t).unwrap())
+                .collect();
+            let mut samples = upload_samples(1, 5, 1);
+            let err = assign_upload_groups(&mut samples, &targets, "abc").unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidParameters(m) if m.contains("no samples")),
+                "{err}"
+            );
+            assert!(samples.iter().all(|s| s.group.is_none()));
         }
 
         fn split_mock(images: [u64; 2], ungrouped: u64) -> serde_json::Value {
@@ -9288,62 +9504,6 @@ mod tests {
                 ],
                 "ungrouped": ungrouped, "skipped_mixed_sequences": 0
             }))
-        }
-
-        #[tokio::test]
-        async fn upload_split_respects_existing_groups() {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/api"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(split_mock([0, 0], 0)))
-                .mount(&server)
-                .await;
-            let client = client_for(&server.uri());
-            let targets = vec![
-                parse_split_target("train=80").unwrap(),
-                parse_split_target("val=20").unwrap(),
-            ];
-            let out =
-                run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, Some("abc"))
-                    .await
-                    .unwrap();
-            assert!(out.contains("all samples already had a group; split made no changes"));
-            let reqs = requests_for(&server, "groups.split").await;
-            assert_eq!(reqs.len(), 1);
-            assert_eq!(reqs[0]["params"]["scope"], "ungrouped");
-            assert_eq!(reqs[0]["params"]["seed"], "abc");
-            assert_eq!(reqs[0]["params"]["dry_run"], false);
-        }
-
-        #[tokio::test]
-        async fn upload_split_prints_report_when_samples_were_split() {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/api"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(split_mock([8, 2], 0)))
-                .mount(&server)
-                .await;
-            let client = client_for(&server.uri());
-            let targets = vec![parse_split_target("train=80").unwrap()];
-            let out = run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, None)
-                .await
-                .unwrap();
-            assert!(out.contains("train"));
-            assert!(!out.contains("already had a group"));
-        }
-
-        #[tokio::test]
-        async fn upload_split_rejects_duplicate_targets() {
-            let server = MockServer::start().await;
-            let client = client_for(&server.uri());
-            let targets = vec![
-                parse_split_target("train=80").unwrap(),
-                parse_split_target("train=20").unwrap(),
-            ];
-            let result =
-                run_post_upload_split(&client, "ds-1".parse().unwrap(), &targets, None).await;
-            assert!(result.is_err());
-            assert!(requests_for(&server, "groups.split").await.is_empty());
         }
 
         #[test]
@@ -9403,35 +9563,6 @@ mod tests {
             assert!(msg.contains("split was applied"), "{msg}");
             assert!(msg.contains("tag 'v1' was not created"), "{msg}");
             assert!(msg.contains("tag exists"), "{msg}");
-        }
-
-        #[tokio::test]
-        async fn upload_split_failure_says_upload_succeeded_and_keeps_code() {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/api"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "jsonrpc": "2.0", "id": "0",
-                    "error": {"code": 101, "message": "no samples to split"}
-                })))
-                .mount(&server)
-                .await;
-            let client = client_for(&server.uri());
-            let targets = vec![parse_split_target("train=100").unwrap()];
-            let err =
-                split_uploaded_dataset(&client, "ds-1".parse().unwrap(), &targets, Some("s9"), 12)
-                    .await
-                    .unwrap_err();
-            assert!(matches!(&err, Error::RpcError(101, _)), "{err:?}");
-            let msg = err.to_string();
-            assert!(msg.contains("upload succeeded"), "{msg}");
-            assert!(msg.contains("12 samples"), "{msg}");
-            assert!(msg.contains("split was not applied"), "{msg}");
-            assert!(
-                msg.contains("`split-groups ds-1 --group train=100 --seed s9`"),
-                "{msg}"
-            );
-            assert!(msg.contains("no samples to split"), "{msg}");
         }
     }
 }
