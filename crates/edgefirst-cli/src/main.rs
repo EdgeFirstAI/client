@@ -207,8 +207,8 @@ enum Command {
         /// Dataset ID
         dataset_id: String,
 
-        /// Target group as NAME=PERCENT (repeatable)
-        #[clap(long = "group", required = true, value_name = "NAME=PERCENT", value_parser = parse_split_target)]
+        /// Target group as NAME=PERCENT, or NAME alone for 100% (repeatable)
+        #[clap(long = "group", required = true, value_name = "NAME[=PERCENT]", value_parser = parse_split_target)]
         groups: Vec<SplitTarget>,
 
         /// Redistribute the samples of these existing groups (comma separated)
@@ -385,17 +385,20 @@ enum Command {
         #[clap(long)]
         annotation_set_id: Option<String>,
 
-        /// Target group as NAME=PERCENT (repeatable, e.g. `--group train=70
-        /// --group val=20 --group test=10`). Without --group, each sample
+        /// Target group as NAME=PERCENT, or NAME alone to put every uploaded
+        /// sample in it (repeatable, e.g. `--group train=70 --group val=20
+        /// --group test=10`, or `--group train`). Without --group, each sample
         /// takes its group from the Arrow `group` column when the file has
         /// one. With --group, that column is ignored with a warning and each
         /// uploaded sample is assigned a group at random by these percentages
         /// before it is sent; samples already in the dataset are not changed.
-        /// Random assignment keeps each sequence of the upload in one group;
-        /// frames added to a sequence the dataset already has are assigned on
+        /// Random assignment keeps each sequence of the upload in one group,
+        /// unless the upload has too few sequences to give every group samples:
+        /// then sequences are split across groups, with a warning naming them.
+        /// Frames added to a sequence the dataset already has are assigned on
         /// their own, with a warning naming those sequences. Individual
         /// samples can still be moved to any group with `set-group`.
-        #[clap(long = "group", value_name = "NAME=PERCENT", value_parser = parse_split_target)]
+        #[clap(long = "group", value_name = "NAME[=PERCENT]", value_parser = parse_split_target)]
         groups: Vec<SplitTarget>,
 
         /// Seed for a reproducible --group assignment; a random seed is used
@@ -3449,7 +3452,8 @@ fn arrow_group_warning(df: &polars::prelude::DataFrame) -> Option<String> {
         })
 }
 
-/// Number of uploaded images and sequences assigned to one `--group` target.
+/// Number of uploaded images and distinct sequences assigned to one `--group`
+/// target.
 #[cfg(feature = "polars")]
 #[derive(Debug, PartialEq)]
 struct UploadGroupTally {
@@ -3458,29 +3462,121 @@ struct UploadGroupTally {
     sequences: usize,
 }
 
-/// Assigns each sample to one of `targets` at random, keeping every sequence
-/// in a single group, and returns the counts for each target in order.
+/// Result of [`assign_upload_groups`].
+#[cfg(feature = "polars")]
+#[derive(Debug)]
+struct UploadGroupOutcome {
+    /// Counts for each target, in target order.
+    tallies: Vec<UploadGroupTally>,
+    /// Sorted names of the sequences whose samples are in more than one group.
+    split_sequences: Vec<String>,
+    /// Targets with a percentage above zero that received no samples.
+    empty_groups: Vec<String>,
+}
+
+/// Assigns each sample to one of `targets` at random.
 ///
 /// Units (a sequence, or a sample without one) are ordered by
 /// SHA-256(seed || ':' || unit key) and each unit goes to the target whose
 /// cumulative percentage band contains its sample-weighted midpoint; units past
-/// the last band stay ungrouped. The same seed over the same samples gives the
-/// same assignment whatever their order. Fails without changing any sample
-/// when a target with a percentage above zero would receive no samples.
+/// the last band stay ungrouped. When keeping every sequence whole leaves a
+/// target with a percentage above zero without samples, each sample is its
+/// own unit instead. The same seed over the same samples gives the same
+/// assignment whatever their order.
 #[cfg(feature = "polars")]
 fn assign_upload_groups(
     samples: &mut [edgefirst_client::Sample],
     targets: &[SplitTarget],
     seed: &str,
-) -> Result<Vec<UploadGroupTally>, Error> {
+) -> UploadGroupOutcome {
+    let mut bounds = Vec::with_capacity(targets.len());
+    let mut cumulative = 0.0;
+    for target in targets {
+        cumulative += target.percent;
+        bounds.push(cumulative);
+    }
+    let empty_targets = |assignment: &[Option<usize>]| -> Vec<String> {
+        targets
+            .iter()
+            .enumerate()
+            .filter(|(k, t)| t.percent > 0.0 && !assignment.contains(&Some(*k)))
+            .map(|(_, t)| t.name.clone())
+            .collect()
+    };
+
+    let mut assignment = place_upload_units(samples, &bounds, seed, true);
+    if !empty_targets(&assignment).is_empty() {
+        assignment = place_upload_units(samples, &bounds, seed, false);
+    }
+
+    let mut tallies: Vec<UploadGroupTally> = targets
+        .iter()
+        .map(|t| UploadGroupTally {
+            name: t.name.clone(),
+            images: 0,
+            sequences: 0,
+        })
+        .collect();
+    let mut sequences_by_target = vec![std::collections::BTreeSet::new(); targets.len()];
+    let mut groups_by_sequence: std::collections::BTreeMap<&str, std::collections::BTreeSet<_>> =
+        Default::default();
+    for (sample, &k) in samples.iter().zip(&assignment) {
+        if let Some(k) = k {
+            tallies[k].images += 1;
+            if let Some(sequence) = sample.sequence_name.as_deref() {
+                sequences_by_target[k].insert(sequence);
+            }
+        }
+        if let Some(sequence) = sample.sequence_name.as_deref() {
+            groups_by_sequence.entry(sequence).or_default().insert(k);
+        }
+    }
+    for (tally, sequences) in tallies.iter_mut().zip(&sequences_by_target) {
+        tally.sequences = sequences.len();
+    }
+    let split_sequences = groups_by_sequence
+        .into_iter()
+        .filter(|(_, groups)| groups.len() > 1)
+        .map(|(sequence, _)| sequence.to_owned())
+        .collect();
+    let empty_groups = empty_targets(&assignment);
+
+    for (sample, k) in samples.iter_mut().zip(assignment) {
+        let group = k.map(|k| targets[k].name.clone());
+        for annotation in &mut sample.annotations {
+            annotation.set_group(group.clone());
+        }
+        sample.group = group;
+    }
+    UploadGroupOutcome {
+        tallies,
+        split_sequences,
+        empty_groups,
+    }
+}
+
+/// Places the units of `samples` in the cumulative percentage `bounds` and
+/// returns each sample's target index. With `keep_sequences`, the samples of a
+/// sequence form one unit; otherwise every sample is its own unit.
+#[cfg(feature = "polars")]
+fn place_upload_units(
+    samples: &[edgefirst_client::Sample],
+    bounds: &[f64],
+    seed: &str,
+    keep_sequences: bool,
+) -> Vec<Option<usize>> {
     use sha2::{Digest, Sha256};
 
     let mut units: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
     for (index, sample) in samples.iter().enumerate() {
-        let key = match (&sample.sequence_name, &sample.image_name) {
-            (Some(sequence), _) => format!("s{sequence}"),
-            (None, Some(image)) => format!("i{image}"),
-            (None, None) => format!("n{index}"),
+        let image = sample
+            .image_name
+            .clone()
+            .unwrap_or_else(|| format!("#{index}"));
+        let key = match &sample.sequence_name {
+            Some(sequence) if keep_sequences => format!("s{sequence}"),
+            Some(sequence) => format!("f{sequence}/{image}"),
+            None => format!("i{image}"),
         };
         units.entry(key).or_default().push(index);
     }
@@ -3493,58 +3589,30 @@ fn assign_upload_groups(
         .collect();
     order.sort();
 
-    let mut bounds = Vec::with_capacity(targets.len());
-    let mut cumulative = 0.0;
-    for target in targets {
-        cumulative += target.percent;
-        bounds.push(cumulative);
-    }
-
     let total = samples.len() as f64;
-    let mut tallies: Vec<UploadGroupTally> = targets
-        .iter()
-        .map(|t| UploadGroupTally {
-            name: t.name.clone(),
-            images: 0,
-            sequences: 0,
-        })
-        .collect();
     let mut assignment = vec![None; samples.len()];
     let mut position = 0usize;
-    for (_, key, members) in &order {
+    for (_, _, members) in &order {
         position += members.len();
         let midpoint = (position as f64 - members.len() as f64 / 2.0) / total * 100.0;
         if let Some(k) = bounds.iter().position(|&bound| midpoint < bound) {
-            tallies[k].images += members.len();
-            tallies[k].sequences += usize::from(key.starts_with('s'));
             for &index in members {
                 assignment[index] = Some(k);
             }
         }
     }
+    assignment
+}
 
-    if let Some((target, _)) = targets
-        .iter()
-        .zip(&tallies)
-        .find(|(target, tally)| target.percent > 0.0 && tally.images == 0)
-    {
-        return Err(Error::InvalidParameters(format!(
-            "group '{}' would receive no samples: the upload holds {} samples in {} sequences \
-             or single images, too few for the --group percentages",
-            target.name,
-            samples.len(),
-            order.len()
-        )));
+/// Joins up to five names, adding how many more there are.
+#[cfg(feature = "polars")]
+fn summarize_names(names: &[&str]) -> String {
+    const SHOWN: usize = 5;
+    let mut list = names[..names.len().min(SHOWN)].join(", ");
+    if names.len() > SHOWN {
+        list.push_str(&format!(" and {} more", names.len() - SHOWN));
     }
-
-    for (sample, k) in samples.iter_mut().zip(assignment) {
-        let group = k.map(|k| targets[k].name.clone());
-        for annotation in &mut sample.annotations {
-            annotation.set_group(group.clone());
-        }
-        sample.group = group;
-    }
-    Ok(tallies)
+    list
 }
 
 /// Returns the warning naming the upload's sequences that are already in the
@@ -3565,11 +3633,7 @@ fn appended_sequences_warning(
     if appended.is_empty() {
         return None;
     }
-    const SHOWN: usize = 5;
-    let mut names = appended[..appended.len().min(SHOWN)].join(", ");
-    if appended.len() > SHOWN {
-        names.push_str(&format!(" and {} more", appended.len() - SHOWN));
-    }
+    let names = summarize_names(&appended);
     Some(format!(
         "⚠ The upload adds frames to sequences already in the dataset: {names}. --group assigns \
          the new frames on their own, so they may get a different group from the sequence's \
@@ -3577,19 +3641,34 @@ fn appended_sequences_warning(
     ))
 }
 
-/// Formats the result of [`assign_upload_groups`] for printing.
+/// Formats the result of [`assign_upload_groups`] for printing, with its
+/// warnings.
 #[cfg(feature = "polars")]
-fn format_upload_groups(seed: &str, tallies: &[UploadGroupTally], samples: usize) -> String {
+fn format_upload_groups(seed: &str, outcome: &UploadGroupOutcome, samples: usize) -> String {
     let mut out = format!("Assigning groups to the uploaded samples (seed: {seed}):\n");
-    for tally in tallies {
+    for tally in &outcome.tallies {
         out.push_str(&format!(
             "  {}: {} samples, {} sequences\n",
             tally.name, tally.images, tally.sequences
         ));
     }
-    let grouped: usize = tallies.iter().map(|t| t.images).sum();
+    let grouped: usize = outcome.tallies.iter().map(|t| t.images).sum();
     if grouped < samples {
         out.push_str(&format!("  ungrouped: {} samples\n", samples - grouped));
+    }
+    if !outcome.split_sequences.is_empty() {
+        let names: Vec<&str> = outcome.split_sequences.iter().map(String::as_str).collect();
+        out.push_str(&format!(
+            "⚠ The upload has too few sequences to give every group samples with each sequence \
+             kept whole, so these sequences are split across groups: {}. Keeping a sequence in \
+             one group is recommended; `set-group --sequences` moves a whole sequence\n",
+            summarize_names(&names)
+        ));
+    }
+    for name in &outcome.empty_groups {
+        out.push_str(&format!(
+            "⚠ Group '{name}' receives no samples: the upload holds only {samples} samples\n"
+        ));
     }
     out
 }
@@ -3800,8 +3879,8 @@ async fn handle_upload_dataset(
         }
         let seed =
             seed.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..16].to_owned());
-        let tallies = assign_upload_groups(&mut samples, &groups, &seed)?;
-        print!("{}", format_upload_groups(&seed, &tallies, samples.len()));
+        let outcome = assign_upload_groups(&mut samples, &groups, &seed);
+        print!("{}", format_upload_groups(&seed, &outcome, samples.len()));
     }
 
     // Generate UUIDs for upload (sample.uuid and sequence_uuid for sequences)
@@ -6426,9 +6505,16 @@ fn init_tracing(args: &Args) -> Option<()> {
 /// Parses a `NAME=PERCENT` split target. The percentage must be a number in
 /// `[0, 100]` and the name must not be empty.
 fn parse_split_target(s: &str) -> Result<SplitTarget, String> {
-    let (name, pct) = s
-        .rsplit_once('=')
-        .ok_or_else(|| format!("expected NAME=PERCENT, got '{s}'"))?;
+    let Some((name, pct)) = s.rsplit_once('=') else {
+        let name = s.trim();
+        if name.is_empty() {
+            return Err("group name is empty".to_owned());
+        }
+        return Ok(SplitTarget {
+            name: name.to_owned(),
+            percent: 100.0,
+        });
+    };
     let name = name.trim();
     if name.is_empty() {
         return Err(format!("group name is empty in '{s}'"));
@@ -6463,7 +6549,7 @@ fn validate_targets(targets: &[SplitTarget]) -> Result<(), Error> {
     let total: f64 = targets.iter().map(|t| t.percent).sum();
     if total > 100.0 + 1e-9 {
         return Err(Error::InvalidParameters(format!(
-            "group percentages sum to {total}, which exceeds 100"
+            "group percentages sum to {total}, which exceeds 100 (a group given without =PERCENT counts as 100)"
         )));
     }
     if total <= 0.0 {
@@ -9128,12 +9214,16 @@ mod tests {
             assert_eq!(target.percent, 20.5);
             assert_eq!(parse_split_target("a=0").unwrap().percent, 0.0);
             assert_eq!(parse_split_target("a=100").unwrap().percent, 100.0);
+            let whole = parse_split_target(" train ").unwrap();
+            assert_eq!(whole.name, "train");
+            assert_eq!(whole.percent, 100.0);
         }
 
         #[test]
         fn split_groups_rejects_bad_targets() {
             for bad in [
-                "train70",
+                "",
+                "  ",
                 "=10",
                 "train=",
                 "train=101",
@@ -9467,7 +9557,7 @@ mod tests {
 
         #[test]
         fn upload_group_rejects_bad_target_seed_without_group_and_split_flag() {
-            assert!(parse(&["upload-dataset", "ds-1", "--group", "train70"]).is_err());
+            assert!(parse(&["upload-dataset", "ds-1", "--group", "train=abc"]).is_err());
             assert!(parse(&["upload-dataset", "ds-1", "--seed", "abc"]).is_err());
             assert!(parse(&["upload-dataset", "ds-1", "--split", "train=70"]).is_err());
         }
@@ -9516,7 +9606,10 @@ mod tests {
                 .map(|t| parse_split_target(t).unwrap())
                 .collect();
             let mut samples = upload_samples(20, 10, 100);
-            let tallies = assign_upload_groups(&mut samples, &targets, "abc").unwrap();
+            let outcome = assign_upload_groups(&mut samples, &targets, "abc");
+            assert!(outcome.split_sequences.is_empty());
+            assert!(outcome.empty_groups.is_empty());
+            let tallies = outcome.tallies;
 
             for s in 0..20 {
                 let name = format!("seq{s}");
@@ -9548,12 +9641,12 @@ mod tests {
 
             let mut reordered = upload_samples(20, 10, 100);
             reordered.reverse();
-            assign_upload_groups(&mut reordered, &targets, "abc").unwrap();
+            assign_upload_groups(&mut reordered, &targets, "abc");
             assert_eq!(groups_by_image(&reordered), groups_by_image(&samples));
 
             let differs = ["def", "ghi", "jkl"].iter().any(|seed| {
                 let mut other = upload_samples(20, 10, 100);
-                assign_upload_groups(&mut other, &targets, seed).unwrap();
+                assign_upload_groups(&mut other, &targets, seed);
                 groups_by_image(&other) != groups_by_image(&samples)
             });
             assert!(differs);
@@ -9582,7 +9675,7 @@ mod tests {
         fn assign_upload_groups_leaves_remainder_ungrouped() {
             let targets = vec![parse_split_target("train=50").unwrap()];
             let mut samples = upload_samples(0, 0, 200);
-            let tallies = assign_upload_groups(&mut samples, &targets, "abc").unwrap();
+            let tallies = assign_upload_groups(&mut samples, &targets, "abc").tallies;
             let grouped = samples.iter().filter(|s| s.group.is_some()).count();
             assert_eq!(grouped, tallies[0].images);
             assert!((80..=120).contains(&grouped), "{grouped}");
@@ -9595,18 +9688,66 @@ mod tests {
 
         #[test]
         #[cfg(feature = "polars")]
-        fn assign_upload_groups_rejects_target_left_empty() {
+        fn assign_upload_groups_puts_everything_in_a_single_bare_group() {
+            let targets = vec![parse_split_target("train").unwrap()];
+            let mut samples = upload_samples(2, 5, 3);
+            let outcome = assign_upload_groups(&mut samples, &targets, "abc");
+            assert!(samples.iter().all(|s| s.group.as_deref() == Some("train")));
+            assert_eq!(outcome.tallies[0].images, 13);
+            assert_eq!(outcome.tallies[0].sequences, 2);
+            assert!(outcome.split_sequences.is_empty());
+            assert!(outcome.empty_groups.is_empty());
+            let text = format_upload_groups("abc", &outcome, samples.len());
+            assert!(!text.contains('⚠'), "{text}");
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn assign_upload_groups_splits_within_a_sequence_when_too_few_sequences() {
             let targets: Vec<SplitTarget> = ["train=70", "val=20", "test=10"]
                 .iter()
                 .map(|t| parse_split_target(t).unwrap())
                 .collect();
-            let mut samples = upload_samples(1, 5, 1);
-            let err = assign_upload_groups(&mut samples, &targets, "abc").unwrap_err();
-            assert!(
-                matches!(&err, Error::InvalidParameters(m) if m.contains("no samples")),
-                "{err}"
-            );
-            assert!(samples.iter().all(|s| s.group.is_none()));
+            let mut samples = upload_samples(1, 20, 0);
+            let outcome = assign_upload_groups(&mut samples, &targets, "abc");
+            assert_eq!(outcome.split_sequences, ["seq0"]);
+            assert!(outcome.empty_groups.is_empty());
+            for (tally, range) in outcome.tallies.iter().zip([10..=18, 1..=8, 1..=6]) {
+                assert!(range.contains(&tally.images), "{:?}", outcome.tallies);
+                assert_eq!(tally.sequences, 1);
+            }
+            for sample in &samples {
+                let group = sample.group.as_deref();
+                assert!(group.is_some());
+                assert!(
+                    sample
+                        .annotations
+                        .iter()
+                        .all(|a| a.group().map(String::as_str) == group)
+                );
+            }
+            let text = format_upload_groups("abc", &outcome, samples.len());
+            assert!(text.contains("⚠") && text.contains("seq0"), "{text}");
+
+            let mut again = upload_samples(1, 20, 0);
+            assign_upload_groups(&mut again, &targets, "abc");
+            assert_eq!(groups_by_image(&again), groups_by_image(&samples));
+        }
+
+        #[test]
+        #[cfg(feature = "polars")]
+        fn assign_upload_groups_warns_when_a_group_gets_no_samples() {
+            let targets: Vec<SplitTarget> = ["train=70", "val=20", "test=10"]
+                .iter()
+                .map(|t| parse_split_target(t).unwrap())
+                .collect();
+            let mut samples = upload_samples(0, 0, 2);
+            let outcome = assign_upload_groups(&mut samples, &targets, "abc");
+            assert_eq!(outcome.empty_groups.len(), 1, "{:?}", outcome.tallies);
+            assert!(samples.iter().all(|s| s.group.is_some()));
+            let text = format_upload_groups("abc", &outcome, samples.len());
+            let empty = &outcome.empty_groups[0];
+            assert!(text.contains(&format!("'{empty}'")), "{text}");
         }
 
         fn split_mock(images: [u64; 2], ungrouped: u64) -> serde_json::Value {

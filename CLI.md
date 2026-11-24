@@ -488,8 +488,8 @@ Upload samples to a dataset from images and/or Arrow annotations file. Supports 
 **\--annotation-set-id** *ANNOTATION_SET_ID*
 :   Annotation Set ID for the annotations. Required if Arrow file contains annotations.
 
-**\--group** *NAME=PERCENT*
-:   Target group and its share of the uploaded samples, repeatable, for example `--group train=70 --group val=20 --group test=10`. Without `--group`, each sample takes its group from the Arrow `group` column when the file has one. With `--group`, that column is ignored with a warning and each uploaded sample is assigned a group at random by these percentages before it is sent; samples already in the dataset are not changed. Random assignment keeps each sequence of the upload in one group. Frames added to a sequence the dataset already has are assigned on their own, so they may get a different group from that sequence's existing frames; a warning names those sequences. A sequence may hold samples of several groups: individual samples can be moved to any group with `set-group`, and `set-group --sequences` puts a whole sequence in one group. Percentages may add up to less than 100, leaving the rest of the uploaded samples ungrouped. The upload is rejected before anything is sent when a group with a percentage above 0 would receive no samples.
+**\--group** *NAME[=PERCENT]*
+:   Target group and its share of the uploaded samples, repeatable, for example `--group train=70 --group val=20 --group test=10`. A name without a percentage takes 100%: `--group val` puts every uploaded sample in `val`. Without `--group`, each sample takes its group from the Arrow `group` column when the file has one. With `--group`, that column is ignored with a warning and each uploaded sample is assigned a group at random by these percentages before it is sent; samples already in the dataset are not changed. Random assignment keeps each sequence of the upload in one group, unless the upload has too few sequences to give every group with a percentage above 0 some samples, such as a single recording uploaded with `train`, `val` and `test` percentages: then its samples are assigned one by one, splitting sequences across groups, and a warning names those sequences. Frames added to a sequence the dataset already has are assigned on their own, so they may get a different group from that sequence's existing frames; a warning names those sequences. A sequence may hold samples of several groups: individual samples can be moved to any group with `set-group`, and `set-group --sequences` puts a whole sequence in one group. Percentages may add up to less than 100, leaving the rest of the uploaded samples ungrouped. A group that still receives no samples, because the upload holds fewer samples than groups, is named in a warning; the upload goes ahead.
 
 **\--seed** *SEED*
 :   Seed for a reproducible `--group` assignment: the same seed over the same samples gives the same groups. Without it a random seed is used and printed.
@@ -641,7 +641,7 @@ Delete a group. Its images become ungrouped.
 
 Randomly split a dataset's samples into groups by percentage.
 
-**edgefirst-client split-groups** [*OPTIONS*] *DATASET_ID* \--group *NAME=PERCENT*...
+**edgefirst-client split-groups** [*OPTIONS*] *DATASET_ID* \--group *NAME[=PERCENT]*...
 
 **Arguments:**
 
@@ -650,8 +650,8 @@ Randomly split a dataset's samples into groups by percentage.
 
 **Options:**
 
-**\--group** *NAME=PERCENT*
-:   Target group and its share, repeatable. The percentages must not sum to more than 100, and at least one must be non-zero. When a split moves at least one image, every target group that does not exist is created, including a 0% target; a dry run, or a split that moves nothing, creates no group.
+**\--group** *NAME[=PERCENT]*
+:   Target group and its share, repeatable; a name without a percentage takes 100%. The percentages must not sum to more than 100, and at least one must be non-zero. When a split moves at least one image, every target group that does not exist is created, including a 0% target; a dry run, or a split that moves nothing, creates no group.
 
 **\--from** *GROUPS*
 :   Redistribute the samples of these existing groups (comma separated), plus the ungrouped samples.
