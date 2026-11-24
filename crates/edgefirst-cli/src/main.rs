@@ -3,9 +3,9 @@
 
 use clap::{ArgGroup, Parser, Subcommand};
 use edgefirst_client::{
-    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, Parameter,
-    Progress, SampleSelection, SchemaField, SnapshotID, SplitReport, SplitScope, SplitTarget,
-    StartTrainingRequest, TaskID, TrainingSession,
+    AnnotationSetID, AnnotationType, Client, Dataset, DatasetID, Error, FileType, GroupSummary,
+    Parameter, Progress, SampleSelection, SchemaField, SnapshotID, SplitReport, SplitScope,
+    SplitTarget, StartTrainingRequest, TaskID, TrainingSession,
 };
 use inquire::{Password, PasswordDisplayMode};
 use std::{
@@ -161,9 +161,9 @@ enum Command {
         #[clap(required = true)]
         sample_ids: Vec<String>,
     },
-    /// Show how many images and sequences each group of a dataset holds, plus
-    /// the ungrouped and total image counts and the number of sequences whose
-    /// images are spread over several groups.
+    /// Show the ID of each group of a dataset and how many images and
+    /// sequences it holds, plus the ungrouped and total image counts and the
+    /// number of sequences whose images are spread over several groups.
     Groups {
         /// Dataset ID
         dataset_id: String,
@@ -3448,7 +3448,9 @@ async fn handle_upload_dataset(
     seed: Option<String>,
 ) -> Result<(), Error> {
     // Fail before anything is uploaded.
-    validate_targets(&split)?;
+    if !split.is_empty() {
+        validate_targets(&split)?;
+    }
 
     if annotations.is_none() && images.is_none() {
         return Err(Error::InvalidParameters(
@@ -6308,6 +6310,18 @@ fn shell_quote(value: &str) -> String {
 async fn handle_groups(client: &Client, dataset_id: String) -> Result<(), Error> {
     let dataset_id: DatasetID = dataset_id.try_into()?;
     let summary = client.group_summary(dataset_id).await?;
+    print!("{}", format_group_summary(&summary));
+    Ok(())
+}
+
+fn format_group_summary(summary: &GroupSummary) -> String {
+    let id_width = summary
+        .groups
+        .iter()
+        .map(|g| g.id.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("ID".len());
     let width = summary
         .groups
         .iter()
@@ -6315,20 +6329,29 @@ async fn handle_groups(client: &Client, dataset_id: String) -> Result<(), Error>
         .max()
         .unwrap_or(0)
         .max("ungrouped".len());
-    println!("{:<width$}  {:>10}  {:>10}", "GROUP", "IMAGES", "SEQUENCES");
-    for group in &summary.groups {
-        println!(
-            "{:<width$}  {:>10}  {:>10}",
-            group.name, group.images, group.sequences
-        );
-    }
-    println!("{:<width$}  {:>10}", "ungrouped", summary.ungrouped);
-    println!("{:<width$}  {:>10}", "total", summary.total);
-    println!(
-        "Sequences spanning several groups: {}",
-        summary.mixed_sequences
+    let mut out = format!(
+        "{:>id_width$}  {:<width$}  {:>10}  {:>10}\n",
+        "ID", "GROUP", "IMAGES", "SEQUENCES"
     );
-    Ok(())
+    for group in &summary.groups {
+        out.push_str(&format!(
+            "{:>id_width$}  {:<width$}  {:>10}  {:>10}\n",
+            group.id, group.name, group.images, group.sequences
+        ));
+    }
+    out.push_str(&format!(
+        "{:>id_width$}  {:<width$}  {:>10}\n",
+        "", "ungrouped", summary.ungrouped
+    ));
+    out.push_str(&format!(
+        "{:>id_width$}  {:<width$}  {:>10}\n",
+        "", "total", summary.total
+    ));
+    out.push_str(&format!(
+        "Sequences spanning several groups: {}\n",
+        summary.mixed_sequences
+    ));
+    out
 }
 
 async fn handle_create_groups(
@@ -9053,6 +9076,52 @@ mod tests {
             assert!(lines[2].contains(" - ") && lines[2].ends_with("(new)"));
             assert!(lines[3].ends_with("(created)"));
             assert!(!lines[4].contains('('));
+        }
+
+        #[test]
+        fn group_summary_lists_group_ids() {
+            let summary: GroupSummary = serde_json::from_value(json!({
+                "total": 12, "ungrouped": 2, "mixed_sequences": 1,
+                "groups": [
+                    {"id": 7, "name": "train", "images": 8, "sequences": 3},
+                    {"id": 1042, "name": "val", "images": 2, "sequences": 1}
+                ]
+            }))
+            .unwrap();
+            let text = format_group_summary(&summary);
+            let lines: Vec<&str> = text.lines().collect();
+            let columns = |line: &str| {
+                line.split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(columns(lines[0]), ["ID", "GROUP", "IMAGES", "SEQUENCES"]);
+            assert_eq!(columns(lines[1]), ["7", "train", "8", "3"]);
+            assert_eq!(columns(lines[2]), ["1042", "val", "2", "1"]);
+            assert_eq!(columns(lines[3]), ["ungrouped", "2"]);
+            assert_eq!(columns(lines[4]), ["total", "12"]);
+            let name_column = lines[0].find("GROUP");
+            for (line, name) in lines[1..5]
+                .iter()
+                .zip(["train", "val", "ungrouped", "total"])
+            {
+                assert_eq!(line.find(name), name_column, "{line}");
+            }
+            assert_eq!(lines[5], "Sequences spanning several groups: 1");
+        }
+
+        #[tokio::test]
+        async fn upload_dataset_without_split_skips_split_validation() {
+            let server = MockServer::start().await;
+            let client = client_for(&server.uri());
+            let err = handle_upload_dataset(&client, "ds-1".into(), None, None, None, vec![], None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidParameters(m) if m.contains("--annotations or --images")),
+                "{err}"
+            );
+            assert!(server.received_requests().await.unwrap().is_empty());
         }
 
         fn fake_jwt() -> String {

@@ -615,7 +615,7 @@ Groups (commonly `train`, `val` and `test`) assign each sample of a dataset to a
 
 ### groups
 
-Show how many images and sequences each group of a dataset holds, plus the ungrouped and total image counts and the number of sequences whose images are spread over several groups.
+Show the ID of each group of a dataset and how many images and sequences it holds, plus the ungrouped and total image counts and the number of sequences whose images are spread over several groups. `rename-group` and `delete-group` take the group ID shown here.
 
 **edgefirst-client groups** *DATASET_ID*
 
