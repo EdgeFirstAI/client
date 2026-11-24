@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-24
+
 All six group commands (`groups`, `create-groups`, `rename-group`, `delete-group`, `split-groups`, `set-group`) and their client methods need Studio server v4.6.17 or later. Against an older server the summary, split and set-group calls fail with an RPC error stating that the method is not supported and the server needs updating; create, rename and delete fail with server errors, and delete removes the group before reporting that the server cannot return the ungrouped count.
 
 ### Added
