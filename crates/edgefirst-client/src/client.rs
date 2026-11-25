@@ -253,6 +253,15 @@ fn server_url(name: &str) -> String {
     }
 }
 
+/// Returns true when two URLs name the same server, comparing them after
+/// URL normalization (scheme and host case, default port, trailing slash).
+fn same_server_url(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 fn sanitize_path_component(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -989,13 +998,16 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
-        let url = if server.starts_with("http://") || server.starts_with("https://") {
+        let scheme = server.split_once("://").map(|(scheme, _)| scheme);
+        let url = if scheme
+            .is_some_and(|s| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https"))
+        {
             self.with_url(server)?.url().to_string()
         } else {
             server_url(server)
         };
 
-        if self.url == url {
+        if same_server_url(&self.url, &url) {
             return Ok(self.clone());
         }
 
@@ -8458,6 +8470,25 @@ mod tests {
             assert_eq!(same.url(), "https://edgefirst.studio");
             assert_eq!(in_memory_token(&same), token, "server {server:?}");
             assert_eq!(storage.load().unwrap(), Some(token.clone()));
+        }
+    }
+
+    #[test]
+    fn with_server_equivalent_url_keeps_token() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("saas");
+        for server in [
+            "https://edgefirst.studio:443",
+            "https://EdgeFirst.Studio",
+            "HTTPS://edgefirst.studio/",
+        ] {
+            let storage = Arc::new(MemoryTokenStorage::new());
+            storage.store(&token).unwrap();
+            let client = Client::new().unwrap().with_storage(storage);
+
+            let same = client.with_server(server).unwrap();
+            assert_eq!(in_memory_token(&same), token, "server {server:?}");
         }
     }
 
