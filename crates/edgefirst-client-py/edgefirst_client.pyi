@@ -5882,9 +5882,11 @@ class Client:
             2. **with_server()** - Used when logging in or no token exists.
             3. **Default "saas"** - If no token and no server specified.
 
-        Important:
-            If a token is already set, calling this method will **drop it**
-            as tokens are server-specific. Use ``parse_token_server()`` to
+        Token handling:
+            If the client already points at this server, it keeps its token.
+            If the server differs, the returned client has no token; a token
+            held in token storage stays there until the next login,
+            ``with_token()`` or ``logout()``. Use ``parse_token_server()`` to
             check a token's server before calling this method.
 
         Args:
@@ -5926,6 +5928,8 @@ class Client:
 
         Use this to configure custom token storage, such as platform-specific
         secure storage (iOS Keychain, Android EncryptedSharedPreferences).
+        A token held in the storage is loaded, and the client points at the
+        server that token was issued for.
 
         The storage can be a built-in storage class (FileTokenStorage,
         MemoryTokenStorage) or any Python object that implements the storage
