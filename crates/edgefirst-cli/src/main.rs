@@ -9201,10 +9201,17 @@ mod tests {
             matchers::{body_partial_json, method, path},
         };
 
+        /// Parses the command line on a thread with an 8 MiB stack, the size
+        /// of a main thread's stack on Linux.
         fn parse(args: &[&str]) -> Result<Args, clap::Error> {
-            let mut full = vec!["edgefirst-client"];
-            full.extend_from_slice(args);
-            Args::try_parse_from(full)
+            let mut full = vec!["edgefirst-client".to_owned()];
+            full.extend(args.iter().map(|a| (*a).to_owned()));
+            std::thread::Builder::new()
+                .stack_size(8 << 20)
+                .spawn(move || Args::try_parse_from(full))
+                .unwrap()
+                .join()
+                .unwrap()
         }
 
         #[test]
