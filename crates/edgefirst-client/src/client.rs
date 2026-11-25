@@ -244,6 +244,24 @@ fn is_loopback_host(host: Option<&url::Host<&str>>) -> bool {
     }
 }
 
+/// Returns the URL of a Studio server instance: `https://edgefirst.studio`
+/// for `""` and `"saas"`, otherwise `https://{name}.edgefirst.studio`.
+fn server_url(name: &str) -> String {
+    match name {
+        "" | "saas" => "https://edgefirst.studio".to_string(),
+        name => format!("https://{}.edgefirst.studio", name),
+    }
+}
+
+/// Returns true when two URLs name the same server, comparing them after
+/// URL normalization (scheme and host case, default port, trailing slash).
+fn same_server_url(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 fn sanitize_path_component(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -923,7 +941,7 @@ impl Client {
         // Extract server from token if available
         let url = if !token.is_empty() {
             match Self::extract_server_from_token(&token) {
-                Ok(server) => format!("https://{}.edgefirst.studio", server),
+                Ok(server) => server_url(&server),
                 Err(e) => {
                     warn!(
                         "Failed to extract server from token: {}. Using default server.",
@@ -956,23 +974,14 @@ impl Client {
     /// - `"dev"` → `https://dev.edgefirst.studio`
     /// - `"{name}"` → `https://{name}.edgefirst.studio`
     ///
-    /// # Server Selection Priority
+    /// # Token Handling
     ///
-    /// When using the CLI or Python API, server selection follows this
-    /// priority:
-    ///
-    /// 1. **Token's server** (highest priority) - JWT tokens encode the server
-    ///    they were issued for. If you have a valid token, its server is used.
-    /// 2. **`with_server()` / `--server`** - Used when logging in or when no
-    ///    token is available. If a token exists with a different server, a
-    ///    warning is emitted and the token's server takes priority.
-    /// 3. **Default `"saas"`** - If no token and no server specified, the
-    ///    production server (`https://edgefirst.studio`) is used.
-    ///
-    /// # Important Notes
-    ///
-    /// - If a token is already set in the client, calling this method will
-    ///   **drop the token** as tokens are specific to the server instance.
+    /// - If the client already points at this server, it is returned
+    ///   unchanged and keeps its token.
+    /// - If the server differs, the returned client has no token. Tokens
+    ///   held in token storage are left in place; the next login or
+    ///   [`with_token`][Self::with_token] replaces them, and
+    ///   [`logout`][Self::logout] removes them.
     /// - Use [`parse_token_server`][Self::parse_token_server] to check a
     ///   token's server before calling this method.
     /// - For login operations, call `with_server()` first, then authenticate.
@@ -989,33 +998,17 @@ impl Client {
     /// # }
     /// ```
     pub fn with_server(&self, server: &str) -> Result<Self, Error> {
-        // Resolve the target URL. Full URLs (self-hosted Studio,
-        // wiremock) are validated through `with_url` so the HTTPS rules
-        // there apply uniformly. Short names map to the SaaS pattern.
-        // We extract only the URL string and rebuild the Client below,
-        // because `with_url` preserves the in-memory token (the contract
-        // for self-hosted deployments) whereas `with_server` deliberately
-        // clears it (a different server means a stale token).
-        let url = if server.starts_with("http://") || server.starts_with("https://") {
+        let scheme = server.split_once("://").map(|(scheme, _)| scheme);
+        let url = if scheme
+            .is_some_and(|s| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https"))
+        {
             self.with_url(server)?.url().to_string()
         } else {
-            match server {
-                "" | "saas" => "https://edgefirst.studio".to_string(),
-                name => format!("https://{}.edgefirst.studio", name),
-            }
+            server_url(server)
         };
 
-        // Clear token from storage when changing servers to prevent
-        // authentication issues with stale tokens from different
-        // instances. This runs whether the caller passed a short name
-        // or a full URL — both reach a new server.
-        if let Some(ref storage) = self.storage
-            && let Err(e) = storage.clear()
-        {
-            warn!(
-                "Failed to clear token from storage when changing servers: {}",
-                e
-            );
+        if same_server_url(&self.url, &url) {
+            return Ok(self.clone());
         }
 
         Ok(Client {
@@ -1064,6 +1057,8 @@ impl Client {
     ///
     /// Use this to configure custom token storage, such as platform-specific
     /// secure storage (iOS Keychain, Android EncryptedSharedPreferences).
+    /// A token held in the storage is loaded, and the client points at the
+    /// server that token was issued for.
     ///
     /// # Examples
     ///
@@ -1092,7 +1087,13 @@ impl Client {
             }
         };
 
+        let url = match Self::extract_server_from_token(&token) {
+            Ok(server) => server_url(&server),
+            Err(_) => self.url.clone(),
+        };
+
         Client {
+            url,
             token: Arc::new(tokio::sync::RwLock::new(token)),
             storage: Some(storage),
             token_path: None,
@@ -1310,7 +1311,7 @@ impl Client {
         }
 
         Ok(Client {
-            url: format!("https://{}.edgefirst.studio", server),
+            url: server_url(&server),
             token: Arc::new(tokio::sync::RwLock::new(token.to_string())),
             ..self.clone()
         })
@@ -8401,55 +8402,126 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_with_server_clears_storage() {
-        use crate::storage::MemoryTokenStorage;
+    fn token_for_server(server: &str) -> String {
+        let engine = base64::engine::general_purpose::STANDARD_NO_PAD;
+        let payload = serde_json::json!({ "server": server, "username": "tester" });
+        format!(
+            "{}.{}.signature",
+            engine.encode(r#"{"alg":"HS256","typ":"JWT"}"#),
+            engine.encode(payload.to_string())
+        )
+    }
 
-        // Create client with memory storage and a token
-        let storage = Arc::new(MemoryTokenStorage::new());
-        storage.store("test-token").unwrap();
-
-        let client = Client::new().unwrap().with_storage(storage.clone());
-
-        // Verify token is loaded
-        assert_eq!(storage.load().unwrap(), Some("test-token".to_string()));
-
-        // Change server - should clear storage
-        let _new_client = client.with_server("test").unwrap();
-
-        // Verify storage was cleared
-        assert_eq!(storage.load().unwrap(), None);
+    fn in_memory_token(client: &Client) -> String {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { client.token.read().await.clone() })
     }
 
     #[test]
-    fn test_with_server_clears_storage_even_for_full_url() {
-        // Regression: `with_server` used to short-circuit to `with_url`
-        // when given a full URL, which preserved the bearer token. The
-        // contract for `with_server` is that switching servers means
-        // the token from the old server is no longer trusted.
+    fn with_storage_points_at_stored_token_server() {
         use crate::storage::MemoryTokenStorage;
 
         let storage = Arc::new(MemoryTokenStorage::new());
-        storage.store("token-from-old-server").unwrap();
-        let client = Client::new().unwrap().with_storage(storage.clone());
-        assert_eq!(
-            storage.load().unwrap(),
-            Some("token-from-old-server".to_string())
-        );
+        storage.store(&token_for_server("stage")).unwrap();
+        let client = Client::new()
+            .unwrap()
+            .with_server("test")
+            .unwrap()
+            .with_storage(storage);
+        assert_eq!(client.url(), "https://stage.edgefirst.studio");
 
-        // Switch to a self-hosted Studio (full URL). Storage must be
-        // cleared, and the new client must have a blank in-memory token.
-        let new_client = client
+        let empty = Client::new()
+            .unwrap()
+            .with_server("test")
+            .unwrap()
+            .with_storage(Arc::new(MemoryTokenStorage::new()));
+        assert_eq!(empty.url(), "https://test.edgefirst.studio");
+    }
+
+    #[test]
+    fn with_server_same_server_keeps_token() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("test");
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store(&token).unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+        assert_eq!(client.url(), "https://test.edgefirst.studio");
+
+        let same = client.with_server("test").unwrap();
+        assert_eq!(same.url(), "https://test.edgefirst.studio");
+        assert_eq!(in_memory_token(&same), token);
+        assert_eq!(storage.load().unwrap(), Some(token));
+    }
+
+    #[test]
+    fn with_server_saas_aliases_keep_saas_token() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("saas");
+        for server in ["saas", "", "https://edgefirst.studio"] {
+            let storage = Arc::new(MemoryTokenStorage::new());
+            storage.store(&token).unwrap();
+            let client = Client::new().unwrap().with_storage(storage.clone());
+            assert_eq!(client.url(), "https://edgefirst.studio");
+
+            let same = client.with_server(server).unwrap();
+            assert_eq!(same.url(), "https://edgefirst.studio");
+            assert_eq!(in_memory_token(&same), token, "server {server:?}");
+            assert_eq!(storage.load().unwrap(), Some(token.clone()));
+        }
+    }
+
+    #[test]
+    fn with_server_equivalent_url_keeps_token() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("saas");
+        for server in [
+            "https://edgefirst.studio:443",
+            "https://EdgeFirst.Studio",
+            "HTTPS://edgefirst.studio/",
+        ] {
+            let storage = Arc::new(MemoryTokenStorage::new());
+            storage.store(&token).unwrap();
+            let client = Client::new().unwrap().with_storage(storage);
+
+            let same = client.with_server(server).unwrap();
+            assert_eq!(in_memory_token(&same), token, "server {server:?}");
+        }
+    }
+
+    #[test]
+    fn with_server_other_server_drops_token_but_keeps_storage() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("test");
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store(&token).unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+
+        let other = client.with_server("stage").unwrap();
+        assert_eq!(other.url(), "https://stage.edgefirst.studio");
+        assert!(in_memory_token(&other).is_empty());
+        assert_eq!(storage.load().unwrap(), Some(token));
+    }
+
+    #[test]
+    fn with_server_full_url_drops_token_but_keeps_storage() {
+        use crate::storage::MemoryTokenStorage;
+
+        let token = token_for_server("test");
+        let storage = Arc::new(MemoryTokenStorage::new());
+        storage.store(&token).unwrap();
+        let client = Client::new().unwrap().with_storage(storage.clone());
+
+        let other = client
             .with_server("https://studio.example.com")
             .expect("https full URL through with_server");
-        assert_eq!(storage.load().unwrap(), None);
-        assert_eq!(new_client.url(), "https://studio.example.com");
-
-        // The new client should not carry the old token in memory either.
-        let in_mem = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async { new_client.token.read().await.clone() });
-        assert!(in_mem.is_empty(), "expected blank token, got {in_mem:?}");
+        assert_eq!(other.url(), "https://studio.example.com");
+        assert!(in_memory_token(&other).is_empty());
+        assert_eq!(storage.load().unwrap(), Some(token));
     }
 
     #[test]

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.1] - 2026-11-24
+
+### Fixed
+
+- `Client::with_server` (Python `Client.with_server`) no longer deletes the token held in token storage. Pointing a client at the server it already uses keeps its token, so `Client().with_server("test")` with a stored `test` token stays logged in. Pointing it at a different server gives a client without a token, and the stored token stays until the next login, `with_token` or `logout`. Code that relied on `with_server` to remove a stored token should call `logout` instead. Full URLs that differ only in letter case, an explicit default port or a trailing slash count as the same server, and `http://` and `https://` are recognised in any letter case.
+- `Client::with_storage` (Python `Client.with_storage`) points the client at the server of the token it loads from the storage, as `Client::new` and `with_token` already do.
+- A token issued for the production server now gives the client the URL `https://edgefirst.studio`, the same URL as `with_server("saas")` and the default client, in place of `https://saas.edgefirst.studio`.
+
 ## [2.21.0] - 2026-11-24
 
 All six group commands (`groups`, `create-groups`, `rename-group`, `delete-group`, `split-groups`, `set-group`) and their client methods need Studio server v4.6.17 or later. Against an older server the summary, split and set-group calls fail with an RPC error stating that the method is not supported and the server needs updating; create, rename and delete fail with server errors, and delete removes the group before reporting that the server cannot return the ungrouped count.

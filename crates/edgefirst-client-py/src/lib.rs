@@ -6175,6 +6175,9 @@ impl Client {
 
     /// Configure custom token storage.
     ///
+    /// A token held in the storage is loaded, and the client points at the
+    /// server that token was issued for.
+    ///
     /// Args:
     ///     storage: A storage object (FileTokenStorage, MemoryTokenStorage,
     ///              or any object with store/load/clear methods)
@@ -6250,9 +6253,11 @@ impl Client {
     ///     2. **with_server()** - Used when logging in or no token exists.
     ///     3. **Default "saas"** - If no token and no server specified.
     ///
-    /// Important:
-    ///     If a token is already set, calling this method will **drop it**
-    ///     as tokens are server-specific. Use ``parse_token_server()`` to
+    /// Token handling:
+    ///     If the client already points at this server, it keeps its token.
+    ///     If the server differs, the returned client has no token; a token
+    ///     held in token storage stays there until the next login,
+    ///     ``with_token()`` or ``logout()``. Use ``parse_token_server()`` to
     ///     check a token's server before calling this method.
     ///
     /// Args:

@@ -242,32 +242,32 @@ class TestClientServerBuilder(unittest.TestCase):
 
     def test_with_server_test(self):
         """Test with_server('test') maps to test.edgefirst.studio."""
-        client = ec.Client().with_server("test")
+        client = ec.Client().with_memory_storage().with_server("test")
         self.assertEqual(client.url, "https://test.edgefirst.studio")
 
     def test_with_server_stage(self):
         """Test with_server('stage') maps to stage.edgefirst.studio."""
-        client = ec.Client().with_server("stage")
+        client = ec.Client().with_memory_storage().with_server("stage")
         self.assertEqual(client.url, "https://stage.edgefirst.studio")
 
     def test_with_server_dev(self):
         """Test with_server('dev') maps to dev.edgefirst.studio."""
-        client = ec.Client().with_server("dev")
+        client = ec.Client().with_memory_storage().with_server("dev")
         self.assertEqual(client.url, "https://dev.edgefirst.studio")
 
     def test_with_server_saas(self):
         """Test with_server('saas') maps to edgefirst.studio."""
-        client = ec.Client().with_server("saas")
+        client = ec.Client().with_memory_storage().with_server("saas")
         self.assertEqual(client.url, "https://edgefirst.studio")
 
     def test_with_server_empty(self):
         """Test with_server('') maps to edgefirst.studio."""
-        client = ec.Client().with_server("")
+        client = ec.Client().with_memory_storage().with_server("")
         self.assertEqual(client.url, "https://edgefirst.studio")
 
     def test_with_server_custom(self):
         """Test with_server('custom') maps to custom.edgefirst.studio."""
-        client = ec.Client().with_server("custom")
+        client = ec.Client().with_memory_storage().with_server("custom")
         self.assertEqual(client.url, "https://custom.edgefirst.studio")
 
 
