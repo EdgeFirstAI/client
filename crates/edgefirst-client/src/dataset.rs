@@ -97,6 +97,32 @@ impl FileType {
             FileType::All => "",
         }
     }
+
+    /// Returns the name to use as a `files` key when uploading a sample.
+    ///
+    /// This differs from the [`Display`](std::fmt::Display) name, which the
+    /// server accepts when reading: an upload is stored under the name given
+    /// here, and only these names are matched by the read filters.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use edgefirst_client::FileType;
+    ///
+    /// assert_eq!(FileType::RadarPcd.to_string(), "radar.pcd");
+    /// assert_eq!(FileType::RadarPcd.upload_name(), "pcd");
+    /// ```
+    pub fn upload_name(&self) -> &'static str {
+        match self {
+            FileType::Image => "image",
+            FileType::LidarPcd => "lidar",
+            FileType::LidarDepth => "lidar.depth",
+            FileType::LidarReflect => "lidar.reflect",
+            FileType::RadarPcd => "pcd",
+            FileType::RadarCube => "radar",
+            FileType::All => "all",
+        }
+    }
 }
 
 impl TryFrom<&str> for FileType {
@@ -679,11 +705,29 @@ where
     let map: HashMap<String, String> = files
         .iter()
         .filter_map(|f| {
-            f.filename()
-                .map(|filename| (f.file_type().to_string(), filename.to_string()))
+            f.filename().map(|filename| {
+                (
+                    upload_file_type(f.file_type()).to_string(),
+                    filename.to_string(),
+                )
+            })
         })
         .collect();
     map.serialize(serializer)
+}
+
+/// Returns the `files` key an upload must use for a sample file type.
+///
+/// Sensor types whose upload name differs from their read name are
+/// translated; every other type, including a custom one, is returned
+/// unchanged.
+fn upload_file_type(file_type: &str) -> &str {
+    match file_type {
+        "lidar.pcd" => FileType::LidarPcd.upload_name(),
+        "radar.pcd" => FileType::RadarPcd.upload_name(),
+        "radar.png" => FileType::RadarCube.upload_name(),
+        other => other,
+    }
 }
 
 // Custom serializer for annotations field - serializes to a flat
@@ -3216,6 +3260,62 @@ pub fn unflatten_polygon_coordinates(coords: &[f32]) -> Vec<Vec<(f32, f32)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==== Sensor file upload name tests ====
+
+    #[test]
+    fn test_upload_name_differs_from_read_name_for_point_clouds() {
+        for (file_type, read_name, upload_name) in [
+            (FileType::Image, "image", "image"),
+            (FileType::LidarPcd, "lidar.pcd", "lidar"),
+            (FileType::LidarDepth, "lidar.depth", "lidar.depth"),
+            (FileType::LidarReflect, "lidar.reflect", "lidar.reflect"),
+            (FileType::RadarPcd, "radar.pcd", "pcd"),
+            (FileType::RadarCube, "radar.png", "radar"),
+        ] {
+            assert_eq!(file_type.to_string(), read_name);
+            assert_eq!(file_type.upload_name(), upload_name);
+        }
+    }
+
+    #[test]
+    fn test_upload_file_type_passes_through_unknown_types() {
+        assert_eq!(upload_file_type("lidar.pcd"), "lidar");
+        assert_eq!(upload_file_type("radar.pcd"), "pcd");
+        assert_eq!(upload_file_type("radar.png"), "radar");
+        assert_eq!(upload_file_type("image"), "image");
+        assert_eq!(upload_file_type("lidar.depth"), "lidar.depth");
+        assert_eq!(upload_file_type("lidar.reflect"), "lidar.reflect");
+        assert_eq!(upload_file_type("mask"), "mask");
+        assert_eq!(upload_file_type("gps"), "gps");
+        assert_eq!(upload_file_type("my_sensor"), "my_sensor");
+    }
+
+    #[test]
+    fn test_sample_serializes_files_under_upload_names() {
+        let mut sample = Sample::new();
+        sample.files = vec![
+            SampleFile::with_filename("radar.pcd".to_string(), "frame_1.radar.pcd".to_string()),
+            SampleFile::with_filename("lidar.pcd".to_string(), "frame_1.lidar.pcd".to_string()),
+            SampleFile::with_filename("radar.png".to_string(), "frame_1.radar.png".to_string()),
+            SampleFile::with_filename("image".to_string(), "frame_1.jpg".to_string()),
+        ];
+
+        let json = serde_json::to_value(&sample).unwrap();
+        let files = json.get("files").unwrap().as_object().unwrap();
+
+        assert_eq!(files.get("pcd").unwrap(), "frame_1.radar.pcd");
+        assert_eq!(files.get("lidar").unwrap(), "frame_1.lidar.pcd");
+        assert_eq!(files.get("radar").unwrap(), "frame_1.radar.png");
+        assert_eq!(files.get("image").unwrap(), "frame_1.jpg");
+        assert_eq!(files.len(), 4);
+        for read_name in ["radar.pcd", "lidar.pcd", "radar.png"] {
+            assert!(
+                !files.contains_key(read_name),
+                "{read_name} must not be used as an upload key"
+            );
+        }
+    }
 
     // ============================================================================
     // TEST HELPER FUNCTIONS (Pure Logic for Testing)
