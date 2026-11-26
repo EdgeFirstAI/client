@@ -2386,6 +2386,7 @@ struct SampleMetadata {
     height: Option<u32>,
     location: Option<edgefirst_client::Location>,
     degradation: Option<String>,
+    date: Option<chrono::DateTime<chrono::Utc>>,
     annotations: Vec<edgefirst_client::Annotation>,
 }
 
@@ -2554,6 +2555,14 @@ fn parse_arrow_samples(
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
+            // Optional capture time, nanoseconds since the Unix epoch, UTC.
+            let sample_date = df
+                .column("timestamp")
+                .ok()
+                .and_then(|c| c.i64().ok())
+                .and_then(|s| s.get(idx))
+                .map(chrono::DateTime::from_timestamp_nanos);
+
             // Get or create entry for this sample, validating group consistency
             let entry = match samples_map.entry(sample_name.clone()) {
                 std::collections::hash_map::Entry::Occupied(e) => {
@@ -2576,6 +2585,7 @@ fn parse_arrow_samples(
                     height: sample_height,
                     location: sample_location,
                     degradation: sample_degradation,
+                    date: sample_date,
                     annotations: Vec::new(),
                 }),
             };
@@ -2805,6 +2815,7 @@ fn resolve_samples_sequential(
             height: metadata.height,
             location: metadata.location,
             degradation: metadata.degradation,
+            date: metadata.date,
             files,
             annotations,
             ..Default::default()
@@ -2991,6 +3002,7 @@ fn process_zip_entry(
         height: entry.metadata.height,
         location: entry.metadata.location,
         degradation: entry.metadata.degradation,
+        date: entry.metadata.date,
         files,
         annotations,
         ..Default::default()
@@ -9037,6 +9049,9 @@ mod tests {
                 image_name: Some("img.jpg".into()),
                 width: Some(100),
                 height: Some(100),
+                date: Some(chrono::DateTime::from_timestamp_nanos(
+                    1_785_637_518_051_835_416,
+                )),
                 annotations: vec![ann],
                 ..Default::default()
             };
@@ -9053,6 +9068,10 @@ mod tests {
             assert_eq!(parsed.ignore(), Some(true));
             assert_eq!(parsed.exclude(), Some(true));
             assert_eq!(parsed.box2d_score(), Some(0.5));
+            assert_eq!(
+                serde_json::to_value(&samples[0]).unwrap()["date"],
+                "2026-08-02T02:25:18.051835416Z"
+            );
 
             // Legacy 2026.04 file: iscrowd only, as UInt32.
             let legacy = temp.path().join("legacy.arrow");
