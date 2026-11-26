@@ -1722,13 +1722,18 @@ struct AnnotationRaw {
     category_frequency: Option<String>,
     #[serde(default)]
     attributes: Option<AnnotationAttributes>,
-    // Nested box2d format (if server sends it this way)
+    // Nested geometry, taken raw: Studio returns the annotation's confidence
+    // inside each geometry object, so the score has to be read off before the
+    // geometry is parsed into its own type.
     #[serde(default)]
-    box2d: Option<Box2d>,
+    box2d: Option<serde_json::Value>,
     #[serde(default)]
-    box3d: Option<Box3d>,
+    box3d: Option<serde_json::Value>,
     #[serde(default, alias = "mask")]
-    polygon: Option<Polygon>,
+    polygon: Option<serde_json::Value>,
+    /// Annotation-level confidence, as `samples.populate2` carries it.
+    #[serde(default)]
+    score: Option<f32>,
     // Flat box2d fields from server (x, y, w, h at annotation level)
     #[serde(default)]
     x: Option<f64>,
@@ -1811,6 +1816,34 @@ pub struct Annotation {
     /// Confidence score for mask (0..1).
     #[serde(skip_serializing_if = "Option::is_none")]
     mask_score: Option<f32>,
+    /// The annotation's confidence. Studio keeps one score per annotation and
+    /// reads it from the annotation level, so the geometry scores collapse to
+    /// the first of mask, polygon, box3d, box2d, the order `arrow-to-coco`
+    /// uses. Kept in step with them by `set_*_score`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f32>,
+}
+
+/// Parses a geometry object returned by Studio, separating the confidence
+/// score it carries from the geometry itself. A score is returned only when
+/// the object holds one. An unparsable geometry is an error, as it is when the
+/// geometry is deserialized directly.
+fn split_geometry_score<'de, T, D>(
+    value: Option<serde_json::Value>,
+) -> Result<(Option<T>, Option<f32>), D::Error>
+where
+    T: serde::de::DeserializeOwned,
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = value else {
+        return Ok((None, None));
+    };
+    let score = value
+        .get("score")
+        .and_then(serde_json::Value::as_f64)
+        .map(|score| score as f32);
+    let geometry = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+    Ok((Some(geometry), score))
 }
 
 impl<'de> serde::Deserialize<'de> for Annotation {
@@ -1821,13 +1854,24 @@ impl<'de> serde::Deserialize<'de> for Annotation {
         // Deserialize to AnnotationRaw first to handle server format differences
         let raw: AnnotationRaw = serde::Deserialize::deserialize(deserializer)?;
 
+        let (box2d, box2d_score) = split_geometry_score::<Box2d, D>(raw.box2d)?;
+        let (box3d, box3d_score) = split_geometry_score::<Box3d, D>(raw.box3d)?;
+        let (polygon, polygon_score) = split_geometry_score::<Polygon, D>(raw.polygon)?;
+
         // Prefer nested box2d if present, otherwise construct from flat x/y/w/h
-        let box2d = raw.box2d.or_else(|| match (raw.x, raw.y, raw.w, raw.h) {
+        let box2d = box2d.or_else(|| match (raw.x, raw.y, raw.w, raw.h) {
             (Some(x), Some(y), Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
                 Some(Box2d::new(x as f32, y as f32, w as f32, h as f32))
             }
             _ => None,
         });
+
+        // Studio stores one score per annotation and echoes it into every
+        // geometry it returns, so an annotation-level score applies to each
+        // geometry that did not carry its own.
+        let box2d_score = box2d.as_ref().and(box2d_score.or(raw.score));
+        let box3d_score = box3d.as_ref().and(box3d_score.or(raw.score));
+        let polygon_score = polygon.as_ref().and(polygon_score.or(raw.score));
 
         Ok(Annotation {
             sample_id: raw.sample_id,
@@ -1843,12 +1887,13 @@ impl<'de> serde::Deserialize<'de> for Annotation {
             category_frequency: raw.category_frequency,
             attributes: raw.attributes.filter(|a| !a.is_empty()),
             box2d,
-            box3d: raw.box3d,
-            polygon: raw.polygon,
+            box3d,
+            polygon,
             mask: None,
-            box2d_score: None,
-            box3d_score: None,
-            polygon_score: None,
+            score: Annotation::collapse_score(None, polygon_score, box3d_score, box2d_score),
+            box2d_score,
+            box3d_score,
+            polygon_score,
             mask_score: None,
         })
     }
@@ -1883,6 +1928,7 @@ impl Annotation {
             box3d_score: None,
             polygon_score: None,
             mask_score: None,
+            score: None,
         }
     }
 
@@ -2074,12 +2120,33 @@ impl Annotation {
         self.mask = mask;
     }
 
+    /// Collapses the geometry scores to the one value Studio stores, keeping
+    /// the first of mask, polygon, box3d, box2d.
+    fn sync_score(&mut self) {
+        self.score = Self::collapse_score(
+            self.mask_score,
+            self.polygon_score,
+            self.box3d_score,
+            self.box2d_score,
+        );
+    }
+
+    fn collapse_score(
+        mask: Option<f32>,
+        polygon: Option<f32>,
+        box3d: Option<f32>,
+        box2d: Option<f32>,
+    ) -> Option<f32> {
+        mask.or(polygon).or(box3d).or(box2d)
+    }
+
     pub fn box2d_score(&self) -> Option<f32> {
         self.box2d_score
     }
 
     pub fn set_box2d_score(&mut self, score: Option<f32>) {
         self.box2d_score = score;
+        self.sync_score();
     }
 
     pub fn box3d_score(&self) -> Option<f32> {
@@ -2088,6 +2155,7 @@ impl Annotation {
 
     pub fn set_box3d_score(&mut self, score: Option<f32>) {
         self.box3d_score = score;
+        self.sync_score();
     }
 
     pub fn polygon_score(&self) -> Option<f32> {
@@ -2096,6 +2164,7 @@ impl Annotation {
 
     pub fn set_polygon_score(&mut self, score: Option<f32>) {
         self.polygon_score = score;
+        self.sync_score();
     }
 
     pub fn mask_score(&self) -> Option<f32> {
@@ -2104,6 +2173,7 @@ impl Annotation {
 
     pub fn set_mask_score(&mut self, score: Option<f32>) {
         self.mask_score = score;
+        self.sync_score();
     }
 }
 
@@ -2483,20 +2553,27 @@ pub fn masks_to_polygons(samples: &mut [Sample]) -> MaskConversion {
             let Some(mask) = annotation.mask.take() else {
                 return true;
             };
-            if annotation.polygon.is_some() {
-                return true;
-            }
-            match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
-                Some(polygon) => {
-                    annotation.polygon = Some(polygon);
-                    counts.converted += 1;
-                    true
+            // The mask's score goes with the mask; a polygon traced from it
+            // inherits the confidence.
+            let mask_score = annotation.mask_score.take();
+            let keep = if annotation.polygon.is_some() {
+                true
+            } else {
+                match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
+                    Some(polygon) => {
+                        annotation.polygon = Some(polygon);
+                        annotation.polygon_score = annotation.polygon_score.or(mask_score);
+                        counts.converted += 1;
+                        true
+                    }
+                    None => {
+                        counts.skipped += 1;
+                        annotation.box2d.is_some() || annotation.box3d.is_some()
+                    }
                 }
-                None => {
-                    counts.skipped += 1;
-                    annotation.box2d.is_some() || annotation.box3d.is_some()
-                }
-            }
+            };
+            annotation.sync_score();
+            keep
         });
     }
     counts
@@ -4170,6 +4247,122 @@ mod tests {
         assert_eq!(returned, uploaded);
     }
 
+    // ==== Annotation score tests ====
+
+    /// A `samples.list` annotation as Studio returns it: the confidence lives
+    /// inside each geometry object, repeated, because the server keeps one
+    /// score per annotation row.
+    const SCORED_ANNOTATION_FROM_STUDIO: &str = r#"{
+        "object_reference": "obj-1",
+        "label_name": "person",
+        "box2d": {"x":0.5,"y":0.25,"w":0.125,"h":0.0625,"score":0.75},
+        "box3d": {"x":9.5,"y":0.25,"z":1.75,"w":0.5,"h":0.25,"l":0.75,"score":0.75},
+        "mask": {"polygon":[[[0.25,0.5],[0.75,0.5],[0.75,0.25]]],"score":0.75}
+    }"#;
+
+    #[test]
+    fn test_scores_are_read_from_each_geometry() {
+        let annotation: Annotation = serde_json::from_str(SCORED_ANNOTATION_FROM_STUDIO).unwrap();
+        assert_eq!(annotation.box2d_score(), Some(0.75));
+        assert_eq!(annotation.box3d_score(), Some(0.75));
+        assert_eq!(annotation.polygon_score(), Some(0.75));
+        // The geometry itself still parses out of the same object.
+        assert!(annotation.box2d().is_some());
+        assert!(annotation.box3d().is_some());
+        assert!(annotation.polygon().is_some());
+    }
+
+    #[test]
+    fn test_score_is_written_where_studio_reads_it() {
+        let annotation: Annotation = serde_json::from_str(SCORED_ANNOTATION_FROM_STUDIO).unwrap();
+        let uploaded = serde_json::to_value(&annotation).unwrap();
+        assert_eq!(
+            uploaded.get("score").and_then(serde_json::Value::as_f64),
+            Some(0.75),
+            "Studio reads the confidence from the annotation level on upload"
+        );
+    }
+
+    #[test]
+    fn test_uploaded_score_keeps_the_mask_polygon_box3d_box2d_order() {
+        // Studio stores one score per annotation, so a row carrying several
+        // keeps the one `arrow-to-coco` would put in its single score field.
+        let wire = |ann: &Annotation| {
+            serde_json::to_value(ann).unwrap()["score"]
+                .as_f64()
+                .map(|s| s as f32)
+        };
+        let mut annotation = Annotation::new();
+        annotation.set_box2d_score(Some(0.125));
+        assert_eq!(wire(&annotation), Some(0.125));
+        annotation.set_box3d_score(Some(0.25));
+        assert_eq!(wire(&annotation), Some(0.25));
+        annotation.set_polygon_score(Some(0.5));
+        assert_eq!(wire(&annotation), Some(0.5));
+        annotation.set_mask_score(Some(0.75));
+        assert_eq!(wire(&annotation), Some(0.75));
+
+        // Clearing the preferred score falls back to the next.
+        annotation.set_mask_score(None);
+        assert_eq!(wire(&annotation), Some(0.5));
+        annotation.set_polygon_score(None);
+        assert_eq!(wire(&annotation), Some(0.25));
+        annotation.set_box3d_score(None);
+        assert_eq!(wire(&annotation), Some(0.125));
+    }
+
+    #[test]
+    fn test_score_absent_when_no_geometry_carries_one() {
+        let unscored =
+            r#"{"object_reference":"obj-2","box2d":{"x":0.5,"y":0.25,"w":0.125,"h":0.0625}}"#;
+        let annotation: Annotation = serde_json::from_str(unscored).unwrap();
+        assert_eq!(annotation.box2d_score(), None);
+        let uploaded = serde_json::to_value(&annotation).unwrap();
+        assert!(uploaded.get("score").is_none(), "no score must be invented");
+    }
+
+    #[test]
+    fn test_annotation_level_score_applies_to_each_geometry() {
+        // The upload contract carries one score beside the geometries; reading
+        // that form back must not lose it.
+        let uploaded_form = r#"{
+            "object_reference":"obj-3",
+            "score":0.5,
+            "box2d":{"x":0.5,"y":0.25,"w":0.125,"h":0.0625},
+            "box3d":{"x":9.5,"y":0.25,"z":1.75,"w":0.5,"h":0.25,"l":0.75}
+        }"#;
+        let annotation: Annotation = serde_json::from_str(uploaded_form).unwrap();
+        assert_eq!(annotation.box2d_score(), Some(0.5));
+        assert_eq!(annotation.box3d_score(), Some(0.5));
+        // A geometry that is absent gains no score.
+        assert_eq!(annotation.polygon_score(), None);
+    }
+
+    #[test]
+    fn test_setting_a_geometry_score_updates_the_uploaded_score() {
+        let mut annotation = Annotation::new();
+        annotation.set_box3d(Some(Box3d::new(9.5, 0.25, 1.75, 0.5, 0.25, 0.75)));
+        annotation.set_box3d_score(Some(0.25));
+        let uploaded = serde_json::to_value(&annotation).unwrap();
+        assert_eq!(
+            uploaded.get("score").and_then(serde_json::Value::as_f64),
+            Some(0.25)
+        );
+        annotation.set_box3d_score(None);
+        let cleared = serde_json::to_value(&annotation).unwrap();
+        assert!(cleared.get("score").is_none());
+    }
+
+    #[test]
+    fn test_mask_as_bare_array_still_parses() {
+        // samples.populate2 documents the mask as a bare ring array, which
+        // carries no score; that form must keep working.
+        let bare = r#"{"object_reference":"obj-4","mask":[[[0.25,0.5],[0.75,0.5],[0.75,0.25]]]}"#;
+        let annotation: Annotation = serde_json::from_str(bare).unwrap();
+        assert!(annotation.polygon().is_some(), "bare ring array lost");
+        assert_eq!(annotation.polygon_score(), None);
+    }
+
     // ==== Box3d Tests ====
     #[test]
     fn test_box3d_construction_and_accessors() {
@@ -5160,6 +5353,91 @@ mod tests {
         assert_eq!(masks_to_polygons(&mut samples), MaskConversion::default());
         assert_eq!(samples[0].annotations[0].polygon(), Some(&polygon));
         assert!(samples[0].annotations[0].mask().is_none());
+    }
+
+    fn wire_score(annotation: &Annotation) -> Option<f32> {
+        serde_json::to_value(annotation).unwrap()["score"]
+            .as_f64()
+            .map(|score| score as f32)
+    }
+
+    #[test]
+    fn masks_to_polygons_moves_a_converted_mask_score_to_the_polygon() {
+        let mut pixels = vec![0u8; 100];
+        for (x, y) in [(4, 6), (5, 6), (4, 7), (5, 7)] {
+            pixels[y * 10 + x] = 1;
+        }
+        let mut annotation =
+            mask_annotation(Some("car"), MaskData::encode(&pixels, 10, 10, 1).unwrap());
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            width: Some(10),
+            height: Some(10),
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        assert_eq!(masks_to_polygons(&mut samples).converted, 1);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(
+            annotation.polygon_score(),
+            Some(0.75),
+            "the polygon traced from the mask carries its confidence"
+        );
+        assert_eq!(
+            annotation.mask_score(),
+            None,
+            "no mask remains to hold a score"
+        );
+        assert_eq!(wire_score(annotation), Some(0.75));
+    }
+
+    #[test]
+    fn masks_to_polygons_clears_a_dropped_mask_score() {
+        let unsupported = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
+        let mut annotation = mask_annotation(Some("car"), unsupported);
+        annotation.set_box2d(Some(Box2d::new(0.1, 0.1, 0.5, 0.5)));
+        annotation.set_box2d_score(Some(0.25));
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        assert_eq!(masks_to_polygons(&mut samples).skipped, 1);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(annotation.mask_score(), None);
+        assert_eq!(
+            wire_score(annotation),
+            Some(0.25),
+            "the surviving box uploads its own confidence, not the dropped mask's"
+        );
+    }
+
+    #[test]
+    fn masks_to_polygons_clears_a_mask_score_superseded_by_a_polygon() {
+        let mut annotation = mask_annotation(Some("car"), MaskData::encode(&[1], 1, 1, 1).unwrap());
+        annotation.set_polygon(Some(Polygon::new(vec![vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+        ]])));
+        annotation.set_polygon_score(Some(0.25));
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        masks_to_polygons(&mut samples);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(annotation.mask_score(), None);
+        assert_eq!(
+            annotation.polygon_score(),
+            Some(0.25),
+            "the polygon keeps its own confidence"
+        );
+        assert_eq!(wire_score(annotation), Some(0.25));
     }
 
     #[test]
