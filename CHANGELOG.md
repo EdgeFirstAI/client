@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A sample uploaded with `Client::populate_samples` (Python `Client.populate_samples`) stores its radar and LiDAR point clouds and its radar cube where the server's read paths find them. Studio names a sensor differently when it is written than when it is read: an upload is stored under `pcd`, `lidar` and `radar`, while `samples.list`, `download-dataset` and `download-annotations` select it with `radar.pcd`, `lidar.pcd` and `radar.png`. The client sent the read names as upload keys, so the files were stored under names no read path matched and the samples came back with the image alone. `FileType::upload_name` gives the name an upload uses, while `FileType`'s `Display` keeps the read name, which is also what `--types` accepts. A `SampleFile` built with a type string is translated on upload, so Python code that passed the short names its documentation gives, such as `"lidar"`, was already correct and is unchanged. GPS, IMU, depth and reflectance uploads are unaffected, and a custom sensor type is still stored verbatim. Point clouds already uploaded under the wrong name are not moved by this release.
+
 ## [2.21.1] - 2026-11-24
 
 ### Fixed
