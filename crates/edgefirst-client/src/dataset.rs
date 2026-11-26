@@ -4031,6 +4031,93 @@ mod tests {
         assert_eq!(bbox.cy(), 75.0); // 100 + (-50)/2
     }
 
+    /// The exact `samples.list` annotation object Studio returns for an
+    /// object carrying both a 2D and a 3D box, captured from `processSample`.
+    const MIX_ANNOTATION_FROM_STUDIO: &str = r#"{
+        "object_reference": "obj-1",
+        "label_name": "person",
+        "label_index": 0,
+        "box2d": {"x":0.47,"y":0.27,"w":0.023,"h":0.018,"score":0.9},
+        "box3d": {"x":9.5,"y":0.25,"z":1.75,"w":0.5,"h":0.25,"l":0.75,"score":0.9}
+    }"#;
+
+    /// What Studio returns when the 2D and 3D boxes are stored as two rows
+    /// sharing one `object_reference`: `processSample` merges them into a
+    /// single annotation object before the client sees them. Captured from
+    /// `processSample` the same way.
+    const MERGED_ANNOTATION_FROM_STUDIO: &str = r#"{
+        "object_reference": "obj-1",
+        "label_name": "person",
+        "label_index": 0,
+        "box2d": {"x":0.47,"y":0.27,"w":0.023,"h":0.018},
+        "box3d": {"x":9.5,"y":0.25,"z":1.75,"w":0.5,"h":0.25,"l":0.75}
+    }"#;
+
+    #[test]
+    fn test_object_identity_survives_both_storage_arrangements() {
+        // One row carrying both boxes, and two rows sharing an object
+        // reference, are the same object by the dataset format. Both must
+        // arrive as one annotation that keeps its identity through re-upload.
+        for source in [MIX_ANNOTATION_FROM_STUDIO, MERGED_ANNOTATION_FROM_STUDIO] {
+            let annotation: Annotation = serde_json::from_str(source).unwrap();
+            assert_eq!(annotation.object_id().map(String::as_str), Some("obj-1"));
+            assert!(annotation.box2d().is_some(), "2D box lost");
+            assert!(annotation.box3d().is_some(), "3D box lost");
+
+            let uploaded = serde_json::to_value(&annotation).unwrap();
+            assert_eq!(
+                uploaded.get("object_reference").unwrap().as_str(),
+                Some("obj-1"),
+                "object reference dropped on upload, splitting one object in two"
+            );
+            assert!(uploaded.get("box2d").is_some(), "2D box not re-uploaded");
+            assert!(uploaded.get("box3d").is_some(), "3D box not re-uploaded");
+        }
+    }
+
+    #[test]
+    fn test_mix_annotation_keeps_both_box2d_and_box3d() {
+        let annotation: Annotation = serde_json::from_str(MIX_ANNOTATION_FROM_STUDIO).unwrap();
+
+        let box2d = annotation
+            .box2d()
+            .expect("2D box lost from a mixed annotation");
+        assert_eq!(box2d.left(), 0.47);
+        assert_eq!(box2d.top(), 0.27);
+        assert_eq!(box2d.width(), 0.023_f32);
+        assert_eq!(box2d.height(), 0.018_f32);
+
+        let box3d = annotation
+            .box3d()
+            .expect("3D box lost from a mixed annotation");
+        assert_eq!((box3d.cx(), box3d.cy(), box3d.cz()), (9.5, 0.25, 1.75));
+        assert_eq!(box3d.w, 0.5);
+        assert_eq!(box3d.h, 0.25);
+        assert_eq!(box3d.l, 0.75);
+    }
+
+    #[test]
+    fn test_mix_annotation_round_trips_both_boxes() {
+        let annotation: Annotation = serde_json::from_str(MIX_ANNOTATION_FROM_STUDIO).unwrap();
+        let uploaded = serde_json::to_value(&annotation).unwrap();
+
+        // Extents are stored as f32, so compare at f32 width.
+        let at_f32 = |object: &serde_json::Value, key: &str| {
+            object.get(key).unwrap().as_f64().unwrap() as f32
+        };
+
+        let box2d = uploaded.get("box2d").expect("2D box not uploaded");
+        assert_eq!(at_f32(box2d, "w"), 0.023);
+        assert_eq!(at_f32(box2d, "h"), 0.018);
+
+        let box3d = uploaded.get("box3d").expect("3D box not uploaded");
+        assert_eq!(at_f32(box3d, "dx"), 0.5);
+        assert_eq!(at_f32(box3d, "dy"), 0.25);
+        assert_eq!(at_f32(box3d, "dz"), 0.75);
+        // The 2D box keeps w/h: only the 3D extents changed spelling.
+        assert!(box3d.get("w").is_none(), "3D box must not be written as w");
+    }
+
     #[test]
     fn test_box3d_writes_stored_extent_names() {
         let json = serde_json::to_value(Box3d::new(9.5, 0.25, 1.75, 0.5, 0.25, 0.75)).unwrap();
