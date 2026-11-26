@@ -1422,8 +1422,18 @@ pub struct Box3d {
     x: f32,
     y: f32,
     z: f32,
+    /// Extent along the sensor frame x-axis. Written as `dx` and read from
+    /// either `dx` or `w`: Studio stores an extent as `dx`/`dy`/`dz` and its
+    /// `samples.list` reply names the same value `w`/`h`/`l`.
+    #[serde(rename(serialize = "dx"), alias = "dx")]
     w: f32,
+    /// Extent along the sensor frame y-axis. Written as `dy`, read from
+    /// either `dy` or `h`.
+    #[serde(rename(serialize = "dy"), alias = "dy")]
     h: f32,
+    /// Extent along the sensor frame z-axis. Written as `dz`, read from
+    /// either `dz` or `l`.
+    #[serde(rename(serialize = "dz"), alias = "dz")]
     l: f32,
 }
 
@@ -4019,6 +4029,58 @@ mod tests {
         assert_eq!(bbox.height(), -50.0);
         assert_eq!(bbox.cx(), 75.0); // 100 + (-50)/2
         assert_eq!(bbox.cy(), 75.0); // 100 + (-50)/2
+    }
+
+    #[test]
+    fn test_box3d_writes_stored_extent_names() {
+        let json = serde_json::to_value(Box3d::new(9.5, 0.25, 1.75, 0.5, 0.25, 0.75)).unwrap();
+        let object = json.as_object().unwrap();
+        assert_eq!(object.len(), 6);
+        for (key, want) in [
+            ("x", 9.5),
+            ("y", 0.25),
+            ("z", 1.75),
+            ("dx", 0.5),
+            ("dy", 0.25),
+            ("dz", 0.75),
+        ] {
+            assert_eq!(object.get(key).unwrap().as_f64().unwrap(), want, "{key}");
+        }
+        for key in ["w", "h", "l"] {
+            assert!(!object.contains_key(key), "{key} must not be written");
+        }
+    }
+
+    #[test]
+    fn test_box3d_reads_either_extent_spelling() {
+        let stored = r#"{"x":9.5,"y":0.25,"z":1.75,"dx":0.5,"dy":0.25,"dz":0.75}"#;
+        let returned = r#"{"x":9.5,"y":0.25,"z":1.75,"w":0.5,"h":0.25,"l":0.75}"#;
+        let from_stored: Box3d = serde_json::from_str(stored).unwrap();
+        let from_returned: Box3d = serde_json::from_str(returned).unwrap();
+        assert_eq!(from_stored, from_returned);
+        assert_eq!(
+            (from_stored.cx(), from_stored.cy(), from_stored.cz()),
+            (9.5, 0.25, 1.75)
+        );
+        assert_eq!(from_stored.w, 0.5);
+        assert_eq!(from_stored.h, 0.25);
+        assert_eq!(from_stored.l, 0.75);
+    }
+
+    #[test]
+    fn test_box3d_survives_a_studio_round_trip() {
+        let uploaded = Box3d::new(9.5, 0.25, 1.75, 0.5, 0.25, 0.75);
+        // What populate2 stores verbatim from the upload.
+        let stored = serde_json::to_string(&uploaded).unwrap();
+        let mut data: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&stored).unwrap();
+        // What samples.list emits: the same values under w/h/l.
+        for (read_name, stored_name) in [("w", "dx"), ("h", "dy"), ("l", "dz")] {
+            let value = data.remove(stored_name).unwrap();
+            data.insert(read_name.to_string(), value);
+        }
+        let returned: Box3d = serde_json::from_value(serde_json::Value::Object(data)).unwrap();
+        assert_eq!(returned, uploaded);
     }
 
     // ==== Box3d Tests ====
