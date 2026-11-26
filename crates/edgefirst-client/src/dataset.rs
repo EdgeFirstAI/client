@@ -2553,20 +2553,27 @@ pub fn masks_to_polygons(samples: &mut [Sample]) -> MaskConversion {
             let Some(mask) = annotation.mask.take() else {
                 return true;
             };
-            if annotation.polygon.is_some() {
-                return true;
-            }
-            match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
-                Some(polygon) => {
-                    annotation.polygon = Some(polygon);
-                    counts.converted += 1;
-                    true
+            // The mask's score goes with the mask; a polygon traced from it
+            // inherits the confidence.
+            let mask_score = annotation.mask_score.take();
+            let keep = if annotation.polygon.is_some() {
+                true
+            } else {
+                match instance_mask_to_polygon(&mask, annotation.label().is_some(), image_size) {
+                    Some(polygon) => {
+                        annotation.polygon = Some(polygon);
+                        annotation.polygon_score = annotation.polygon_score.or(mask_score);
+                        counts.converted += 1;
+                        true
+                    }
+                    None => {
+                        counts.skipped += 1;
+                        annotation.box2d.is_some() || annotation.box3d.is_some()
+                    }
                 }
-                None => {
-                    counts.skipped += 1;
-                    annotation.box2d.is_some() || annotation.box3d.is_some()
-                }
-            }
+            };
+            annotation.sync_score();
+            keep
         });
     }
     counts
@@ -5346,6 +5353,91 @@ mod tests {
         assert_eq!(masks_to_polygons(&mut samples), MaskConversion::default());
         assert_eq!(samples[0].annotations[0].polygon(), Some(&polygon));
         assert!(samples[0].annotations[0].mask().is_none());
+    }
+
+    fn wire_score(annotation: &Annotation) -> Option<f32> {
+        serde_json::to_value(annotation).unwrap()["score"]
+            .as_f64()
+            .map(|score| score as f32)
+    }
+
+    #[test]
+    fn masks_to_polygons_moves_a_converted_mask_score_to_the_polygon() {
+        let mut pixels = vec![0u8; 100];
+        for (x, y) in [(4, 6), (5, 6), (4, 7), (5, 7)] {
+            pixels[y * 10 + x] = 1;
+        }
+        let mut annotation =
+            mask_annotation(Some("car"), MaskData::encode(&pixels, 10, 10, 1).unwrap());
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            width: Some(10),
+            height: Some(10),
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        assert_eq!(masks_to_polygons(&mut samples).converted, 1);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(
+            annotation.polygon_score(),
+            Some(0.75),
+            "the polygon traced from the mask carries its confidence"
+        );
+        assert_eq!(
+            annotation.mask_score(),
+            None,
+            "no mask remains to hold a score"
+        );
+        assert_eq!(wire_score(annotation), Some(0.75));
+    }
+
+    #[test]
+    fn masks_to_polygons_clears_a_dropped_mask_score() {
+        let unsupported = MaskData::encode(&[0, 200, 255, 0], 2, 2, 8).unwrap();
+        let mut annotation = mask_annotation(Some("car"), unsupported);
+        annotation.set_box2d(Some(Box2d::new(0.1, 0.1, 0.5, 0.5)));
+        annotation.set_box2d_score(Some(0.25));
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        assert_eq!(masks_to_polygons(&mut samples).skipped, 1);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(annotation.mask_score(), None);
+        assert_eq!(
+            wire_score(annotation),
+            Some(0.25),
+            "the surviving box uploads its own confidence, not the dropped mask's"
+        );
+    }
+
+    #[test]
+    fn masks_to_polygons_clears_a_mask_score_superseded_by_a_polygon() {
+        let mut annotation = mask_annotation(Some("car"), MaskData::encode(&[1], 1, 1, 1).unwrap());
+        annotation.set_polygon(Some(Polygon::new(vec![vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+        ]])));
+        annotation.set_polygon_score(Some(0.25));
+        annotation.set_mask_score(Some(0.75));
+        let mut samples = vec![Sample {
+            annotations: vec![annotation],
+            ..Default::default()
+        }];
+
+        masks_to_polygons(&mut samples);
+        let annotation = &samples[0].annotations[0];
+        assert_eq!(annotation.mask_score(), None);
+        assert_eq!(
+            annotation.polygon_score(),
+            Some(0.25),
+            "the polygon keeps its own confidence"
+        );
+        assert_eq!(wire_score(annotation), Some(0.25));
     }
 
     #[test]
